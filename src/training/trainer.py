@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 from transformers import Trainer, TrainingArguments
 
-from ..config.base import Config
+from ..config_unified import UnifiedConfig
 from ..data import BBUDataset, DataCollator, FlattenedDataCollator
 from ..logging import get_model_logger, get_training_logger
 from ..losses import ObjectDetectionLoss, ResponseParser
@@ -94,7 +94,7 @@ class TrainingMetrics:
 class ComponentManager:
     """Manages initialization and configuration of training components."""
 
-    def __init__(self, config: Config, logger):
+    def __init__(self, config: UnifiedConfig, logger):
         self.config = config
         self.logger = logger
 
@@ -238,7 +238,7 @@ class ComponentManager:
 class LossManager:
     """Manages loss computation and detection loss integration."""
 
-    def __init__(self, config: Config, tokenizer, logger):
+    def __init__(self, config: UnifiedConfig, tokenizer, logger):
         self.config = config
         self.tokenizer = tokenizer
         self.logger = logger
@@ -377,7 +377,7 @@ class BBUTrainer(Trainer):
 
     def __init__(
         self,
-        config: Config,
+        config: UnifiedConfig,
         training_args: Optional[TrainingArguments] = None,
         **kwargs,
     ):
@@ -464,8 +464,8 @@ class BBUTrainer(Trainer):
             ):
                 callbacks.append(
                     BestCheckpointCallback(
-                        output_dir=training_args.output_dir,
-                        metric_for_best_model="eval_loss",
+                        save_total_limit=getattr(self.config, "save_total_limit", 2),
+                        metric_name="eval_loss",
                         greater_is_better=False,
                     )
                 )
@@ -958,7 +958,7 @@ class BBUTrainer(Trainer):
 
 
 def create_trainer(
-    config: Config, training_args: Optional[TrainingArguments] = None, **kwargs
+    config: UnifiedConfig, training_args: Optional[TrainingArguments] = None, **kwargs
 ) -> BBUTrainer:
     """Factory function to create a BBU trainer."""
     try:
