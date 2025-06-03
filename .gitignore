@@ -1,0 +1,11 @@
+# Ignore everything
+*
+
+# Do not ignore the .gitignore file itself
+!.gitignore
+
+# Do not ignore specific folders
+!src/
+!data_conversion/
+!data_analysis/
+!eval/
