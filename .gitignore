@@ -4,8 +4,17 @@
 # Do not ignore the .gitignore file itself
 !.gitignore
 
-# Do not ignore specific folders
+# Un-ignore top-level folders
 !src/
 !data_conversion/
 !data_analysis/
 !eval/
+
+# Un-ignore everything inside those folders
+!src/**
+!data_conversion/**
+!data_analysis/**
+!eval/**
+
+
+**/__pycache__

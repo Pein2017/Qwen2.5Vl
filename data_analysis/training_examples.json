@@ -1,0 +1,441 @@
+{
+  "sparse": {
+    "image": "ds_rescaled/QC-20230215-0000236_1115765.jpeg",
+    "objects": [
+      {
+        "bbox": [
+          214,
+          611,
+          474,
+          1066
+        ],
+        "description": "label matches"
+      }
+    ]
+  },
+  "medium": {
+    "image": "ds_rescaled/QC-20240307-0027549_4394129.jpeg",
+    "objects": [
+      {
+        "bbox": [
+          0,
+          0,
+          85,
+          140
+        ],
+        "description": "install screw correct"
+      },
+      {
+        "bbox": [
+          0,
+          0,
+          699,
+          879
+        ],
+        "description": "huawei bbu"
+      },
+      {
+        "bbox": [
+          68,
+          696,
+          220,
+          823
+        ],
+        "description": "install screw incorrect, rust"
+      },
+      {
+        "bbox": [
+          83,
+          771,
+          700,
+          1418
+        ],
+        "description": "huawei bbu"
+      },
+      {
+        "bbox": [
+          119,
+          791,
+          257,
+          913
+        ],
+        "description": "install screw correct"
+      },
+      {
+        "bbox": [
+          279,
+          924,
+          656,
+          1092
+        ],
+        "description": "label matches"
+      }
+    ]
+  },
+  "dense": {
+    "image": "ds_rescaled/QC-TEMP-20241126-0015381_4301914.jpeg",
+    "objects": [
+      {
+        "bbox": [
+          336,
+          0,
+          698,
+          1392
+        ],
+        "description": "zte bbu"
+      },
+      {
+        "bbox": [
+          616,
+          3,
+          677,
+          52
+        ],
+        "description": "install screw correct"
+      },
+      {
+        "bbox": [
+          30,
+          14,
+          700,
+          1392
+        ],
+        "description": "cabinet fully occupied"
+      },
+      {
+        "bbox": [
+          364,
+          25,
+          436,
+          89
+        ],
+        "description": "install screw correct"
+      },
+      {
+        "bbox": [
+          67,
+          58,
+          428,
+          302
+        ],
+        "description": "non-fiber cable, binding aligned horizontally and vertically"
+      },
+      {
+        "bbox": [
+          114,
+          98,
+          337,
+          1400
+        ],
+        "description": "bbu shield installed, shield orientation correct, shield unobstructed"
+      },
+      {
+        "bbox": [
+          167,
+          117,
+          363,
+          285
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          183,
+          714,
+          483,
+          886
+        ],
+        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+      },
+      {
+        "bbox": [
+          355,
+          755,
+          436,
+          866
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          483,
+          863,
+          557,
+          1111
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          167,
+          896,
+          523,
+          1153
+        ],
+        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+      },
+      {
+        "bbox": [
+          378,
+          917,
+          498,
+          1112
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          293,
+          1065,
+          390,
+          1230
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          98,
+          1269,
+          220,
+          1385
+        ],
+        "description": "label matches"
+      }
+    ]
+  },
+  "diverse": {
+    "image": "ds_rescaled/QC-20230222-0000297_272972.jpeg",
+    "objects": [
+      {
+        "bbox": [
+          242,
+          160,
+          615,
+          992
+        ],
+        "description": "cabinet not fully occupied, match"
+      },
+      {
+        "bbox": [
+          502,
+          170,
+          520,
+          188
+        ],
+        "description": "install screw correct"
+      },
+      {
+        "bbox": [
+          370,
+          178,
+          525,
+          995
+        ],
+        "description": "huawei bbu"
+      },
+      {
+        "bbox": [
+          281,
+          199,
+          474,
+          297
+        ],
+        "description": "fiber cable, fibre bend radius proper, armour protection"
+      },
+      {
+        "bbox": [
+          298,
+          204,
+          371,
+          945
+        ],
+        "description": "bbu shield installed, shield orientation correct, shield unobstructed"
+      },
+      {
+        "bbox": [
+          418,
+          280,
+          483,
+          359
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          476,
+          293,
+          502,
+          375
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          299,
+          344,
+          437,
+          587
+        ],
+        "description": "fiber cable, fibre bend radius proper, armour protection"
+      },
+      {
+        "bbox": [
+          334,
+          571,
+          418,
+          602
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          392,
+          586,
+          446,
+          665
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          438,
+          593,
+          470,
+          640
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          197,
+          603,
+          344,
+          719
+        ],
+        "description": "fiber cable, fibre bend radius proper, armour protection"
+      },
+      {
+        "bbox": [
+          360,
+          681,
+          395,
+          717
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          223,
+          910,
+          363,
+          1038
+        ],
+        "description": "non-fiber cable, binding aligned horizontally and vertically"
+      },
+      {
+        "bbox": [
+          436,
+          963,
+          452,
+          979
+        ],
+        "description": "cabinet grounding correct"
+      },
+      {
+        "bbox": [
+          504,
+          969,
+          525,
+          985
+        ],
+        "description": "install screw correct"
+      }
+    ]
+  },
+  "rare": {
+    "image": "ds_rescaled/QC-20230301-0000486_2850863.jpeg",
+    "objects": [
+      {
+        "bbox": [
+          16,
+          0,
+          672,
+          1038
+        ],
+        "description": "cabinet fully occupied"
+      },
+      {
+        "bbox": [
+          0,
+          22,
+          672,
+          563
+        ],
+        "description": "zte bbu"
+      },
+      {
+        "bbox": [
+          223,
+          213,
+          542,
+          397
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          127,
+          433,
+          268,
+          574
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          335,
+          509,
+          672,
+          700
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          91,
+          510,
+          234,
+          754
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          1,
+          540,
+          672,
+          761
+        ],
+        "description": "ericsson bbu"
+      },
+      {
+        "bbox": [
+          312,
+          659,
+          452,
+          792
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          0,
+          738,
+          548,
+          906
+        ],
+        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+      }
+    ]
+  }
+}
