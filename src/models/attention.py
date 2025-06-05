@@ -132,24 +132,10 @@ def _update_causal_mask(
 
 def replace_qwen2_vl_attention_class():
     """Replace the flash attention implementation in transformers with our optimized version."""
-    if not FLASH_ATTENTION_AVAILABLE:
-        print("⚠️  Flash Attention 2 not available. Skipping attention replacement.")
-        return
-
-    import transformers
-    import transformers.modeling_flash_attention_utils
-
-    # Replace for both Qwen2VL and Qwen2.5VL
-    transformers.models.qwen2_vl.modeling_qwen2_vl._flash_attention_forward = (
-        _flash_attention_forward
-    )
-    transformers.models.qwen2_vl.modeling_qwen2_vl.Qwen2VLModel._update_causal_mask = (
-        _update_causal_mask
-    )
-    transformers.models.qwen2_5_vl.modeling_qwen2_5_vl._flash_attention_forward = (
-        _flash_attention_forward
-    )
-    transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel._update_causal_mask = _update_causal_mask
+    print("⚠️  Custom flash attention replacement DISABLED for compatibility.")
+    print("   → Using official Qwen2.5-VL flash attention implementation")
+    print("   → This ensures compatibility with standard data collators")
+    return
 
 
 def enable_flash_attention():
@@ -161,9 +147,11 @@ def enable_flash_attention():
         return False
 
     try:
-        replace_qwen2_vl_attention_class()
-        print("✅ Flash attention enabled")
+        # Disable custom replacement for compatibility
+        print("✅ Flash attention available (using official implementation)")
+        print("   → Custom overrides disabled for stability")
+        print("   → Using transformers' native flash attention")
         return True
     except Exception as e:
-        print(f"⚠️  Flash attention failed: {e}")
+        print(f"⚠️  Flash attention check failed: {e}")
         return False

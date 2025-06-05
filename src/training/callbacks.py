@@ -10,7 +10,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from ..logging import get_logger
+from src.logger_utils import get_logger
 
 
 class BestCheckpointCallback(TrainerCallback):

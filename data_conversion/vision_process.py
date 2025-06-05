@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 IMAGE_FACTOR = 28
 MIN_PIXELS = 4 * 28 * 28
-MAX_PIXELS = 1003520
+MAX_PIXELS = 720 * 28 * 28
 MAX_RATIO = 200
 
 VIDEO_MIN_PIXELS = 128 * 28 * 28

@@ -65,22 +65,14 @@ def main():
         default=False,
         help="Enable image resizing and bounding box scaling",
     )
-    parser.add_argument(
-        "--response_types",
-        nargs="+",
-        choices=["object_type", "property", "extra_info"],
-        default=["object_type", "property", "extra_info"],
-        help="Response types to include in output (default: all types)",
-    )
-
     args = parser.parse_args()
     input_folder_path = Path(args.input_folder).resolve()
     output_image_folder_path = Path(args.output_image_folder).resolve()
     output_jsonl_path = Path(args.output_jsonl).resolve()
     token_map_path = Path(args.map_file).resolve()
 
-    # Convert response types to set
-    response_types = set(args.response_types)
+    # Define response types directly in script (no command line argument needed)
+    response_types = {"object_type", "property", "extra_info"}
     logger.info(f"Using response types: {sorted(response_types)}")
 
     # Initialize core modules

@@ -104,7 +104,7 @@ def extract_unique_phrases(input_jsonl: str) -> Dict[str, int]:
 def save_phrases(
     phrases_dict: Dict[str, int], output_file: str, min_frequency: int = 1
 ):
-    """Save phrases to JSON file with optional frequency filtering."""
+    """Save phrases to text file with optional frequency filtering."""
     # Filter by minimum frequency
     filtered_phrases = {
         phrase: count
@@ -115,7 +115,20 @@ def save_phrases(
     # Sort by frequency (descending) then alphabetically
     sorted_phrases = dict(sorted(filtered_phrases.items(), key=lambda x: (-x[1], x[0])))
 
-    # Create output structure
+    # Extract just the phrase list for the candidates file
+    phrase_list = list(sorted_phrases.keys())
+
+    # Save to file as plain text (one phrase per line)
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(phrase_list))
+
+    logger.info(f"Saved {len(sorted_phrases)} phrases to {output_file}")
+
+    # Also save detailed metadata to a separate JSON file for analysis
+    metadata_file = output_path.with_suffix(".metadata.json")
     output_data = {
         "metadata": {
             "total_unique_phrases": len(sorted_phrases),
@@ -128,20 +141,18 @@ def save_phrases(
         "phrase_list": list(sorted_phrases.keys()),  # For easy access
     }
 
-    # Save to file
-    output_path = Path(output_file)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-    logger.info(f"Saved {len(sorted_phrases)} phrases to {output_file}")
+    logger.info(f"Saved detailed metadata to {metadata_file}")
 
     # Display statistics
     print("\n📊 Phrase Extraction Results:")
     print("===============================")
     print(f"Total unique phrases: {len(sorted_phrases)}")
     print(f"Minimum frequency: {min_frequency}")
+    print(f"Candidates file: {output_file} (plain text)")
+    print(f"Metadata file: {metadata_file} (JSON)")
 
     if sorted_phrases:
         top_10 = list(sorted_phrases.items())[:10]

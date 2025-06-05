@@ -12,8 +12,10 @@ Key improvements:
 - Automatic type validation and coercion
 - Environment variables handled by launcher script only
 - Clear error messages for missing/invalid fields
+- DeepSpeed settings controlled by launcher script, not YAML
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,6 +24,7 @@ import yaml
 from transformers import TrainingArguments
 
 
+# todo: use omegaconf to parse the yaml file allowing the 'defaults'
 @dataclass
 class UnifiedConfig:
     """
@@ -29,7 +32,7 @@ class UnifiedConfig:
 
     Core Philosophy:
     - YAML files: Only hyperparameters and model-specific settings
-    - Launcher script: Environment variables and GPU/distributed settings
+    - Launcher script: Environment variables and GPU/distributed settings (including DeepSpeed)
     - This dataclass: Schema, validation, and defaults
     """
 
@@ -55,6 +58,9 @@ class UnifiedConfig:
     data_root: str = "./"
     max_pixels: int = 1003520
     min_pixels: int = 784
+    collator_type: str = (
+        "flattened"  # "flattened" (recommended) | "standard" (compatibility)
+    )
 
     # ========================================================================
     # LEARNING RATES (auto-determines training strategy)
@@ -126,15 +132,8 @@ class UnifiedConfig:
     dataloader_num_workers: int = 8
     pin_memory: bool = True
     prefetch_factor: int = 2
-    data_flatten: bool = False
-    batching_strategy: str = "simple"
+    max_total_length: Optional[int] = None  # Auto-calculated as 2x model_max_length
     remove_unused_columns: bool = False
-
-    # ========================================================================
-    # DEEPSPEED (with sensible defaults)
-    # ========================================================================
-    deepspeed_enabled: bool = True
-    deepspeed_config_file: str = "scripts/zero2.json"
 
     # ========================================================================
     # OUTPUT (auto-generated, not in YAML)
@@ -172,8 +171,15 @@ class UnifiedConfig:
     master_addr: Optional[str] = None  # Set by launcher
     master_port: Optional[int] = None  # Set by launcher
 
+    # DeepSpeed settings (controlled by launcher script, not YAML)
+    deepspeed_enabled: Optional[bool] = None  # Set by launcher based on GPU count
+    deepspeed_config_file: Optional[str] = None  # Set by launcher
+
     def __post_init__(self):
         """Post-initialization validation and auto-generation of derived fields."""
+        # Load environment settings from launcher script
+        self._load_environment_settings()
+
         # Validate required fields
         self._validate_required_fields()
 
@@ -182,6 +188,33 @@ class UnifiedConfig:
 
         # Validate configuration consistency
         self._validate_configuration()
+
+    def _load_environment_settings(self):
+        """Load environment settings set by the launcher script."""
+        # DeepSpeed settings from launcher
+        deepspeed_enabled_str = os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower()
+        self.deepspeed_enabled = deepspeed_enabled_str == "true"
+
+        self.deepspeed_config_file = os.getenv(
+            "BBU_DEEPSPEED_CONFIG", "scripts/zero2.json"
+        )
+
+        # GPU count from launcher
+        num_gpus_str = os.getenv("BBU_NUM_GPUS", "1")
+        try:
+            self.nproc_per_node = int(num_gpus_str)
+        except ValueError:
+            self.nproc_per_node = 1
+
+        # Other environment settings
+        self.cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES")
+        self.master_addr = os.getenv("MASTER_ADDR", "127.0.0.1")
+
+        master_port_str = os.getenv("MASTER_PORT", "29500")
+        try:
+            self.master_port = int(master_port_str)
+        except ValueError:
+            self.master_port = 29500
 
     def _validate_required_fields(self):
         """Validate that all required fields are provided."""
@@ -239,10 +272,11 @@ class UnifiedConfig:
         self._validate_paths()
 
         # Validate DeepSpeed config if enabled
-        if self.deepspeed_enabled and not Path(self.deepspeed_config_file).exists():
-            raise ValueError(
-                f"❌ DeepSpeed config file not found: {self.deepspeed_config_file}"
-            )
+        if self.deepspeed_enabled and self.deepspeed_config_file:
+            if not Path(self.deepspeed_config_file).exists():
+                raise ValueError(
+                    f"❌ DeepSpeed config file not found: {self.deepspeed_config_file}"
+                )
 
     def _validate_paths(self):
         """Validate that required paths exist."""
@@ -292,6 +326,8 @@ class UnifiedConfig:
         cuda_visible_devices: Optional[str] = None,
         master_addr: Optional[str] = None,
         master_port: Optional[int] = None,
+        deepspeed_enabled: Optional[bool] = None,
+        deepspeed_config_file: Optional[str] = None,
     ):
         """
         Update environment configuration from launcher script.
@@ -307,6 +343,10 @@ class UnifiedConfig:
             self.master_addr = master_addr
         if master_port is not None:
             self.master_port = master_port
+        if deepspeed_enabled is not None:
+            self.deepspeed_enabled = deepspeed_enabled
+        if deepspeed_config_file is not None:
+            self.deepspeed_config_file = deepspeed_config_file
 
         # Regenerate derived fields that depend on environment config
         self._generate_derived_fields()
@@ -455,7 +495,6 @@ class ConfigManager:
             "pin_memory",
             "data_flatten",
             "remove_unused_columns",
-            "deepspeed_enabled",
             "hungarian_matching",
             "use_semantic_similarity",
             "allow_occasional_nan",
@@ -514,6 +553,9 @@ class ConfigManager:
                 "cuda_visible_devices",
                 "master_addr",
                 "master_port",
+                "deepspeed_enabled",
+                "deepspeed_config_file",
+                "output_dir",  # Auto-generated, don't save
             ]:
                 continue
 
@@ -575,6 +617,8 @@ class ConfigManager:
                 "cuda_visible_devices",
                 "master_addr",
                 "master_port",
+                "deepspeed_enabled",
+                "deepspeed_config_file",
             ],
         }
 

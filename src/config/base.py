@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 
 from transformers import TrainingArguments
@@ -323,17 +324,15 @@ class Config:
             missing_keys.append("remove_unused_columns")
 
         # =====================================================================
-        # DEEPSPEED - REQUIRED
+        # DEEPSPEED - HANDLED BY LAUNCHER SCRIPT
         # =====================================================================
-        try:
-            self.deepspeed_config_file: str = kwargs["deepspeed_config_file"]
-        except KeyError:
-            missing_keys.append("deepspeed_config_file")
-
-        try:
-            self.deepspeed_enabled: bool = kwargs["deepspeed_enabled"]
-        except KeyError:
-            missing_keys.append("deepspeed_enabled")
+        # DeepSpeed settings are now controlled by the launcher script via environment variables
+        # These are no longer required in YAML files
+        deepspeed_enabled_str = os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower()
+        self.deepspeed_enabled: bool = deepspeed_enabled_str == "true"
+        self.deepspeed_config_file: str = os.getenv(
+            "BBU_DEEPSPEED_CONFIG", "scripts/zero2.json"
+        )
 
         # =====================================================================
         # OUTPUT - REQUIRED (except run_name which can be None)
@@ -615,9 +614,7 @@ class Config:
             "data_flatten",
             "batching_strategy",
             "remove_unused_columns",
-            # DeepSpeed
-            "deepspeed_config_file",
-            "deepspeed_enabled",
+            # DeepSpeed - handled by launcher script, not required in YAML
             # Output
             "output_base_dir",
             "tb_dir",

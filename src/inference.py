@@ -13,8 +13,8 @@ import torch
 from src.config.base import Config
 from src.models.wrapper import ModelWrapper
 
-from .preprocessing import create_preprocessor
-from .utils import (
+from src.preprocessing import create_preprocessor
+from src.utils import (
     UnifiedLogger,
     extract_prompts_from_conversation,
     find_ground_truth_response,

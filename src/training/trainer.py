@@ -20,14 +20,14 @@ import torch
 import torch.nn as nn
 from transformers import Trainer, TrainingArguments
 
-from ..config_unified import UnifiedConfig
-from ..data import BBUDataset, DataCollator, FlattenedDataCollator
-from ..logging import get_model_logger, get_training_logger
-from ..losses import ObjectDetectionLoss, ResponseParser
-from ..models.attention import replace_qwen2_vl_attention_class
-from ..models.wrapper import ModelWrapper
-from .callbacks import BestCheckpointCallback
-from .stability import StabilityMonitor
+from src.config_unified import UnifiedConfig
+from src.data import BBUDataset
+from src.logger_utils import get_model_logger, get_training_logger
+from src.losses import ObjectDetectionLoss, ResponseParser
+from src.models.attention import replace_qwen2_vl_attention_class
+from src.models.wrapper import ModelWrapper
+from src.training.callbacks import BestCheckpointCallback
+from src.training.stability import StabilityMonitor
 
 
 class TrainingError(Exception):
@@ -191,43 +191,35 @@ class ComponentManager:
         except Exception as e:
             raise ComponentInitializationError(f"Failed to setup datasets: {e}")
 
-    def setup_data_collator(
-        self, tokenizer
-    ) -> Union[DataCollator, FlattenedDataCollator]:
-        """Setup data collator based on configuration."""
-        self.logger.info("🔧 Setting up data collator...")
+    def setup_data_collator(self, tokenizer):
+        """Setup FlattenedDataCollator for optimal Qwen2.5-VL training."""
+        self.logger.info("🔧 Setting up FlattenedDataCollator...")
 
         try:
-            use_flattened = self.config.data_flatten
+            from ..data import FlattenedDataCollator
 
-            if use_flattened:
-                collator = FlattenedDataCollator(
-                    tokenizer=tokenizer,
-                    max_total_length=self.config.model_max_length,
-                )
-                self.logger.info("✅ Using FlattenedDataCollator")
-                self.logger.info("   → Optimized for variable-length sequences")
-                self.logger.info("   → Works seamlessly with flash attention")
-                self.logger.info(
-                    "   → Better memory efficiency for mixed sequence lengths"
-                )
-            else:
-                collator = DataCollator(
-                    tokenizer=tokenizer,
-                    max_seq_length=self.config.model_max_length,
-                    use_dynamic_length=True,
-                    adaptive_batching=False,
-                )
-                self.logger.info("✅ Using DataCollator (standard padding)")
-                self.logger.info("   → Standard padding-based approach")
-                self.logger.info("   → Compatible with flash attention")
-                self.logger.info("   → Consistent sequence lengths per batch")
+            # Calculate max total length for packed sequences
+            # Use 2x model_max_length to allow for batch packing
+            max_total_length = getattr(self.config, "max_total_length", None)
+            if max_total_length is None:
+                max_total_length = self.config.model_max_length * 2
+
+            collator = FlattenedDataCollator(
+                tokenizer=tokenizer,
+                max_total_length=max_total_length,
+            )
+
+            self.logger.info("✅ Using FlattenedDataCollator")
+            self.logger.info("   → Optimized for Qwen2.5-VL with mRoPE embeddings")
+            self.logger.info("   → Proper attention mask format for flash attention")
+            self.logger.info("   → Memory efficient padding approach")
+            self.logger.info("   → Compatible with multi-round conversations")
+            self.logger.info("   → Only trains on final assistant response")
 
             # Log configuration details
             self.logger.info("   📊 Configuration:")
-            self.logger.info(f"      data_flatten: {use_flattened}")
-            self.logger.info(f"      max_length: {self.config.model_max_length}")
-            self.logger.info("      flash_attention: enabled (always)")
+            self.logger.info(f"      max_total_length: {max_total_length}")
+            self.logger.info(f"      model_max_length: {self.config.model_max_length}")
 
             return collator
 
@@ -584,6 +576,9 @@ class BBUTrainer(Trainer):
 
         except Exception as e:
             self.metrics.skipped_steps += 1
+            import traceback
+
+            traceback.print_exc()
             return self._handle_training_exception(e, model)
 
     def _handle_unstable_loss(self, loss, status, model, inputs):
@@ -628,6 +623,9 @@ class BBUTrainer(Trainer):
 
         except Exception as e:
             self.logger.error(f"💥 Loss computation failed: {e}")
+            import traceback
+
+            traceback.print_exc()
             raise TrainingError(f"Loss computation failed: {e}")
 
     def _should_log_losses(self) -> bool:
@@ -806,6 +804,9 @@ class BBUTrainer(Trainer):
             model_device = next(model.parameters()).device
             return torch.tensor(0.0, requires_grad=True, device=model_device)
         except Exception:
+            import traceback
+
+            traceback.print_exc()
             raise TrainingError(f"Unrecoverable training error: {exception}")
 
     def _raise_training_failure(self, issues):
@@ -964,6 +965,9 @@ def create_trainer(
     try:
         return BBUTrainer(config, training_args, **kwargs)
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         raise ComponentInitializationError(f"Failed to create trainer: {e}")
 
 

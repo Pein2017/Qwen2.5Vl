@@ -84,6 +84,63 @@ def validate_conversation_structure(
         return False
 
 
+def validate_special_tokens(filename: str) -> bool:
+    """Validate Qwen2.5-VL special tokens in assistant responses."""
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+
+                data = json.loads(line)
+                conversations = data.get("conversations", [])
+
+                for conv in conversations:
+                    if conv.get("role") == "assistant":
+                        content = conv.get("content", "")
+                        if isinstance(content, str) and content.strip():
+                            # Check for Qwen2.5-VL special tokens
+                            has_object_ref = (
+                                "<|object_ref_start|>" in content
+                                and "<|object_ref_end|>" in content
+                            )
+                            has_box = (
+                                "<|box_start|>" in content and "<|box_end|>" in content
+                            )
+
+                            if has_object_ref and has_box:
+                                # Validate token pairing
+                                ref_starts = content.count("<|object_ref_start|>")
+                                ref_ends = content.count("<|object_ref_end|>")
+                                box_starts = content.count("<|box_start|>")
+                                box_ends = content.count("<|box_end|>")
+
+                                if ref_starts != ref_ends:
+                                    print(
+                                        f"   ❌ {filename} line {i}: Mismatched object_ref tokens"
+                                    )
+                                    return False
+
+                                if box_starts != box_ends:
+                                    print(
+                                        f"   ❌ {filename} line {i}: Mismatched box tokens"
+                                    )
+                                    return False
+
+                                if ref_starts != box_starts:
+                                    print(
+                                        f"   ❌ {filename} line {i}: Mismatched object_ref and box token counts"
+                                    )
+                                    return False
+
+        print(f"   ✅ {filename}: Valid special token format")
+        return True
+
+    except Exception as e:
+        print(f"   ❌ {filename}: Special token validation error: {e}")
+        return False
+
+
 def validate_files(
     train_file: str, val_file: str, include_examples: bool = False
 ) -> bool:
@@ -105,7 +162,16 @@ def validate_files(
     )
     val_structure_valid = validate_conversation_structure(val_file, False)
 
-    return train_structure_valid and val_structure_valid
+    if not (train_structure_valid and val_structure_valid):
+        return False
+
+    print("   Validating Qwen2.5-VL special tokens...")
+
+    # Validate special tokens
+    train_tokens_valid = validate_special_tokens(train_file)
+    val_tokens_valid = validate_special_tokens(val_file)
+
+    return train_tokens_valid and val_tokens_valid
 
 
 def main():

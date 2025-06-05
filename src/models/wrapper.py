@@ -6,8 +6,8 @@ from transformers import (
 )
 
 from src.config.base import Config
-from src.logging import get_model_logger
-from src.models.patches import apply_smart_mrope_fix, verify_smart_mrope_patch
+from src.logger_utils import get_model_logger
+from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
 
 def convert_torch_dtype(dtype_str: str) -> torch.dtype:
@@ -51,10 +51,10 @@ class ModelWrapper:
             f"Loading model components for {self.config.model_size} model..."
         )
 
-        # Apply the smart mRoPE fix
-        self.logger.info("🔧 Applying smart mRoPE fix...")
-        if not apply_smart_mrope_fix():
-            raise RuntimeError("Failed to apply smart mRoPE fix")
+        # Apply comprehensive Qwen2.5-VL fixes
+        self.logger.info("🔧 Applying comprehensive Qwen2.5-VL fixes...")
+        if not apply_comprehensive_qwen25_fixes():
+            raise RuntimeError("Failed to apply Qwen2.5-VL fixes")
 
         # Convert torch_dtype from config
         torch_dtype = convert_torch_dtype(self.config.torch_dtype)
@@ -70,12 +70,12 @@ class ModelWrapper:
             attn_implementation=self.config.attn_implementation,
             torch_dtype=torch_dtype,
         )
-        self.model.config.use_cache = False
+        self.model.config.use_cache = True
 
-        # Verify mRoPE patch
-        self.logger.info("🔍 Verifying mRoPE patch...")
-        if not verify_smart_mrope_patch():
-            raise RuntimeError("mRoPE patch verification failed")
+        # Verify all patches
+        self.logger.info("🔍 Verifying all patches...")
+        if not verify_qwen25_patches():
+            raise RuntimeError("Patch verification failed")
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(

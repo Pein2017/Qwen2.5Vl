@@ -3,38 +3,40 @@ Model components for Qwen2.5-VL training.
 
 Includes model wrapper, patches, and attention optimizations.
 
-CRITICAL: Smart mRoPE Fix
-========================
-This module includes a critical fix for Qwen2.5-VL models that resolves
-dimension mismatch errors between 3B and 7B model sizes.
+CRITICAL: Comprehensive Qwen2.5-VL Fixes
+=========================================
+This module includes critical fixes for Qwen2.5-VL models that resolve:
+1. mRoPE dimension mismatch errors during generation
+2. Visual processing edge cases that cause reshape failures
+3. Proper handling of both 3B and 7B model configurations
 
-The fix is automatically applied when importing ModelWrapper, but you can
-also test and verify it manually:
+The fixes are automatically applied when importing ModelWrapper, but you can
+also test and verify them manually:
 
-    from src.models.patches import test_mrope_configurations, verify_smart_mrope_patch
+    from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
-    # Test the fix works for both model sizes
-    test_mrope_configurations()
+    # Apply all fixes
+    apply_comprehensive_qwen25_fixes()
 
-    # Verify the patch is applied
-    verify_smart_mrope_patch()
+    # Verify the patches are working
+    verify_qwen25_patches()
 
-For full verification, run: python scripts/verify_mrope_fix.py
+For full verification, run: python src/models/test_fixes.py
 """
 
 from .attention import enable_flash_attention, replace_qwen2_vl_attention_class
 from .patches import (
-    apply_smart_mrope_fix,
-    test_mrope_configurations,
-    verify_smart_mrope_patch,
+    apply_comprehensive_qwen25_fixes,
+    official_apply_multimodal_rotary_pos_emb,
+    verify_qwen25_patches,
 )
 from .wrapper import ModelWrapper
 
 __all__ = [
     "ModelWrapper",
-    "apply_smart_mrope_fix",
-    "verify_smart_mrope_patch",
-    "test_mrope_configurations",
+    "apply_comprehensive_qwen25_fixes",
+    "verify_qwen25_patches",
+    "official_apply_multimodal_rotary_pos_emb",
     "enable_flash_attention",
     "replace_qwen2_vl_attention_class",
 ]

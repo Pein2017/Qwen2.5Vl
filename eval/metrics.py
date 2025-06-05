@@ -17,16 +17,19 @@ import json
 import os
 import re
 from typing import Any, Dict, List
+
 from tqdm import tqdm
 
 
 class ResponseParser:
-    """Parse model responses to extract structured predictions."""
+    """Parse model responses to extract structured predictions with special token support."""
 
     @staticmethod
     def parse_prediction(prediction_text: str) -> List[Dict[str, Any]]:
         """
         Parse the model's prediction text to extract bounding boxes and labels.
+
+        Supports both Qwen2.5-VL special token format and legacy JSON format.
 
         Args:
             prediction_text: Raw text output from the model or JSON string from ground truth
@@ -42,7 +45,12 @@ class ResponseParser:
         if not isinstance(prediction_text, str):
             prediction_text = str(prediction_text)
 
-        # Try to parse as JSON directly first (handles escaped JSON strings from ground truth)
+        # First, try to parse special token format (preferred for model outputs)
+        special_token_objects = ResponseParser._parse_special_tokens(prediction_text)
+        if special_token_objects:
+            return special_token_objects
+
+        # Try to parse as JSON directly (handles escaped JSON strings from ground truth)
         try:
             parsed = json.loads(prediction_text)
             if isinstance(parsed, list):
@@ -107,6 +115,41 @@ class ResponseParser:
 
         # If we reach here, parsing failed completely
         return []
+
+    @staticmethod
+    def _parse_special_tokens(prediction_text: str) -> List[Dict[str, Any]]:
+        """
+        Parse Qwen2.5-VL special token format.
+
+        Format: <|object_ref_start|>description<|object_ref_end|><|box_start|>(x1, y1), (x2, y2)<|box_end|>
+
+        Returns objects in bbox_2d format for compatibility with existing evaluation metrics.
+        """
+        objects = []
+
+        # Pattern to match special token format
+        pattern = r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|box_start\|>\(([^)]+)\),\s*\(([^)]+)\)<\|box_end\|>"
+
+        matches = re.findall(pattern, prediction_text, re.DOTALL)
+
+        for desc, coords1, coords2 in matches:
+            try:
+                # Parse coordinates: (x1, y1), (x2, y2)
+                x1, y1 = map(float, coords1.split(", "))
+                x2, y2 = map(float, coords2.split(", "))
+                bbox = [
+                    int(x1),
+                    int(y1),
+                    int(x2),
+                    int(y2),
+                ]  # Convert to int for bbox_2d format
+
+                # Format in bbox_2d format for compatibility
+                objects.append({"bbox_2d": bbox, "description": desc.strip()})
+            except (ValueError, IndexError):
+                continue
+
+        return objects
 
     @staticmethod
     def _extract_from_truncated_json(prediction_text: str) -> List[Dict[str, Any]]:
