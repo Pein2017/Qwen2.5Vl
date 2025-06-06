@@ -21,7 +21,6 @@ from transformers import (
 from src.config.base import Config
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
-from src.models.attention import replace_qwen2_vl_attention_class
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
 
@@ -211,10 +210,13 @@ def setup_model_and_tokenizer(config: Config) -> Tuple[nn.Module, Any, Any]:
     Setup model and tokenizer with configurable approach.
     Chooses between ModelWrapper and direct loading based on config.
     """
-    # Check if config specifies which approach to use
-    use_model_wrapper = getattr(config, "use_model_wrapper", True)
+    # EXPLICIT: No defaults - config must specify use_model_wrapper
+    if not hasattr(config, "use_model_wrapper"):
+        raise ValueError(
+            "Config must specify 'use_model_wrapper' - no defaults allowed"
+        )
 
-    if use_model_wrapper:
+    if config.use_model_wrapper:
         return setup_model_and_tokenizer_with_wrapper(config)
     else:
         return setup_model_and_tokenizer_direct(config)
@@ -245,11 +247,17 @@ def setup_data_module(config: Config, tokenizer, image_processor) -> Dict[str, A
             logger.warning("⚠️ Validation dataset is empty")
             eval_dataset = None
 
+    # EXPLICIT: No defaults - config must specify these values
+    if not hasattr(config, "max_total_length"):
+        raise ValueError("Config must specify 'max_total_length' - no defaults allowed")
+    if not hasattr(config, "collator_type"):
+        raise ValueError("Config must specify 'collator_type' - no defaults allowed")
+
     # Setup data collator
     data_collator = create_data_collator(
         tokenizer=tokenizer,
-        max_total_length=getattr(config, "max_total_length", config.model_max_length),
-        collator_type=getattr(config, "collator_type", "standard"),
+        max_total_length=config.max_total_length,
+        collator_type=config.collator_type,
     )
 
     return {
@@ -285,15 +293,28 @@ def create_trainer(
     """
     logger = get_training_logger()
 
-    # Determine which approach is being used
-    use_model_wrapper = getattr(config, "use_model_wrapper", True)
-    approach = "ModelWrapper" if use_model_wrapper else "Direct Loading"
+    # EXPLICIT: No defaults - config must specify use_model_wrapper
+    if not hasattr(config, "use_model_wrapper"):
+        raise ValueError(
+            "Config must specify 'use_model_wrapper' - no defaults allowed"
+        )
+
+    approach = "ModelWrapper" if config.use_model_wrapper else "Direct Loading"
     logger.info(f"🔧 Creating unified trainer using {approach}...")
 
-    # Setup flash attention optimization if needed
-    if getattr(config, "data_flatten", False):
-        replace_qwen2_vl_attention_class()
-        logger.info("✅ Flash attention optimization enabled")
+    # EXPLICIT: Enable flash attention optimization based on attn_implementation
+    if (
+        hasattr(config, "attn_implementation")
+        and config.attn_implementation == "flash_attention_2"
+    ):
+        # replace_qwen2_vl_attention_class()
+        logger.info(
+            "✅DDDDDBUG not using Flash attention optimization enabled (flash_attention_2)"
+        )
+    else:
+        logger.info(
+            f"ℹ️ Using standard attention (attn_implementation: {getattr(config, 'attn_implementation', 'default')})"
+        )
 
     # Setup model and tokenizer (automatically chooses approach based on config)
     model, tokenizer, image_processor = setup_model_and_tokenizer(config)

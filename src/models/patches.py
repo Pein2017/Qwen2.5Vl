@@ -149,16 +149,43 @@ def safe_visual_forward(original_forward):
                     "⚠️ Empty pixel_values tensor detected during inference, skipping visual processing"
                 )
                 # Return empty tensor with correct shape
-                batch_size = grid_thw.shape[0] if grid_thw.numel() > 0 else 1
-                hidden_size = getattr(self, "embed_dim", 1152)  # Default for 3B model
+                # EXPLICIT: Get hidden_size from model - no defaults
+                if hasattr(self, "embed_dim"):
+                    hidden_size = self.embed_dim
+                elif hasattr(self, "config") and hasattr(self.config, "hidden_size"):
+                    hidden_size = self.config.hidden_size
+                else:
+                    raise ValueError(
+                        "Cannot determine hidden_size - model must have embed_dim or config.hidden_size"
+                    )
                 return torch.zeros(
                     0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
                 )
 
             seq_len = pixel_values.shape[0]
 
+            # EXPLICIT: Get dimensions from model config - no defaults
+            if hasattr(self, "embed_dim"):
+                hidden_size = self.embed_dim
+            else:
+                # Fallback to config if available
+                if hasattr(self, "config") and hasattr(self.config, "hidden_size"):
+                    hidden_size = self.config.hidden_size
+                else:
+                    raise ValueError(
+                        "Cannot determine hidden_size - model must have embed_dim or config.hidden_size"
+                    )
+
+            # Get spatial merge unit from config
+            if hasattr(self, "spatial_merge_unit"):
+                spatial_merge_unit = self.spatial_merge_unit
+            elif hasattr(self, "config") and hasattr(self.config, "spatial_merge_unit"):
+                spatial_merge_unit = self.config.spatial_merge_unit
+            else:
+                # Use Qwen2.5-VL default
+                spatial_merge_unit = 4
+
             # Check spatial_merge_unit compatibility
-            spatial_merge_unit = getattr(self, "spatial_merge_unit", 4)
             if seq_len % spatial_merge_unit != 0:
                 logger.warning(
                     f"⚠️ seq_len ({seq_len}) not divisible by spatial_merge_unit ({spatial_merge_unit}) during inference"
@@ -186,9 +213,14 @@ def safe_visual_forward(original_forward):
 
         except Exception as e:
             logger.error(f"❌ Visual forward failed during inference: {e}")
-            # Return safe fallback only during inference
-            batch_size = grid_thw.shape[0] if grid_thw.numel() > 0 else 1
-            hidden_size = getattr(self, "embed_dim", 1152)
+            # EXPLICIT: Get hidden_size from model - no defaults
+            if hasattr(self, "embed_dim"):
+                hidden_size = self.embed_dim
+            elif hasattr(self, "config") and hasattr(self.config, "hidden_size"):
+                hidden_size = self.config.hidden_size
+            else:
+                # Last resort fallback for inference only
+                hidden_size = 1152  # Qwen2.5-VL 3B default
             return torch.zeros(
                 0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
             )

@@ -10,11 +10,8 @@ from src.logger_utils import get_model_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
 
-def convert_torch_dtype(dtype_str: str) -> torch.dtype:
-    """Convert string torch_dtype to actual torch.dtype."""
-    if isinstance(dtype_str, torch.dtype):
-        return dtype_str
-
+def _get_torch_dtype(dtype_str: str) -> torch.dtype:
+    """Convert string to torch dtype with explicit mapping."""
     dtype_mapping = {
         "float32": torch.float32,
         "float16": torch.float16,
@@ -25,14 +22,12 @@ def convert_torch_dtype(dtype_str: str) -> torch.dtype:
         "int64": torch.int64,
     }
 
-    if dtype_str in dtype_mapping:
-        return dtype_mapping[dtype_str]
-    else:
-        # Try to get from torch directly
-        if hasattr(torch, dtype_str):
-            return getattr(torch, dtype_str)
-        else:
-            raise ValueError(f"Unsupported torch_dtype: {dtype_str}")
+    if dtype_str not in dtype_mapping:
+        raise ValueError(
+            f"Unsupported dtype: {dtype_str}. Supported: {list(dtype_mapping.keys())}"
+        )
+
+    return dtype_mapping[dtype_str]
 
 
 class ModelWrapper:
@@ -57,7 +52,7 @@ class ModelWrapper:
             raise RuntimeError("Failed to apply Qwen2.5-VL fixes")
 
         # Convert torch_dtype from config
-        torch_dtype = convert_torch_dtype(self.config.torch_dtype)
+        torch_dtype = _get_torch_dtype(self.config.torch_dtype)
         self.logger.info(f"🔧 Using torch_dtype: {torch_dtype}")
 
         # Load model
@@ -154,10 +149,10 @@ class ModelWrapper:
                 sys.path.remove(data_conversion_path)
 
         self.logger.info(
-            f"   patch_size: {getattr(self.image_processor, 'patch_size', 'Not set')}"
+            f"   patch_size: {self.image_processor.patch_size if hasattr(self.image_processor, 'patch_size') else 'Not set'}"
         )
         self.logger.info(
-            f"   merge_size: {getattr(self.image_processor, 'merge_size', 'Not set')}"
+            f"   merge_size: {self.image_processor.merge_size if hasattr(self.image_processor, 'merge_size') else 'Not set'}"
         )
 
         if hasattr(self.image_processor, "size"):

@@ -69,7 +69,7 @@ class GlobalLoggerManager:
 
         # Configure root logger
         root_logger = logging.getLogger()
-        root_logger.setLevel(getattr(logging, log_level.upper()))
+        root_logger.setLevel(self._get_logging_level(log_level))
 
         # Clear existing handlers
         root_logger.handlers.clear()
@@ -86,14 +86,14 @@ class GlobalLoggerManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = log_path / f"training_{timestamp}.log"
         file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-        file_handler.setLevel(getattr(logging, log_level.upper()))
+        file_handler.setLevel(self._get_logging_level(log_level))
         file_handler.setFormatter(detailed_formatter)
         root_logger.addHandler(file_handler)
 
         # Console handler (rank 0 only in distributed training)
         if self._should_log_to_console():
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(getattr(logging, console_level.upper()))
+            console_handler.setLevel(self._get_logging_level(console_level))
             if verbose:
                 console_handler.setFormatter(detailed_formatter)
             else:
@@ -198,25 +198,70 @@ class GlobalLoggerManager:
         """Log message from all ranks (for debugging)."""
         logger = self.get_logger(logger_name)
         rank = self._get_rank()
-        getattr(logger, level.lower())(f"[Rank {rank}] {message}")
+        # EXPLICIT: Call appropriate logger method based on level
+
+        level_methods = {
+            "DEBUG": logger.debug,
+            "INFO": logger.info,
+            "WARNING": logger.warning,
+            "ERROR": logger.error,
+            "CRITICAL": logger.critical,
+        }
+
+        level_upper = level.upper()
+        if level_upper in level_methods:
+            level_methods[level_upper](f"[Rank {rank}] {message}")
+        else:
+            logger.info(f"[Rank {rank}] {message}")  
 
     def force_console_log(self, logger_name: str, level: str, message: str):
         """Force console logging regardless of rank (for critical messages)."""
         logger = self.get_logger(logger_name)
         # Temporarily add console handler if not present
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(getattr(logging, level.upper()))
+        console_handler.setLevel(self._get_logging_level(level))
         formatter = logging.Formatter("%(levelname)s: %(message)s")
         console_handler.setFormatter(formatter)
 
         logger.addHandler(console_handler)
-        getattr(logger, level.lower())(message)
+        # EXPLICIT: Call appropriate logger method based on level
+        level_methods = {
+            "DEBUG": logger.debug,
+            "INFO": logger.info,
+            "WARNING": logger.warning,
+            "ERROR": logger.error,
+            "CRITICAL": logger.critical,
+        }
+
+        level_upper = level.upper()
+        if level_upper in level_methods:
+            level_methods[level_upper](message)
+        else:
+            logger.info(message)  # Fallback to info
         logger.removeHandler(console_handler)
 
     def _should_log_to_console(self) -> bool:
         """Determine if this process should log to console."""
         # Only rank 0 logs to console in distributed training
         return self._get_rank() == 0
+
+    def _get_logging_level(self, level_str: str) -> int:
+        """Convert log level string to logging constant with explicit mapping."""
+        level_mapping = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "ERROR": logging.ERROR,
+            "CRITICAL": logging.CRITICAL,
+        }
+
+        level_upper = level_str.upper()
+        if level_upper not in level_mapping:
+            raise ValueError(
+                f"Invalid log level: {level_str}. Supported: {list(level_mapping.keys())}"
+            )
+
+        return level_mapping[level_upper]
 
 
 # Global logger manager instance

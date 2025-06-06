@@ -12,7 +12,7 @@ import torch
 
 from src.config.base import Config
 from src.models.wrapper import ModelWrapper
-from src.preprocessing_unified import UnifiedPreprocessor
+from src.preprocessing_unified import UnifiedPreprocessor  # noqa
 from src.utils import (
     UnifiedLogger,
     extract_prompts_from_conversation,
@@ -76,7 +76,7 @@ class InferenceEngine:
 
         print("✅ Unified inference engine loaded")
         print(
-            f"   - Flash attention: {getattr(self.model.config, 'attn_implementation', 'unknown')}"
+            f"   - Flash attention: {self.model.config.attn_implementation if hasattr(self.model.config, 'attn_implementation') else 'unknown'}"
         )
         print(f"   - Torch dtype: {self.model.dtype}")
         print(f"   - Use cache: {self.model.config.use_cache}")

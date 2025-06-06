@@ -64,6 +64,11 @@ class Config:
         except KeyError:
             missing_keys.append("use_cache")
 
+        try:
+            self.use_model_wrapper: bool = kwargs["use_model_wrapper"]
+        except KeyError:
+            missing_keys.append("use_model_wrapper")
+
         # =====================================================================
         # DATA SETTINGS - REQUIRED
         # =====================================================================
@@ -307,11 +312,6 @@ class Config:
             missing_keys.append("prefetch_factor")
 
         try:
-            self.data_flatten: bool = kwargs["data_flatten"]
-        except KeyError:
-            missing_keys.append("data_flatten")
-
-        try:
             self.batching_strategy: str = kwargs["batching_strategy"]
         except KeyError:
             missing_keys.append("batching_strategy")
@@ -325,6 +325,32 @@ class Config:
             self.collator_type: str = kwargs["collator_type"]
         except KeyError:
             missing_keys.append("collator_type")
+
+        try:
+            self.max_total_length: int = kwargs["max_total_length"]
+        except KeyError:
+            missing_keys.append("max_total_length")
+
+        # Preprocessing configuration
+        try:
+            self.use_candidates: bool = kwargs["use_candidates"]
+        except KeyError:
+            missing_keys.append("use_candidates")
+
+        try:
+            self.candidates_file: str = kwargs["candidates_file"]
+        except KeyError:
+            missing_keys.append("candidates_file")
+
+        try:
+            self.multi_round: bool = kwargs["multi_round"]
+        except KeyError:
+            missing_keys.append("multi_round")
+
+        try:
+            self.max_examples: int = kwargs["max_examples"]
+        except KeyError:
+            missing_keys.append("max_examples")
 
         # =====================================================================
         # DEEPSPEED - HANDLED BY LAUNCHER SCRIPT
@@ -570,6 +596,7 @@ class Config:
             "attn_implementation",
             "torch_dtype",
             "use_cache",
+            "use_model_wrapper",
             # Data settings
             "train_data_path",
             "val_data_path",
@@ -620,9 +647,15 @@ class Config:
             "dataloader_num_workers",
             "pin_memory",
             "prefetch_factor",
-            "data_flatten",
             "batching_strategy",
             "remove_unused_columns",
+            "collator_type",
+            "max_total_length",
+            # Preprocessing configuration
+            "use_candidates",
+            "candidates_file",
+            "multi_round",
+            "max_examples",
             # DeepSpeed - handled by launcher script, not required in YAML
             # Output
             "output_base_dir",

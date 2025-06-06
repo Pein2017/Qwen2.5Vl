@@ -35,54 +35,6 @@ IGNORE_INDEX = -100  # Standard ignore index for loss calculation
 
 
 # ============================================================================
-# Data Loading and Validation
-# ============================================================================
-
-
-def load_clean_semantic_data(file_path: str) -> List[Dict[str, Any]]:
-    """Load clean semantic data from JSONL file."""
-    samples = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            samples.append(json.loads(line.strip()))
-    return samples
-
-
-def validate_semantic_data(data: Dict[str, Any]) -> bool:
-    """Validate clean semantic data format."""
-    required_fields = ["images", "objects"]
-
-    # Check required fields
-    for field in required_fields:
-        if field not in data:
-            logger.warning(f"Missing required field: {field}")
-            return False
-
-    # Validate images
-    images = data["images"]
-    if not isinstance(images, list):
-        logger.warning("Images field must be a list")
-        return False
-
-    # Validate objects
-    objects = data["objects"]
-    if not isinstance(objects, list):
-        logger.warning("Objects field must be a list")
-        return False
-
-    for obj in objects:
-        if not isinstance(obj, dict):
-            logger.warning("Each object must be a dictionary")
-            return False
-
-        if "box" not in obj or "desc" not in obj:
-            logger.warning("Each object must have 'box' and 'desc' fields")
-            return False
-
-    return True
-
-
-# ============================================================================
 # Basic Conversation Formatting (for reference)
 # ============================================================================
 
@@ -143,51 +95,6 @@ def format_conversation(
 
 
 # ============================================================================
-# Legacy Support Functions
-# ============================================================================
-
-
-def convert_legacy_to_clean(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert legacy data format to clean semantic format."""
-    # Extract basic info
-    image_path = legacy_data.get("image", "")
-    raw_objects = legacy_data.get("objects", [])
-
-    # Convert objects to clean format
-    clean_objects = []
-    for obj in raw_objects:
-        # Handle different bbox formats
-        if "bbox" in obj:
-            box = obj["bbox"]
-        elif "bbox_2d" in obj:
-            box = obj["bbox_2d"]
-        else:
-            continue
-
-        # Extract description
-        desc = ""
-        if "description" in obj:
-            desc_data = obj["description"]
-            if isinstance(desc_data, dict):
-                desc = desc_data.get("desc", "")
-            else:
-                desc = str(desc_data)
-        elif "desc" in obj:
-            desc = str(obj["desc"])
-
-        clean_obj = {
-            "box": box,
-            "desc": desc,
-            "type": obj.get("type", ""),
-            "property": obj.get("property", ""),
-            "extra_info": obj.get("extra_info", ""),
-        }
-        clean_objects.append(clean_obj)
-
-    return {"images": [image_path] if image_path else [], "objects": clean_objects}
-
-
-# ============================================================================
 # Utility Functions
 # ============================================================================
 
@@ -200,28 +107,3 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
             data.append(json.loads(line.strip()))
     return data
 
-
-def save_jsonl(data: List[Dict[str, Any]], file_path: str):
-    """Save data to JSONL file."""
-    with open(file_path, "w", encoding="utf-8") as f:
-        for item in data:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-
-def get_model_path(model_size: str = "7B") -> str:
-    """Get model path based on size."""
-    if model_size == "3B":
-        return DEFAULT_BASE_MODEL_PATH
-    elif model_size == "7B":
-        return DEFAULT_7B_MODEL_PATH
-    else:
-        raise ValueError(f"Unsupported model size: {model_size}")
-
-
-def setup_logging(level: str = "INFO") -> logging.Logger:
-    """Setup logging configuration."""
-    logging.basicConfig(
-        level=getattr(logging, level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    return logging.getLogger(__name__)

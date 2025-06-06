@@ -152,9 +152,9 @@ def _update_causal_mask(
     letting the official flash attention implementation handle the details.
     """
     # For flash attention, follow the official Qwen2.5-VL approach
-    if (
-        hasattr(self, "config")
-        and getattr(self.config, "_attn_implementation", None) == "flash_attention_2"
+    if hasattr(self, "config") and (
+        hasattr(self.config, "_attn_implementation")
+        and self.config._attn_implementation == "flash_attention_2"
     ):
         if attention_mask is not None and past_key_values is not None:
             is_padding_right = (
@@ -219,61 +219,30 @@ def _optimized_flash_attention_forward(
     **kwargs,
 ):
     """
-    Optimized flash attention that follows the official Qwen2.5-VL approach.
+    Simplified flash attention that fails fast instead of falling back.
 
-    Key insight: Visual tokens are replaced in-place via masked_scatter, so sequence
-    lengths should match. If they don't, we fall back to standard attention.
+    This implementation assumes flash attention should work and raises clear errors
+    if it doesn't, following the fail-fast principle.
     """
     if not _is_flash_attn_available():
-        logger.debug("⚠️ Flash attention not available, using standard attention")
-        return _standard_attention_fallback(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            is_causal,
-            dropout,
-            softmax_scale,
-            softcap,
+        raise RuntimeError(
+            "Flash Attention 2 is required but not available. "
+            "Install with: pip install flash-attn --no-build-isolation"
         )
 
     batch_size, num_heads, seq_len, head_dim = query_states.shape
 
-    # Log sequence information for debugging
-    logger.debug(f"🔍 Flash attention input shapes:")
-    logger.debug(f"   query_states: {query_states.shape}")
-    logger.debug(
-        f"   attention_mask: {attention_mask.shape if attention_mask is not None else None}"
-    )
-    logger.debug(f"   seq_len: {seq_len}, query_length: {query_length}")
-
-    # Simple fallback logic: if attention mask exists and has different sequence length,
-    # fall back to standard attention (this shouldn't happen with proper masked_scatter)
+    # FAIL-FAST: Validate inputs instead of falling back
     if attention_mask is not None and attention_mask.shape[-1] != seq_len:
-        logger.debug(
-            f"🔄 Sequence length mismatch detected: mask_len={attention_mask.shape[-1]}, seq_len={seq_len}. "
-            f"Falling back to standard attention."
+        raise ValueError(
+            f"Attention mask sequence length mismatch: "
+            f"mask_len={attention_mask.shape[-1]}, seq_len={seq_len}. "
+            f"This indicates a data preprocessing issue that must be fixed."
         )
 
-        # Ensure correct format for fallback: [batch, heads, seq, head_dim]
-        if query_states.shape[1] != num_heads:
-            query_states = query_states.transpose(1, 2)
-            key_states = key_states.transpose(1, 2)
-            value_states = value_states.transpose(1, 2)
-
-        return _standard_attention_fallback(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            is_causal,
-            dropout,
-            softmax_scale,
-            softcap,
-        )
-
-    # Flash attention path: follow official Qwen2.5-VL approach
-    logger.debug(f"🚀 Using flash attention (official approach)")
+    logger.debug(
+        f"🚀 Using flash attention: batch={batch_size}, seq_len={seq_len}, heads={num_heads}"
+    )
 
     # Ensure correct input format for flash attention: [batch, seq, heads, head_dim]
     if query_states.shape[1] == num_heads:
@@ -283,156 +252,40 @@ def _optimized_flash_attention_forward(
         value_states = value_states.transpose(1, 2)
 
     # Determine causal setting
-    if not use_top_left_mask:
-        causal = is_causal
-    else:
-        causal = is_causal and query_length != 1
+    causal = is_causal and (not use_top_left_mask or query_length != 1)
 
-    # Prepare flash attention arguments
-    flash_kwargs = {}
-    if softcap is not None:
-        flash_kwargs["softcap"] = softcap
+    # Use the official flash attention implementation directly
+    from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
-    try:
-        # Call flash attention using the official _flash_attention_forward
-        from transformers.modeling_flash_attention_utils import _flash_attention_forward
-
-        attn_output = _flash_attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            query_length,
-            dropout=dropout,
-            softmax_scale=softmax_scale,
-            sliding_window=sliding_window,
-            is_causal=causal,
-            use_top_left_mask=use_top_left_mask,
-            softcap=softcap,
-            **kwargs,
-        )
-
-        # Output should already be in correct format: [batch, seq, heads * head_dim]
-        # Reshape to [batch, seq, heads, head_dim] then transpose to [batch, heads, seq, head_dim]
-        attn_output = attn_output.view(batch_size, seq_len, num_heads, head_dim)
-        return attn_output.transpose(1, 2)
-
-    except Exception as e:
-        # Flash attention failed, fall back to standard attention
-        logger.warning(f"⚠️ Flash attention failed: {e}")
-        logger.debug("🔄 Falling back to standard attention")
-
-        # Transpose back to standard attention format if needed
-        if query_states.shape[1] != num_heads:
-            query_states = query_states.transpose(1, 2)
-            key_states = key_states.transpose(1, 2)
-            value_states = value_states.transpose(1, 2)
-
-        return _standard_attention_fallback(
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            is_causal,
-            dropout,
-            softmax_scale,
-            softcap,
-        )
-
-
-def _standard_attention_fallback(
-    query_states: torch.Tensor,
-    key_states: torch.Tensor,
-    value_states: torch.Tensor,
-    attention_mask: torch.Tensor,
-    is_causal: bool,
-    dropout: float,
-    softmax_scale: Optional[float],
-    softcap: Optional[float],
-):
-    """
-    Memory-efficient standard attention fallback for padded sequences.
-
-    Simplified to match official Qwen2.5-VL approach: visual tokens are handled
-    via masked_scatter, so sequence lengths should always match.
-    """
-    batch_size, num_heads, seq_len, head_dim = query_states.shape
-
-    # Compute attention scores
-    if softmax_scale is None:
-        softmax_scale = 1.0 / (head_dim**0.5)
-
-    attn_scores = (
-        torch.matmul(query_states, key_states.transpose(-2, -1)) * softmax_scale
+    attn_output = _flash_attention_forward(
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        query_length,
+        dropout=dropout,
+        softmax_scale=softmax_scale,
+        sliding_window=sliding_window,
+        is_causal=causal,
+        use_top_left_mask=use_top_left_mask,
+        softcap=softcap,
+        **kwargs,
     )
 
-    # Apply softcap if specified
-    if softcap is not None:
-        attn_scores = torch.tanh(attn_scores / softcap) * softcap
-
-    # Apply attention mask - SIMPLIFIED APPROACH
-    if attention_mask is not None:
-        mask_value = torch.finfo(attn_scores.dtype).min
-
-        if attention_mask.dtype == torch.bool:
-            # Boolean mask: [batch_size, seq_len]
-            # Should match sequence length since visual tokens are handled via masked_scatter
-
-            if attention_mask.shape[-1] == seq_len:
-                # Standard case: create attention matrix mask
-                key_mask = attention_mask.unsqueeze(1).unsqueeze(
-                    2
-                )  # [batch, 1, seq_len, 1]
-                query_mask = attention_mask.unsqueeze(1).unsqueeze(
-                    3
-                )  # [batch, 1, 1, seq_len]
-                full_mask = query_mask & key_mask  # [batch, 1, seq_len, seq_len]
-                attn_scores = attn_scores.masked_fill(~full_mask, mask_value)
-            else:
-                # Unexpected case: sequence length mismatch
-                logger.warning(
-                    f"⚠️ Attention mask sequence length mismatch: "
-                    f"mask_len={attention_mask.shape[-1]}, seq_len={seq_len}. "
-                    f"This shouldn't happen with proper masked_scatter. Skipping mask."
-                )
-
-        else:
-            # Additive mask (legacy format)
-            if attention_mask.shape[-1] == seq_len:
-                attn_scores = attn_scores + attention_mask
-            else:
-                logger.warning(
-                    f"⚠️ Additive attention mask shape mismatch: "
-                    f"mask_len={attention_mask.shape[-1]}, seq_len={seq_len}. Skipping mask."
-                )
-
-    # Apply causal mask if needed
-    if is_causal:
-        causal_mask = torch.tril(
-            torch.ones(seq_len, seq_len, device=attn_scores.device, dtype=torch.bool)
-        )
-        attn_scores = attn_scores.masked_fill(
-            ~causal_mask, torch.finfo(attn_scores.dtype).min
-        )
-
-    # Compute attention weights
-    attn_weights = torch.softmax(attn_scores, dim=-1)
-
-    # Apply dropout
-    if dropout > 0.0:
-        attn_weights = torch.nn.functional.dropout(
-            attn_weights, p=dropout, training=True
-        )
-
-    # Compute output
-    attn_output = torch.matmul(attn_weights, value_states)
-
-    return attn_output
+    # Output should be [batch, seq, heads * head_dim]
+    # Reshape to [batch, seq, heads, head_dim] then transpose to [batch, heads, seq, head_dim]
+    attn_output = attn_output.view(batch_size, seq_len, num_heads, head_dim)
+    return attn_output.transpose(1, 2)
 
 
 def replace_qwen2_vl_attention_class():
     """
-    Replace Qwen2.5-VL attention with optimized flash attention for StandardDataCollator.
+    Replace Qwen2.5-VL attention with fail-fast flash attention implementation.
+
+    This replaces the default flash attention with a version that:
+    - Fails fast instead of falling back to standard attention
+    - Validates inputs and raises clear errors for debugging
+    - Uses the official Transformers flash attention implementation directly
     """
     import transformers
     import transformers.modeling_flash_attention_utils
@@ -451,10 +304,10 @@ def replace_qwen2_vl_attention_class():
     )
     transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel._update_causal_mask = _update_causal_mask
 
-    logger.info("✅ Optimized flash attention enabled for Qwen2.5-VL")
-    logger.info("   → Prioritizes flash attention over standard attention")
-    logger.info("   → Handles boolean attention masks from StandardDataCollator")
-    logger.info("   → Uses variable-length flash attention for padded sequences")
+    logger.info("✅ Fail-fast flash attention enabled for Qwen2.5-VL")
+    logger.info("   → Uses official Transformers flash attention implementation")
+    logger.info("   → Fails fast with clear errors instead of silent fallbacks")
+    logger.info("   → Validates attention mask and sequence length compatibility")
 
 
 def print_trainable_parameters_visual(self) -> None:

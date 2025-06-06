@@ -24,7 +24,8 @@ import torch
 import transformers
 from torch.utils.data import Dataset
 
-from src.chat_processor import create_chat_processor
+from src.chat_processor import ChatProcessor
+from src.config.base import Config
 from src.tokens import SpecialTokens
 from src.utils import IGNORE_INDEX
 
@@ -60,32 +61,59 @@ def read_jsonl(path: str) -> List[Dict]:
 class BBUDataset(Dataset):
     """Dataset using UnifiedPreprocessor for clean data processing."""
 
-    def __init__(self, config, tokenizer, image_processor, data_path: str):
+    def __init__(
+        self,
+        config: Config,
+        tokenizer,
+        image_processor,
+        data_path: str,
+    ):
+        """
+        Initialize BBU Dataset with explicit configuration.
+        No defaults allowed - all parameters must be specified in config.
+        """
+        # EXPLICIT: No defaults - config must specify all required fields
+        required_fields = [
+            "data_root",
+            "model_max_length",
+            "use_candidates",
+            "candidates_file",
+        ]
+        for field in required_fields:
+            if not hasattr(config, field):
+                raise ValueError(f"Config must specify '{field}' - no defaults allowed")
+
         self.config = config
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.data_path = data_path
 
+        # Use explicit config values - no getattr defaults
+        self.data_root = config.data_root
+        self.model_max_length = config.model_max_length
+        self.use_candidates = config.use_candidates
+        self.candidates_file = config.candidates_file
+
+        # Load data
+        self.data = self._load_data()
+
+        # Load candidates if enabled
+        self.candidates = None
+        if self.use_candidates and self.candidates_file:
+            self.candidates = self._load_candidates()
+
+        # Initialize chat processor
+        self.chat_processor = ChatProcessor(
+            tokenizer=self.tokenizer,
+            image_processor=self.image_processor,
+            data_root=self.data_root,
+            model_max_length=self.model_max_length,
+            use_candidates=self.use_candidates,
+            candidates_file=self.candidates_file,
+        )
+
         # Initialize special tokens first (needed for validation)
         self.tokens = SpecialTokens()
-
-        # Load raw data
-        raw_data = read_jsonl(data_path)
-        print(f"📊 Loaded {len(raw_data)} raw samples from {data_path}")
-
-        # Basic validation and filtering
-        self.data = self._validate_and_filter_samples(raw_data)
-        print(f"📊 After validation: {len(self.data)} valid samples")
-
-        # Create chat processor
-        self.processor = create_chat_processor(
-            tokenizer=tokenizer,
-            image_processor=image_processor,
-            data_root=getattr(config, "data_root", "./"),
-            model_max_length=getattr(config, "model_max_length", 8192),
-            use_candidates=getattr(config, "use_candidates", False),
-            candidates_file=getattr(config, "candidates_file", None),
-        )
 
         # Calculate sequence lengths for optimization
         self._sequence_lengths = None
@@ -262,7 +290,7 @@ class BBUDataset(Dataset):
         sample = self.data[idx]
 
         # Process using the chat processor
-        result = self.processor.process_sample(sample)
+        result = self.chat_processor.process_sample(sample)
         data_logger.debug(f"✅ Successfully processed sample {idx}")
 
         # Validate result
@@ -274,6 +302,36 @@ class BBUDataset(Dataset):
         )
 
         return result
+
+    def _load_data(self) -> List[Dict]:
+        """Load and validate data from JSONL file."""
+        # Load raw data
+        raw_data = read_jsonl(self.data_path)
+        print(f"📊 Loaded {len(raw_data)} raw samples from {self.data_path}")
+
+        # Basic validation and filtering
+        validated_data = self._validate_and_filter_samples(raw_data)
+        print(f"📊 After validation: {len(validated_data)} valid samples")
+
+        return validated_data
+
+    def _load_candidates(self) -> Optional[Dict]:
+        """Load candidate phrases if available."""
+        if not self.candidates_file:
+            return None
+
+        try:
+            import json
+
+            with open(self.candidates_file, "r") as f:
+                candidates = json.load(f)
+            print(
+                f"📊 Loaded {len(candidates)} candidate phrases from {self.candidates_file}"
+            )
+            return candidates
+        except Exception as e:
+            print(f"⚠️ Failed to load candidates from {self.candidates_file}: {e}")
+            return None
 
 
 def extract_ground_truth_objects_from_conversation(
@@ -378,7 +436,7 @@ class StandardDataCollator:
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         """
-        Collate batch with optimized memory management and vision token filtering.
+        Collate batch with optimized memory management for flash attention.
 
         Args:
             instances: Sequence of dicts containing input_ids, labels, etc.
@@ -386,20 +444,14 @@ class StandardDataCollator:
         Returns:
             Batch dict optimized for flash attention
         """
-        # CRITICAL: Filter out samples with excessive vision tokens
-        filtered_instances = []
-        vision_token_threshold = (
-            300  # Increased threshold: 224 tokens for 2 images is reasonable
-        )
-
+        # FAIL-FAST: Process all instances without filtering or fallbacks
         for i, instance in enumerate(instances):
             if "pixel_values" in instance and instance["pixel_values"] is not None:
-                # Calculate the ACTUAL final vision token count (post-merge)
+                # Log vision token information for debugging
                 if (
                     "image_grid_thw" in instance
                     and instance["image_grid_thw"] is not None
                 ):
-                    # Use the official calculation: grid_thw.prod() // merge_length
                     grid_thw = instance["image_grid_thw"]
                     merge_size = 2  # Default merge size for Qwen2.5-VL
                     merge_length = merge_size**2
@@ -408,58 +460,17 @@ class StandardDataCollator:
                     for grid in grid_thw:
                         total_final_tokens += grid.prod().item() // merge_length
 
-                    vision_tokens = total_final_tokens
                     pre_merge_tokens = instance["pixel_values"].shape[0]
-
-                    data_logger.info(
-                        f"✅ Sample {i}: {pre_merge_tokens} pre-merge → {vision_tokens} final tokens"
-                    )
-                else:
-                    # Fallback: use pre-merge count if grid_thw is not available
-                    vision_tokens = instance["pixel_values"].shape[0]
-                    data_logger.info(
-                        f"ℹ️ Sample {i}: No grid_thw available, using pre-merge count: {vision_tokens} tokens"
-                    )
-
-                if vision_tokens > vision_token_threshold:
-                    data_logger.info(
-                        f"⚠️ FILTERING SAMPLE {i}: {vision_tokens} final vision tokens > {vision_token_threshold} threshold"
-                    )
-                    data_logger.info(f"   This sample would cause CUDA OOM - skipping")
-                    continue
-                else:
                     data_logger.debug(
-                        f"✅ Sample {i}: {vision_tokens} final vision tokens (within threshold)"
+                        f"Sample {i}: {pre_merge_tokens} pre-merge → {total_final_tokens} final tokens"
+                    )
+                else:
+                    vision_tokens = instance["pixel_values"].shape[0]
+                    data_logger.debug(
+                        f"Sample {i}: {vision_tokens} vision tokens (no grid_thw)"
                     )
 
-            filtered_instances.append(instance)
-
-        # Handle edge case: if all samples filtered, take the one with minimum vision tokens
-        if not filtered_instances:
-            data_logger.info("ℹ️ All samples filtered due to excessive vision tokens!")
-            data_logger.info("   Taking sample with minimum vision tokens as fallback")
-
-            min_tokens = float("inf")
-            fallback_instance = None
-
-            for instance in instances:
-                if "pixel_values" in instance and instance["pixel_values"] is not None:
-                    tokens = instance["pixel_values"].shape[0]
-                    if tokens < min_tokens:
-                        min_tokens = tokens
-                        fallback_instance = instance
-
-            if fallback_instance:
-                filtered_instances = [fallback_instance]
-                data_logger.info(
-                    f"   Using fallback sample with {min_tokens} vision tokens"
-                )
-            else:
-                data_logger.warning("   No valid fallback sample found!")
-                filtered_instances = instances[:1]  # Take first sample as last resort
-
-        # Continue with filtered instances
-        instances = filtered_instances
+        # Process all instances - no filtering, no fallbacks
 
         # 1. Extract sequences
         input_ids_list: List[torch.Tensor] = [
@@ -499,25 +510,6 @@ class StandardDataCollator:
         data_logger.info(f"   Max length in batch: {batch_max_length}")
         data_logger.info(f"   Min length in batch: {min(sequence_lengths)}")
         data_logger.info(f"   Total tokens (sum): {sum(sequence_lengths)}")
-        data_logger.info(f"   Uniform sequences: {len(set(sequence_lengths)) == 1}")
-        data_logger.info(
-            f"   Padding ratio: {(batch_max_length * batch_size - sum(sequence_lengths)) / (batch_max_length * batch_size):.2%}"
-        )
-
-        # Log memory usage for batch creation
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            reserved = torch.cuda.memory_reserved() / 1024**3  # GB
-            data_logger.info(f"🔧 CUDA MEMORY DURING BATCH CREATION:")
-            data_logger.info(
-                f"   Allocated: {allocated:.2f}GB | Reserved: {reserved:.2f}GB"
-            )
-
-            # Estimate memory needed for this batch
-            estimated_memory = (
-                batch_size * batch_max_length * 4
-            ) / 1024**3  # Assuming 4 bytes per token
-            data_logger.info(f"   Estimated batch memory: {estimated_memory:.2f}GB")
 
         # Log vision token information
         total_images = sum(info["image_count"] for info in vision_info)
@@ -630,160 +622,6 @@ class StandardDataCollator:
         return batch
 
 
-# @dataclass
-# class FlattenedDataCollator:
-#     """
-#     Flattened data collator for packed sequence training.
-
-#     This is the default and recommended collator, matching the official repo approach.
-#     It concatenates samples into packed sequences without padding, providing:
-#     - Maximum memory efficiency (no padding waste)
-#     - Compatibility with flash attention
-#     - Optimal performance for variable-length sequences
-#     - Support for multi-GPU training with DeepSpeed
-
-#     NOTE: Currently disabled due to attention mask compatibility issues.
-#     Use StandardDataCollator for stable training.
-#     """
-
-#     tokenizer: transformers.PreTrainedTokenizer
-#     max_total_length: Optional[int] = None
-
-#     def __post_init__(self):
-#         self._batch_count = 0
-
-#     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-#         """Collate batch using packed sequences (official repo approach)."""
-#         self._batch_count += 1
-
-#         # Extract components
-#         input_ids = [instance["input_ids"].squeeze() for instance in instances]
-#         labels = [instance["labels"].squeeze() for instance in instances]
-#         position_ids = [instance.get("position_ids") for instance in instances]
-
-#         # Extract attention masks (sequence lengths)
-#         attention_mask = []
-#         for instance in instances:
-#             if "attention_mask" in instance:
-#                 mask = instance["attention_mask"]
-#                 if mask.dim() > 1:
-#                     mask = mask.squeeze()
-#                 # Convert to sequence length
-#                 seq_len = mask.sum().item() if mask.dtype == torch.bool else len(mask)
-#                 attention_mask.append(seq_len)
-#             else:
-#                 # Fallback: use input_ids length
-#                 attention_mask.append(len(instance["input_ids"].squeeze()))
-
-#         # Validate total length
-#         total_length = sum(attention_mask)
-#         if self.max_total_length and total_length > self.max_total_length:
-#             raise ValueError(
-#                 f"❌ TOTAL LENGTH EXCEEDED!\n"
-#                 f"   Total sequence length: {total_length}\n"
-#                 f"   Maximum allowed: {self.max_total_length}\n"
-#                 f"   Samples in batch: {len(instances)}\n"
-#                 f"   Individual lengths: {attention_mask}\n"
-#                 f"\n"
-#                 f"🔧 SOLUTIONS:\n"
-#                 f"   1. Reduce per_device_train_batch_size\n"
-#                 f"   2. Increase max_total_length\n"
-#                 f"   3. Use shorter sequences\n"
-#             )
-
-#         # Create proper boolean attention mask for flash attention compatibility
-#         # Instead of cumulative lengths, create a proper boolean mask
-#         batch_size = len(instances)
-#         max_seq_len = max(attention_mask)
-
-#         # Create 2D attention mask [batch_size, max_seq_len]
-#         attention_mask_2d = torch.zeros(batch_size, max_seq_len, dtype=torch.bool)
-#         for i, seq_len in enumerate(attention_mask):
-#             attention_mask_2d[i, :seq_len] = True
-
-#         # Pad sequences to max length for proper batching
-#         padded_input_ids = []
-#         padded_labels = []
-#         padded_position_ids = []
-
-#         for i, (input_seq, label_seq, pos_ids) in enumerate(
-#             zip(input_ids, labels, position_ids)
-#         ):
-#             seq_len = len(input_seq)
-
-#             # Pad input_ids
-#             padded_input = torch.full(
-#                 (max_seq_len,), self.tokenizer.pad_token_id, dtype=input_seq.dtype
-#             )
-#             padded_input[:seq_len] = input_seq
-#             padded_input_ids.append(padded_input)
-
-#             # Pad labels
-#             padded_label = torch.full(
-#                 (max_seq_len,), IGNORE_INDEX, dtype=label_seq.dtype
-#             )
-#             padded_label[:seq_len] = label_seq
-#             padded_labels.append(padded_label)
-
-#             # Handle position_ids (can be None if using official model calculation)
-#             if pos_ids is not None:
-#                 padded_pos = torch.zeros(3, 1, max_seq_len, dtype=pos_ids.dtype)
-#                 padded_pos[:, :, :seq_len] = pos_ids
-#                 padded_position_ids.append(padded_pos)
-
-#         batch = {
-#             "input_ids": torch.stack(padded_input_ids),
-#             "labels": torch.stack(padded_labels),
-#             "attention_mask": attention_mask_2d,  # Proper boolean mask for flash attention
-#         }
-
-#         # Only add position_ids if they were provided
-#         if padded_position_ids:
-#             batch["position_ids"] = torch.cat(padded_position_ids, dim=1)
-
-#         # Handle images (concatenate across all samples)
-#         images = [
-#             instance["pixel_values"]
-#             for instance in instances
-#             if "pixel_values" in instance
-#         ]
-
-#         if images:
-#             # CRITICAL FIX: Validate that we don't create empty tensors
-#             # Filter out any empty tensors that might have been created
-#             valid_images = [img for img in images if img.shape[0] > 0]
-
-#             if valid_images:
-#                 # Qwen2.5-VL supports both 2D [total_patches, feature_dim] and 4D [N, C, H, W] formats
-#                 # torch.cat works for both formats when concatenating along dim=0
-#                 batch["pixel_values"] = torch.cat(valid_images, dim=0)
-
-#                 grid_thw_list = [
-#                     instance["image_grid_thw"]
-#                     for instance in instances
-#                     if "image_grid_thw" in instance
-#                 ]
-
-#                 # CRITICAL FIX: Validate image_grid_thw as well
-#                 valid_grid_thw = [grid for grid in grid_thw_list if grid.shape[0] > 0]
-
-#                 if valid_grid_thw:
-#                     batch["image_grid_thw"] = torch.cat(valid_grid_thw, dim=0)
-#                 else:
-#                     # If no valid grid_thw, don't include pixel_values either
-#                     if "pixel_values" in batch:
-#                         del batch["pixel_values"]
-#                         print(
-#                             "⚠️ Warning: Removed pixel_values due to invalid image_grid_thw"
-#                         )
-#             else:
-#                 print(
-#                     "⚠️ Warning: All pixel_values tensors are empty - treating batch as text-only"
-#                 )
-
-#         return batch
-
-
 def create_data_collator(
     tokenizer,
     max_total_length: Optional[int] = None,
@@ -802,9 +640,7 @@ def create_data_collator(
     Returns:
         Data collator instance
     """
-    if collator_type == "flattened":
-        raise ValueError("FlattenedDataCollator is not supported")
-    elif collator_type == "standard":
+    if collator_type == "standard":
         return StandardDataCollator(
             tokenizer=tokenizer,
         )

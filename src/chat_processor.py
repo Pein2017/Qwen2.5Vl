@@ -341,7 +341,13 @@ Assistant:"""
 
         # CRITICAL FIX: Calculate tokens using official formula with proper merge operation
         # The formula is: grid_thw.prod() // merge_length, where merge_length = merge_size**2
-        merge_size = getattr(self.image_processor, "merge_size", 2)
+        # EXPLICIT: Get merge_size from image processor - no defaults
+        if hasattr(self.image_processor, "merge_size"):
+            merge_size = self.image_processor.merge_size
+        else:
+            raise ValueError(
+                "Cannot determine merge_size - image processor must have merge_size"
+            )
         merge_length = merge_size**2
 
         # This is the OFFICIAL token calculation from the processor
@@ -416,7 +422,11 @@ Assistant:"""
             )
 
             # Also check what the tokenizer thinks the endoftext token should be
-            tokenizer_endoftext_id = getattr(self.tokenizer, "eos_token_id", None)
+            # EXPLICIT: Get eos_token_id from tokenizer - no defaults
+        if hasattr(self.tokenizer, "eos_token_id"):
+            tokenizer_endoftext_id = self.tokenizer.eos_token_id
+        else:
+            tokenizer_endoftext_id = None
             logger.debug(f"🔍 Tokenizer eos_token_id: {tokenizer_endoftext_id}")
 
             # Check if the tokenizer has the special token
@@ -490,7 +500,7 @@ Assistant:"""
         # Log original image sizes for debugging
         logger.info(f"🖼️ PROCESSING {len(images)} IMAGES:")
         for i, img in enumerate(images):
-            logger.info(f"   Image {i}: {img.size} (W×H), mode={img.mode}")
+            logger.info(f"   Image {i}: {img.size} (W*H), mode={img.mode}")
 
         # Use processor directly like official QwenVL implementation
         # The processor is already configured with data_conversion/vision_process.py values
@@ -511,7 +521,12 @@ Assistant:"""
             logger.info(f"   image_grid_thw values: {image_grid_thw.tolist()}")
 
             # Calculate both pre-merge and post-merge token counts for clarity
-            merge_size = getattr(self.image_processor, "merge_size", 2)
+            # EXPLICIT: Get merge_size from image processor - no defaults
+            if hasattr(self.image_processor, "merge_size"):
+                merge_size = self.image_processor.merge_size
+            else:
+                # Use Qwen2.5-VL default
+                merge_size = 2
             merge_length = merge_size**2
 
             total_pre_merge = 0

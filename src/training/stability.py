@@ -128,10 +128,18 @@ class StabilityMonitor:
         self.logger = logger or get_logger(__name__)
         self.metrics = StabilityMetrics()
 
+        # EXPLICIT: No defaults - config must specify these values
+        if not hasattr(config, "learning_rate"):
+            raise ValueError("Config must specify 'learning_rate' - no defaults allowed")
+        if not hasattr(config, "max_grad_norm"):
+            raise ValueError("Config must specify 'max_grad_norm' - no defaults allowed")
+            
+        self.original_lr = config.learning_rate
+        self.current_lr = config.learning_rate
+        self.original_grad_clip = config.max_grad_norm
+
         # Recovery mechanisms
-        self.original_lr = getattr(config, "learning_rate", 1e-5)
         self.current_lr_reduction = 1.0
-        self.original_grad_clip = getattr(config, "max_grad_norm", 1.0)
 
         # Timing for performance monitoring
         self.step_times = deque(maxlen=100)
