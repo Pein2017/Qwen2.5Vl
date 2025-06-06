@@ -59,6 +59,11 @@ class Config:
         except KeyError:
             missing_keys.append("torch_dtype")
 
+        try:
+            self.use_cache: bool = kwargs["use_cache"]
+        except KeyError:
+            missing_keys.append("use_cache")
+
         # =====================================================================
         # DATA SETTINGS - REQUIRED
         # =====================================================================
@@ -77,15 +82,8 @@ class Config:
         except KeyError:
             missing_keys.append("data_root")
 
-        try:
-            self.max_pixels: int = kwargs["max_pixels"]
-        except KeyError:
-            missing_keys.append("max_pixels")
-
-        try:
-            self.min_pixels: int = kwargs["min_pixels"]
-        except KeyError:
-            missing_keys.append("min_pixels")
+        # REMOVED: max_pixels and min_pixels completely
+        # Official QwenVL approach uses processor defaults without overrides
 
         # =====================================================================
         # LEARNING RATE SETTINGS - REQUIRED
@@ -323,6 +321,11 @@ class Config:
         except KeyError:
             missing_keys.append("remove_unused_columns")
 
+        try:
+            self.collator_type: str = kwargs["collator_type"]
+        except KeyError:
+            missing_keys.append("collator_type")
+
         # =====================================================================
         # DEEPSPEED - HANDLED BY LAUNCHER SCRIPT
         # =====================================================================
@@ -482,6 +485,13 @@ class Config:
                 "At least one learning rate (vision_lr, mlp_lr, llm_lr) must be > 0"
             )
 
+        # Check use_cache and gradient_checkpointing compatibility
+        if self.use_cache and self.gradient_checkpointing:
+            raise ValueError(
+                "use_cache=True is incompatible with gradient_checkpointing=True. "
+                "Set either use_cache=False or gradient_checkpointing=False."
+            )
+
         # Check paths exist
         from pathlib import Path
 
@@ -559,12 +569,11 @@ class Config:
             "cache_dir",
             "attn_implementation",
             "torch_dtype",
+            "use_cache",
             # Data settings
             "train_data_path",
             "val_data_path",
             "data_root",
-            "max_pixels",
-            "min_pixels",
             # Learning rates
             "vision_lr",
             "mlp_lr",
@@ -648,21 +657,23 @@ class Config:
 def create_training_arguments_with_deepspeed(config: Config) -> TrainingArguments:
     """
     Create TrainingArguments with proper DeepSpeed configuration.
-    NO DEFAULT VALUES - all required values must be in config.
-    This mimics the official qwen-vl-finetune approach.
+    Matches the official qwen-vl-finetune approach exactly.
     """
-    # Core training parameters - REQUIRED
+    # Core training parameters - following official approach
     args = {
         "output_dir": config.output_dir,
         "num_train_epochs": config.num_train_epochs,
         "per_device_train_batch_size": config.per_device_train_batch_size,
         "per_device_eval_batch_size": config.per_device_eval_batch_size,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
         "learning_rate": config.learning_rate,
         "warmup_ratio": config.warmup_ratio,
         "lr_scheduler_type": config.lr_scheduler_type,
+        "max_grad_norm": config.max_grad_norm,
+        "weight_decay": config.weight_decay,
     }
 
-    # Evaluation and saving - REQUIRED
+    # Evaluation and saving
     args.update(
         {
             "eval_strategy": config.eval_strategy,
@@ -674,44 +685,34 @@ def create_training_arguments_with_deepspeed(config: Config) -> TrainingArgument
         }
     )
 
-    # Performance and optimization - REQUIRED
+    # Performance and optimization - following official approach
     args.update(
         {
             "bf16": config.bf16,
             "gradient_checkpointing": config.gradient_checkpointing,
             "remove_unused_columns": config.remove_unused_columns,
             "dataloader_num_workers": config.dataloader_num_workers,
+            "dataloader_pin_memory": config.pin_memory,
             "report_to": [config.report_to]
             if isinstance(config.report_to, str)
             else config.report_to,
         }
     )
 
-    # Stability enhancements - REQUIRED
+    # CRITICAL: Memory management - Enable automatic cache clearing
     args.update(
         {
-            "max_grad_norm": config.max_grad_norm,
-            "weight_decay": config.weight_decay,
-            "logging_nan_inf_filter": True,
-            "dataloader_pin_memory": config.pin_memory,
-            "skip_memory_metrics": False,
-            "log_level": "warning",
-            "disable_tqdm": False,
+            "torch_empty_cache_steps": 1,  # Clear cache every step to prevent memory accumulation
         }
     )
 
-    # Gradient accumulation steps - REQUIRED
-    args["gradient_accumulation_steps"] = config.gradient_accumulation_steps
-
-    # Logging directory - optional (can be None)
+    # Optional parameters
     if config.logging_dir is not None:
         args["logging_dir"] = config.logging_dir
-
-    # Run name - optional (can be None)
     if config.run_name is not None:
         args["run_name"] = config.run_name
 
-    # CRITICAL: DeepSpeed configuration (like official framework)
+    # CRITICAL: DeepSpeed configuration - SIMPLE approach like official
     if config.deepspeed_enabled:
         args["deepspeed"] = config.deepspeed_config_file
         print(f"🚀 DeepSpeed enabled: {config.deepspeed_config_file}")

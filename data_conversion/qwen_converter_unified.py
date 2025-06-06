@@ -10,6 +10,14 @@ Input format (intermediate JSONL):
 
 Output format (clean semantic):
 {"images": ["path.jpg"], "objects": [{"box": [x1,y1,x2,y2], "desc": "type, property, extra_info"}]}
+
+Extended format (multi-round with examples):
+{
+  "examples": [
+    {"images": ["example1.jpg"], "objects": [{"box": [x1,y1,x2,y2], "desc": "description"}]}
+  ],
+  "target": {"images": ["target.jpg"], "objects": [{"box": [x1,y1,x2,y2], "desc": "description"}]}
+}
 """
 
 import argparse
@@ -77,7 +85,9 @@ class CleanSemanticConverter:
 
     def _convert_verbose_to_compact(self, verbose_desc: str) -> str:
         """Convert verbose description to compact format."""
-        return CompactResponseFormatter.convert_from_verbose_format(verbose_desc)
+        return CompactResponseFormatter.convert_from_verbose_format(
+            verbose_desc, self.response_types
+        )
 
     def _convert_sample(self, sample: Dict) -> Dict:
         """Convert a single sample from intermediate to clean semantic format."""
@@ -114,6 +124,65 @@ class CleanSemanticConverter:
             logger.warning(f"Failed to convert sample: {e}")
             return None
 
+    def _get_example_by_category(self, num_objects: int) -> Dict:
+        """Get an appropriate example based on object density."""
+        if not self.examples:
+            return None
+
+        # Categorize by object count
+        if num_objects <= 2:
+            category = "sparse"
+        elif num_objects <= 5:
+            category = "medium"
+        else:
+            category = "dense"
+
+        # Get example from appropriate category
+        category_examples = self.examples.get(category, {})
+        if not category_examples:
+            # Fallback to any available category
+            for cat in ["sparse", "medium", "dense"]:
+                if self.examples.get(cat):
+                    category_examples = self.examples[cat]
+                    break
+
+        if not category_examples:
+            return None
+
+        # Convert example to clean semantic format
+        example_images = [category_examples.get("image", "")]
+        example_objects = []
+
+        for obj in category_examples.get("objects", []):
+            if "bbox" in obj and "description" in obj:
+                example_objects.append({"box": obj["bbox"], "desc": obj["description"]})
+
+        return {"images": example_images, "objects": example_objects}
+
+    def _create_multi_round_sample(
+        self, target_sample: Dict, max_examples: int = 1
+    ) -> Dict:
+        """Create multi-round sample with examples and target."""
+        # If max_examples is 0, return simple format
+        if max_examples <= 0:
+            return target_sample
+
+        num_objects = len(target_sample.get("objects", []))
+
+        # Get examples
+        examples = []
+        for _ in range(max_examples):
+            example = self._get_example_by_category(num_objects)
+            if example:
+                examples.append(example)
+
+        # Create multi-round format
+        if examples:
+            return {"examples": examples, "target": target_sample}
+        else:
+            # Fallback to simple format if no examples available
+            return target_sample
+
     def convert_and_split(
         self,
         input_jsonl: str,
@@ -144,6 +213,11 @@ class CleanSemanticConverter:
                     sample = json.loads(line.strip())
                     converted = self._convert_sample(sample)
                     if converted:
+                        # Apply multi-round format if requested
+                        if multi_round and include_examples and max_examples > 0:
+                            converted = self._create_multi_round_sample(
+                                converted, max_examples
+                            )
                         samples.append(converted)
                 except Exception as e:
                     logger.warning(f"Failed to process line {line_num}: {e}")
@@ -168,6 +242,12 @@ class CleanSemanticConverter:
         logger.info(
             f"Split complete: {len(train_samples)} train, {len(val_samples)} val samples"
         )
+
+        # Log format information
+        if multi_round and include_examples and max_examples > 0:
+            logger.info("✅ Generated multi-round format with examples and target")
+        else:
+            logger.info("✅ Generated simple format (no examples)")
 
     def _write_jsonl(self, samples: List[Dict], output_file: str):
         """Write samples to JSONL file."""
@@ -207,7 +287,7 @@ def main():
     parser.add_argument(
         "--response_types",
         default="object_type property extra_info",
-        help="Space-separated response types",
+        help="Space-separated response types to include",
     )
 
     args = parser.parse_args()
@@ -215,8 +295,10 @@ def main():
     # Parse response types
     response_types = set(args.response_types.split())
 
-    # Create converter and run
-    converter = CleanSemanticConverter(response_types)
+    # Create converter
+    converter = CleanSemanticConverter(response_types=response_types)
+
+    # Convert and split
     converter.convert_and_split(
         input_jsonl=args.input_jsonl,
         output_train=args.output_train,
@@ -228,6 +310,8 @@ def main():
         examples_file=args.examples_file,
         max_examples=args.max_examples,
     )
+
+    logger.info("✅ Conversion completed successfully!")
 
 
 if __name__ == "__main__":

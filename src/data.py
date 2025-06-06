@@ -1,14 +1,14 @@
 """
-Optimized data handling for Qwen2.5-VL training with flattened sequences.
+Optimized data handling for Qwen2.5-VL training with unified preprocessing.
 
 This module provides:
-- BBUDataset: Dataset for multi-round conversation format with <image> tokens
+- BBUDataset: Dataset using UnifiedPreprocessor for clean data processing
 - FlattenedDataCollator: Default collator using packed sequences (like official repo)
 - StandardDataCollator: Traditional padding-based collator for compatibility
 - Utilities for ground truth extraction from conversation format
 
 Key Features:
-- Flattened sequence collation (no padding waste)
+- Unified preprocessing pipeline (no file dependencies)
 - Multi-image conversation support
 - Compatible with flash attention and DeepSpeed
 - Optimized for large sequences and multi-GPU training
@@ -24,7 +24,8 @@ import torch
 import transformers
 from torch.utils.data import Dataset
 
-from src.preprocessing import create_preprocessor
+from src.chat_processor import create_chat_processor
+from src.tokens import SpecialTokens
 from src.utils import IGNORE_INDEX
 
 
@@ -57,7 +58,7 @@ def read_jsonl(path: str) -> List[Dict]:
 
 
 class BBUDataset(Dataset):
-    """Dataset for multi-round conversation format with image support."""
+    """Dataset using UnifiedPreprocessor for clean data processing."""
 
     def __init__(self, config, tokenizer, image_processor, data_path: str):
         self.config = config
@@ -65,20 +66,25 @@ class BBUDataset(Dataset):
         self.image_processor = image_processor
         self.data_path = data_path
 
-        # Load data
+        # Initialize special tokens first (needed for validation)
+        self.tokens = SpecialTokens()
+
+        # Load raw data
         raw_data = read_jsonl(data_path)
         print(f"📊 Loaded {len(raw_data)} raw samples from {data_path}")
 
-        # STRICT VALIDATION: Filter and validate samples
+        # Basic validation and filtering
         self.data = self._validate_and_filter_samples(raw_data)
         print(f"📊 After validation: {len(self.data)} valid samples")
 
-        # Create preprocessor
-        self.preprocessor = create_preprocessor(
+        # Create chat processor
+        self.processor = create_chat_processor(
             tokenizer=tokenizer,
             image_processor=image_processor,
             data_root=getattr(config, "data_root", "./"),
             model_max_length=getattr(config, "model_max_length", 8192),
+            use_candidates=getattr(config, "use_candidates", False),
+            candidates_file=getattr(config, "candidates_file", None),
         )
 
         # Calculate sequence lengths for optimization
@@ -87,113 +93,131 @@ class BBUDataset(Dataset):
             self._calculate_sequence_lengths()
 
     def _validate_and_filter_samples(self, raw_data: List[Dict]) -> List[Dict]:
-        """Strictly validate and filter samples to ensure data quality."""
+        """Validate and filter samples with strict requirements."""
         valid_samples = []
 
-        # Determine minimum image requirements based on data split
+        # Determine minimum image requirement based on data type
         is_training = "train" in self.data_path.lower()
         min_images = 2 if is_training else 1
 
         print(
-            f"🔍 Validating samples with minimum {min_images} images ({'training' if is_training else 'validation'} mode)"
+            f"🔍 Validating simplified JSONL samples with minimum {min_images} images ({'training' if is_training else 'validation'} mode)"
         )
 
         for idx, sample in enumerate(raw_data):
-            try:
-                # Basic structure validation
-                if not isinstance(sample, dict):
-                    raise ValueError(f"Sample {idx} is not a dictionary")
+            # Basic structure validation
+            if not isinstance(sample, dict):
+                raise ValueError(f"Sample {idx} is not a dictionary")
 
-                if "conversations" not in sample:
-                    raise ValueError(f"Sample {idx} missing 'conversations' key")
+            if "examples" not in sample:
+                raise ValueError(f"Sample {idx} missing 'examples' key")
 
-                if "images" not in sample:
-                    raise ValueError(f"Sample {idx} missing 'images' key")
+            if "target" not in sample:
+                raise ValueError(f"Sample {idx} missing 'target' key")
 
-                conversations = sample["conversations"]
-                image_paths = sample["images"]
+            examples = sample["examples"]
+            target = sample["target"]
 
-                # Validate conversations structure
-                if not isinstance(conversations, list) or len(conversations) == 0:
-                    raise ValueError(f"Sample {idx} has empty or invalid conversations")
+            # Validate examples structure
+            if not isinstance(examples, list) or len(examples) == 0:
+                raise ValueError(f"Sample {idx} has empty or invalid examples")
 
-                # Validate images structure
-                if not isinstance(image_paths, list) or len(image_paths) == 0:
-                    raise ValueError(f"Sample {idx} has empty or invalid images list")
+            # Validate target structure
+            if not isinstance(target, dict):
+                raise ValueError(f"Sample {idx} has invalid target structure")
 
-                # STRICT REQUIREMENT: Minimum image count
-                if len(image_paths) < min_images:
+            # Count total images
+            total_images = 0
+
+            # Validate examples
+            for ex_idx, example in enumerate(examples):
+                if not isinstance(example, dict):
                     raise ValueError(
-                        f"Sample {idx} has only {len(image_paths)} images, "
-                        f"but minimum {min_images} required for {'training' if is_training else 'validation'}"
+                        f"Sample {idx}, example {ex_idx} is not a dictionary"
                     )
 
-                # Validate conversation format
-                if conversations[0].get("role") != "system":
-                    raise ValueError(f"Sample {idx} must start with system message")
-
-                # Count and validate <image> tokens
-                image_token_count = 0
-                for conv_idx, conv in enumerate(conversations):
-                    if not isinstance(conv, dict):
-                        raise ValueError(
-                            f"Sample {idx}, conversation {conv_idx} is not a dictionary"
-                        )
-
-                    content = conv.get("content", "")
-                    if not isinstance(content, str):
-                        raise ValueError(
-                            f"Sample {idx}, conversation {conv_idx} has non-string content"
-                        )
-
-                    image_token_count += content.count("<image>")
-
-                # STRICT REQUIREMENT: Image token alignment
-                if image_token_count != len(image_paths):
+                if "images" not in example:
                     raise ValueError(
-                        f"Sample {idx}: Found {image_token_count} <image> tokens but {len(image_paths)} image paths. "
-                        f"Every image must have exactly one <image> token in the conversations."
+                        f"Sample {idx}, example {ex_idx} missing 'images' key"
                     )
 
-                # STRICT REQUIREMENT: Minimum image tokens
-                if image_token_count < min_images:
+                if "objects" not in example:
                     raise ValueError(
-                        f"Sample {idx}: Found only {image_token_count} <image> tokens, "
-                        f"but minimum {min_images} required"
+                        f"Sample {idx}, example {ex_idx} missing 'objects' key"
                     )
 
-                # Validate that we have at least one assistant response
-                has_assistant = any(
-                    conv.get("role") == "assistant" for conv in conversations
+                example_images = example["images"]
+                if not isinstance(example_images, list) or len(example_images) == 0:
+                    raise ValueError(
+                        f"Sample {idx}, example {ex_idx} has empty or invalid images"
+                    )
+
+                total_images += len(example_images)
+
+            # Validate target
+            if "images" not in target:
+                raise ValueError(f"Sample {idx} target missing 'images' key")
+
+            if "objects" not in target:
+                raise ValueError(f"Sample {idx} target missing 'objects' key")
+
+            target_images = target["images"]
+            if not isinstance(target_images, list) or len(target_images) == 0:
+                raise ValueError(f"Sample {idx} target has empty or invalid images")
+
+            total_images += len(target_images)
+
+            # STRICT REQUIREMENT: Minimum image count
+            if total_images < min_images:
+                raise ValueError(
+                    f"Sample {idx} has only {total_images} total images, "
+                    f"but minimum {min_images} required for {'training' if is_training else 'validation'}"
                 )
-                if not has_assistant:
-                    raise ValueError(f"Sample {idx} has no assistant responses")
 
-                # Additional validation: Check for proper multi-round structure
-                roles = [conv.get("role") for conv in conversations]
-                if (
-                    len(set(roles)) < 2
-                ):  # Should have at least system/user and assistant
+            # Validate objects structure in examples
+            for ex_idx, example in enumerate(examples):
+                objects = example["objects"]
+                if not isinstance(objects, list):
                     raise ValueError(
-                        f"Sample {idx} has insufficient role diversity: {roles}"
+                        f"Sample {idx}, example {ex_idx} objects is not a list"
                     )
 
-                valid_samples.append(sample)
+                for obj_idx, obj in enumerate(objects):
+                    if not isinstance(obj, dict):
+                        raise ValueError(
+                            f"Sample {idx}, example {ex_idx}, object {obj_idx} is not a dictionary"
+                        )
 
-            except ValueError as e:
-                print(f"⚠️ Skipping invalid sample {idx}: {e}")
-                continue
-            except Exception as e:
-                print(f"❌ Unexpected error validating sample {idx}: {e}")
-                continue
+                    if "box" not in obj or "desc" not in obj:
+                        raise ValueError(
+                            f"Sample {idx}, example {ex_idx}, object {obj_idx} missing required keys"
+                        )
+
+            # Validate objects structure in target
+            target_objects = target["objects"]
+            if not isinstance(target_objects, list):
+                raise ValueError(f"Sample {idx} target objects is not a list")
+
+            for obj_idx, obj in enumerate(target_objects):
+                if not isinstance(obj, dict):
+                    raise ValueError(
+                        f"Sample {idx}, target object {obj_idx} is not a dictionary"
+                    )
+
+                if "box" not in obj or "desc" not in obj:
+                    raise ValueError(
+                        f"Sample {idx}, target object {obj_idx} missing required keys"
+                    )
+
+            valid_samples.append(sample)
 
         if len(valid_samples) == 0:
             raise RuntimeError(
                 f"❌ CRITICAL ERROR: No valid samples found in {self.data_path}!\n"
-                f"   All samples failed validation. Check your data format and requirements:\n"
-                f"   - Minimum {min_images} images per sample\n"
-                f"   - Proper conversation structure with system/user/assistant roles\n"
-                f"   - Exact alignment between <image> tokens and image paths"
+                f"   All samples failed validation. Check your data format:\n"
+                f"   - Must have 'examples' and 'target' keys\n"
+                f"   - Examples and target must have 'images' and 'objects' lists\n"
+                f"   - Minimum {min_images} total images per sample"
             )
 
         validation_ratio = len(valid_samples) / len(raw_data)
@@ -211,15 +235,14 @@ class BBUDataset(Dataset):
         lengths = []
 
         for i in range(min(100, len(self.data))):  # Sample first 100 for estimation
-            try:
-                sample = self._get_item(i)
-                if "input_ids" in sample:
-                    lengths.append(sample["input_ids"].shape[-1])
-            except Exception:
-                lengths.append(2048)  # Default estimate
+            sample = self._get_item(i)
+            if "input_ids" in sample:
+                lengths.append(sample["input_ids"].shape[-1])
+            else:
+                lengths.append(8192)  # Default estimate
 
         self._sequence_lengths = lengths
-        avg_length = sum(lengths) / len(lengths) if lengths else 2048
+        avg_length = sum(lengths) / len(lengths) if lengths else 8192
         print(f"📏 Average sequence length: {avg_length:.0f} tokens")
 
     @property
@@ -232,284 +255,25 @@ class BBUDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single sample with strict validation - no fallbacks."""
-        try:
-            return self._get_item(idx)
-        except Exception as e:
-            logger = get_sample_logger()
-            logger.error(f"❌ CRITICAL: Failed to process sample {idx}: {e}")
-            # DO NOT provide fallback - let the error bubble up to expose data issues
-            raise RuntimeError(
-                f"❌ SAMPLE PROCESSING FAILED: Sample {idx} could not be processed!\n"
-                f"   Error: {e}\n"
-                f"   This indicates a critical issue in the data pipeline.\n"
-                f"   Fix the data or preprocessing logic instead of masking the error."
-            ) from e
+        return self._get_item(idx)
 
     def _get_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Process a single sample from the multi-round conversation format."""
-        data_logger.info(f"📊 PROCESSING SAMPLE {idx}")
+        """Process a single sample using ChatProcessor."""
         sample = self.data[idx]
 
-        # Validate sample format
-        if "conversations" not in sample:
-            raise ValueError(f"Sample {idx} missing 'conversations' key")
-        if "images" not in sample:
-            raise ValueError(f"Sample {idx} missing 'images' key")
+        # Process using the chat processor
+        result = self.processor.process_sample(sample)
+        data_logger.debug(f"✅ Successfully processed sample {idx}")
 
-        conversations = sample["conversations"]
-        image_paths = sample["images"]
+        # Validate result
+        if "input_ids" not in result:
+            raise ValueError("Missing input_ids in preprocessed result")
 
-        data_logger.info(f"   Number of conversations: {len(conversations)}")
-        data_logger.info(f"   Number of images: {len(image_paths)}")
-        data_logger.info(f"   Image paths: {image_paths}")
+        data_logger.debug(
+            f"✅ Sample {idx} processed (automatic memory management enabled)"
+        )
 
-        # Log conversation content
-        for i, conv in enumerate(conversations):
-            role = conv.get("role", "unknown")
-            content = conv.get("content", "")
-            data_logger.info(f"   Conv {i}: {role} - {len(content)} chars")
-            data_logger.info(f"     Content preview: {repr(content[:200])}")
-            if "<image>" in content:
-                image_count_in_conv = content.count("<image>")
-                data_logger.info(f"     Contains {image_count_in_conv} <image> tokens")
-
-        # Validate conversation format
-        if not conversations or conversations[0].get("role") != "system":
-            raise ValueError(f"Sample {idx} must start with system message")
-
-        # Count <image> tokens in conversations
-        image_token_count = 0
-        for conv in conversations:
-            content = conv.get("content", "")
-            image_token_count += content.count("<image>")
-
-        data_logger.info(f"   Total <image> tokens found: {image_token_count}")
-
-        # Validate image alignment
-        if image_token_count != len(image_paths):
-            data_logger.error(
-                f"   ❌ IMAGE MISMATCH: {image_token_count} <image> tokens vs {len(image_paths)} paths"
-            )
-            raise ValueError(
-                f"Sample {idx}: Found {image_token_count} <image> tokens but {len(image_paths)} image paths"
-            )
-
-        # Process using the unified preprocessor
-        try:
-            data_logger.info("🔄 CALLING PREPROCESSOR")
-            result = self.preprocessor.process_sample_for_training(sample, idx)
-
-            data_logger.info("✅ PREPROCESSOR COMPLETED")
-            data_logger.info(f"   Result keys: {list(result.keys())}")
-
-            # Validate and fix result components
-            if "input_ids" not in result:
-                raise ValueError("Missing input_ids in preprocessed result")
-
-            input_ids = result["input_ids"]
-            if input_ids.numel() == 0:
-                raise ValueError("Empty input_ids tensor")
-
-            data_logger.info(f"   Input IDs shape: {input_ids.shape}")
-            data_logger.info(
-                f"   Input IDs sample (first 50): {input_ids.flatten()[:50].tolist()}"
-            )
-            data_logger.info(
-                f"   Input IDs sample (last 50): {input_ids.flatten()[-50:].tolist()}"
-            )
-
-            # Log special tokens from preprocessor
-            from .losses import log_special_tokens
-
-            log_special_tokens(
-                self.tokenizer, input_ids, f"SAMPLE {idx} POST-PREPROCESSING"
-            )
-
-            # Ensure position_ids has correct shape
-            if "position_ids" in result:
-                pos_ids = result["position_ids"]
-
-                # Handle case where position_ids is None (using official model calculation)
-                if pos_ids is None:
-                    # Remove position_ids from result - let the model handle it
-                    del result["position_ids"]
-                else:
-                    expected_seq_len = input_ids.shape[-1]
-
-                    # Validate position_ids dimensions
-                    if pos_ids.dim() == 3 and pos_ids.shape[-1] != expected_seq_len:
-                        logger = get_sample_logger()
-                        logger.warning(
-                            f"Position IDs length mismatch: expected {expected_seq_len}, got {pos_ids.shape[-1]}"
-                        )
-                        # Recreate position_ids with correct length
-                        result["position_ids"] = (
-                            torch.arange(expected_seq_len).view(1, -1).expand(3, -1)
-                        )
-                    elif pos_ids.dim() != 3:
-                        # Fix incorrect dimensions
-                        result["position_ids"] = (
-                            torch.arange(expected_seq_len).view(1, -1).expand(3, -1)
-                        )
-
-            # Log visual data
-            if "pixel_values" in result:
-                data_logger.info(
-                    f"   Pixel values shape: {result['pixel_values'].shape}"
-                )
-            if "image_grid_thw" in result:
-                data_logger.info(
-                    f"   Image grid THW shape: {result['image_grid_thw'].shape}"
-                )
-                data_logger.info(
-                    f"   Image grid THW values: {result['image_grid_thw']}"
-                )
-
-            # Add attention_mask for collators
-            if "input_ids" in result:
-                seq_len = result["input_ids"].shape[-1]
-                result["attention_mask"] = torch.ones(seq_len, dtype=torch.long)
-
-            data_logger.info(f"📊 SAMPLE {idx} PROCESSING COMPLETE")
-            data_logger.info("=" * 100)
-
-            return result
-
-        except Exception as e:
-            raise ValueError(f"Sample {idx} preprocessing failed: {e}")
-
-
-@dataclass
-class FlattenedDataCollator:
-    """
-    Flattened data collator for packed sequence training.
-
-    This is the default and recommended collator, matching the official repo approach.
-    It concatenates samples into packed sequences without padding, providing:
-    - Maximum memory efficiency (no padding waste)
-    - Compatibility with flash attention
-    - Optimal performance for variable-length sequences
-    - Support for multi-GPU training with DeepSpeed
-
-    NOTE: Currently disabled due to attention mask compatibility issues.
-    Use StandardDataCollator for stable training.
-    """
-
-    tokenizer: transformers.PreTrainedTokenizer
-    max_total_length: Optional[int] = None
-
-    def __post_init__(self):
-        self._batch_count = 0
-
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        """Collate batch using packed sequences (official repo approach)."""
-        self._batch_count += 1
-
-        # Extract components
-        input_ids = [instance["input_ids"].squeeze() for instance in instances]
-        labels = [instance["labels"].squeeze() for instance in instances]
-        position_ids = [instance.get("position_ids") for instance in instances]
-
-        # Extract attention masks (sequence lengths)
-        attention_mask = []
-        for instance in instances:
-            if "attention_mask" in instance:
-                mask = instance["attention_mask"]
-                if mask.dim() > 1:
-                    mask = mask.squeeze()
-                # Convert to sequence length
-                seq_len = mask.sum().item() if mask.dtype == torch.bool else len(mask)
-                attention_mask.append(seq_len)
-            else:
-                # Fallback: use input_ids length
-                attention_mask.append(len(instance["input_ids"].squeeze()))
-
-        # Validate total length
-        total_length = sum(attention_mask)
-        if self.max_total_length and total_length > self.max_total_length:
-            raise ValueError(
-                f"❌ TOTAL LENGTH EXCEEDED!\n"
-                f"   Total sequence length: {total_length}\n"
-                f"   Maximum allowed: {self.max_total_length}\n"
-                f"   Samples in batch: {len(instances)}\n"
-                f"   Individual lengths: {attention_mask}\n"
-                f"\n"
-                f"🔧 SOLUTIONS:\n"
-                f"   1. Reduce per_device_train_batch_size\n"
-                f"   2. Increase max_total_length\n"
-                f"   3. Use shorter sequences\n"
-            )
-
-        # Create proper boolean attention mask for flash attention compatibility
-        # Instead of cumulative lengths, create a proper boolean mask
-        batch_size = len(instances)
-        max_seq_len = max(attention_mask)
-
-        # Create 2D attention mask [batch_size, max_seq_len]
-        attention_mask_2d = torch.zeros(batch_size, max_seq_len, dtype=torch.bool)
-        for i, seq_len in enumerate(attention_mask):
-            attention_mask_2d[i, :seq_len] = True
-
-        # Pad sequences to max length for proper batching
-        padded_input_ids = []
-        padded_labels = []
-        padded_position_ids = []
-
-        for i, (input_seq, label_seq, pos_ids) in enumerate(
-            zip(input_ids, labels, position_ids)
-        ):
-            seq_len = len(input_seq)
-
-            # Pad input_ids
-            padded_input = torch.full(
-                (max_seq_len,), self.tokenizer.pad_token_id, dtype=input_seq.dtype
-            )
-            padded_input[:seq_len] = input_seq
-            padded_input_ids.append(padded_input)
-
-            # Pad labels
-            padded_label = torch.full(
-                (max_seq_len,), IGNORE_INDEX, dtype=label_seq.dtype
-            )
-            padded_label[:seq_len] = label_seq
-            padded_labels.append(padded_label)
-
-            # Handle position_ids (can be None if using official model calculation)
-            if pos_ids is not None:
-                padded_pos = torch.zeros(3, 1, max_seq_len, dtype=pos_ids.dtype)
-                padded_pos[:, :, :seq_len] = pos_ids
-                padded_position_ids.append(padded_pos)
-
-        batch = {
-            "input_ids": torch.stack(padded_input_ids),
-            "labels": torch.stack(padded_labels),
-            "attention_mask": attention_mask_2d,  # Proper boolean mask for flash attention
-        }
-
-        # Only add position_ids if they were provided
-        if padded_position_ids:
-            batch["position_ids"] = torch.cat(padded_position_ids, dim=1)
-
-        # Handle images (concatenate across all samples)
-        images = [
-            instance["pixel_values"]
-            for instance in instances
-            if "pixel_values" in instance
-        ]
-
-        if images:
-            concat_images = torch.cat(images, dim=0)
-            grid_thw = [
-                instance["image_grid_thw"]
-                for instance in instances
-                if "image_grid_thw" in instance
-            ]
-            grid_thw = torch.cat(grid_thw, dim=0)
-
-            batch["pixel_values"] = concat_images
-            batch["image_grid_thw"] = grid_thw
-
-        return batch
+        return result
 
 
 def extract_ground_truth_objects_from_conversation(
@@ -604,34 +368,100 @@ def _extract_objects_with_regex(content: str) -> Optional[List[Dict]]:
 @dataclass
 class StandardDataCollator:
     """
-    Standard data collator that pads each batch 到 batch 中最长序列的长度，
-    完全动态计算，不做任何截断，保证每个样本 loss-free。
+    Standard data collator optimized for flash attention and memory efficiency.
+
+    Uses padding to batch max length but with optimized memory management
+    and flash attention compatibility.
     """
 
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         """
-        Collate 一个 batch，动态 padding 到 batch 内最长长度，不做 truncation。
+        Collate batch with optimized memory management and vision token filtering.
 
         Args:
-            instances: 一个 sequence，每个元素为 dict，至少包含:
-                - "input_ids": torch.Tensor，形状 [seq_len]
-                - "labels":    torch.Tensor，形状 [seq_len]
-                - 可选 "position_ids": torch.Tensor，形状 [3, 1, seq_len]
-                - 可选 "pixel_values": torch.Tensor（图像张量）
-                - 可选 "image_grid_thw": torch.Tensor
+            instances: Sequence of dicts containing input_ids, labels, etc.
 
         Returns:
-            一个 dict，包含:
-                - "input_ids":       torch.Tensor，形状 [batch_size, batch_max_length]
-                - "labels":          torch.Tensor，形状 [batch_size, batch_max_length]
-                - "attention_mask":  torch.Tensor，形状 [batch_size, batch_max_length]
-                - 可选 "position_ids": torch.Tensor，形状 [3, batch_size, batch_max_length]
-                - 可选 "pixel_values": torch.Tensor，把所有样本的 pixel_values concat
-                - 可选 "image_grid_thw": torch.Tensor，把所有样本的 image_grid_thw concat
+            Batch dict optimized for flash attention
         """
-        # 1. 提取每个实例的 input_ids、labels、position_ids 列表
+        # CRITICAL: Filter out samples with excessive vision tokens
+        filtered_instances = []
+        vision_token_threshold = (
+            300  # Increased threshold: 224 tokens for 2 images is reasonable
+        )
+
+        for i, instance in enumerate(instances):
+            if "pixel_values" in instance and instance["pixel_values"] is not None:
+                # Calculate the ACTUAL final vision token count (post-merge)
+                if (
+                    "image_grid_thw" in instance
+                    and instance["image_grid_thw"] is not None
+                ):
+                    # Use the official calculation: grid_thw.prod() // merge_length
+                    grid_thw = instance["image_grid_thw"]
+                    merge_size = 2  # Default merge size for Qwen2.5-VL
+                    merge_length = merge_size**2
+
+                    total_final_tokens = 0
+                    for grid in grid_thw:
+                        total_final_tokens += grid.prod().item() // merge_length
+
+                    vision_tokens = total_final_tokens
+                    pre_merge_tokens = instance["pixel_values"].shape[0]
+
+                    data_logger.info(
+                        f"✅ Sample {i}: {pre_merge_tokens} pre-merge → {vision_tokens} final tokens"
+                    )
+                else:
+                    # Fallback: use pre-merge count if grid_thw is not available
+                    vision_tokens = instance["pixel_values"].shape[0]
+                    data_logger.info(
+                        f"ℹ️ Sample {i}: No grid_thw available, using pre-merge count: {vision_tokens} tokens"
+                    )
+
+                if vision_tokens > vision_token_threshold:
+                    data_logger.info(
+                        f"⚠️ FILTERING SAMPLE {i}: {vision_tokens} final vision tokens > {vision_token_threshold} threshold"
+                    )
+                    data_logger.info(f"   This sample would cause CUDA OOM - skipping")
+                    continue
+                else:
+                    data_logger.debug(
+                        f"✅ Sample {i}: {vision_tokens} final vision tokens (within threshold)"
+                    )
+
+            filtered_instances.append(instance)
+
+        # Handle edge case: if all samples filtered, take the one with minimum vision tokens
+        if not filtered_instances:
+            data_logger.info("ℹ️ All samples filtered due to excessive vision tokens!")
+            data_logger.info("   Taking sample with minimum vision tokens as fallback")
+
+            min_tokens = float("inf")
+            fallback_instance = None
+
+            for instance in instances:
+                if "pixel_values" in instance and instance["pixel_values"] is not None:
+                    tokens = instance["pixel_values"].shape[0]
+                    if tokens < min_tokens:
+                        min_tokens = tokens
+                        fallback_instance = instance
+
+            if fallback_instance:
+                filtered_instances = [fallback_instance]
+                data_logger.info(
+                    f"   Using fallback sample with {min_tokens} vision tokens"
+                )
+            else:
+                data_logger.warning("   No valid fallback sample found!")
+                filtered_instances = instances[:1]  # Take first sample as last resort
+
+        # Continue with filtered instances
+        instances = filtered_instances
+
+        # 1. Extract sequences
         input_ids_list: List[torch.Tensor] = [
             instance["input_ids"].squeeze() for instance in instances
         ]
@@ -642,11 +472,67 @@ class StandardDataCollator:
             instance.get("position_ids") for instance in instances
         ]
 
-        # 2. 动态计算本次 batch 中最长序列长度
-        batch_max_length: int = max(seq.shape[-1] for seq in input_ids_list)
-
-        # 3. 准备 pad 后张量的容器
+        # 2. Calculate batch dimensions
+        sequence_lengths = [seq.shape[-1] for seq in input_ids_list]
+        batch_max_length: int = max(sequence_lengths)
         batch_size = len(instances)
+
+        # 3. Analyze vision token information for debugging
+        vision_info = []
+        for i, instance in enumerate(instances):
+            has_images = (
+                "pixel_values" in instance and instance["pixel_values"] is not None
+            )
+            image_count = instance["pixel_values"].shape[0] if has_images else 0
+            vision_info.append(
+                {
+                    "has_images": has_images,
+                    "image_count": image_count,
+                    "seq_len": sequence_lengths[i],
+                }
+            )
+
+        # Log comprehensive sequence information for debugging
+        data_logger.info(f"📊 BATCH SEQUENCE INFO:")
+        data_logger.info(f"   Batch size: {batch_size}")
+        data_logger.info(f"   Individual lengths: {sequence_lengths}")
+        data_logger.info(f"   Max length in batch: {batch_max_length}")
+        data_logger.info(f"   Min length in batch: {min(sequence_lengths)}")
+        data_logger.info(f"   Total tokens (sum): {sum(sequence_lengths)}")
+        data_logger.info(f"   Uniform sequences: {len(set(sequence_lengths)) == 1}")
+        data_logger.info(
+            f"   Padding ratio: {(batch_max_length * batch_size - sum(sequence_lengths)) / (batch_max_length * batch_size):.2%}"
+        )
+
+        # Log memory usage for batch creation
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+            data_logger.info(f"🔧 CUDA MEMORY DURING BATCH CREATION:")
+            data_logger.info(
+                f"   Allocated: {allocated:.2f}GB | Reserved: {reserved:.2f}GB"
+            )
+
+            # Estimate memory needed for this batch
+            estimated_memory = (
+                batch_size * batch_max_length * 4
+            ) / 1024**3  # Assuming 4 bytes per token
+            data_logger.info(f"   Estimated batch memory: {estimated_memory:.2f}GB")
+
+        # Log vision token information
+        total_images = sum(info["image_count"] for info in vision_info)
+        data_logger.debug(f"🖼️ VISION TOKEN INFO:")
+        data_logger.debug(f"   Total images in batch: {total_images}")
+        data_logger.debug(
+            f"   Samples with images: {sum(1 for info in vision_info if info['has_images'])}"
+        )
+        for i, info in enumerate(vision_info):
+            if info["has_images"]:
+                data_logger.debug(
+                    f"   Sample {i}: {info['image_count']} images, seq_len={info['seq_len']}"
+                )
+
+        # 4. Create padded tensors efficiently (single allocation)
         padded_input_ids = torch.full(
             (batch_size, batch_max_length),
             self.tokenizer.pad_token_id,
@@ -657,32 +543,41 @@ class StandardDataCollator:
             IGNORE_INDEX,
             dtype=labels_list[0].dtype,
         )
+
+        # Create attention mask for flash attention (boolean mask)
+        # This mask represents the original text sequence lengths BEFORE vision token expansion
         attention_mask = torch.zeros(
             (batch_size, batch_max_length),
             dtype=torch.bool,
         )
 
-        # 4. 逐样本拷贝原始序列，不做截断
+        # 5. Fill padded tensors
         for i, (input_seq, label_seq) in enumerate(zip(input_ids_list, labels_list)):
-            seq_len = input_seq.shape[-1]  # 一定 <= batch_max_length
+            seq_len = input_seq.shape[-1]
             padded_input_ids[i, :seq_len] = input_seq
             padded_labels[i, :seq_len] = label_seq
             attention_mask[i, :seq_len] = True
 
-        # 5. 构造输出 dict
+        # 6. Build batch dict
         batch: Dict[str, torch.Tensor] = {
             "input_ids": padded_input_ids,
             "labels": padded_labels,
             "attention_mask": attention_mask,
         }
 
-        # 6. 如果提供了 position_ids，就一并 pad/pad，并按维度 cat
+        # Log final attention mask info for flash attention debugging
+        data_logger.debug(f"🎯 ATTENTION MASK INFO:")
+        data_logger.debug(f"   Attention mask shape: {attention_mask.shape}")
+        data_logger.debug(f"   Attention mask dtype: {attention_mask.dtype}")
+        mask_lengths = attention_mask.sum(dim=-1).tolist()
+        data_logger.debug(f"   Attention mask lengths: {mask_lengths}")
+        data_logger.debug(f"   Uniform attention masks: {len(set(mask_lengths)) == 1}")
+
+        # 7. Handle position_ids if provided
         if any(pos_ids is not None for pos_ids in position_ids_list):
-            # 每个 position_ids 的 shape 为 [3, 1, seq_len]
             padded_position_ids_list: List[torch.Tensor] = []
             for pos_ids in position_ids_list:
                 if pos_ids is not None:
-                    # 在最后一个维度 pad 到 batch_max_length
                     seq_len = pos_ids.shape[-1]
                     padded_pos = torch.zeros(
                         (3, 1, batch_max_length),
@@ -690,34 +585,203 @@ class StandardDataCollator:
                     )
                     padded_pos[:, :, :seq_len] = pos_ids
                 else:
-                    # 如果当前样本没有传 position_ids，创建全零占位
                     padded_pos = torch.zeros(
                         (3, 1, batch_max_length),
                         dtype=torch.long,
                     )
                 padded_position_ids_list.append(padded_pos)
 
-            # cat 到一起，得到形状 [3, batch_size, batch_max_length]
             batch["position_ids"] = torch.cat(padded_position_ids_list, dim=1)
 
-        # 7. 如果有图像数据，则把所有样本的 pixel_values、image_grid_thw 串联
+        # 8. Handle images efficiently
         images = [
             instance["pixel_values"]
             for instance in instances
-            if "pixel_values" in instance
+            if "pixel_values" in instance and instance["pixel_values"].shape[0] > 0
         ]
+
         if images:
-            # 假设每个 pixel_values 的 shape 为 [N_images, C, H, W]，都能在第 0 维 cat
+            # Concatenate valid images
             batch["pixel_values"] = torch.cat(images, dim=0)
 
+            # Ensure bf16 precision for pixel_values
+            if batch["pixel_values"].dtype != torch.bfloat16:
+                batch["pixel_values"] = batch["pixel_values"].to(torch.bfloat16)
+                data_logger.debug(f"🔧 Converted pixel_values to bf16")
+
+            # Handle image grid info
             grid_thw_list = [
                 instance["image_grid_thw"]
                 for instance in instances
                 if "image_grid_thw" in instance
+                and instance["image_grid_thw"].shape[0] > 0
             ]
-            batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
+
+            if grid_thw_list:
+                batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
+                data_logger.debug(f"🖼️ Image grid info: {batch['image_grid_thw'].shape}")
+            else:
+                # Remove pixel_values if no valid grid_thw
+                del batch["pixel_values"]
+                data_logger.warning(
+                    "⚠️ Removed pixel_values due to invalid image_grid_thw"
+                )
 
         return batch
+
+
+# @dataclass
+# class FlattenedDataCollator:
+#     """
+#     Flattened data collator for packed sequence training.
+
+#     This is the default and recommended collator, matching the official repo approach.
+#     It concatenates samples into packed sequences without padding, providing:
+#     - Maximum memory efficiency (no padding waste)
+#     - Compatibility with flash attention
+#     - Optimal performance for variable-length sequences
+#     - Support for multi-GPU training with DeepSpeed
+
+#     NOTE: Currently disabled due to attention mask compatibility issues.
+#     Use StandardDataCollator for stable training.
+#     """
+
+#     tokenizer: transformers.PreTrainedTokenizer
+#     max_total_length: Optional[int] = None
+
+#     def __post_init__(self):
+#         self._batch_count = 0
+
+#     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+#         """Collate batch using packed sequences (official repo approach)."""
+#         self._batch_count += 1
+
+#         # Extract components
+#         input_ids = [instance["input_ids"].squeeze() for instance in instances]
+#         labels = [instance["labels"].squeeze() for instance in instances]
+#         position_ids = [instance.get("position_ids") for instance in instances]
+
+#         # Extract attention masks (sequence lengths)
+#         attention_mask = []
+#         for instance in instances:
+#             if "attention_mask" in instance:
+#                 mask = instance["attention_mask"]
+#                 if mask.dim() > 1:
+#                     mask = mask.squeeze()
+#                 # Convert to sequence length
+#                 seq_len = mask.sum().item() if mask.dtype == torch.bool else len(mask)
+#                 attention_mask.append(seq_len)
+#             else:
+#                 # Fallback: use input_ids length
+#                 attention_mask.append(len(instance["input_ids"].squeeze()))
+
+#         # Validate total length
+#         total_length = sum(attention_mask)
+#         if self.max_total_length and total_length > self.max_total_length:
+#             raise ValueError(
+#                 f"❌ TOTAL LENGTH EXCEEDED!\n"
+#                 f"   Total sequence length: {total_length}\n"
+#                 f"   Maximum allowed: {self.max_total_length}\n"
+#                 f"   Samples in batch: {len(instances)}\n"
+#                 f"   Individual lengths: {attention_mask}\n"
+#                 f"\n"
+#                 f"🔧 SOLUTIONS:\n"
+#                 f"   1. Reduce per_device_train_batch_size\n"
+#                 f"   2. Increase max_total_length\n"
+#                 f"   3. Use shorter sequences\n"
+#             )
+
+#         # Create proper boolean attention mask for flash attention compatibility
+#         # Instead of cumulative lengths, create a proper boolean mask
+#         batch_size = len(instances)
+#         max_seq_len = max(attention_mask)
+
+#         # Create 2D attention mask [batch_size, max_seq_len]
+#         attention_mask_2d = torch.zeros(batch_size, max_seq_len, dtype=torch.bool)
+#         for i, seq_len in enumerate(attention_mask):
+#             attention_mask_2d[i, :seq_len] = True
+
+#         # Pad sequences to max length for proper batching
+#         padded_input_ids = []
+#         padded_labels = []
+#         padded_position_ids = []
+
+#         for i, (input_seq, label_seq, pos_ids) in enumerate(
+#             zip(input_ids, labels, position_ids)
+#         ):
+#             seq_len = len(input_seq)
+
+#             # Pad input_ids
+#             padded_input = torch.full(
+#                 (max_seq_len,), self.tokenizer.pad_token_id, dtype=input_seq.dtype
+#             )
+#             padded_input[:seq_len] = input_seq
+#             padded_input_ids.append(padded_input)
+
+#             # Pad labels
+#             padded_label = torch.full(
+#                 (max_seq_len,), IGNORE_INDEX, dtype=label_seq.dtype
+#             )
+#             padded_label[:seq_len] = label_seq
+#             padded_labels.append(padded_label)
+
+#             # Handle position_ids (can be None if using official model calculation)
+#             if pos_ids is not None:
+#                 padded_pos = torch.zeros(3, 1, max_seq_len, dtype=pos_ids.dtype)
+#                 padded_pos[:, :, :seq_len] = pos_ids
+#                 padded_position_ids.append(padded_pos)
+
+#         batch = {
+#             "input_ids": torch.stack(padded_input_ids),
+#             "labels": torch.stack(padded_labels),
+#             "attention_mask": attention_mask_2d,  # Proper boolean mask for flash attention
+#         }
+
+#         # Only add position_ids if they were provided
+#         if padded_position_ids:
+#             batch["position_ids"] = torch.cat(padded_position_ids, dim=1)
+
+#         # Handle images (concatenate across all samples)
+#         images = [
+#             instance["pixel_values"]
+#             for instance in instances
+#             if "pixel_values" in instance
+#         ]
+
+#         if images:
+#             # CRITICAL FIX: Validate that we don't create empty tensors
+#             # Filter out any empty tensors that might have been created
+#             valid_images = [img for img in images if img.shape[0] > 0]
+
+#             if valid_images:
+#                 # Qwen2.5-VL supports both 2D [total_patches, feature_dim] and 4D [N, C, H, W] formats
+#                 # torch.cat works for both formats when concatenating along dim=0
+#                 batch["pixel_values"] = torch.cat(valid_images, dim=0)
+
+#                 grid_thw_list = [
+#                     instance["image_grid_thw"]
+#                     for instance in instances
+#                     if "image_grid_thw" in instance
+#                 ]
+
+#                 # CRITICAL FIX: Validate image_grid_thw as well
+#                 valid_grid_thw = [grid for grid in grid_thw_list if grid.shape[0] > 0]
+
+#                 if valid_grid_thw:
+#                     batch["image_grid_thw"] = torch.cat(valid_grid_thw, dim=0)
+#                 else:
+#                     # If no valid grid_thw, don't include pixel_values either
+#                     if "pixel_values" in batch:
+#                         del batch["pixel_values"]
+#                         print(
+#                             "⚠️ Warning: Removed pixel_values due to invalid image_grid_thw"
+#                         )
+#             else:
+#                 print(
+#                     "⚠️ Warning: All pixel_values tensors are empty - treating batch as text-only"
+#                 )
+
+#         return batch
 
 
 def create_data_collator(
@@ -739,65 +803,10 @@ def create_data_collator(
         Data collator instance
     """
     if collator_type == "flattened":
-        return FlattenedDataCollator(
-            tokenizer=tokenizer,
-            max_total_length=max_total_length,
-        )
+        raise ValueError("FlattenedDataCollator is not supported")
     elif collator_type == "standard":
         return StandardDataCollator(
             tokenizer=tokenizer,
         )
     else:
         raise ValueError(f"Unknown collator_type: {collator_type}")
-
-
-def test_data_collator():
-    """Test function to verify FlattenedDataCollator works correctly."""
-    print("🧪 Testing StandardDataCollator...")
-
-    # Mock tokenizer
-    class MockTokenizer:
-        def __init__(self):
-            self.pad_token_id = 0
-            self.model_max_length = 8192
-
-    tokenizer = MockTokenizer()
-    collator = FlattenedDataCollator(tokenizer=tokenizer, max_total_length=16384)
-
-    # Create mock instances
-    instances = [
-        {
-            "input_ids": torch.tensor([1, 2, 3, 4]),
-            "labels": torch.tensor([1, 2, 3, 4]),
-            "position_ids": torch.zeros(3, 1, 4),
-            "attention_mask": torch.ones(4),
-            "pixel_values": torch.randn(49, 1152),  # 7x7 image tokens
-            "image_grid_thw": torch.tensor([[1, 7, 7]]),
-        },
-        {
-            "input_ids": torch.tensor([1, 2, 3, 4, 5, 6]),
-            "labels": torch.tensor([1, 2, 3, 4, 5, 6]),
-            "position_ids": torch.zeros(3, 1, 6),
-            "attention_mask": torch.ones(6),
-            "pixel_values": torch.randn(49, 1152),  # 7x7 image tokens
-            "image_grid_thw": torch.tensor([[1, 7, 7]]),
-        },
-    ]
-
-    try:
-        batch = collator(instances)
-        print("✅ Batch created successfully!")
-        print(f"   - input_ids shape: {batch['input_ids'].shape}")
-        print(f"   - labels shape: {batch['labels'].shape}")
-        print(f"   - attention_mask: {batch['attention_mask']}")
-        print(f"   - position_ids shape: {batch['position_ids'].shape}")
-        print(f"   - pixel_values shape: {batch['pixel_values'].shape}")
-        print(f"   - image_grid_thw shape: {batch['image_grid_thw'].shape}")
-        return True
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        return False
-
-
-if __name__ == "__main__":
-    test_data_collator()

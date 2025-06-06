@@ -72,11 +72,9 @@ Multi-Round Conversation Format:
 
 import json
 import logging
-import os
 import re
 import warnings
 from abc import ABC, abstractmethod
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -84,167 +82,88 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# Setup detailed logging for debugging special tokens
 def setup_debug_logging():
-    """Setup comprehensive logging for debugging special tokens and generation."""
-    log_dir = "debug_logs"
-    os.makedirs(log_dir, exist_ok=True)
+    """Set up debug logging configuration."""
+    debug_logger = logging.getLogger("debug")
+    debug_logger.setLevel(logging.DEBUG)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"qwen_debug_{timestamp}.log")
+    # Remove existing handlers to avoid duplicates
+    for handler in debug_logger.handlers[:]:
+        debug_logger.removeHandler(handler)
 
-    # Create logger
-    logger = logging.getLogger("qwen_debug")
-    logger.setLevel(logging.DEBUG)
-
-    # Clear existing handlers
-    for handler in logger.handlers:
-        logger.removeHandler(handler)
-
-    # File handler
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-
-    # Console handler
+    # Create console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.DEBUG)
 
-    # Formatter
-    formatter = logging.Formatter(
-        "[%(asctime)s] %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
+    # Create formatter
+    formatter = logging.Formatter("%(levelname)s: %(message)s")
     console_handler.setFormatter(formatter)
 
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    # Add handler to logger
+    debug_logger.addHandler(console_handler)
 
-    logger.info(f"🔍 Debug logging initialized - Log file: {log_file}")
-    return logger
+    return debug_logger
+
+
+def clear_cuda_cache():
+    """Clear CUDA cache to save memory."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def log_cuda_memory(context: str = ""):
+    """Log CUDA memory usage for debugging OOM issues."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+        debug_logger.info(
+            f"🔧 CUDA Memory {context} | Allocated: {allocated:.2f}GB | Reserved: {reserved:.2f}GB"
+        )
+    else:
+        debug_logger.info(f"🔧 CUDA not available {context}")
+
+
+def log_compact_tokens(tokenizer, input_ids: torch.Tensor, context: str = ""):
+    """Compact logging: show first 100 and last 100 tokens with their text."""
+    debug_logger.info(f"📊 {context} | input.shape={input_ids.shape}")
+
+    if input_ids.numel() == 0:
+        debug_logger.info("   Empty tensor")
+        return
+
+    # Get first and last 100 tokens
+    tokens = input_ids.flatten()
+    total_tokens = len(tokens)
+
+    if total_tokens <= 200:
+        # Show all tokens if less than 200
+        first_100 = tokens
+        last_100 = torch.tensor([])
+    else:
+        first_100 = tokens[:100]
+        last_100 = tokens[-100:]
+
+    # Decode and show
+    try:
+        if len(first_100) > 0:
+            first_text = tokenizer.decode(first_100, skip_special_tokens=False)
+            debug_logger.info(f"   First 100: {first_100.tolist()}")
+            debug_logger.info(f"   First text: {repr(first_text[:200])}")
+
+        if len(last_100) > 0:
+            last_text = tokenizer.decode(last_100, skip_special_tokens=False)
+            debug_logger.info(f"   Last 100: {last_100.tolist()}")
+            debug_logger.info(f"   Last text: {repr(last_text[:200])}")
+
+        if total_tokens > 200:
+            debug_logger.info(f"   ... [{total_tokens - 200} tokens omitted] ...")
+
+    except Exception as e:
+        debug_logger.warning(f"   Decode failed: {e}")
 
 
 # Initialize debug logger
 debug_logger = setup_debug_logging()
-
-
-def log_special_tokens(tokenizer, input_ids: torch.Tensor, context: str = ""):
-    """Log detailed information about ALL relevant special tokens in the sequence."""
-    debug_logger.info(f"🔍 COMPREHENSIVE SPECIAL TOKEN ANALYSIS - {context}")
-    debug_logger.info(f"   Input IDs shape: {input_ids.shape}")
-    debug_logger.info(f"   Total tokens: {input_ids.numel()}")
-
-    # All relevant special tokens for Qwen2.5-VL
-    all_special_tokens = {
-        # Vision tokens (confirmed IDs)
-        "<|vision_start|>": 151652,
-        "<|vision_end|>": 151653,
-        "<|image_pad|>": 151655,
-        # System tokens (confirmed IDs)
-        "<|im_start|>": 151644,
-        "<|im_end|>": 151645,
-        "<|endoftext|>": 151643,
-        # Object detection tokens (to be determined)
-        "<|object_ref_start|>": 151646,
-        "<|object_ref_end|>": 151647,
-        "<|box_start|>": 151648,
-        "<|box_end|>": 151649,
-    }
-
-    # Count special tokens by ID
-    debug_logger.info("📊 TOKEN COUNT BY ID:")
-    found_tokens = 0
-    for token_name, expected_id in all_special_tokens.items():
-        try:
-            # Get actual token ID from tokenizer
-            actual_id = tokenizer.convert_tokens_to_ids(token_name)
-
-            # Skip if token is UNK
-            if actual_id == tokenizer.unk_token_id:
-                debug_logger.info(f"   ❌ {token_name}: NOT FOUND (UNK)")
-                continue
-
-            # Count occurrences
-            count = (input_ids == actual_id).sum().item()
-
-            if count > 0:
-                positions = (input_ids == actual_id).nonzero().flatten()
-                debug_logger.info(
-                    f"   ✅ {token_name} (ID: {actual_id}): {count} occurrences"
-                )
-                debug_logger.info(
-                    f"      Positions: {positions.tolist()[:10]}..."
-                )  # Show first 10
-                found_tokens += count
-
-                # Check for ID mismatch
-                if expected_id and actual_id != expected_id:
-                    debug_logger.warning(
-                        f"      ⚠️ ID MISMATCH! Expected {expected_id}, got {actual_id}"
-                    )
-            else:
-                debug_logger.info(
-                    f"   ⭕ {token_name} (ID: {actual_id}): 0 occurrences"
-                )
-
-        except Exception as e:
-            debug_logger.warning(f"   ❌ {token_name}: ERROR ({e})")
-
-    debug_logger.info(f"📊 TOTAL SPECIAL TOKENS FOUND: {found_tokens}")
-
-    # Decode and search for tokens in text
-    try:
-        decoded_text = tokenizer.decode(input_ids.flatten(), skip_special_tokens=False)
-        debug_logger.info(f"📄 DECODED TEXT LENGTH: {len(decoded_text)} characters")
-
-        # Search for object detection tokens in decoded text
-        object_detection_patterns = [
-            "<|object_ref_start|>",
-            "<|object_ref_end|>",
-            "<|box_start|>",
-            "<|box_end|>",
-        ]
-
-        debug_logger.info("🔍 OBJECT DETECTION TOKENS IN TEXT:")
-        total_od_tokens = 0
-        for token in object_detection_patterns:
-            count = decoded_text.count(token)
-            if count > 0:
-                debug_logger.info(f"   ✅ {token}: {count} occurrences")
-                total_od_tokens += count
-            else:
-                debug_logger.info(f"   ⭕ {token}: 0 occurrences")
-
-        debug_logger.info(
-            f"📊 TOTAL OBJECT DETECTION TOKENS IN TEXT: {total_od_tokens}"
-        )
-
-        # Show sample of decoded text
-        if len(decoded_text) > 0:
-            debug_logger.info(
-                f"📄 TEXT SAMPLE (first 200 chars): {repr(decoded_text[:200])}"
-            )
-            debug_logger.info(
-                f"📄 TEXT SAMPLE (last 200 chars): {repr(decoded_text[-200:])}"
-            )
-
-    except Exception as e:
-        debug_logger.warning(f"   Failed to decode for text analysis: {e}")
-
-    # Additional analysis: Look for coordinate patterns
-    try:
-        import re
-
-        coordinate_pattern = r"\(\s*\d+\s*,\s*\d+\s*\)"
-        coordinates = re.findall(coordinate_pattern, decoded_text)
-        debug_logger.info(f"🎯 COORDINATE PATTERNS FOUND: {len(coordinates)}")
-        if coordinates:
-            debug_logger.info(
-                f"   Sample coordinates: {coordinates[:5]}"
-            )  # Show first 5
-    except Exception as e:
-        debug_logger.warning(f"   Coordinate pattern search failed: {e}")
-
-    debug_logger.info("=" * 100)
 
 
 # Optional imports for semantic similarity
@@ -339,14 +258,10 @@ class ResponseParser:
     def _init_sentence_transformer(self):
         """Initialize SentenceTransformer with better error handling."""
         if SENTENCE_TRANSFORMER_AVAILABLE:
-            try:
-                self.sentence_transformer = SentenceTransformer(
-                    "/data4/swift/model_cache/sentence-transformers/all-MiniLM-L6-v2/"
-                )
-                print("✅ SentenceTransformer loaded successfully")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not load SentenceTransformer: {e}")
-                self.sentence_transformer = None
+            self.sentence_transformer = SentenceTransformer(
+                "/data4/swift/model_cache/sentence-transformers/all-MiniLM-L6-v2/"
+            )
+            print("✅ SentenceTransformer loaded successfully")
         else:
             self.sentence_transformer = None
 
@@ -367,32 +282,25 @@ class ResponseParser:
         if not response_text or not response_text.strip():
             return []
 
-        try:
-            # Clean and parse
-            text = self._clean_response_text(response_text)
+        # Clean and parse
+        text = self._clean_response_text(response_text)
 
-            # Try special token format first (preferred)
-            objects = self._parse_special_tokens(text)
+        # Try special token format first (preferred)
+        objects = self._parse_special_tokens(text)
 
-            # If special token parsing fails, try JSON format
-            if not objects:
-                objects = self._parse_json_format(text)
+        # If special token parsing fails, try JSON format
+        if not objects:
+            objects = self._parse_json_format(text)
 
-            # If JSON parsing fails, try unquoted format
-            if not objects:
-                objects = self._parse_unquoted_format(text)
+        # If JSON parsing fails, try unquoted format
+        if not objects:
+            objects = self._parse_unquoted_format(text)
 
-            # If still no objects, try alternative patterns
-            if not objects:
-                objects = self._try_alternative_patterns(text)
+        # If still no objects, try alternative patterns
+        if not objects:
+            objects = self._try_alternative_patterns(text)
 
-            return self._validate_objects(objects)
-        except Exception as e:
-            if self.early_training_mode:
-                print(f"⚠️ Warning: Parse error in early training mode: {e}")
-                return []
-            else:
-                raise LossComputationError(f"Failed to parse response: {e}")
+        return self._validate_objects(objects)
 
     def _clean_response_text(self, text: str) -> str:
         """Remove common prefixes/suffixes and normalize."""
@@ -563,15 +471,12 @@ class ResponseParser:
     def calculate_semantic_similarity(self, desc1: str, desc2: str) -> float:
         """Calculate semantic similarity between descriptions."""
         if self.sentence_transformer is not None:
-            try:
-                embeddings = self.sentence_transformer.encode([desc1, desc2])
-                similarity = torch.cosine_similarity(
-                    torch.tensor(embeddings[0]).unsqueeze(0),
-                    torch.tensor(embeddings[1]).unsqueeze(0),
-                ).item()
-                return max(0.0, similarity)
-            except Exception as e:
-                print(f"⚠️ SentenceTransformer error: {e}, falling back to rule-based")
+            embeddings = self.sentence_transformer.encode([desc1, desc2])
+            similarity = torch.cosine_similarity(
+                torch.tensor(embeddings[0]).unsqueeze(0),
+                torch.tensor(embeddings[1]).unsqueeze(0),
+            ).item()
+            return max(0.0, similarity)
 
         return self._rule_based_similarity(desc1, desc2)
 
@@ -615,13 +520,10 @@ class BoundingBoxLoss(BaseLoss):
 
     def compute(self, pred_boxes: torch.Tensor, gt_boxes: torch.Tensor) -> torch.Tensor:
         """Compute L1 loss between predicted and ground truth boxes."""
-        try:
-            self.device_manager.check_device_consistency(
-                [pred_boxes, gt_boxes], pred_boxes.device, "BoundingBoxLoss"
-            )
-            return F.l1_loss(pred_boxes, gt_boxes, reduction="mean")
-        except Exception as e:
-            raise LossComputationError(f"BoundingBox loss computation failed: {e}")
+        self.device_manager.check_device_consistency(
+            [pred_boxes, gt_boxes], pred_boxes.device, "BoundingBoxLoss"
+        )
+        return F.l1_loss(pred_boxes, gt_boxes, reduction="mean")
 
 
 class GIoULoss(BaseLoss):
@@ -629,18 +531,15 @@ class GIoULoss(BaseLoss):
 
     def compute(self, pred_boxes: torch.Tensor, gt_boxes: torch.Tensor) -> torch.Tensor:
         """Compute GIoU loss between predicted and ground truth boxes."""
-        try:
-            self.device_manager.check_device_consistency(
-                [pred_boxes, gt_boxes], pred_boxes.device, "GIoULoss"
-            )
+        self.device_manager.check_device_consistency(
+            [pred_boxes, gt_boxes], pred_boxes.device, "GIoULoss"
+        )
 
-            # Ensure boxes are in [x1, y1, x2, y2] format
-            if pred_boxes.shape[-1] != 4 or gt_boxes.shape[-1] != 4:
-                raise LossComputationError("Boxes must have 4 coordinates")
+        # Ensure boxes are in [x1, y1, x2, y2] format
+        if pred_boxes.shape[-1] != 4 or gt_boxes.shape[-1] != 4:
+            raise LossComputationError("Boxes must have 4 coordinates")
 
-            return self._compute_giou_loss(pred_boxes, gt_boxes)
-        except Exception as e:
-            raise LossComputationError(f"GIoU loss computation failed: {e}")
+        return self._compute_giou_loss(pred_boxes, gt_boxes)
 
     def _compute_giou_loss(
         self, pred_boxes: torch.Tensor, gt_boxes: torch.Tensor
@@ -694,39 +593,33 @@ class SemanticClassificationLoss(BaseLoss):
         self, pred_objects: List[Dict], gt_objects: List[Dict], device: torch.device
     ) -> torch.Tensor:
         """Compute semantic classification loss."""
-        try:
-            if not pred_objects or not gt_objects:
-                return self.device_manager.create_zero_loss(device)
+        if not pred_objects or not gt_objects:
+            return self.device_manager.create_zero_loss(device)
 
-            similarities = []
-            for pred_obj in pred_objects:
-                pred_desc = pred_obj.get("description", "")
-                best_similarity = 0.0
+        similarities = []
+        for pred_obj in pred_objects:
+            pred_desc = pred_obj.get("description", "")
+            best_similarity = 0.0
 
-                for gt_obj in gt_objects:
-                    gt_desc = gt_obj.get("description", "")
-                    similarity = self.parser.calculate_semantic_similarity(
-                        pred_desc, gt_desc
-                    )
-                    best_similarity = max(best_similarity, similarity)
+            for gt_obj in gt_objects:
+                gt_desc = gt_obj.get("description", "")
+                similarity = self.parser.calculate_semantic_similarity(
+                    pred_desc, gt_desc
+                )
+                best_similarity = max(best_similarity, similarity)
 
-                similarities.append(best_similarity)
+            similarities.append(best_similarity)
 
-            if not similarities:
-                return self.device_manager.create_zero_loss(device)
+        if not similarities:
+            return self.device_manager.create_zero_loss(device)
 
-            # Convert to loss (1 - similarity)
-            similarity_tensor = torch.tensor(
-                similarities, device=device, dtype=torch.float32
-            )
-            loss = 1.0 - similarity_tensor.mean()
+        # Convert to loss (1 - similarity)
+        similarity_tensor = torch.tensor(
+            similarities, device=device, dtype=torch.float32
+        )
+        loss = 1.0 - similarity_tensor.mean()
 
-            return loss
-
-        except Exception as e:
-            raise LossComputationError(
-                f"Semantic classification loss computation failed: {e}"
-            )
+        return loss
 
 
 class HungarianMatcher:
@@ -739,29 +632,24 @@ class HungarianMatcher:
         self, pred_objects: List[Dict], gt_objects: List[Dict]
     ) -> Tuple[List[Dict], List[Dict]]:
         """Match predicted and ground truth objects using Hungarian algorithm."""
-        try:
-            if not pred_objects or not gt_objects:
-                return [], []
+        if not pred_objects or not gt_objects:
+            return [], []
 
-            if not SCIPY_AVAILABLE:
-                # Fallback to greedy matching
-                return self._greedy_match(pred_objects, gt_objects)
-
-            # Compute cost matrix
-            cost_matrix = self._compute_cost_matrix(pred_objects, gt_objects)
-
-            # Apply Hungarian algorithm
-            pred_indices, gt_indices = linear_sum_assignment(cost_matrix)
-
-            # Extract matched objects
-            matched_pred = [pred_objects[i] for i in pred_indices]
-            matched_gt = [gt_objects[i] for i in gt_indices]
-
-            return matched_pred, matched_gt
-
-        except Exception as e:
-            print(f"⚠️ Hungarian matching failed: {e}, using greedy fallback")
+        if not SCIPY_AVAILABLE:
+            # Fallback to greedy matching
             return self._greedy_match(pred_objects, gt_objects)
+
+        # Compute cost matrix
+        cost_matrix = self._compute_cost_matrix(pred_objects, gt_objects)
+
+        # Apply Hungarian algorithm
+        pred_indices, gt_indices = linear_sum_assignment(cost_matrix)
+
+        # Extract matched objects
+        matched_pred = [pred_objects[i] for i in pred_indices]
+        matched_gt = [gt_objects[i] for i in gt_indices]
+
+        return matched_pred, matched_gt
 
     def _compute_cost_matrix(
         self, pred_objects: List[Dict], gt_objects: List[Dict]
@@ -778,28 +666,23 @@ class HungarianMatcher:
 
     def _compute_cost(self, pred_obj: Dict, gt_obj: Dict) -> float:
         """Compute matching cost between two objects."""
-        try:
-            # Bbox IoU cost (lower IoU = higher cost)
-            pred_bbox = torch.tensor(pred_obj["bbox"], dtype=torch.float32).unsqueeze(0)
-            gt_bbox = torch.tensor(gt_obj["bbox"], dtype=torch.float32).unsqueeze(0)
+        # Bbox IoU cost (lower IoU = higher cost)
+        pred_bbox = torch.tensor(pred_obj["bbox"], dtype=torch.float32).unsqueeze(0)
+        gt_bbox = torch.tensor(gt_obj["bbox"], dtype=torch.float32).unsqueeze(0)
 
-            iou = self._compute_iou(pred_bbox, gt_bbox).item()
-            bbox_cost = 1.0 - iou
+        iou = self._compute_iou(pred_bbox, gt_bbox).item()
+        bbox_cost = 1.0 - iou
 
-            # Semantic similarity cost
-            pred_desc = pred_obj.get("description", "")
-            gt_desc = gt_obj.get("description", "")
-            similarity = self.parser.calculate_semantic_similarity(pred_desc, gt_desc)
-            semantic_cost = 1.0 - similarity
+        # Semantic similarity cost
+        pred_desc = pred_obj.get("description", "")
+        gt_desc = gt_obj.get("description", "")
+        similarity = self.parser.calculate_semantic_similarity(pred_desc, gt_desc)
+        semantic_cost = 1.0 - similarity
 
-            # Combined cost (weighted average)
-            total_cost = 0.7 * bbox_cost + 0.3 * semantic_cost
+        # Combined cost (weighted average)
+        total_cost = 0.7 * bbox_cost + 0.3 * semantic_cost
 
-            return total_cost
-
-        except Exception as e:
-            print(f"⚠️ Cost computation failed: {e}")
-            return 1.0  # Maximum cost as fallback
+        return total_cost
 
     def _compute_iou(
         self, pred_boxes: torch.Tensor, gt_boxes: torch.Tensor
@@ -939,122 +822,85 @@ class ObjectDetectionLoss(nn.Module):
         model_device = next(model.parameters()).device
 
         # Clear CUDA cache at the start of loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_cuda_cache()
+        log_cuda_memory("START")
 
-        try:
-            self._validate_device_consistency(
-                [input_ids, pixel_values, image_grid_thw, labels, inputs_embeds],
-                model_device,
-            )
+        self._validate_device_consistency(
+            [input_ids, pixel_values, image_grid_thw, labels, inputs_embeds],
+            model_device,
+        )
 
-            # Initialize total loss
-            total_loss = self.device_manager.create_zero_loss(model_device)
-            loss_dict = {}
+        # Initialize total loss
+        total_loss = self.device_manager.create_zero_loss(model_device)
+        loss_dict = {}
 
-            # 1. Language modeling loss
-            if hasattr(outputs, "loss") and outputs.loss is not None:
-                lm_loss = outputs.loss
-                if lm_loss.device != model_device:
-                    raise RuntimeError(
-                        f"LM loss device mismatch: {lm_loss.device} != {model_device}"
-                    )
+        # Standard Language Modeling loss
+        if outputs.loss is not None:
+            lm_loss = outputs.loss
+            # Log the LM loss for debugging
+            debug_logger.debug(f"📊 LM Loss: {lm_loss.item():.6f}")
+            loss_dict["lm_loss"] = lm_loss
+            # CRITICAL FIX: Detach before accumulation to prevent computation graph retention
+            total_loss = total_loss + self.lm_weight * lm_loss.detach()
 
-                if lm_loss.dim() > 0:
-                    lm_loss = lm_loss.mean()
-                loss_dict["lm_loss"] = lm_loss
-                total_loss = total_loss + self.lm_weight * lm_loss
-
-            # 2. Detection losses
-            if self._should_compute_detection_loss(ground_truth_objects, labels):
-                try:
-                    # Check if embedding extraction should be disabled
-                    disable_embedding_extraction = (
-                        os.getenv("DISABLE_EMBEDDING_EXTRACTION", "false").lower()
-                        == "true"
-                        or self.early_training_mode  # Disable in early training by default
-                    )
-
-                    if disable_embedding_extraction:
-                        inputs_embeds = None  # Force standard processing
-
-                    detection_losses = self._compute_detection_losses(
-                        model,
-                        tokenizer,
-                        input_ids,
-                        labels,
-                        pixel_values,
-                        image_grid_thw,
-                        ground_truth_objects,
-                        inputs_embeds,
-                    )
-
-                    # Add detection losses with proper weighting
-                    for loss_name, loss_value in detection_losses.items():
-                        if loss_value is not None and not torch.isnan(loss_value):
-                            if loss_value.device != model_device:
-                                raise RuntimeError(
-                                    f"Detection loss {loss_name} device mismatch"
-                                )
-
-                            if loss_value.dim() > 0:
-                                loss_value = loss_value.mean()
-                            loss_dict[loss_name] = loss_value
-
-                            # Apply weights
-                            if "bbox" in loss_name:
-                                total_loss = total_loss + self.bbox_weight * loss_value
-                            elif "giou" in loss_name:
-                                total_loss = total_loss + self.giou_weight * loss_value
-                            elif "class" in loss_name:
-                                total_loss = total_loss + self.class_weight * loss_value
-
-                except RuntimeError as e:
-                    if "shape" in str(e) and "invalid for input" in str(e):
-                        print(
-                            f"⚠️ Warning: Vision processing shape error (likely malformed inputs): {e}"
-                        )
-                        print("⚠️ Skipping detection loss computation for this batch")
-                        # Continue with just language modeling loss
-                    else:
-                        print(f"⚠️ Warning: Detection loss computation failed: {e}")
-                except Exception as e:
-                    print(f"⚠️ Warning: Detection loss computation failed: {e}")
-                    if self.early_training_mode:
-                        print("⚠️ Continuing with language modeling loss only")
-                    else:
-                        # In strict mode, re-raise the exception
-                        raise
-
-            # Update training step counter
-            self.training_step += 1
-
+        # If detection mode is disabled, return early
+        if self.detection_mode == "disabled":
+            debug_logger.info("🚫 Detection loss disabled, returning LM loss only")
             # Ensure total_loss is scalar
             if total_loss.dim() > 0:
                 total_loss = total_loss.squeeze()
-
             loss_dict["total_loss"] = total_loss
-
-            # Clear cache before returning
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
             return loss_dict
 
+        # Check if we should compute detection loss
+        if not self._should_compute_detection_loss(ground_truth_objects, labels):
+            debug_logger.debug("⏭️ Skipping detection loss computation")
+            # Ensure total_loss is scalar
+            if total_loss.dim() > 0:
+                total_loss = total_loss.squeeze()
+            loss_dict["total_loss"] = total_loss
+            return loss_dict
+
+        # Compute detection losses
+        try:
+            detection_losses = self._compute_detection_losses(
+                model,
+                tokenizer,
+                input_ids,
+                labels,
+                pixel_values,
+                image_grid_thw,
+                ground_truth_objects,
+                inputs_embeds,
+            )
+
+            # Add detection losses to total with proper detaching
+            for loss_name, loss_value in detection_losses.items():
+                if loss_value is not None and not torch.isnan(loss_value):
+                    loss_dict[loss_name] = loss_value
+
+                    # CRITICAL FIX: Detach before accumulation to prevent computation graph retention
+                    if loss_name == "bbox_loss":
+                        total_loss = total_loss + self.bbox_weight * loss_value.detach()
+                    elif loss_name == "giou_loss":
+                        total_loss = total_loss + self.giou_weight * loss_value.detach()
+                    elif loss_name == "class_loss":
+                        total_loss = (
+                            total_loss + self.class_weight * loss_value.detach()
+                        )
+
         except Exception as e:
-            # Clear cache on error
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            debug_logger.warning(f"⚠️ Detection loss computation failed: {e}")
 
-            # Return fallback loss to prevent training interruption
-            fallback_loss = self.device_manager.create_zero_loss(model_device)
-            if hasattr(outputs, "loss") and outputs.loss is not None:
-                fallback_loss = outputs.loss
-                if fallback_loss.device != model_device:
-                    fallback_loss = fallback_loss.to(model_device)
+        # Ensure total_loss is scalar
+        if total_loss.dim() > 0:
+            total_loss = total_loss.squeeze()
 
-            print(f"⚠️ Warning: Loss computation failed, using fallback: {e}")
-            return {"total_loss": fallback_loss}
+        loss_dict["total_loss"] = total_loss
+
+        debug_logger.debug(f"✅ Final total loss: {total_loss.item():.6f}")
+
+        return loss_dict
 
     def _validate_device_consistency(
         self, tensors: List[Optional[torch.Tensor]], expected_device: torch.device
@@ -1138,50 +984,33 @@ class ObjectDetectionLoss(nn.Module):
         model_device = next(model.parameters()).device
 
         # Clear CUDA cache before detection loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_cuda_cache()
 
-        try:
-            self.device_manager.check_device_consistency(
-                [input_ids, labels, inputs_embeds],
-                model_device,
-                "detection_losses_with_embeddings",
+        self.device_manager.check_device_consistency(
+            [input_ids, labels, inputs_embeds],
+            model_device,
+            "detection_losses_with_embeddings",
+        )
+
+        # Set model to eval mode for inference
+        original_training_mode = model.training
+        model.eval()
+
+        with torch.no_grad():
+            # Extract and generate responses with unified method
+            predicted_objects_batch = self._generate_responses_unified(
+                model, tokenizer, input_ids, labels, inputs_embeds=inputs_embeds
             )
 
-            # Set model to eval mode for inference
-            original_training_mode = model.training
-            model.eval()
+        # Restore original training mode
+        model.train(original_training_mode)
 
-            with torch.no_grad():
-                # Extract and generate responses with unified method
-                predicted_objects_batch = self._generate_responses_unified(
-                    model, tokenizer, input_ids, labels, inputs_embeds=inputs_embeds
-                )
+        # Clear cache after generation
+        clear_cuda_cache()
 
-            # Restore original training mode
-            model.train(original_training_mode)
-
-            # Clear cache after generation
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            return self._compute_batch_detection_losses(
-                predicted_objects_batch, ground_truth_objects, model_device
-            )
-
-        except Exception:
-            # Ensure model is back in training mode on error
-            model.train(original_training_mode)
-            # Clear cache on error
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # Return zero losses on error to prevent training interruption
-            return {
-                "bbox_loss": self.device_manager.create_zero_loss(model_device),
-                "giou_loss": self.device_manager.create_zero_loss(model_device),
-                "class_loss": self.device_manager.create_zero_loss(model_device),
-            }
+        return self._compute_batch_detection_losses(
+            predicted_objects_batch, ground_truth_objects, model_device
+        )
 
     def _compute_detection_losses_standard(
         self,
@@ -1197,74 +1026,39 @@ class ObjectDetectionLoss(nn.Module):
         model_device = next(model.parameters()).device
 
         # Clear CUDA cache before detection loss computation
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clear_cuda_cache()
 
         # Validate multimodal inputs before generation
-        try:
-            if pixel_values is not None and image_grid_thw is not None:
-                debug_logger.info("🔍 MULTIMODAL VALIDATION:")
-                debug_logger.info(f"  - input_ids shape: {input_ids.shape}")
-                debug_logger.info(f"  - pixel_values shape: {pixel_values.shape}")
-                debug_logger.info(f"  - image_grid_thw shape: {image_grid_thw.shape}")
-                debug_logger.info(
-                    f"  - vision_start tokens: {(input_ids == 151652).sum().item()}"
-                )
-
-                # Log detailed input analysis
-                log_special_tokens(tokenizer, input_ids, "BEFORE VALIDATION")
-
-                self.validate_multimodal_inputs(
-                    input_ids, pixel_values, image_grid_thw, model.config
-                )
-                debug_logger.info("✅ Multimodal input validation passed!")
-        except ValueError as e:
-            debug_logger.error(f"⚠️ Multimodal input validation failed: {e}")
-            debug_logger.error("   This will cause fallback to text-only generation")
-            debug_logger.error("   🔍 VALIDATION FAILURE ANALYSIS:")
-            debug_logger.error(f"     - input_ids shape: {input_ids.shape}")
-            debug_logger.error(
-                f"     - pixel_values shape: {pixel_values.shape if pixel_values is not None else None}"
+        if pixel_values is not None and image_grid_thw is not None:
+            debug_logger.info(
+                f"🔍 MULTIMODAL | input.shape={input_ids.shape} | pixel.shape={pixel_values.shape} | grid.shape={image_grid_thw.shape}"
             )
-            debug_logger.error(
-                f"     - image_grid_thw shape: {image_grid_thw.shape if image_grid_thw is not None else None}"
+            log_compact_tokens(tokenizer, input_ids, "INPUT")
+            self.validate_multimodal_inputs(
+                input_ids, pixel_values, image_grid_thw, model.config
             )
-            raise ValueError("Multimodal input validation failed")
+            debug_logger.info("✅ Validation passed")
+        else:
+            debug_logger.info("📝 Text-only batch")
 
-        try:
-            # Set model to eval mode for inference
-            original_training_mode = model.training
-            model.eval()
+        # Set model to eval mode for inference
+        original_training_mode = model.training
+        model.eval()
 
-            with torch.no_grad():
-                predicted_objects_batch = self._generate_responses_unified(
-                    model, tokenizer, input_ids, labels, pixel_values, image_grid_thw
-                )
-
-            # Restore original training mode
-            model.train(original_training_mode)
-
-            # Clear cache after generation
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            return self._compute_batch_detection_losses(
-                predicted_objects_batch, ground_truth_objects, model_device
+        with torch.no_grad():
+            predicted_objects_batch = self._generate_responses_unified(
+                model, tokenizer, input_ids, labels, pixel_values, image_grid_thw
             )
 
-        except Exception:
-            # Ensure model is back in training mode on error
-            model.train(original_training_mode)
-            # Clear cache on error
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        # Restore original training mode
+        model.train(original_training_mode)
 
-            # Return zero losses on error to prevent training interruption
-            return {
-                "bbox_loss": self.device_manager.create_zero_loss(model_device),
-                "giou_loss": self.device_manager.create_zero_loss(model_device),
-                "class_loss": self.device_manager.create_zero_loss(model_device),
-            }
+        # Clear cache after generation
+        clear_cuda_cache()
+
+        return self._compute_batch_detection_losses(
+            predicted_objects_batch, ground_truth_objects, model_device
+        )
 
     def _generate_responses_unified(
         self,
@@ -1280,82 +1074,111 @@ class ObjectDetectionLoss(nn.Module):
         batch_size = input_ids.size(0)
         predicted_objects_batch = []
 
+        # CRITICAL FIX: Handle empty tensors at batch level
+        if pixel_values is not None and pixel_values.shape[0] == 0:
+            debug_logger.warning(
+                "⚠️ Empty pixel_values at batch level - treating all samples as text-only"
+            )
+            pixel_values = None
+            image_grid_thw = None
+
+        if image_grid_thw is not None and image_grid_thw.shape[0] == 0:
+            debug_logger.warning(
+                "⚠️ Empty image_grid_thw at batch level - treating all samples as text-only"
+            )
+            pixel_values = None
+            image_grid_thw = None
+
         # Process each sample individually to save memory
         for i in range(batch_size):
-            try:
-                # Clear CUDA cache before processing each sample
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            # Clear CUDA cache before processing each sample
+            clear_cuda_cache()
 
-                # Extract single sample
-                sample_input_ids = input_ids[i : i + 1]
-                sample_labels = labels[i : i + 1] if labels is not None else None
-                sample_pixel_values = (
-                    pixel_values[i : i + 1] if pixel_values is not None else None
-                )
-                sample_image_grid_thw = (
-                    image_grid_thw[i : i + 1] if image_grid_thw is not None else None
-                )
-                sample_embeds = (
-                    inputs_embeds[i : i + 1] if inputs_embeds is not None else None
-                )
+            # Extract single sample
+            sample_input_ids = input_ids[i : i + 1]
+            sample_labels = labels[i : i + 1] if labels is not None else None
 
-                # Find the prompt end (where generation should start)
-                prompt_end_idx = self._find_prompt_end(
-                    sample_input_ids, sample_labels, tokenizer
-                )
-
-                if prompt_end_idx is None:
-                    predicted_objects_batch.append([])
-                    continue
-
-                # Generate response
-                generated_text = self._generate_single_response_unified(
-                    model,
-                    tokenizer,
-                    sample_input_ids,
-                    prompt_end_idx,
-                    sample_pixel_values,
-                    sample_image_grid_thw,
-                    sample_embeds,
-                )
-
-                # Parse the generated response
-                if generated_text:
-                    predicted_objects = self.parser.parse_response(generated_text)
-                    predicted_objects_batch.append(predicted_objects)
+            # IMPROVED: Handle pixel_values slicing more carefully
+            sample_pixel_values = None
+            if pixel_values is not None:
+                # For text-only samples in a mixed batch, we need to handle indexing carefully
+                # Since pixel_values are concatenated across all samples, we need to determine
+                # how many patches belong to each sample
+                if i == 0:
+                    # For simplicity, if we have pixel_values, assume all samples have images
+                    # This is a limitation that should be addressed in the data collator
+                    sample_pixel_values = pixel_values
                 else:
-                    predicted_objects_batch.append([])
+                    # For subsequent samples, we can't easily slice pixel_values
+                    # because we don't know the patch distribution per sample
+                    # This is a known limitation of the current data format
+                    sample_pixel_values = None
+                    debug_logger.warning(
+                        f"⚠️ Cannot slice pixel_values for sample {i} - treating as text-only"
+                    )
 
-            except Exception as e:
-                print(f"⚠️ Warning: Failed to generate response for sample {i}: {e}")
+            # IMPROVED: Handle image_grid_thw slicing more carefully
+            sample_image_grid_thw = None
+            if image_grid_thw is not None:
+                if i == 0:
+                    # For simplicity, if we have image_grid_thw, assume all samples have images
+                    sample_image_grid_thw = image_grid_thw
+                else:
+                    # For subsequent samples, we can't easily slice image_grid_thw
+                    # because we don't know the image distribution per sample
+                    sample_image_grid_thw = None
+                    debug_logger.warning(
+                        f"⚠️ Cannot slice image_grid_thw for sample {i} - treating as text-only"
+                    )
+
+            sample_embeds = (
+                inputs_embeds[i : i + 1] if inputs_embeds is not None else None
+            )
+
+            # Find the prompt end (where generation should start)
+            prompt_end_idx = self._find_prompt_end(
+                sample_input_ids, sample_labels, tokenizer
+            )
+
+            if prompt_end_idx is None:
                 predicted_objects_batch.append([])
-                # Clear cache on error
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                continue
+
+            # Generate response
+            generated_text = self._generate_single_response_unified(
+                model,
+                tokenizer,
+                sample_input_ids,
+                prompt_end_idx,
+                sample_pixel_values,
+                sample_image_grid_thw,
+                sample_embeds,
+            )
+
+            # Parse the generated response
+            if generated_text:
+                predicted_objects = self.parser.parse_response(generated_text)
+                predicted_objects_batch.append(predicted_objects)
+            else:
+                predicted_objects_batch.append([])
 
         return predicted_objects_batch
 
     def _find_prompt_end(self, input_ids, labels, tokenizer):
         """Find where the prompt ends and generation should start."""
-        try:
-            if labels is None:
-                # If no labels, generate from the end of input
-                return input_ids.size(1) - 1
+        if labels is None:
+            # If no labels, generate from the end of input
+            return input_ids.size(1) - 1
 
-            # Find the first non-masked token in labels (where actual response starts)
-            labels_flat = labels.flatten()
-            non_masked_indices = (labels_flat != self.ignore_index).nonzero(
-                as_tuple=True
-            )[0]
+        # Find the first non-masked token in labels (where actual response starts)
+        labels_flat = labels.flatten()
+        non_masked_indices = (labels_flat != self.ignore_index).nonzero(as_tuple=True)[
+            0
+        ]
 
-            if len(non_masked_indices) > 0:
-                return non_masked_indices[0].item()
-            else:
-                # Fallback: generate from end of input
-                return input_ids.size(1) - 1
-
-        except Exception:
+        if len(non_masked_indices) > 0:
+            return non_masked_indices[0].item()
+        else:
             # Fallback: generate from end of input
             return input_ids.size(1) - 1
 
@@ -1369,160 +1192,69 @@ class ObjectDetectionLoss(nn.Module):
         image_grid_thw=None,
         inputs_embeds=None,
     ):
-        """
-        Fixed generation method with proper multimodal input handling.
+        """Generate a single response using the unified approach."""
+        debug_logger = logging.getLogger("debug")
 
-        Key fixes:
-        1. Don't truncate sequences when images are present (breaks alignment)
-        2. Validate image token vs feature alignment
-        3. Ensure device consistency
-        4. Fallback to text-only if validation fails
-        """
-        debug_logger.info("🚀 STARTING GENERATION")
-        debug_logger.info(f"   Prompt end index: {prompt_end_idx}")
-        debug_logger.info(f"   Input IDs shape: {input_ids.shape}")
-        debug_logger.info(
-            f"   Pixel values: {pixel_values.shape if pixel_values is not None else None}"
+        # Prepare prompt
+        prompt_ids = input_ids[:, :prompt_end_idx]
+        debug_logger.info(f"🎯 GENERATION | prompt.shape={prompt_ids.shape}")
+        log_compact_tokens(tokenizer, prompt_ids[0], "PROMPT")
+
+        # CRITICAL FIX: Check for empty pixel_values and treat as None
+        if pixel_values is not None and pixel_values.shape[0] == 0:
+            debug_logger.error(
+                "❌ Empty pixel_values detected - treating as text-only input"
+            )
+            pixel_values = None
+            image_grid_thw = None
+            raise ValueError("Empty pixel_values detected")
+
+        # CRITICAL FIX: Check for empty image_grid_thw and treat as None
+        if image_grid_thw is not None and image_grid_thw.shape[0] == 0:
+            debug_logger.error(
+                "❌ Empty image_grid_thw detected - treating as text-only input"
+            )
+            raise ValueError("Empty image_grid_thw detected")
+
+        # Generation parameters
+        generation_kwargs = {
+            "max_new_tokens": self.max_generation_length,
+            "do_sample": False,
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "pad_token_id": tokenizer.eos_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+        }
+
+        # Add multimodal inputs ONLY if they are valid (non-empty)
+        if pixel_values is not None and pixel_values.shape[0] > 0:
+            generation_kwargs["pixel_values"] = pixel_values
+        if image_grid_thw is not None and image_grid_thw.shape[0] > 0:
+            generation_kwargs["image_grid_thw"] = image_grid_thw
+        if inputs_embeds is not None:
+            generation_kwargs["inputs_embeds"] = inputs_embeds
+
+        debug_logger.info(f"🔧 Generation kwargs: {list(generation_kwargs.keys())}")
+
+        with torch.no_grad():
+            # Use the robust official generation method
+            outputs = model.generate(input_ids=prompt_ids, **generation_kwargs)
+
+        # Extract only the generated part
+        generated_ids = outputs[:, prompt_ids.size(1) :]
+
+        # Decode with and without special tokens
+        generated_text_with_special = tokenizer.decode(
+            generated_ids[0], skip_special_tokens=False
         )
-        debug_logger.info(
-            f"   Image grid thw: {image_grid_thw.shape if image_grid_thw is not None else None}"
-        )
+        generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
 
-        # Log special tokens in input
-        log_special_tokens(tokenizer, input_ids, "BEFORE GENERATION")
+        # Log generation results
+        debug_logger.info("✅ GENERATION COMPLETED")
+        log_compact_tokens(tokenizer, generated_ids[0], "GENERATED")
+        debug_logger.info(f"   Generated text: {repr(generated_text[:200])}")
 
-        try:
-            # CRITICAL FIX: Validate multimodal inputs before processing
-            if pixel_values is not None and image_grid_thw is not None:
-                # Check for empty pixel_values (root cause of the error)
-                if pixel_values.shape[0] == 0:
-                    debug_logger.warning(
-                        "⚠️ Empty pixel_values tensor detected, falling back to text-only generation"
-                    )
-                    pixel_values = None
-                    image_grid_thw = None
-                    prompt_ids = input_ids[:, : prompt_end_idx + 1]
-                else:
-                    # Validate image token alignment
-                    vision_start_token_id = 151652  # <|vision_start|>
-                    image_sequence_count = (
-                        (input_ids == vision_start_token_id).sum().item()
-                    )
-                    expected_image_features = image_grid_thw.shape[0]
-
-                    if image_sequence_count != expected_image_features:
-                        debug_logger.warning(
-                            f"⚠️ Image sequence mismatch: {image_sequence_count} sequences vs {expected_image_features} features"
-                        )
-                        debug_logger.warning("   Falling back to text-only generation")
-                        pixel_values = None
-                        image_grid_thw = None
-                        prompt_ids = input_ids[:, : prompt_end_idx + 1]
-                    else:
-                        # Valid multimodal input - use full sequence to maintain alignment
-                        prompt_ids = input_ids
-                        debug_logger.info(
-                            f"✅ Valid multimodal input: {image_sequence_count} images, {expected_image_features} features"
-                        )
-            else:
-                # Text-only generation - safe to truncate
-                prompt_ids = input_ids[:, : prompt_end_idx + 1]
-                debug_logger.info("📝 Text-only generation mode")
-
-            # Standard generation parameters
-            generation_kwargs = {
-                "max_new_tokens": self.max_generation_length,
-                "do_sample": False,  # Use greedy decoding
-                "num_beams": 1,  # No beam search
-                "pad_token_id": tokenizer.pad_token_id,
-                "eos_token_id": tokenizer.eos_token_id,
-                "use_cache": True,
-            }
-
-            # CRITICAL FIX 4: Only add visual inputs if both are present AND valid
-            if pixel_values is not None and image_grid_thw is not None:
-                # Ensure tensors are on the same device as the model
-                generation_kwargs["pixel_values"] = pixel_values.to(prompt_ids.device)
-                generation_kwargs["image_grid_thw"] = image_grid_thw.to(
-                    prompt_ids.device
-                )
-
-            # Log final generation inputs
-            debug_logger.info("📝 GENERATION INPUTS:")
-            debug_logger.info(f"   prompt_ids shape: {prompt_ids.shape}")
-            debug_logger.info(
-                f"   generation_kwargs keys: {list(generation_kwargs.keys())}"
-            )
-
-            # Log the prompt text
-            try:
-                prompt_text = tokenizer.decode(prompt_ids[0], skip_special_tokens=False)
-                debug_logger.info(
-                    f"   Prompt text (first 500 chars): {prompt_text[:500]}..."
-                )
-                debug_logger.info(
-                    f"   Prompt text (last 200 chars): ...{prompt_text[-200:]}"
-                )
-            except Exception as e:
-                debug_logger.warning(f"   Failed to decode prompt text: {e}")
-
-            with torch.no_grad():
-                # Use the robust official generation method
-                outputs = model.generate(input_ids=prompt_ids, **generation_kwargs)
-
-            # Extract only the generated part
-            generated_ids = outputs[:, prompt_ids.size(1) :]
-
-            # Log generation results
-            debug_logger.info("✅ GENERATION COMPLETED")
-            debug_logger.info(f"   Generated IDs shape: {generated_ids.shape}")
-            debug_logger.info(f"   Generated token IDs: {generated_ids[0].tolist()}")
-
-            # Decode with and without special tokens
-            generated_text_with_special = tokenizer.decode(
-                generated_ids[0], skip_special_tokens=False
-            )
-            generated_text = tokenizer.decode(
-                generated_ids[0], skip_special_tokens=True
-            )
-
-            debug_logger.info(
-                f"   Generated text (with special tokens): {repr(generated_text_with_special)}"
-            )
-            debug_logger.info(f"   Generated text (clean): {repr(generated_text)}")
-
-            # Check for object detection tokens in output
-            object_tokens = [
-                "<|object_ref_start|>",
-                "<|object_ref_end|>",
-                "<|box_start|>",
-                "<|box_end|>",
-            ]
-            for token in object_tokens:
-                count = generated_text_with_special.count(token)
-                debug_logger.info(f"   {token} in output: {count} occurrences")
-
-            return generated_text.strip()
-
-        except Exception as e:
-            print(f"⚠️ Generation failed: {e}")
-            print("Debug info:")
-            print(f"  - input_ids shape: {input_ids.shape}")
-            print(
-                f"  - pixel_values shape: {pixel_values.shape if pixel_values is not None else None}"
-            )
-            print(
-                f"  - image_grid_thw shape: {image_grid_thw.shape if image_grid_thw is not None else None}"
-            )
-            print(f"  - prompt_end_idx: {prompt_end_idx}")
-
-            vision_start_token_id = 151652  # <|vision_start|>
-            image_sequence_count = (input_ids == vision_start_token_id).sum().item()
-            print(f"  - image_sequence_count: {image_sequence_count}")
-            print(
-                f"  - expected_features: {image_grid_thw.shape[0] if len(image_grid_thw.shape) > 1 else 1}"
-            )
-            return ""
+        return generated_text.strip()
 
     def _compute_batch_detection_losses(
         self, predicted_objects_batch, ground_truth_objects_batch, device
@@ -1614,49 +1346,31 @@ class ObjectDetectionLoss(nn.Module):
     ):
         """Validate that multimodal inputs are properly aligned."""
         if pixel_values is None or image_grid_thw is None:
-            debug_logger.info("📝 Text-only input validation - passed")
             return True  # Text-only is always valid
 
-        debug_logger.info("🔍 MULTIMODAL INPUT VALIDATION:")
-        debug_logger.info(f"  - input_ids shape: {input_ids.shape}")
-        debug_logger.info(f"  - pixel_values shape: {pixel_values.shape}")
-        debug_logger.info(f"  - image_grid_thw shape: {image_grid_thw.shape}")
-
-        # CRITICAL CHECK: Empty pixel_values (root cause of the error)
-        if pixel_values.shape[0] == 0:
-            raise ValueError(
-                "❌ CRITICAL ERROR: Empty pixel_values tensor detected!\n"
-                f"   pixel_values.shape: {pixel_values.shape}\n"
-                f"   image_grid_thw.shape: {image_grid_thw.shape}\n"
-                f"   This indicates a data preprocessing issue where images were not loaded properly.\n"
-                f"   Check your image paths and preprocessing pipeline."
+        # Handle empty tensors gracefully
+        if pixel_values.shape[0] == 0 or image_grid_thw.shape[0] == 0:
+            debug_logger.warning(
+                f"⚠️ Empty tensors | pixel.shape={pixel_values.shape} | grid.shape={image_grid_thw.shape}"
             )
+            return True  # Allow processing as text-only
 
         # Check image sequence alignment
         vision_start_token_id = 151652  # <|vision_start|>
         image_sequence_count = (input_ids == vision_start_token_id).sum().item()
         expected_features = image_grid_thw.shape[0]
 
-        debug_logger.info(f"  - vision_start tokens: {image_sequence_count}")
-        debug_logger.info(f"  - expected image features: {expected_features}")
-
         if image_sequence_count != expected_features:
             raise ValueError(
-                f"❌ Image sequence mismatch!\n"
-                f"   Found {image_sequence_count} <|vision_start|> tokens in input_ids\n"
-                f"   But {expected_features} image features in image_grid_thw\n"
-                f"   Each image should have exactly one <|vision_start|> token.\n"
-                f"   Check your data preprocessing and tokenization."
+                f"❌ Image sequence mismatch! Found {image_sequence_count} vision tokens, expected {expected_features}"
             )
 
-        # Additional validation: Check pixel_values dimensions
-        if len(pixel_values.shape) != 4:
+        # Validate pixel_values format
+        if len(pixel_values.shape) not in [2, 4]:
             raise ValueError(
-                f"❌ Invalid pixel_values dimensions!\n"
-                f"   Expected 4D tensor [N, C, H, W], got shape: {pixel_values.shape}"
+                f"❌ Invalid pixel_values dimensions! Expected 2D or 4D, got {pixel_values.shape}"
             )
 
-        debug_logger.info("✅ Multimodal input validation passed!")
         return True
 
     @staticmethod

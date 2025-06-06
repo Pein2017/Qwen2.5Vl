@@ -91,93 +91,12 @@ def get_rope_index_25(
         image_index, video_index = 0, 0
         attention_mask = attention_mask.to(total_input_ids.device)
         for i, input_ids in enumerate(total_input_ids):
-            # STRICT PRE-VALIDATION: Check all indices before any tensor operations
-            if i >= len(attention_mask):
-                raise RuntimeError(
-                    f"❌ CRITICAL INDEX ERROR: Batch index {i} >= attention_mask length {len(attention_mask)}!\n"
-                    f"   This will cause index out of bounds in CUDA operations!"
-                )
-
-            # Extract valid tokens with strict bounds checking
-            attention_valid = attention_mask[i] == 1
-            if attention_valid.sum() == 0:
-                raise RuntimeError(
-                    f"❌ CRITICAL DATA ERROR: No valid tokens in sequence {i}!\n"
-                    f"   Attention mask: {attention_mask[i]}\n"
-                    f"   This indicates completely masked sequence!"
-                )
-
-            input_ids = input_ids[attention_valid]
-
-            # STRICT VALIDATION: Check input_ids bounds
-            if input_ids.numel() == 0:
-                raise RuntimeError(
-                    f"❌ CRITICAL DATA ERROR: Empty input_ids after attention masking for sequence {i}!"
-                )
-
+            input_ids = input_ids[attention_mask[i] == 1]
             image_nums, video_nums = 0, 0
             vision_start_indices = torch.argwhere(
                 input_ids == vision_start_token_id
             ).squeeze(1)
-
-            # STRICT VALIDATION: Fail fast if no vision tokens found when images are expected
-            if vision_start_indices.numel() == 0:
-                raise RuntimeError(
-                    f"❌ CRITICAL DATA ERROR: No vision start tokens found in sequence but image_grid_thw provided!\n"
-                    f"   Sequence {i} length: {len(input_ids)}\n"
-                    f"   Input tokens: {input_ids.tolist()[:20]}{'...' if len(input_ids) > 20 else ''}\n"
-                    f"   Expected vision_start_token_id: {vision_start_token_id}\n"
-                    f"   This indicates a problem in the data preprocessing pipeline.\n"
-                    f"   Every sample with images must contain proper vision tokens!"
-                )
-
-            # STRICT VALIDATION: Ensure vision_start_indices + 1 doesn't go out of bounds
-            max_valid_idx = len(input_ids) - 1
-
-            # Check each vision start index individually
-            for idx_pos, vision_idx in enumerate(vision_start_indices):
-                if vision_idx >= max_valid_idx:
-                    raise RuntimeError(
-                        f"❌ CRITICAL INDEX ERROR: Vision start token at position {vision_idx} >= max valid index {max_valid_idx}!\n"
-                        f"   Sequence {i}, vision token {idx_pos}\n"
-                        f"   This will cause index out of bounds when accessing input_ids[{vision_idx} + 1]!\n"
-                        f"   Sequence length: {len(input_ids)}\n"
-                        f"   Vision start indices: {vision_start_indices.tolist()}"
-                    )
-
-                # STRICT VALIDATION: Check the next token exists and is valid
-                next_token_idx = vision_idx + 1
-                if next_token_idx >= len(input_ids):
-                    raise RuntimeError(
-                        f"❌ CRITICAL INDEX ERROR: Next token index {next_token_idx} >= sequence length {len(input_ids)}!\n"
-                        f"   Sequence {i}, vision token {idx_pos} at position {vision_idx}\n"
-                        f"   This will cause index out of bounds in CUDA operations!"
-                    )
-
-            # Use only valid indices for vision token detection
-            valid_indices = vision_start_indices[vision_start_indices < max_valid_idx]
-
-            if valid_indices.numel() != vision_start_indices.numel():
-                raise RuntimeError(
-                    f"❌ CRITICAL DATA ERROR: Some vision start tokens are at sequence end!\n"
-                    f"   Sequence {i}: Total vision start tokens: {vision_start_indices.numel()}\n"
-                    f"   Valid vision start tokens: {valid_indices.numel()}\n"
-                    f"   Invalid indices: {vision_start_indices[vision_start_indices >= max_valid_idx].tolist()}\n"
-                    f"   This indicates truncated or malformed vision sequences!"
-                )
-
-            # STRICT VALIDATION: Check vision token access before doing it
-            for idx_pos, vision_idx in enumerate(valid_indices):
-                access_idx = vision_idx + 1
-                if access_idx >= len(input_ids):
-                    raise RuntimeError(
-                        f"❌ CRITICAL INDEX ERROR: About to access input_ids[{access_idx}] but sequence length is {len(input_ids)}!\n"
-                        f"   Sequence {i}, vision token {idx_pos}\n"
-                        f"   This is the exact cause of the CUDA index out of bounds error!"
-                    )
-
-            # Now safe to access vision tokens
-            vision_tokens = input_ids[valid_indices + 1]
+            vision_tokens = input_ids[vision_start_indices + 1]
             image_nums = (vision_tokens == image_token_id).sum()
             video_nums = (vision_tokens == video_token_id).sum()
             input_tokens = input_ids.tolist()
@@ -194,76 +113,23 @@ def get_rope_index_25(
                 else:
                     ed_video = len(input_tokens) + 1
                 if ed_image < ed_video:
-                    # STRICT VALIDATION: Check image_index bounds before access
-                    if image_index >= len(image_grid_thw):
-                        raise RuntimeError(
-                            f"❌ CRITICAL INDEX ERROR: image_index {image_index} >= image_grid_thw length {len(image_grid_thw)}!\n"
-                            f"   Sequence {i}, processing image token\n"
-                            f"   This will cause index out of bounds when accessing image_grid_thw[{image_index}]!\n"
-                            f"   Total images expected: {image_nums}, processed so far: {image_index}"
-                        )
-
-                    # STRICT VALIDATION: Check image_grid_thw structure
-                    if len(image_grid_thw[image_index]) < 3:
-                        raise RuntimeError(
-                            f"❌ CRITICAL DATA ERROR: image_grid_thw[{image_index}] has insufficient dimensions!\n"
-                            f"   Expected 3 dimensions (t, h, w), got {len(image_grid_thw[image_index])}\n"
-                            f"   Value: {image_grid_thw[image_index]}\n"
-                            f"   This will cause index error when accessing t, h, w components!"
-                        )
-
                     t, h, w = (
                         image_grid_thw[image_index][0],
                         image_grid_thw[image_index][1],
                         image_grid_thw[image_index][2],
                     )
-
-                    # STRICT VALIDATION: Check spatial_merge_size division
-                    if (
-                        h.item() % spatial_merge_size != 0
-                        or w.item() % spatial_merge_size != 0
-                    ):
-                        raise RuntimeError(
-                            f"❌ CRITICAL DATA ERROR: Image dimensions not divisible by spatial_merge_size!\n"
-                            f"   Image {image_index}: h={h.item()}, w={w.item()}\n"
-                            f"   spatial_merge_size: {spatial_merge_size}\n"
-                            f"   h % spatial_merge_size = {h.item() % spatial_merge_size}\n"
-                            f"   w % spatial_merge_size = {w.item() % spatial_merge_size}\n"
-                            f"   This will cause incorrect grid calculations!"
-                        )
-
                     second_per_grid_t = 0
                     image_index += 1
                     remain_images -= 1
                     ed = ed_image
 
                 else:
-                    # STRICT VALIDATION: Check video bounds
-                    if video_grid_thw is None:
-                        raise RuntimeError(
-                            f"❌ CRITICAL DATA ERROR: video_grid_thw is None but video token found!\n"
-                            f"   Sequence {i}, video_index {video_index}\n"
-                            f"   This indicates video tokens without corresponding video grid data!"
-                        )
-
-                    if video_index >= len(video_grid_thw):
-                        raise RuntimeError(
-                            f"❌ CRITICAL INDEX ERROR: video_index {video_index} >= video_grid_thw length {len(video_grid_thw)}!\n"
-                            f"   Sequence {i}, processing video token\n"
-                            f"   This will cause index out of bounds when accessing video_grid_thw[{video_index}]!"
-                        )
-
                     t, h, w = (
                         video_grid_thw[video_index][0],
                         video_grid_thw[video_index][1],
                         video_grid_thw[video_index][2],
                     )
                     if second_per_grid_ts is not None:
-                        if video_index >= len(second_per_grid_ts):
-                            raise RuntimeError(
-                                f"❌ CRITICAL INDEX ERROR: video_index {video_index} >= second_per_grid_ts length {len(second_per_grid_ts)}!\n"
-                                f"   This will cause index out of bounds when accessing second_per_grid_ts[{video_index}]!"
-                            )
                         second_per_grid_t = second_per_grid_ts[video_index]
                     else:
                         second_per_grid_t = 1.0
@@ -318,90 +184,7 @@ def get_rope_index_25(
                     torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx
                 )
 
-            # Handle case where no position IDs were generated
-            if not llm_pos_ids_list:
-                seq_len = len(input_tokens)
-                llm_positions = torch.arange(seq_len).view(1, -1).expand(3, -1)
-            else:
-                llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
-
-            # Ensure llm_positions matches the expected sequence length
-            expected_len = (attention_mask[i] == 1).sum().item()
-            if llm_positions.shape[-1] != expected_len:
-                # Truncate or pad to match expected length
-                if llm_positions.shape[-1] > expected_len:
-                    llm_positions = llm_positions[:, :expected_len]
-                else:
-                    # Pad with sequential values
-                    pad_len = expected_len - llm_positions.shape[-1]
-                    start_val = (
-                        llm_positions.max() + 1 if llm_positions.numel() > 0 else 0
-                    )
-                    pad_positions = (
-                        torch.arange(start_val, start_val + pad_len)
-                        .view(1, -1)
-                        .expand(3, -1)
-                    )
-                    llm_positions = torch.cat([llm_positions, pad_positions], dim=-1)
-
-            # STRICT VALIDATION: Validate position_ids assignment before CUDA operation
-            attention_valid_mask = attention_mask[i] == 1
-            expected_len = attention_valid_mask.sum().item()
-
-            # Check position_ids tensor bounds
-            if i >= position_ids.shape[-2]:
-                raise RuntimeError(
-                    f"❌ CRITICAL INDEX ERROR: Batch index {i} >= position_ids batch dimension {position_ids.shape[-2]}!\n"
-                    f"   Position IDs shape: {position_ids.shape}\n"
-                    f"   This will cause index out of bounds in position_ids[..., {i}, :]!"
-                )
-
-            # Check attention mask bounds
-            if attention_valid_mask.shape[0] != position_ids.shape[-1]:
-                raise RuntimeError(
-                    f"❌ CRITICAL DIMENSION ERROR: Attention mask length {attention_valid_mask.shape[0]} != position_ids sequence length {position_ids.shape[-1]}!\n"
-                    f"   Position IDs shape: {position_ids.shape}\n"
-                    f"   Attention mask shape: {attention_mask[i].shape}\n"
-                    f"   This will cause dimension mismatch in CUDA operations!"
-                )
-
-            # Check llm_positions dimensions
-            if llm_positions.shape[-1] != expected_len:
-                raise RuntimeError(
-                    f"❌ CRITICAL DIMENSION ERROR: llm_positions length {llm_positions.shape[-1]} != expected length {expected_len}!\n"
-                    f"   llm_positions shape: {llm_positions.shape}\n"
-                    f"   Expected length from attention mask: {expected_len}\n"
-                    f"   Attention valid positions: {attention_valid_mask.sum().item()}\n"
-                    f"   This will cause dimension mismatch in position assignment!"
-                )
-
-            # Check if any indices in attention_valid_mask are out of bounds
-            valid_indices = torch.where(attention_valid_mask)[0]
-            if len(valid_indices) > 0:
-                max_valid_idx = valid_indices.max().item()
-                if max_valid_idx >= position_ids.shape[-1]:
-                    raise RuntimeError(
-                        f"❌ CRITICAL INDEX ERROR: Max valid attention index {max_valid_idx} >= position_ids sequence length {position_ids.shape[-1]}!\n"
-                        f"   Valid indices: {valid_indices.tolist()[:10]}{'...' if len(valid_indices) > 10 else ''}\n"
-                        f"   Position IDs shape: {position_ids.shape}\n"
-                        f"   This is the exact cause of the CUDA index out of bounds error!"
-                    )
-
-            # Validate the assignment dimensions match exactly
-            target_slice_shape = position_ids[..., i, attention_valid_mask].shape
-            source_shape = llm_positions.shape
-
-            if target_slice_shape != source_shape:
-                raise RuntimeError(
-                    f"❌ CRITICAL SHAPE ERROR: Target slice shape {target_slice_shape} != source shape {source_shape}!\n"
-                    f"   Target: position_ids[..., {i}, attention_mask[{i}] == 1]\n"
-                    f"   Source: llm_positions\n"
-                    f"   Position IDs shape: {position_ids.shape}\n"
-                    f"   Attention mask sum: {attention_valid_mask.sum().item()}\n"
-                    f"   This will cause assignment error in CUDA!"
-                )
-
-            # Now safe to assign
+            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
             position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(
                 position_ids.device
             )

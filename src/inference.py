@@ -12,8 +12,7 @@ import torch
 
 from src.config.base import Config
 from src.models.wrapper import ModelWrapper
-
-from src.preprocessing import create_preprocessor
+from src.preprocessing_unified import UnifiedPreprocessor
 from src.utils import (
     UnifiedLogger,
     extract_prompts_from_conversation,
@@ -36,7 +35,7 @@ class InferenceEngine:
         self,
         model_path: str,
         device: str = "auto",
-        max_new_tokens: int = 2048,
+        max_new_tokens: int = 1024,
         data_root: str = "./",
     ):
         self.model_path = model_path
@@ -59,11 +58,11 @@ class InferenceEngine:
         self.model, self.tokenizer, self.image_processor = self.model_wrapper.load_all()
 
         # Create preprocessor (same as training)
-        self.preprocessor = create_preprocessor(
+        self.preprocessor = UnifiedPreprocessor(
             tokenizer=self.tokenizer,
             image_processor=self.image_processor,
-            data_root=data_root,
             model_max_length=self.config.model_max_length,
+            data_root=data_root,
         )
 
         # Move to device
@@ -138,6 +137,36 @@ class InferenceEngine:
                 output_ids[len(input_ids) :]
                 for input_ids, output_ids in zip(inputs["input_ids"], output_ids)
             ]
+
+            # Log generation details
+            print(f"🎯 GENERATION COMPLETED:")
+            print(f"   Input tokens: {inputs['input_ids'].size(1)}")
+            print(f"   Output tokens: {output_ids.size(1)}")
+            print(
+                f"   Generated tokens: {output_ids.size(1) - inputs['input_ids'].size(1)}"
+            )
+
+            # Decode with special tokens for analysis
+            generated_text_with_special = self.tokenizer.decode(
+                generated_ids[0], skip_special_tokens=False
+            )
+
+            print(
+                f"   Generated text (with special): {repr(generated_text_with_special)}"
+            )
+
+            # Check for special tokens in output
+            special_tokens = [
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
+                "<|box_start|>",
+                "<|box_end|>",
+                "<|endoftext|>",
+            ]
+            print(f"🔍 SPECIAL TOKENS IN OUTPUT:")
+            for token in special_tokens:
+                count = generated_text_with_special.count(token)
+                print(f"   {token}: {count} occurrences")
 
             output_text = self.tokenizer.batch_decode(
                 generated_ids,
@@ -301,7 +330,7 @@ class InferenceEngine:
 def create_inference_engine(
     model_path: str,
     device: str = "auto",
-    max_new_tokens: int = 2048,
+    max_new_tokens: int = 1024,
     data_root: str = "./",
 ) -> InferenceEngine:
     """

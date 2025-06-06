@@ -4,10 +4,10 @@
     "objects": [
       {
         "bbox": [
-          164,
-          447,
-          363,
-          780
+          64,
+          194,
+          142,
+          338
         ],
         "description": "label matches"
       }
@@ -20,8 +20,8 @@
         "bbox": [
           0,
           0,
-          62,
-          104
+          24,
+          44
         ],
         "description": "install screw correct"
       },
@@ -29,44 +29,44 @@
         "bbox": [
           0,
           0,
-          503,
-          655
+          196,
+          276
         ],
         "description": "huawei bbu"
       },
       {
         "bbox": [
-          49,
-          519,
-          158,
-          613
+          19,
+          218,
+          61,
+          258
         ],
         "description": "install screw incorrect, rust"
       },
       {
         "bbox": [
-          60,
-          575,
-          504,
-          1057
+          23,
+          242,
+          196,
+          445
         ],
         "description": "huawei bbu"
       },
       {
         "bbox": [
-          86,
-          589,
-          185,
-          680
+          33,
+          248,
+          72,
+          287
         ],
         "description": "install screw correct"
       },
       {
         "bbox": [
-          201,
-          689,
-          472,
-          813
+          78,
+          290,
+          184,
+          343
         ],
         "description": "label matches"
       }
@@ -77,127 +77,127 @@
     "objects": [
       {
         "bbox": [
-          242,
+          94,
           0,
-          502,
-          1058
+          195,
+          445
         ],
         "description": "zte bbu"
       },
       {
         "bbox": [
-          444,
-          2,
-          488,
-          40
+          173,
+          1,
+          190,
+          17
         ],
         "description": "install screw correct"
       },
       {
         "bbox": [
-          22,
-          10,
-          504,
-          1058
+          8,
+          4,
+          196,
+          445
         ],
         "description": "cabinet fully occupied"
       },
       {
         "bbox": [
-          262,
-          19,
-          314,
-          67
+          102,
+          8,
+          122,
+          28
         ],
         "description": "install screw correct"
       },
       {
         "bbox": [
-          48,
-          44,
-          308,
-          229
+          19,
+          18,
+          120,
+          97
         ],
         "description": "non-fiber cable, binding aligned horizontally and vertically"
       },
       {
         "bbox": [
-          82,
-          74,
-          242,
-          1064
+          32,
+          31,
+          94,
+          448
         ],
         "description": "bbu shield installed, shield orientation correct, shield unobstructed"
       },
       {
         "bbox": [
-          120,
-          89,
-          262,
-          217
+          47,
+          38,
+          102,
+          91
         ],
         "description": "label matches"
       },
       {
         "bbox": [
-          132,
-          542,
-          348,
-          673
+          51,
+          228,
+          135,
+          284
         ],
         "description": "fiber cable, fibre bend radius proper, snake tube protection"
       },
       {
         "bbox": [
-          256,
-          574,
-          314,
-          658
+          99,
+          242,
+          122,
+          277
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
-          348,
-          656,
-          401,
-          844
+          135,
+          276,
+          156,
+          356
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
-          121,
-          681,
-          377,
-          876
+          47,
+          287,
+          147,
+          369
         ],
         "description": "fiber cable, fibre bend radius proper, snake tube protection"
       },
       {
         "bbox": [
-          272,
-          697,
-          358,
-          845
+          106,
+          293,
+          139,
+          356
         ],
         "description": "label matches"
       },
       {
         "bbox": [
-          211,
-          810,
-          281,
-          935
+          82,
+          341,
+          109,
+          394
         ],
         "description": "label matches"
       },
       {
         "bbox": [
-          70,
-          965,
-          159,
-          1052
+          27,
+          406,
+          62,
+          443
         ],
         "description": "label matches"
       }
@@ -208,145 +208,145 @@
     "objects": [
       {
         "bbox": [
-          185,
-          117,
-          471,
-          726
+          72,
+          51,
+          184,
+          314
         ],
         "description": "cabinet not fully occupied, match"
       },
       {
         "bbox": [
-          385,
-          124,
-          399,
-          138
+          151,
+          54,
+          156,
+          60
         ],
         "description": "install screw correct"
       },
       {
         "bbox": [
-          284,
-          130,
-          402,
-          728
+          111,
+          56,
+          157,
+          315
         ],
         "description": "huawei bbu"
       },
       {
         "bbox": [
-          215,
-          146,
-          364,
-          217
+          84,
+          63,
+          142,
+          94
         ],
         "description": "fiber cable, fibre bend radius proper, armour protection"
       },
       {
         "bbox": [
-          228,
-          149,
-          284,
-          692
+          89,
+          65,
+          111,
+          300
         ],
         "description": "bbu shield installed, shield orientation correct, shield unobstructed"
       },
       {
         "bbox": [
-          321,
-          205,
-          371,
-          263
+          125,
+          89,
+          145,
+          114
         ],
         "description": "label matches"
       },
       {
         "bbox": [
-          365,
-          214,
-          385,
-          274
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          229,
-          252,
-          335,
-          429
-        ],
-        "description": "fiber cable, fibre bend radius proper, armour protection"
-      },
-      {
-        "bbox": [
-          256,
-          418,
-          321,
-          440
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          300,
-          429,
-          342,
-          487
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          336,
-          434,
-          361,
-          468
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
+          143,
+          93,
           151,
-          441,
-          264,
-          526
-        ],
-        "description": "fiber cable, fibre bend radius proper, armour protection"
-      },
-      {
-        "bbox": [
-          276,
-          498,
-          303,
-          525
+          119
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
-          171,
-          666,
-          278,
-          759
+          90,
+          109,
+          131,
+          186
+        ],
+        "description": "fiber cable, fibre bend radius proper, armour protection"
+      },
+      {
+        "bbox": [
+          100,
+          181,
+          125,
+          191
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          118,
+          186,
+          134,
+          211
+        ],
+        "description": "label matches"
+      },
+      {
+        "bbox": [
+          131,
+          188,
+          141,
+          203
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          59,
+          191,
+          103,
+          228
+        ],
+        "description": "fiber cable, fibre bend radius proper, armour protection"
+      },
+      {
+        "bbox": [
+          108,
+          216,
+          119,
+          227
+        ],
+        "description": "cpri connection correct"
+      },
+      {
+        "bbox": [
+          67,
+          288,
+          109,
+          329
         ],
         "description": "non-fiber cable, binding aligned horizontally and vertically"
       },
       {
         "bbox": [
-          335,
-          705,
-          347,
-          717
+          131,
+          305,
+          136,
+          311
         ],
         "description": "cabinet grounding correct"
       },
       {
         "bbox": [
-          386,
-          709,
-          402,
-          721
+          151,
+          307,
+          157,
+          312
         ],
         "description": "install screw correct"
       }
@@ -357,82 +357,82 @@
     "objects": [
       {
         "bbox": [
-          12,
+          5,
           0,
-          504,
-          764
+          196,
+          313
         ],
         "description": "cabinet fully occupied"
       },
       {
         "bbox": [
           0,
-          16,
-          504,
-          414
+          7,
+          196,
+          170
         ],
         "description": "zte bbu"
       },
       {
         "bbox": [
-          167,
-          157,
-          407,
-          292
+          65,
+          64,
+          158,
+          120
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
-          96,
-          319,
-          201,
-          422
+          37,
+          131,
+          78,
+          173
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
-          251,
-          375,
-          504,
-          515
+          98,
+          154,
+          196,
+          211
         ],
         "description": "label matches"
       },
       {
         "bbox": [
+          26,
+          154,
           68,
-          375,
-          175,
-          555
+          228
         ],
         "description": "label matches"
       },
       {
         "bbox": [
-          1,
-          397,
-          504,
-          560
+          0,
+          163,
+          196,
+          230
         ],
         "description": "ericsson bbu"
       },
       {
         "bbox": [
-          234,
-          485,
-          339,
-          583
+          91,
+          199,
+          132,
+          239
         ],
         "description": "cpri connection correct"
       },
       {
         "bbox": [
           0,
-          543,
-          411,
-          667
+          223,
+          160,
+          274
         ],
         "description": "fiber cable, fibre bend radius proper, snake tube protection"
       }

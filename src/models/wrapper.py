@@ -70,7 +70,6 @@ class ModelWrapper:
             attn_implementation=self.config.attn_implementation,
             torch_dtype=torch_dtype,
         )
-        self.model.config.use_cache = True
 
         # Verify all patches
         self.logger.info("🔍 Verifying all patches...")
@@ -93,8 +92,76 @@ class ModelWrapper:
         # Load image processor
         processor = AutoProcessor.from_pretrained(self.config.model_path)
         self.image_processor = processor.image_processor
-        self.image_processor.max_pixels = self.config.max_pixels
-        self.image_processor.min_pixels = self.config.min_pixels
+
+        # CRITICAL FIX: Use pixel constraints from data_conversion/vision_process.py
+        # These values match exactly what was used during data preparation
+        # Import the constants from data conversion
+        import os
+        import sys
+
+        data_conversion_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data_conversion"
+        )
+        sys.path.insert(0, data_conversion_path)
+
+        try:
+            from vision_process import IMAGE_FACTOR, MAX_PIXELS, MIN_PIXELS
+
+            # Apply the exact same pixel constraints used during data conversion
+            self.image_processor.min_pixels = MIN_PIXELS  # 4 * 28 * 28 = 3136
+            self.image_processor.max_pixels = MAX_PIXELS  # 128 * 28 * 28 = 100352
+
+            # Also set size constraints if the processor supports them
+            if hasattr(self.image_processor, "size"):
+                if isinstance(self.image_processor.size, dict):
+                    self.image_processor.size["min_pixels"] = MIN_PIXELS
+                    self.image_processor.size["max_pixels"] = MAX_PIXELS
+                else:
+                    # Create size dict if it doesn't exist
+                    self.image_processor.size = {
+                        "min_pixels": MIN_PIXELS,
+                        "max_pixels": MAX_PIXELS,
+                    }
+
+            self.logger.info(
+                f"✅ Image processor configured with data_conversion/vision_process.py constants:"
+            )
+            self.logger.info(
+                f"   min_pixels: {self.image_processor.min_pixels} (4 * 28 * 28)"
+            )
+            self.logger.info(
+                f"   max_pixels: {self.image_processor.max_pixels} (128 * 28 * 28)"
+            )
+            self.logger.info(f"   image_factor: {IMAGE_FACTOR}")
+
+        except ImportError as e:
+            self.logger.error(
+                f"❌ Failed to import from data_conversion/vision_process.py: {e}"
+            )
+            self.logger.error(
+                "   Using fallback values from vision_process.py in project root"
+            )
+
+            # Fallback to the values from the project root vision_process.py
+            from vision_process import MAX_PIXELS, MIN_PIXELS
+
+            self.image_processor.min_pixels = MIN_PIXELS
+            self.image_processor.max_pixels = MAX_PIXELS
+
+        finally:
+            # Clean up sys.path
+            if data_conversion_path in sys.path:
+                sys.path.remove(data_conversion_path)
+
+        self.logger.info(
+            f"   patch_size: {getattr(self.image_processor, 'patch_size', 'Not set')}"
+        )
+        self.logger.info(
+            f"   merge_size: {getattr(self.image_processor, 'merge_size', 'Not set')}"
+        )
+
+        if hasattr(self.image_processor, "size"):
+            self.logger.info(f"   size constraints: {self.image_processor.size}")
 
         # Configure training
         self._configure_training()

@@ -331,62 +331,70 @@ class CompactResponseFormatter:
     """Handles compact response formatting for cleaner LLM training."""
 
     @staticmethod
-    def format_to_compact_string(content_dict: Dict[str, Any]) -> str:
+    def format_to_compact_string(
+        content_dict: Dict[str, Any], response_types: Set[str] = None
+    ) -> str:
         """Convert content dictionary to natural language comma-separated format without schema wrappers."""
+        if response_types is None:
+            response_types = {"object_type", "property", "extra_info"}
+
         parts = []
 
-        # Always include object_type (required) - no "object_type:" prefix
-        object_type = content_dict.get("object_type", "").strip()
-        if object_type and object_type != "none":
-            parts.append(object_type)
+        # Add object_type if requested - no "object_type:" prefix
+        if "object_type" in response_types:
+            object_type = content_dict.get("object_type", "").strip()
+            if object_type and object_type != "none":
+                parts.append(object_type)
 
-        # Add property if meaningful - no "property:" prefix
-        property_value = content_dict.get("property", "").strip()
-        if property_value and property_value != "none":
-            if isinstance(property_value, list):
-                # Join multiple properties with commas
-                property_parts = [
-                    str(p).strip()
-                    for p in property_value
-                    if str(p).strip() and str(p).strip() != "none"
-                ]
-                if property_parts:
-                    parts.extend(property_parts)
-            elif property_value:
-                # Split on commas if multiple values are comma-separated
-                if "," in property_value:
+        # Add property if requested and meaningful - no "property:" prefix
+        if "property" in response_types:
+            property_value = content_dict.get("property", "").strip()
+            if property_value and property_value != "none":
+                if isinstance(property_value, list):
+                    # Join multiple properties with commas
                     property_parts = [
-                        p.strip()
-                        for p in property_value.split(",")
-                        if p.strip() and p.strip() != "none"
+                        str(p).strip()
+                        for p in property_value
+                        if str(p).strip() and str(p).strip() != "none"
                     ]
-                    parts.extend(property_parts)
-                else:
-                    parts.append(property_value)
+                    if property_parts:
+                        parts.extend(property_parts)
+                elif property_value:
+                    # Split on commas if multiple values are comma-separated
+                    if "," in property_value:
+                        property_parts = [
+                            p.strip()
+                            for p in property_value.split(",")
+                            if p.strip() and p.strip() != "none"
+                        ]
+                        parts.extend(property_parts)
+                    else:
+                        parts.append(property_value)
 
-        # Add extra_info if meaningful - no "extra_info:" prefix
-        extra_info = content_dict.get("extra_info", "").strip()
-        if extra_info and extra_info != "none":
-            if isinstance(extra_info, list):
-                # Join multiple extra_info with commas
-                extra_parts = [
-                    str(e).strip()
-                    for e in extra_info
-                    if str(e).strip() and str(e).strip() != "none"
-                ]
-                if extra_parts:
-                    parts.extend(extra_parts)
-            elif extra_info:
-                # Split on commas if multiple values are comma-separated
-                if "," in extra_info:
+        # Add extra_info if requested and meaningful - no "extra_info:" prefix
+        if "extra_info" in response_types:
+            extra_info = content_dict.get("extra_info", "").strip()
+            if extra_info and extra_info != "none":
+                if isinstance(extra_info, list):
+                    # Join multiple extra_info with commas
                     extra_parts = [
-                        e.strip()
-                        for e in extra_info.split(",")
-                        if e.strip() and e.strip() != "none"
+                        str(e).strip()
+                        for e in extra_info
+                        if str(e).strip() and str(e).strip() != "none"
                     ]
-                    parts.extend(extra_parts)
-                else:
-                    parts.append(extra_info)
+                    if extra_parts:
+                        parts.extend(extra_parts)
+                elif extra_info:
+                    # Split on commas if multiple values are comma-separated
+                    if "," in extra_info:
+                        extra_parts = [
+                            e.strip()
+                            for e in extra_info.split(",")
+                            if e.strip() and e.strip() != "none"
+                        ]
+                        parts.extend(extra_parts)
+                    else:
+                        parts.append(extra_info)
 
         # Join with comma separator for natural reading
         # Filter out empty parts and deduplicate
@@ -420,7 +428,9 @@ class CompactResponseFormatter:
         return components
 
     @staticmethod
-    def convert_from_verbose_format(description: str) -> str:
+    def convert_from_verbose_format(
+        description: str, response_types: Set[str] = None
+    ) -> str:
         """Convert from verbose schema format to simplified comma-separated format."""
         if not description:
             return "unknown"
@@ -445,7 +455,9 @@ class CompactResponseFormatter:
                     components["extra_info"] = value
 
         # Then convert to compact format
-        return CompactResponseFormatter.format_to_compact_string(components)
+        return CompactResponseFormatter.format_to_compact_string(
+            components, response_types
+        )
 
 
 # Utility functions for backward compatibility and convenience

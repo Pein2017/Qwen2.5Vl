@@ -30,6 +30,9 @@ OBJECT_REF_END = "<object_ref_end>"
 DEFAULT_BASE_MODEL_PATH = "/data4/swift/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_7B_MODEL_PATH = "/data4/swift/model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
 
+# Training constants
+IGNORE_INDEX = -100  # Standard ignore index for loss calculation
+
 
 # ============================================================================
 # Data Loading and Validation
