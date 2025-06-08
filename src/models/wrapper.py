@@ -61,7 +61,6 @@ class ModelWrapper:
         )
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.config.model_path,
-            cache_dir=self.config.cache_dir,
             attn_implementation=self.config.attn_implementation,
             torch_dtype=torch_dtype,
         )
@@ -74,7 +73,6 @@ class ModelWrapper:
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.config.model_path,
-            cache_dir=self.config.cache_dir,
             model_max_length=self.config.model_max_length,
             padding_side="right",
             use_fast=False,

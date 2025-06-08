@@ -1,353 +1,345 @@
+#!/usr/bin/env python3
 """
-Unified inference engine that uses the same preprocessing pipeline as training.
+Inference module for Qwen2.5-VL model with proper input handling.
 
-This module provides fast, optimized inference using the same components
-and optimizations as training, ensuring consistency and performance.
+This module demonstrates the correct way to prepare inputs for both
+model.forward() and model.generate() methods, following the official
+Qwen2.5-VL implementation patterns.
 """
 
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import torch
+from PIL import Image
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-from src.config.base import Config
-from src.models.wrapper import ModelWrapper
-from src.preprocessing_unified import UnifiedPreprocessor  # noqa
-from src.utils import (
-    UnifiedLogger,
-    extract_prompts_from_conversation,
-    find_ground_truth_response,
-)
+from src.chat_processor import ChatProcessor
+from src.logger_utils import get_model_logger
+
+logger = get_model_logger()
 
 
-class InferenceEngine:
+class Qwen25VLInference:
     """
-    Unified inference engine that uses the same preprocessing and optimizations as training.
+    Inference wrapper for Qwen2.5-VL with proper input handling.
 
-    Key benefits:
-    - Same preprocessing pipeline as training (no inconsistencies)
-    - Uses training's flash attention optimizations
-    - Supports both single-image and multi-image inputs
-    - Fast inference with training-optimized components
+    Demonstrates the key differences between forward() and generate() input preparation.
     """
 
-    def __init__(
-        self,
-        model_path: str,
-        device: str = "auto",
-        max_new_tokens: int = 1024,
-        data_root: str = "./",
-    ):
+    def __init__(self, model_path: str, device: str = "cuda"):
         self.model_path = model_path
-        self.max_new_tokens = max_new_tokens
-        self.data_root = data_root
+        self.device = device
 
-        print(f"🚀 Loading unified inference engine from {model_path}")
-        print(f"📝 Max new tokens: {max_new_tokens}")
+        # Load model and processor
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_path, torch_dtype=torch.bfloat16, device_map=device
+        )
 
-        # Create config for model loading
-        self.config = Config()
-        self.config.model_path = model_path
-        self.config.data_root = data_root
+        self.processor = AutoProcessor.from_pretrained(model_path)
 
-        # Create logger (inference mode)
-        self.logger = UnifiedLogger(log_dir="logs", verbose=True, is_training=False)
+        # Initialize chat processor for advanced use cases
+        self.chat_processor = ChatProcessor(
+            tokenizer=self.processor.tokenizer,
+            image_processor=self.processor.image_processor,
+            model_max_length=8192,
+        )
 
-        # Load model components using training's ModelWrapper
-        self.model_wrapper = ModelWrapper(self.config, self.logger)
-        self.model, self.tokenizer, self.image_processor = self.model_wrapper.load_all()
+        logger.info(f"✅ Qwen2.5-VL inference initialized on {device}")
 
-        # Create preprocessor (same as training)
-        self.preprocessor = UnifiedPreprocessor(
-            tokenizer=self.tokenizer,
-            image_processor=self.image_processor,
-            model_max_length=self.config.model_max_length,
-            data_root=data_root,
+    def prepare_inputs_for_forward(
+        self, images: List[Image.Image], text: str
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepare inputs for model.forward() - used during training.
+
+        Key characteristics:
+        - Always includes pixel_values and image_grid_thw when images are present
+        - Used for training where we need gradients through vision encoder
+        - Only includes parameters accepted by the official model
+        """
+        # Use the official processor
+        inputs = self.processor(
+            text=[text], images=images, return_tensors="pt", padding=False
         )
 
         # Move to device
-        if device != "auto":
-            self.model = self.model.to(device)
-        elif torch.cuda.is_available():
-            self.model = self.model.to("cuda:0")
+        for key, value in inputs.items():
+            if isinstance(value, torch.Tensor):
+                inputs[key] = value.to(self.device)
 
-        # Set model to eval mode
-        self.model.eval()
+        # Filter to only include valid model parameters
+        valid_model_params = {
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "past_key_values",
+            "inputs_embeds",
+            "labels",
+            "use_cache",
+            "output_attentions",
+            "output_hidden_states",
+            "return_dict",
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
+            "rope_deltas",
+            "cache_position",
+            "second_per_grid_ts",
+        }
 
-        print("✅ Unified inference engine loaded")
-        print(
-            f"   - Flash attention: {self.model.config.attn_implementation if hasattr(self.model.config, 'attn_implementation') else 'unknown'}"
+        filtered_inputs = {
+            key: value for key, value in inputs.items() if key in valid_model_params
+        }
+
+        logger.debug(f"🔧 FORWARD INPUTS:")
+        logger.debug(f"   input_ids shape: {filtered_inputs['input_ids'].shape}")
+        logger.debug(
+            f"   pixel_values shape: {filtered_inputs.get('pixel_values', torch.empty(0)).shape}"
         )
-        print(f"   - Torch dtype: {self.model.dtype}")
-        print(f"   - Use cache: {self.model.config.use_cache}")
-        print(f"   - Model max length: {self.tokenizer.model_max_length}")
+        logger.debug(
+            f"   image_grid_thw shape: {filtered_inputs.get('image_grid_thw', torch.empty(0)).shape}"
+        )
+
+        return filtered_inputs
+
+    def prepare_inputs_for_generate(
+        self, images: List[Image.Image], text: str
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepare inputs for model.generate() - used during inference.
+
+        Key characteristics:
+        - Includes pixel_values and image_grid_thw for the initial prefill
+        - The model's prepare_inputs_for_generation will handle subsequent steps
+        - Only includes parameters accepted by the official model
+        """
+        # Use the official processor for the initial step
+        inputs = self.processor(
+            text=[text], images=images, return_tensors="pt", padding=False
+        )
+
+        # Move to device
+        for key, value in inputs.items():
+            if isinstance(value, torch.Tensor):
+                inputs[key] = value.to(self.device)
+
+        # Filter to only include valid generation parameters
+        valid_generation_params = {
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "past_key_values",
+            "inputs_embeds",
+            "use_cache",
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
+            "second_per_grid_ts",
+        }
+
+        filtered_inputs = {
+            key: value
+            for key, value in inputs.items()
+            if key in valid_generation_params
+        }
+
+        logger.debug(f"🔧 GENERATE INPUTS (initial):")
+        logger.debug(f"   input_ids shape: {filtered_inputs['input_ids'].shape}")
+        logger.debug(
+            f"   pixel_values shape: {filtered_inputs.get('pixel_values', torch.empty(0)).shape}"
+        )
+        logger.debug(
+            f"   image_grid_thw shape: {filtered_inputs.get('image_grid_thw', torch.empty(0)).shape}"
+        )
+
+        return filtered_inputs
+
+    def forward_pass(
+        self,
+        images: List[Image.Image],
+        text: str,
+        labels: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Perform a forward pass (training-style) through the model.
+        """
+        inputs = self.prepare_inputs_for_forward(images, text)
+
+        if labels is not None:
+            inputs["labels"] = labels.to(self.device)
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+
+        return {
+            "logits": outputs.logits,
+            "loss": outputs.loss if labels is not None else None,
+            "hidden_states": outputs.hidden_states
+            if hasattr(outputs, "hidden_states")
+            else None,
+        }
 
     def generate_response(
-        self, image_paths: Union[str, List[str]], system_prompt: str, user_prompt: str
-    ) -> Tuple[str, Dict]:
+        self,
+        images: List[Image.Image],
+        text: str,
+        max_new_tokens: int = 512,
+        temperature: float = 0.7,
+        do_sample: bool = True,
+    ) -> str:
         """
-        Generate response using unified preprocessing pipeline.
+        Generate a response using model.generate().
 
-        Args:
-            image_paths: Single image path or list of image paths
-            system_prompt: System message
-            user_prompt: User message with <image> tokens
-
-        Returns:
-            Tuple of (generated_text, metadata)
+        This method properly handles the vision input lifecycle:
+        1. Initial step: includes pixel_values and image_grid_thw
+        2. Subsequent steps: vision inputs are automatically set to None
         """
-        try:
-            # Use unified preprocessor (same as training)
-            inputs = self.preprocessor.process_sample_for_inference(
-                image_paths=image_paths,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+        inputs = self.prepare_inputs_for_generate(images, text)
+
+        # Generate with proper parameters
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                pad_token_id=self.processor.tokenizer.eos_token_id,
             )
 
-            # Move to device
-            device = next(self.model.parameters()).device
-            inputs = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v
-                for k, v in inputs.items()
-            }
+        # Decode only the new tokens
+        input_length = inputs["input_ids"].shape[1]
+        new_tokens = generated_ids[:, input_length:]
 
-            # Generate with optimized parameters
-            with torch.no_grad():
-                output_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    do_sample=False,  # Deterministic
-                    temperature=None,
-                    top_p=None,
-                    top_k=None,
-                    num_beams=1,
-                    pad_token_id=self.tokenizer.pad_token_id
-                    or self.tokenizer.eos_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    use_cache=self.model.config.use_cache,
-                    repetition_penalty=1.1,
-                    length_penalty=1.0,
-                    early_stopping=False,
-                    min_new_tokens=10,
-                    no_repeat_ngram_size=3,
-                )
-
-            # Decode generated tokens
-            generated_ids = [
-                output_ids[len(input_ids) :]
-                for input_ids, output_ids in zip(inputs["input_ids"], output_ids)
-            ]
-
-            # Log generation details
-            print(f"🎯 GENERATION COMPLETED:")
-            print(f"   Input tokens: {inputs['input_ids'].size(1)}")
-            print(f"   Output tokens: {output_ids.size(1)}")
-            print(
-                f"   Generated tokens: {output_ids.size(1) - inputs['input_ids'].size(1)}"
-            )
-
-            # Decode with special tokens for analysis
-            generated_text_with_special = self.tokenizer.decode(
-                generated_ids[0], skip_special_tokens=False
-            )
-
-            print(
-                f"   Generated text (with special): {repr(generated_text_with_special)}"
-            )
-
-            # Check for special tokens in output
-            special_tokens = [
-                "<|object_ref_start|>",
-                "<|object_ref_end|>",
-                "<|box_start|>",
-                "<|box_end|>",
-                "<|endoftext|>",
-            ]
-            print(f"🔍 SPECIAL TOKENS IN OUTPUT:")
-            for token in special_tokens:
-                count = generated_text_with_special.count(token)
-                print(f"   {token}: {count} occurrences")
-
-            output_text = self.tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True,
-            )[0]
-
-            # Create metadata
-            metadata = {
-                "input_tokens": inputs["input_ids"].size(1),
-                "output_tokens": output_ids.size(1),
-                "generated_tokens": output_ids.size(1) - inputs["input_ids"].size(1),
-                "num_images": len(image_paths) if isinstance(image_paths, list) else 1,
-                "max_new_tokens": self.max_new_tokens,
-                "generation_config": {
-                    "do_sample": False,
-                    "repetition_penalty": 1.1,
-                    "length_penalty": 1.0,
-                    "early_stopping": False,
-                    "no_repeat_ngram_size": 3,
-                },
-            }
-
-            # Clean up GPU memory
-            if torch.cuda.is_available():
-                del output_ids, generated_ids
-                torch.cuda.empty_cache()
-
-            return output_text, metadata
-
-        except Exception as e:
-            print(f"❌ Error generating response: {e}")
-            return "", {"error": str(e)}
-
-    def process_dataset(
-        self, validation_jsonl: str, output_file: str, max_samples: Optional[int] = None
-    ) -> None:
-        """
-        Process entire validation dataset using unified pipeline.
-
-        Args:
-            validation_jsonl: Path to validation JSONL file
-            output_file: Path to save results
-            max_samples: Maximum number of samples to process
-        """
-        import json
-        import os
-
-        from tqdm import tqdm
-
-        from .utils import load_jsonl
-
-        print(f"📊 Loading validation data from {validation_jsonl}")
-        samples = load_jsonl(validation_jsonl)
-
-        if max_samples is not None:
-            samples = samples[:max_samples]
-            print(f"🔢 Processing {max_samples} samples (limited)")
-        else:
-            print(f"🔢 Processing {len(samples)} samples")
-
-        results = []
-        skipped_count = 0
-        error_count = 0
-
-        # Create progress bar
-        progress_bar = tqdm(
-            enumerate(samples),
-            total=len(samples),
-            desc="🔄 Generating responses",
-            unit="sample",
-            ncols=100,
+        response = self.processor.tokenizer.decode(
+            new_tokens[0], skip_special_tokens=True
         )
 
-        for i, sample in progress_bar:
-            try:
-                # Extract data using training utilities
-                conversations = sample.get("conversations", [])
+        return response
 
-                # Handle both unified format (images array) and legacy format (image string)
-                if "images" in sample and sample["images"]:
-                    image_paths = sample["images"]
-                elif "image" in sample:
-                    image_paths = [sample["image"]]
-                else:
-                    skipped_count += 1
-                    continue
+    def process_sample_from_jsonl(
+        self, sample: Dict, data_root: str = "./"
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Process a sample from your JSONL format for training.
 
-                if not conversations:
-                    skipped_count += 1
-                    continue
+        This shows how to use your ChatProcessor for training data preparation.
+        """
+        # Update chat processor data root
+        self.chat_processor.data_root = Path(data_root)
 
-                # Extract prompts using training utilities
-                system_prompt, user_prompt = extract_prompts_from_conversation(
-                    conversations
-                )
-                ground_truth = find_ground_truth_response(conversations)
+        # Process the sample
+        processed = self.chat_processor.process_sample(sample)
 
-                if not user_prompt or not ground_truth:
-                    skipped_count += 1
-                    continue
+        # Move to device
+        for key, value in processed.items():
+            if isinstance(value, torch.Tensor):
+                processed[key] = value.to(self.device)
 
-                # Generate response using unified pipeline
-                raw_response, metadata = self.generate_response(
-                    image_paths, system_prompt, user_prompt
-                )
+        return processed
 
-                # Save result
-                result = {
-                    "sample_id": i,
-                    "image_paths": image_paths,
-                    "system_prompt": system_prompt,
-                    "user_prompt": user_prompt,
-                    "ground_truth": ground_truth,
-                    "prediction": raw_response,
-                    "metadata": metadata,
-                    "timestamp": datetime.now().isoformat(),
-                }
+    def demonstrate_input_differences(self, images: List[Image.Image], text: str):
+        """
+        Demonstrate the key differences between forward and generate input preparation.
+        """
+        logger.info("🔍 DEMONSTRATING INPUT DIFFERENCES:")
 
-                results.append(result)
+        # 1. Forward inputs (training)
+        logger.info("\n1️⃣ FORWARD INPUTS (Training):")
+        forward_inputs = self.prepare_inputs_for_forward(images, text)
 
-                # Update progress
-                progress_bar.set_postfix(
-                    {
-                        "✅": len(results),
-                        "⚠️": skipped_count,
-                        "❌": error_count,
-                        "Current": os.path.basename(image_paths[0])
-                        if image_paths
-                        else "unknown",
-                    }
-                )
+        logger.info(f"   input_ids: {forward_inputs['input_ids'].shape}")
+        logger.info(f"   pixel_values: {forward_inputs.get('pixel_values', 'None')}")
+        logger.info(
+            f"   image_grid_thw: {forward_inputs.get('image_grid_thw', 'None')}"
+        )
 
-            except Exception as e:
-                error_count += 1
-                progress_bar.set_postfix(
-                    {
-                        "✅": len(results),
-                        "⚠️": skipped_count,
-                        "❌": error_count,
-                        "Error": str(e)[:20] + "..." if len(str(e)) > 20 else str(e),
-                    }
-                )
-                continue
+        # 2. Generate inputs (inference)
+        logger.info("\n2️⃣ GENERATE INPUTS (Inference - Initial Step):")
+        generate_inputs = self.prepare_inputs_for_generate(images, text)
 
-        progress_bar.close()
+        logger.info(f"   input_ids: {generate_inputs['input_ids'].shape}")
+        logger.info(f"   pixel_values: {generate_inputs.get('pixel_values', 'None')}")
+        logger.info(
+            f"   image_grid_thw: {generate_inputs.get('image_grid_thw', 'None')}"
+        )
 
-        # Save results
-        print(f"💾 Saving {len(results)} results to {output_file}")
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-
-        print("✅ Unified inference completed!")
-        print(f"📈 Successfully processed: {len(results)}/{len(samples)} samples")
-        print(f"⚠️  Skipped: {skipped_count} samples")
-        print(f"❌ Errors: {error_count} samples")
+        # 3. Show what happens during generation
+        logger.info("\n3️⃣ DURING GENERATION:")
+        logger.info("   - First step: Uses pixel_values and image_grid_thw")
+        logger.info(
+            "   - Subsequent steps: model.prepare_inputs_for_generation sets them to None"
+        )
+        logger.info("   - This prevents the 'shape [0, 4, -1] is invalid' error")
 
 
-def create_inference_engine(
-    model_path: str,
-    device: str = "auto",
-    max_new_tokens: int = 1024,
-    data_root: str = "./",
-) -> InferenceEngine:
-    """
-    Factory function to create a unified inference engine.
+def load_images_from_paths(
+    image_paths: List[str], data_root: str = "./"
+) -> List[Image.Image]:
+    """Load images from file paths."""
+    images = []
+    data_root = Path(data_root)
 
-    Args:
-        model_path: Path to the model
-        device: Device to load model on
-        max_new_tokens: Maximum tokens to generate
-        data_root: Root directory for image paths
+    for path in image_paths:
+        full_path = data_root / path
+        if full_path.exists():
+            images.append(Image.open(full_path).convert("RGB"))
+        else:
+            logger.warning(f"Image not found: {full_path}")
 
-    Returns:
-        UnifiedInferenceEngine instance
-    """
-    return InferenceEngine(
-        model_path=model_path,
-        device=device,
-        max_new_tokens=max_new_tokens,
-        data_root=data_root,
+    return images
+
+
+def example_usage():
+    """Example usage of the inference wrapper."""
+
+    # Initialize inference
+    inference = Qwen25VLInference(
+        model_path="Qwen/Qwen2.5-VL-7B-Instruct", device="cuda"
     )
+
+    # Example images and text
+    images = [Image.new("RGB", (224, 224), color="red")]  # Dummy image
+    text = "What do you see in this image?"
+
+    # Demonstrate input differences
+    inference.demonstrate_input_differences(images, text)
+
+    # Example 1: Forward pass (training-style)
+    logger.info("\n🔧 FORWARD PASS EXAMPLE:")
+    forward_result = inference.forward_pass(images, text)
+    logger.info(f"   Logits shape: {forward_result['logits'].shape}")
+
+    # Example 2: Generation (inference-style)
+    logger.info("\n🔧 GENERATION EXAMPLE:")
+    response = inference.generate_response(images, text, max_new_tokens=50)
+    logger.info(f"   Generated response: {response}")
+
+    # Example 3: Process JSONL sample
+    logger.info("\n🔧 JSONL PROCESSING EXAMPLE:")
+    sample = {
+        "examples": [
+            {
+                "images": ["example1.jpg"],
+                "objects": [{"box": [10, 10, 50, 50], "desc": "test object"}],
+            }
+        ],
+        "target": {
+            "images": ["target.jpg"],
+            "objects": [{"box": [20, 20, 60, 60], "desc": "target object"}],
+        },
+    }
+
+    try:
+        processed = inference.process_sample_from_jsonl(
+            sample, data_root="./ds_rescaled/"
+        )
+        logger.info(f"   Processed sample keys: {list(processed.keys())}")
+    except Exception as e:
+        logger.warning(f"   JSONL processing failed (expected with dummy data): {e}")
+
+
+if __name__ == "__main__":
+    example_usage()

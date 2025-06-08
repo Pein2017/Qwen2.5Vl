@@ -82,7 +82,7 @@ class SemanticMatcher:
     def calculate_semantic_similarity(self, desc1: str, desc2: str) -> float:
         """Calculate semantic similarity between two descriptions."""
         if not self.model or not SKLEARN_AVAILABLE:
-            return self._rule_based_similarity(desc1, desc2)
+            raise ValueError("Semantic similarity model not available")
 
         try:
             # Extract object types for comparison

@@ -6,10 +6,11 @@ Object detection now uses pure JSON format instead of special tokens.
 """
 
 import json
-import logging
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from src.logger_utils import get_tokens_logger
+
+logger = get_tokens_logger()
 
 
 class SpecialTokens:

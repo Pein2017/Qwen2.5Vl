@@ -5,7 +5,6 @@ This module provides flash attention detection and replacement functionality
 to optimize memory usage and training speed.
 """
 
-import logging
 from typing import Optional
 
 import torch
@@ -20,7 +19,9 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     Qwen2VLModel,
 )
 
-logger = logging.getLogger(__name__)
+from src.logger_utils import get_attention_logger
+
+logger = get_attention_logger()
 
 
 # Direct Flash Attention availability check (more reliable than transformers' CUDA-dependent check)
@@ -326,13 +327,6 @@ def print_trainable_parameters_visual(self) -> None:
 
     is_merger_trainable = any(param.requires_grad for param in self.merger.parameters())
 
-    print("Vision Module - Attention Blocks:")
-    print(
-        f"Trainable Block Indices: {trainable_blocks if trainable_blocks else 'None'}"
-    )
-    print(
-        f"Non-Trainable Block Indices: {non_trainable_blocks if non_trainable_blocks else 'None'}"
-    )
     print(f"Merger Module Trainable: {is_merger_trainable}")
 
 
@@ -354,13 +348,6 @@ def print_trainable_parameters(self) -> None:
             trainable_layers.append(layer_idx)
         else:
             non_trainable_layers.append(layer_idx)
-
-    print(
-        f"LLM Module - Trainable Layer Indices: {trainable_layers if trainable_layers else 'None'}"
-    )
-    print(
-        f"LLM Module - Non-Trainable Layer Indices: {non_trainable_layers if non_trainable_layers else 'None'}"
-    )
 
 
 # Apply monkey patches for trainable parameter printing only

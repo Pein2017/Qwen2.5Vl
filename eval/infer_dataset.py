@@ -76,7 +76,6 @@ class FastInferenceEngine:
         # Create training config to ensure exact alignment
         self.config = Config()
         self.config.model_path = model_path
-        self.config.cache_dir = "/data4/swift/model_cache"
         self.config.model_max_length = 8192  # Allow longer sequences for inference
         self.config.max_pixels = 1003520  # Same as training
         self.config.min_pixels = 784  # Same as training

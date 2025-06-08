@@ -10,8 +10,6 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 
-from src.logger_utils import get_logger
-
 
 @dataclass
 class StabilityMetrics:
@@ -125,15 +123,21 @@ class StabilityMonitor:
 
     def __init__(self, config, logger=None):
         self.config = config
-        self.logger = logger or get_logger(__name__)
+        from src.logger_utils import get_stability_logger
+
+        self.logger = logger or get_stability_logger()
         self.metrics = StabilityMetrics()
 
         # EXPLICIT: No defaults - config must specify these values
         if not hasattr(config, "learning_rate"):
-            raise ValueError("Config must specify 'learning_rate' - no defaults allowed")
+            raise ValueError(
+                "Config must specify 'learning_rate' - no defaults allowed"
+            )
         if not hasattr(config, "max_grad_norm"):
-            raise ValueError("Config must specify 'max_grad_norm' - no defaults allowed")
-            
+            raise ValueError(
+                "Config must specify 'max_grad_norm' - no defaults allowed"
+            )
+
         self.original_lr = config.learning_rate
         self.current_lr = config.learning_rate
         self.original_grad_clip = config.max_grad_norm

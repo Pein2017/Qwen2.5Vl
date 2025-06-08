@@ -10,8 +10,6 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.logger_utils import get_logger
-
 
 class BestCheckpointCallback(TrainerCallback):
     """
@@ -51,7 +49,9 @@ class BestCheckpointCallback(TrainerCallback):
     ):
         """Called when logging occurs - this is where eval metrics are available."""
         if self.logger is None:
-            self.logger = get_logger("best_checkpoint_callback")
+            from src.logger_utils import get_callback_logger
+
+            self.logger = get_callback_logger()
 
         # Get the current logs
         logs = kwargs.get("logs", {})

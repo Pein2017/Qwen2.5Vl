@@ -13,16 +13,16 @@ Pipeline: Simplified JSONL → ChatProcessor → Training-ready samples
 """
 
 import json
-import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
 
+from src.logger_utils import get_chat_logger
 from src.tokens import SpecialTokens
 
-logger = logging.getLogger(__name__)
+logger = get_chat_logger()
 
 
 class ChatProcessor:
@@ -404,10 +404,10 @@ Assistant:"""
         input_ids = tokens["input_ids"].squeeze()
 
         # Log sequence length for debugging
-        logger.info(f"📏 SEQUENCE LENGTH INFO:")
-        logger.info(f"   Formatted text length: {len(formatted_text)} chars")
-        logger.info(f"   Tokenized sequence length: {len(input_ids)} tokens")
-        logger.info(f"   Model max length: {self.model_max_length}")
+        logger.debug(f"📏 SEQUENCE LENGTH INFO:")
+        logger.debug(f"   Formatted text length: {len(formatted_text)} chars")
+        logger.debug(f"   Tokenized sequence length: {len(input_ids)} tokens")
+        logger.debug(f"   Model max length: {self.model_max_length}")
         if len(input_ids) >= self.model_max_length:
             logger.warning(
                 f"⚠️ Sequence was truncated from {len(formatted_text)} chars to {len(input_ids)} tokens"
@@ -498,9 +498,9 @@ Assistant:"""
             return None, None
 
         # Log original image sizes for debugging
-        logger.info(f"🖼️ PROCESSING {len(images)} IMAGES:")
+        logger.debug(f"🖼️ PROCESSING {len(images)} IMAGES:")
         for i, img in enumerate(images):
-            logger.info(f"   Image {i}: {img.size} (W*H), mode={img.mode}")
+            logger.debug(f"   Image {i}: {img.size} (W*H), mode={img.mode}")
 
         # Use processor directly like official QwenVL implementation
         # The processor is already configured with data_conversion/vision_process.py values
@@ -510,15 +510,15 @@ Assistant:"""
         image_grid_thw = processed.get("image_grid_thw")
 
         # CRITICAL: Log the vision token analysis
-        logger.info(f"🚨 VISION TOKEN ANALYSIS:")
-        logger.info(f"   Input images: {len(images)} images")
-        logger.info(f"   Original sizes: {[img.size for img in images]}")
-        logger.info(f"   pixel_values shape: {pixel_values.shape}")
-        logger.info(f"   Vision tokens generated (pre-merge): {pixel_values.shape[0]}")
+        logger.debug(f"🚨 VISION TOKEN ANALYSIS:")
+        logger.debug(f"   Input images: {len(images)} images")
+        logger.debug(f"   Original sizes: {[img.size for img in images]}")
+        logger.debug(f"   pixel_values shape: {pixel_values.shape}")
+        logger.debug(f"   Vision tokens generated (pre-merge): {pixel_values.shape[0]}")
 
         if image_grid_thw is not None:
-            logger.info(f"   image_grid_thw shape: {image_grid_thw.shape}")
-            logger.info(f"   image_grid_thw values: {image_grid_thw.tolist()}")
+            logger.debug(f"   image_grid_thw shape: {image_grid_thw.shape}")
+            logger.debug(f"   image_grid_thw values: {image_grid_thw.tolist()}")
 
             # Calculate both pre-merge and post-merge token counts for clarity
             # EXPLICIT: Get merge_size from image processor - no defaults
@@ -539,18 +539,18 @@ Assistant:"""
                 total_pre_merge += pre_merge_tokens
                 total_post_merge += post_merge_tokens
 
-                logger.info(
+                logger.debug(
                     f"   Image {i}: grid=({t},{h},{w}) → {pre_merge_tokens} pre-merge → {post_merge_tokens} final tokens"
                 )
 
-            logger.info(
+            logger.debug(
                 f"   TOTAL: {total_pre_merge} pre-merge → {total_post_merge} final tokens (merge_size={merge_size}²={merge_length})"
             )
-            logger.info(
+            logger.debug(
                 f"   Vision token efficiency: {total_post_merge}/{total_pre_merge} = {total_post_merge / total_pre_merge:.1%}"
             )
         else:
-            logger.info(f"   No image_grid_thw available")
+            logger.debug(f"   No image_grid_thw available")
 
         # CRITICAL: Ensure bf16 precision for pixel_values
         if pixel_values.dtype != torch.bfloat16:
@@ -570,6 +570,83 @@ Assistant:"""
         )
 
         return pixel_values, image_grid_thw
+
+    def prepare_inputs_for_inference(
+        self, images: List[Image.Image], text: str, is_first_step: bool = True
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepare inputs for inference following the official Qwen2.5-VL pattern.
+
+        Args:
+            images: List of PIL images
+            text: Input text prompt
+            is_first_step: Whether this is the first generation step (prefill)
+
+        Returns:
+            Dict containing properly formatted inputs for model.generate()
+        """
+        # Tokenize text
+        text_inputs = self.tokenizer(text, return_tensors="pt", padding=False)
+
+        # Prepare base inputs
+        model_inputs = {
+            "input_ids": text_inputs["input_ids"],
+        }
+
+        # Add attention_mask only if it exists
+        if (
+            "attention_mask" in text_inputs
+            and text_inputs["attention_mask"] is not None
+        ):
+            model_inputs["attention_mask"] = text_inputs["attention_mask"]
+
+        # Handle vision inputs based on generation step
+        if is_first_step and images:
+            # First step: process images normally
+            pixel_values, image_grid_thw = self._process_images_for_model(images)
+
+            if pixel_values is not None:
+                model_inputs["pixel_values"] = pixel_values
+
+            if image_grid_thw is not None:
+                model_inputs["image_grid_thw"] = image_grid_thw
+
+            logger.debug(f"🔥 FIRST STEP: Added vision inputs")
+            logger.debug(
+                f"   pixel_values shape: {pixel_values.shape if pixel_values is not None else None}"
+            )
+            logger.debug(
+                f"   image_grid_thw shape: {image_grid_thw.shape if image_grid_thw is not None else None}"
+            )
+        else:
+            # Subsequent steps: don't add vision inputs at all
+            # The model's prepare_inputs_for_generation will handle this
+            logger.debug(f"🔥 SUBSEQUENT STEP: No vision inputs added")
+
+        # Filter to only include valid generation parameters
+        valid_generation_params = {
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "past_key_values",
+            "inputs_embeds",
+            "use_cache",
+            "pixel_values",
+            "pixel_values_videos",
+            "image_grid_thw",
+            "video_grid_thw",
+            "second_per_grid_ts",
+        }
+
+        filtered_inputs = {
+            key: value
+            for key, value in model_inputs.items()
+            if key in valid_generation_params and value is not None
+        }
+
+        logger.debug(f"🔧 FILTERED INFERENCE INPUTS: {list(filtered_inputs.keys())}")
+
+        return filtered_inputs
 
 
 def create_chat_processor(

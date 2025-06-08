@@ -45,11 +45,6 @@ class Config:
             missing_keys.append("model_max_length")
 
         try:
-            self.cache_dir: str = kwargs["cache_dir"]
-        except KeyError:
-            missing_keys.append("cache_dir")
-
-        try:
             self.attn_implementation: str = kwargs["attn_implementation"]
         except KeyError:
             missing_keys.append("attn_implementation")
@@ -239,6 +234,34 @@ class Config:
             self.verbose: bool = kwargs["verbose"]
         except KeyError:
             missing_keys.append("verbose")
+
+        # =====================================================================
+        # MONITORING CONFIGURATION - REQUIRED
+        # =====================================================================
+        try:
+            self.enable_monitoring: bool = kwargs["enable_monitoring"]
+        except KeyError:
+            missing_keys.append("enable_monitoring")
+
+        try:
+            self.monitor_log_dir: str = kwargs["monitor_log_dir"]
+        except KeyError:
+            missing_keys.append("monitor_log_dir")
+
+        try:
+            self.save_predictions: bool = kwargs["save_predictions"]
+        except KeyError:
+            missing_keys.append("save_predictions")
+
+        try:
+            self.save_token_analysis: bool = kwargs["save_token_analysis"]
+        except KeyError:
+            missing_keys.append("save_token_analysis")
+
+        try:
+            self.save_raw_text: bool = kwargs["save_raw_text"]
+        except KeyError:
+            missing_keys.append("save_raw_text")
 
         # =====================================================================
         # LOSS CONFIGURATION - REQUIRED
@@ -592,7 +615,6 @@ class Config:
             "model_path",
             "model_size",
             "model_max_length",
-            "cache_dir",
             "attn_implementation",
             "torch_dtype",
             "use_cache",
@@ -632,6 +654,12 @@ class Config:
             "log_level",
             "report_to",
             "verbose",
+            # Monitoring
+            "enable_monitoring",
+            "monitor_log_dir",
+            "save_predictions",
+            "save_token_analysis",
+            "save_raw_text",
             # Loss configuration
             "loss_type",
             "lm_weight",
@@ -726,9 +754,9 @@ def create_training_arguments_with_deepspeed(config: Config) -> TrainingArgument
             "remove_unused_columns": config.remove_unused_columns,
             "dataloader_num_workers": config.dataloader_num_workers,
             "dataloader_pin_memory": config.pin_memory,
-            "report_to": [config.report_to]
-            if isinstance(config.report_to, str)
-            else config.report_to,
+            "report_to": [],  # Disable all reporting to prevent logs
+            # Completely disable all progress logging
+            "disable_tqdm": True,
         }
     )
 

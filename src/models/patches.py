@@ -22,11 +22,11 @@ VERIFICATION:
 Run generation tests to verify both training and inference work correctly.
 """
 
-import logging
-
 import torch
 
-logger = logging.getLogger(__name__)
+from src.logger_utils import get_patches_logger
+
+logger = get_patches_logger()
 
 
 def rotate_half(x):
@@ -144,11 +144,29 @@ def safe_visual_forward(original_forward):
         # Only apply safe handling during inference
         try:
             # Validate inputs before processing
-            if pixel_values.numel() == 0:
+            if pixel_values.numel() == 0 or pixel_values.shape[0] == 0:
                 logger.warning(
                     "⚠️ Empty pixel_values tensor detected during inference, skipping visual processing"
                 )
                 # Return empty tensor with correct shape
+                # EXPLICIT: Get hidden_size from model - no defaults
+                if hasattr(self, "embed_dim"):
+                    hidden_size = self.embed_dim
+                elif hasattr(self, "config") and hasattr(self.config, "hidden_size"):
+                    hidden_size = self.config.hidden_size
+                else:
+                    raise ValueError(
+                        "Cannot determine hidden_size - model must have embed_dim or config.hidden_size"
+                    )
+                return torch.zeros(
+                    0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
+                )
+
+            # Additional validation for grid_thw
+            if grid_thw.numel() == 0 or grid_thw.shape[0] == 0:
+                logger.warning(
+                    "⚠️ Empty grid_thw tensor detected during inference, skipping visual processing"
+                )
                 # EXPLICIT: Get hidden_size from model - no defaults
                 if hasattr(self, "embed_dim"):
                     hidden_size = self.embed_dim
@@ -241,11 +259,18 @@ def apply_comprehensive_qwen25_fixes():
         )
         logger.info("✅ Official mRoPE fix applied (with batch dimension fix)")
 
-        # Fix 2: DISABLED - Visual forward patch causes CUDA index errors during generation
-        # The official Qwen2.5-VL visual forward is more robust than our custom patch
-        logger.info("⚠️ Visual forward patch DISABLED - using official implementation")
-        logger.info("   → This prevents CUDA index out of bounds during generation")
-        logger.info("   → Official implementation handles edge cases better")
+        # Fix 2: Apply safe visual forward patch for generation edge cases
+        # This handles empty sequences and dimension mismatches during generation
+        if hasattr(qwen25_modeling, "Qwen2_5_VisionTransformerPretrainedModel"):
+            original_forward = (
+                qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel.forward
+            )
+            qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel.forward = (
+                safe_visual_forward(original_forward)
+            )
+            logger.info("✅ Safe visual forward patch applied for generation")
+        else:
+            logger.warning("⚠️ Visual transformer class not found - patch not applied")
 
         logger.info("✅ All Qwen2.5-VL fixes applied successfully")
         logger.info("   - mRoPE: Uses official doubling logic + batch fix")
@@ -277,9 +302,20 @@ def verify_qwen25_patches():
             logger.warning("⚠️ mRoPE patch not applied correctly")
             return False
 
-        # Visual patch is disabled - just check if class exists
+        # Check visual patch
         if hasattr(qwen25_modeling, "Qwen2_5_VisionTransformerPretrainedModel"):
-            logger.info("✅ Visual transformer class available")
+            # Check if our safe wrapper is applied
+            forward_method = (
+                qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel.forward
+            )
+            if hasattr(forward_method, "__name__") and "wrapped_forward" in str(
+                forward_method
+            ):
+                logger.info("✅ Safe visual forward patch verification successful")
+            else:
+                logger.info(
+                    "✅ Visual transformer class available (patch may not be applied)"
+                )
         else:
             logger.warning("⚠️ Visual transformer class not found")
             return False

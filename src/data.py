@@ -15,7 +15,6 @@ Key Features:
 """
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
@@ -26,30 +25,13 @@ from torch.utils.data import Dataset
 
 from src.chat_processor import ChatProcessor
 from src.config.base import Config
+
+# Get the debug logger from losses.py
+from src.logger_utils import get_data_logger
 from src.tokens import SpecialTokens
 from src.utils import IGNORE_INDEX
 
-
-# Get the debug logger from losses.py
-def get_debug_logger():
-    """Get the debug logger for data processing."""
-    return logging.getLogger("qwen_debug")
-
-
-data_logger = get_debug_logger()
-
-# Global sample logger for debugging
-_sample_logger = None
-
-
-def get_sample_logger():
-    """Get or create sample logger for debugging."""
-    global _sample_logger
-    if _sample_logger is None:
-        import logging
-
-        _sample_logger = logging.getLogger("sample_debug")
-    return _sample_logger
+data_logger = get_data_logger()
 
 
 def read_jsonl(path: str) -> List[Dict]:
@@ -504,12 +486,12 @@ class StandardDataCollator:
             )
 
         # Log comprehensive sequence information for debugging
-        data_logger.info(f"📊 BATCH SEQUENCE INFO:")
-        data_logger.info(f"   Batch size: {batch_size}")
-        data_logger.info(f"   Individual lengths: {sequence_lengths}")
-        data_logger.info(f"   Max length in batch: {batch_max_length}")
-        data_logger.info(f"   Min length in batch: {min(sequence_lengths)}")
-        data_logger.info(f"   Total tokens (sum): {sum(sequence_lengths)}")
+        data_logger.debug(f"📊 BATCH SEQUENCE INFO:")
+        data_logger.debug(f"   Batch size: {batch_size}")
+        data_logger.debug(f"   Individual lengths: {sequence_lengths}")
+        data_logger.debug(f"   Max length in batch: {batch_max_length}")
+        data_logger.debug(f"   Min length in batch: {min(sequence_lengths)}")
+        data_logger.debug(f"   Total tokens (sum): {sum(sequence_lengths)}")
 
         # Log vision token information
         total_images = sum(info["image_count"] for info in vision_info)
@@ -585,7 +567,7 @@ class StandardDataCollator:
 
             batch["position_ids"] = torch.cat(padded_position_ids_list, dim=1)
 
-        # 8. Handle images efficiently
+        # 8. Handle images - FAIL-FAST approach
         images = [
             instance["pixel_values"]
             for instance in instances
@@ -593,6 +575,17 @@ class StandardDataCollator:
         ]
 
         if images:
+            # Track image counts per sample for proper extraction during generation
+            image_counts_per_sample = []
+            for instance in instances:
+                if "pixel_values" in instance and instance["pixel_values"].shape[0] > 0:
+                    image_counts_per_sample.append(instance["pixel_values"].shape[0])
+                else:
+                    image_counts_per_sample.append(0)
+
+            # Store image counts in batch for later use
+            batch["image_counts_per_sample"] = image_counts_per_sample
+
             # Concatenate valid images
             batch["pixel_values"] = torch.cat(images, dim=0)
 
@@ -601,7 +594,7 @@ class StandardDataCollator:
                 batch["pixel_values"] = batch["pixel_values"].to(torch.bfloat16)
                 data_logger.debug(f"🔧 Converted pixel_values to bf16")
 
-            # Handle image grid info
+            # Handle image grid info - REQUIRED if pixel_values exist
             grid_thw_list = [
                 instance["image_grid_thw"]
                 for instance in instances
@@ -609,15 +602,18 @@ class StandardDataCollator:
                 and instance["image_grid_thw"].shape[0] > 0
             ]
 
-            if grid_thw_list:
-                batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
-                data_logger.debug(f"🖼️ Image grid info: {batch['image_grid_thw'].shape}")
-            else:
-                # Remove pixel_values if no valid grid_thw
-                del batch["pixel_values"]
-                data_logger.warning(
-                    "⚠️ Removed pixel_values due to invalid image_grid_thw"
+            if not grid_thw_list:
+                raise ValueError(
+                    "pixel_values present but no valid image_grid_thw found. "
+                    "Both pixel_values and image_grid_thw must be consistent."
                 )
+
+            batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
+            data_logger.debug(f"🖼️ Image grid info: {batch['image_grid_thw'].shape}")
+            data_logger.debug(f"🖼️ Image counts per sample: {image_counts_per_sample}")
+        else:
+            # No images in batch
+            batch["image_counts_per_sample"] = [0] * batch_size
 
         return batch
 
