@@ -1,8 +1,8 @@
 """
-Unified BBU Trainer following the official qwen-vl-finetune approach.
+Unified BBU Trainer using the direct configuration system.
 
-This implementation supports both ModelWrapper and direct loading approaches,
-closely matching the official train_qwen.py to ensure compatibility.
+This implementation uses the new direct config access that eliminates
+parameter passing and provides flat, direct access to all config values.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +18,7 @@ from transformers import (
     TrainingArguments,
 )
 
-from src.config.base import Config
+from src.config import config
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
@@ -33,9 +33,8 @@ class BBUTrainer(Trainer):
     while maintaining clean separation of concerns.
     """
 
-    def __init__(self, config: Config, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.config = config
         self.logger = get_training_logger()
 
         # Initialize detection losses storage for callback integration
@@ -44,57 +43,50 @@ class BBUTrainer(Trainer):
 
         # Initialize training monitor if enabled
         self.monitor = None
-        if getattr(config, "enable_monitoring", False):
+        if config.enable_monitoring:
             self._init_monitor()
 
         # Initialize object detection loss if configured
         self.detection_loss = None
-        if hasattr(config, "loss_type") and config.loss_type == "object_detection":
+        if config.loss_type == "object_detection":
             self._init_detection_loss()
 
     def _init_monitor(self):
         """Initialize training monitor for prediction and GT logging."""
         from src.training.monitor import create_training_monitor
 
-        monitor_log_dir = getattr(
-            self.config, "monitor_log_dir", "logs/training_monitor"
-        )
-        save_predictions = getattr(self.config, "save_predictions", True)
-        save_token_analysis = getattr(self.config, "save_token_analysis", True)
-        save_raw_text = getattr(self.config, "save_raw_text", False)
-
         self.monitor = create_training_monitor(
-            log_dir=monitor_log_dir,
-            save_predictions=save_predictions,
-            save_token_analysis=save_token_analysis,
-            save_raw_text=save_raw_text,
+            log_dir=config.monitor_log_dir,
+            save_predictions=config.save_predictions,
+            save_token_analysis=config.save_token_analysis,
+            save_raw_text=config.save_raw_text,
         )
 
         self.logger.info("🔍 Training monitor initialized in BBUTrainer")
-        self.logger.info(f"   Monitor log directory: {monitor_log_dir}")
-        self.logger.info(f"   Save predictions: {save_predictions}")
-        self.logger.info(f"   Save token analysis: {save_token_analysis}")
-        self.logger.info(f"   Save raw text: {save_raw_text}")
+        self.logger.info(f"   Monitor log directory: {config.monitor_log_dir}")
+        self.logger.info(f"   Save predictions: {config.save_predictions}")
+        self.logger.info(f"   Save token analysis: {config.save_token_analysis}")
+        self.logger.info(f"   Save raw text: {config.save_raw_text}")
 
     def _init_detection_loss(self):
         """Initialize object detection loss with config parameters."""
         from src.losses import ObjectDetectionLoss
 
-        # EXPLICIT: All parameters must be provided in config - no defaults
+        # EXPLICIT: All parameters accessed directly from global config
         self.detection_loss = ObjectDetectionLoss(
-            bbox_weight=self.config.bbox_weight,
-            giou_weight=self.config.giou_weight,
-            class_weight=self.config.class_weight,
-            max_generation_length=self.config.max_generation_length,
-            hungarian_matching=self.config.hungarian_matching,
-            enable_monitoring=getattr(self.config, "enable_monitoring", False),
+            bbox_weight=config.bbox_weight,
+            giou_weight=config.giou_weight,
+            class_weight=config.class_weight,
+            max_generation_length=config.max_generation_length,
+            hungarian_matching=config.hungarian_matching,
+            enable_monitoring=config.enable_monitoring,
             monitor=self.monitor,
         )
 
         self.logger.info("🎯 Object detection loss initialized in BBUTrainer")
-        self.logger.info(f"   bbox_weight: {self.config.bbox_weight}")
-        self.logger.info(f"   giou_weight: {self.config.giou_weight}")
-        self.logger.info(f"   class_weight: {self.config.class_weight}")
+        self.logger.info(f"   bbox_weight: {config.bbox_weight}")
+        self.logger.info(f"   giou_weight: {config.giou_weight}")
+        self.logger.info(f"   class_weight: {config.class_weight}")
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
@@ -291,10 +283,10 @@ class BBUTrainer(Trainer):
         return input_parts, ground_truth_texts
 
 
-def set_model_training_params(config: Config, model):
+def set_model_training_params(model):
     """
-    Set model training parameters following the official approach.
-    This matches the set_model() function in train_qwen.py exactly.
+    Set model training parameters based on global configuration.
+    Configures which parts of the model should be trained.
     """
     logger = get_training_logger()
 
@@ -331,9 +323,7 @@ def set_model_training_params(config: Config, model):
         logger.info("🔧 LLM: FROZEN")
 
 
-def setup_model_and_tokenizer_with_wrapper(
-    config: Config,
-) -> Tuple[nn.Module, Any, Any]:
+def setup_model_and_tokenizer_with_wrapper() -> Tuple[nn.Module, Any, Any]:
     """
     Setup model and tokenizer using BBU ModelWrapper with patches.
     This ensures all mRoPE fixes and other patches are applied.
@@ -344,7 +334,7 @@ def setup_model_and_tokenizer_with_wrapper(
     # Use BBU ModelWrapper which includes all necessary patches
     from src.models.wrapper import ModelWrapper
 
-    model_wrapper = ModelWrapper(config, logger)
+    model_wrapper = ModelWrapper(logger)
     model, tokenizer, image_processor = model_wrapper.load_all()
 
     # CRITICAL: Disable cache for training - following official approach
@@ -362,7 +352,7 @@ def setup_model_and_tokenizer_with_wrapper(
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # Set training parameters
-    set_model_training_params(config, model)
+    set_model_training_params(model)
 
     # Log trainable parameters - following official approach
     if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
@@ -376,7 +366,7 @@ def setup_model_and_tokenizer_with_wrapper(
     return model, tokenizer, image_processor
 
 
-def setup_model_and_tokenizer_direct(config: Config) -> Tuple[nn.Module, Any, Any]:
+def setup_model_and_tokenizer_direct() -> Tuple[nn.Module, Any, Any]:
     """
     Setup model and tokenizer with direct loading and patches.
     This matches the model setup in train_qwen.py exactly.
@@ -456,7 +446,7 @@ def setup_model_and_tokenizer_direct(config: Config) -> Tuple[nn.Module, Any, An
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # Set training parameters
-    set_model_training_params(config, model)
+    set_model_training_params(model)
 
     # Log trainable parameters - following official approach
     if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
@@ -470,24 +460,18 @@ def setup_model_and_tokenizer_direct(config: Config) -> Tuple[nn.Module, Any, An
     return model, tokenizer, image_processor
 
 
-def setup_model_and_tokenizer(config: Config) -> Tuple[nn.Module, Any, Any]:
+def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
     """
     Setup model and tokenizer with configurable approach.
     Chooses between ModelWrapper and direct loading based on config.
     """
-    # EXPLICIT: No defaults - config must specify use_model_wrapper
-    if not hasattr(config, "use_model_wrapper"):
-        raise ValueError(
-            "Config must specify 'use_model_wrapper' - no defaults allowed"
-        )
-
     if config.use_model_wrapper:
-        return setup_model_and_tokenizer_with_wrapper(config)
+        return setup_model_and_tokenizer_with_wrapper()
     else:
-        return setup_model_and_tokenizer_direct(config)
+        return setup_model_and_tokenizer_direct()
 
 
-def setup_data_module(config: Config, tokenizer, image_processor) -> Dict[str, Any]:
+def setup_data_module(tokenizer, image_processor) -> Dict[str, Any]:
     """
     Setup data module following the official approach.
     This matches the data setup in train_qwen.py.
@@ -495,39 +479,34 @@ def setup_data_module(config: Config, tokenizer, image_processor) -> Dict[str, A
     logger = get_training_logger()
     logger.info("🔧 Setting up data module...")
 
-    # Setup datasets
+    # Create datasets - no config parameters needed
     train_dataset = BBUDataset(
-        config, tokenizer, image_processor, config.train_data_path
+        tokenizer=tokenizer,
+        image_processor=image_processor,
+        data_path=config.train_data_path,
     )
-    logger.info(f"✅ Train dataset: {len(train_dataset)} samples")
 
-    eval_dataset = None
-    if hasattr(config, "val_data_path") and config.val_data_path:
-        eval_dataset = BBUDataset(
-            config, tokenizer, image_processor, config.val_data_path
-        )
-        if len(eval_dataset) > 0:
-            logger.info(f"✅ Eval dataset: {len(eval_dataset)} samples")
-        else:
-            logger.warning("⚠️ Validation dataset is empty")
-            eval_dataset = None
+    val_dataset = BBUDataset(
+        tokenizer=tokenizer,
+        image_processor=image_processor,
+        data_path=config.val_data_path,
+    )
 
-    # EXPLICIT: No defaults - config must specify these values
-    if not hasattr(config, "max_total_length"):
-        raise ValueError("Config must specify 'max_total_length' - no defaults allowed")
-    if not hasattr(config, "collator_type"):
-        raise ValueError("Config must specify 'collator_type' - no defaults allowed")
-
-    # Setup data collator
+    # Create data collator
     data_collator = create_data_collator(
         tokenizer=tokenizer,
         max_total_length=config.max_total_length,
         collator_type=config.collator_type,
     )
 
+    logger.info(f"✅ Data module setup completed:")
+    logger.info(f"   Train samples: {len(train_dataset)}")
+    logger.info(f"   Val samples: {len(val_dataset)}")
+    logger.info(f"   Collator type: {config.collator_type}")
+
     return {
         "train_dataset": train_dataset,
-        "eval_dataset": eval_dataset,
+        "eval_dataset": val_dataset,
         "data_collator": data_collator,
     }
 
@@ -535,13 +514,12 @@ def setup_data_module(config: Config, tokenizer, image_processor) -> Dict[str, A
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """
     Safe model saving following the official approach.
-    This matches the safe_save_model_for_hf_trainer in train_qwen.py exactly.
+    This matches the saving logic in train_qwen.py.
     """
-    if trainer.deepspeed:
-        torch.cuda.synchronize()
-        trainer.save_model(output_dir)
-        return
+    logger = get_training_logger()
+    logger.info(f"💾 Safely saving model to: {output_dir}")
 
+    # Save model state dict
     state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
         cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
@@ -550,69 +528,41 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def create_trainer(
-    config: Config, training_args: Optional[TrainingArguments] = None, **kwargs
+    training_args: Optional[TrainingArguments] = None, **kwargs
 ) -> BBUTrainer:
     """
-    Create BBUTrainer with object detection loss integration.
-    This matches the trainer creation in train_qwen.py exactly but uses BBUTrainer.
+    Create BBU trainer with all components using direct config access.
+    This matches the trainer creation in train_qwen.py.
     """
     logger = get_training_logger()
+    logger.info("🏋️ Creating BBU trainer...")
 
-    # EXPLICIT: No defaults - config must specify use_model_wrapper
-    if not hasattr(config, "use_model_wrapper"):
-        raise ValueError(
-            "Config must specify 'use_model_wrapper' - no defaults allowed"
-        )
-
-    approach = "ModelWrapper" if config.use_model_wrapper else "Direct Loading"
-    logger.info(f"🔧 Creating BBUTrainer using {approach}...")
-
-    # EXPLICIT: Enable flash attention optimization based on attn_implementation
-    if (
-        hasattr(config, "attn_implementation")
-        and config.attn_implementation == "flash_attention_2"
-    ):
-        # replace_qwen2_vl_attention_class()
-        logger.info(
-            "✅DDDDDBUG not using Flash attention optimization enabled (flash_attention_2)"
-        )
-    else:
-        logger.info(
-            f"ℹ️ Using standard attention (attn_implementation: {config.attn_implementation})"
-        )
-
-    # Setup model and tokenizer (automatically chooses approach based on config)
-    model, tokenizer, image_processor = setup_model_and_tokenizer(config)
+    # Setup model and tokenizer
+    model, tokenizer, image_processor = setup_model_and_tokenizer()
 
     # Setup data module
-    data_module = setup_data_module(config, tokenizer, image_processor)
+    data_module = setup_data_module(tokenizer, image_processor)
 
-    if training_args is None:
-        training_args = TrainingArguments(disable_tqdm=True)
+    # Create callbacks
+    callbacks = []
+
+    # Add detection loss logging callback if object detection is enabled
+    if config.loss_type == "object_detection":
+        detection_callback = DetectionLossLoggingCallback()
+        callbacks.append(detection_callback)
+        logger.info("🎯 Added DetectionLossLoggingCallback")
 
     # Create BBUTrainer with object detection loss integration
     trainer = BBUTrainer(
-        config=config,  # Pass config to BBUTrainer
         model=model,
         processing_class=tokenizer,  # Use processing_class instead of tokenizer
         args=training_args,
-        **data_module,
+        train_dataset=data_module["train_dataset"],
+        eval_dataset=data_module["eval_dataset"],
+        data_collator=data_module["data_collator"],
+        callbacks=callbacks,
+        **kwargs,
     )
 
-    logger.info(f"✅ BBUTrainer created successfully using {approach}")
-
-    # Add DetectionLossLoggingCallback by default when object detection loss is enabled
-    # or when explicitly requested via config
-    enable_detection_logging = trainer.detection_loss is not None
-
-    if enable_detection_logging:
-        detection_callback = DetectionLossLoggingCallback()
-        trainer.add_callback(detection_callback)
-        logger.info("📊 DetectionLossLoggingCallback: ADDED")
-
-    if trainer.detection_loss is not None:
-        logger.info("🎯 Object detection loss integration: ENABLED")
-    else:
-        logger.info("📝 Object detection loss integration: DISABLED")
-
+    logger.info("✅ BBU trainer created successfully")
     return trainer

@@ -28,9 +28,20 @@ logger = get_attention_logger()
 def _is_flash_attn_available():
     """Check if Flash Attention is available, regardless of CUDA availability."""
     try:
-        import flash_attn
-        from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input
-        from flash_attn.flash_attn_interface import (
+        import importlib.util
+
+        # Check if flash_attn is available
+        if importlib.util.find_spec("flash_attn") is None:
+            return False
+
+        # Try importing the specific modules we need
+        import flash_attn  # noqa: F401
+        from flash_attn.bert_padding import (  # noqa: F401
+            index_first_axis,
+            pad_input,
+            unpad_input,
+        )
+        from flash_attn.flash_attn_interface import (  # noqa: F401
             flash_attn_func,
             flash_attn_varlen_func,
         )

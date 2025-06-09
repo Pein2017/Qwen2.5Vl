@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 
+from src.config import config
+
 
 @dataclass
 class StabilityMetrics:
@@ -80,16 +82,12 @@ class StabilityMetrics:
         )
         return nan_count / window
 
-    def is_unstable(self, config) -> bool:
+    def is_unstable(self) -> bool:
         """Check if training is becoming unstable."""
         # Check consecutive issues
-        max_consecutive_zero = getattr(
-            config, "max_consecutive_zero", 10
-        )  # Default to 10 if not set
-
         if (
             self.consecutive_nan_count >= config.max_consecutive_nan
-            or self.consecutive_zero_count >= max_consecutive_zero
+            or self.consecutive_zero_count >= config.max_consecutive_zero
         ):
             return True
 
@@ -121,23 +119,13 @@ class StabilityMonitor:
     - Training health diagnostics
     """
 
-    def __init__(self, config, logger=None):
-        self.config = config
+    def __init__(self, logger=None):
         from src.logger_utils import get_stability_logger
 
         self.logger = logger or get_stability_logger()
         self.metrics = StabilityMetrics()
 
-        # EXPLICIT: No defaults - config must specify these values
-        if not hasattr(config, "learning_rate"):
-            raise ValueError(
-                "Config must specify 'learning_rate' - no defaults allowed"
-            )
-        if not hasattr(config, "max_grad_norm"):
-            raise ValueError(
-                "Config must specify 'max_grad_norm' - no defaults allowed"
-            )
-
+        # Access config values directly from global config
         self.original_lr = config.learning_rate
         self.current_lr = config.learning_rate
         self.original_grad_clip = config.max_grad_norm
@@ -192,7 +180,7 @@ class StabilityMonitor:
 
         # Determine actions
         if is_nan or is_inf:
-            if self.metrics.consecutive_nan_count <= self.config.max_consecutive_nan:
+            if self.metrics.consecutive_nan_count <= config.max_consecutive_nan:
                 status["should_skip"] = True
                 status["recovery_needed"] = True
                 status["recommendations"].append("Skip step and attempt recovery")
@@ -202,7 +190,7 @@ class StabilityMonitor:
                     "Stop training - too many consecutive NaN/Inf"
                 )
 
-        elif self.metrics.is_unstable(self.config):
+        elif self.metrics.is_unstable():
             status["recovery_needed"] = True
             status["recommendations"].append("Apply stability recovery measures")
 
@@ -217,7 +205,7 @@ class StabilityMonitor:
         """
         self.metrics.recovery_attempts += 1
 
-        if not self.config.nan_recovery_enabled:
+        if not config.nan_recovery_enabled:
             self.logger.warning("🚫 NaN recovery is disabled in config")
             return False
 
@@ -235,7 +223,7 @@ class StabilityMonitor:
 
         # 2. Reduce learning rate
         if optimizer is not None and hasattr(optimizer, "param_groups"):
-            reduction_factor = self.config.learning_rate_reduction_factor
+            reduction_factor = config.learning_rate_reduction_factor
             self.current_lr_reduction *= reduction_factor
 
             for param_group in optimizer.param_groups:
@@ -248,9 +236,7 @@ class StabilityMonitor:
             recovery_success = True
 
         # 3. Reduce gradient clipping
-        new_grad_clip = (
-            self.original_grad_clip * self.config.gradient_clip_reduction_factor
-        )
+        new_grad_clip = self.original_grad_clip * config.gradient_clip_reduction_factor
         self.logger.info(
             f"   ✂️ Reduced gradient clipping: {self.original_grad_clip} → {new_grad_clip}"
         )
@@ -369,6 +355,6 @@ class StabilityMonitor:
         return True, "Training appears stable"
 
 
-def create_stability_monitor(config, logger=None) -> StabilityMonitor:
-    """Create a stability monitor with the given configuration."""
-    return StabilityMonitor(config, logger)
+def create_stability_monitor(logger=None) -> StabilityMonitor:
+    """Create a stability monitor with the global configuration."""
+    return StabilityMonitor(logger)

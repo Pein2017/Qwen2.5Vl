@@ -24,7 +24,7 @@ import transformers
 from torch.utils.data import Dataset
 
 from src.chat_processor import ChatProcessor
-from src.config.base import Config
+from src.config import config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
@@ -45,53 +45,30 @@ class BBUDataset(Dataset):
 
     def __init__(
         self,
-        config: Config,
         tokenizer,
         image_processor,
         data_path: str,
     ):
         """
-        Initialize BBU Dataset with explicit configuration.
-        No defaults allowed - all parameters must be specified in config.
+        Initialize BBU Dataset using global configuration.
+        All configuration values are accessed from the global config singleton.
         """
-        # EXPLICIT: No defaults - config must specify all required fields
-        required_fields = [
-            "data_root",
-            "model_max_length",
-            "use_candidates",
-            "candidates_file",
-        ]
-        for field in required_fields:
-            if not hasattr(config, field):
-                raise ValueError(f"Config must specify '{field}' - no defaults allowed")
-
-        self.config = config
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.data_path = data_path
-
-        # Use explicit config values - no getattr defaults
-        self.data_root = config.data_root
-        self.model_max_length = config.model_max_length
-        self.use_candidates = config.use_candidates
-        self.candidates_file = config.candidates_file
 
         # Load data
         self.data = self._load_data()
 
         # Load candidates if enabled
         self.candidates = None
-        if self.use_candidates and self.candidates_file:
+        if config.use_candidates and config.candidates_file:
             self.candidates = self._load_candidates()
 
-        # Initialize chat processor
+        # Initialize chat processor - no config parameters needed
         self.chat_processor = ChatProcessor(
             tokenizer=self.tokenizer,
             image_processor=self.image_processor,
-            data_root=self.data_root,
-            model_max_length=self.model_max_length,
-            use_candidates=self.use_candidates,
-            candidates_file=self.candidates_file,
         )
 
         # Initialize special tokens first (needed for validation)
@@ -99,8 +76,27 @@ class BBUDataset(Dataset):
 
         # Calculate sequence lengths for optimization
         self._sequence_lengths = None
-        if hasattr(config, "calculate_lengths") and config.calculate_lengths:
-            self._calculate_sequence_lengths()
+        # Note: calculate_lengths feature removed for simplicity
+
+    @property
+    def data_root(self) -> str:
+        """Get data root from global config."""
+        return config.data_root
+
+    @property
+    def model_max_length(self) -> int:
+        """Get model max length from global config."""
+        return config.max_total_length
+
+    @property
+    def use_candidates(self) -> bool:
+        """Get use candidates flag from global config."""
+        return config.use_candidates
+
+    @property
+    def candidates_file(self) -> str:
+        """Get candidates file path from global config."""
+        return config.candidates_file
 
     def _validate_and_filter_samples(self, raw_data: List[Dict]) -> List[Dict]:
         """Validate and filter samples with strict requirements."""

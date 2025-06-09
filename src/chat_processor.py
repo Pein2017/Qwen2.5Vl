@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from PIL import Image
 
+from src.config import config
 from src.logger_utils import get_chat_logger
 from src.tokens import SpecialTokens
 
@@ -37,38 +38,31 @@ class ChatProcessor:
         self,
         tokenizer,
         image_processor,
-        data_root: str = "./",
-        model_max_length: int = 8192,
-        use_candidates: bool = False,
-        candidates_file: Optional[str] = None,
     ):
         """
-        Initialize the chat processor.
+        Initialize the chat processor using global configuration.
 
         Args:
             tokenizer: Qwen2.5-VL tokenizer
             image_processor: Qwen2.5-VL image processor
-            data_root: Root directory for image paths
-            model_max_length: Maximum sequence length
-            use_candidates: Whether to use candidate phrases
-            candidates_file: Path to candidate phrases JSON
         """
         self.tokenizer = tokenizer
         self.image_processor = image_processor
-        self.data_root = Path(data_root)
-        self.model_max_length = model_max_length
+
+        # Store data root from global config
+        self.data_root = Path(config.data_root)
 
         # Initialize special tokens (only for vision tokens, not for object detection)
         self.tokens = SpecialTokens()
 
-        # Build system prompt
-        self.system_prompt = self._build_system_prompt(use_candidates, candidates_file)
+        # Build system prompt using global config
+        self.system_prompt = self._build_system_prompt()
 
         # Log configuration
         logger.info(f"✅ ChatProcessor initialized:")
-        logger.info(f"   Data root: {self.data_root}")
-        logger.info(f"   Model max length: {self.model_max_length}")
-        logger.info(f"   Use candidates: {use_candidates}")
+        logger.info(f"   Data root: {config.data_root}")
+        logger.info(f"   Model max length: {config.max_total_length}")
+        logger.info(f"   Use candidates: {config.use_candidates}")
         logger.info(f"   Output format: Pure JSON (Qwen2.5-VL compatible)")
 
         # Log a sample of the system prompt
@@ -77,9 +71,7 @@ class ChatProcessor:
         logger.info(f"📄 System prompt sample (last 200 chars):")
         logger.info(f"   {repr(self.system_prompt[-200:])}")
 
-    def _build_system_prompt(
-        self, use_candidates: bool, candidates_file: Optional[str]
-    ) -> str:
+    def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
 
         base_prompt = """You are an object-detection assistant for telecom-equipment inspection.
@@ -121,8 +113,8 @@ If two objects share the same y, e.g. (y=20,x=50) and (y=20,x=10), list the one 
 - Ensure valid JSON syntax with proper escaping if needed"""
 
         # Add candidate phrases if provided
-        if use_candidates and candidates_file:
-            candidates_path = Path(candidates_file)
+        if config.use_candidates and config.candidates_file:
+            candidates_path = Path(config.candidates_file)
             if candidates_path.exists():
                 with open(candidates_path, "r", encoding="utf-8") as f:
                     candidates_data = json.load(f)
@@ -145,7 +137,7 @@ If two objects share the same y, e.g. (y=20,x=50) and (y=20,x=10), list the one 
 
                 base_prompt += candidates_section
             else:
-                logger.warning(f"Candidates file not found: {candidates_file}")
+                logger.warning(f"Candidates file not found: {config.candidates_file}")
 
         # Add few-shot examples section
         few_shot_section = """
@@ -407,8 +399,8 @@ Assistant:"""
         logger.debug(f"📏 SEQUENCE LENGTH INFO:")
         logger.debug(f"   Formatted text length: {len(formatted_text)} chars")
         logger.debug(f"   Tokenized sequence length: {len(input_ids)} tokens")
-        logger.debug(f"   Model max length: {self.model_max_length}")
-        if len(input_ids) >= self.model_max_length:
+        logger.debug(f"   Model max length: {config.max_total_length}")
+        if len(input_ids) >= config.max_total_length:
             logger.warning(
                 f"⚠️ Sequence was truncated from {len(formatted_text)} chars to {len(input_ids)} tokens"
             )
