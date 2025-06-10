@@ -15,7 +15,6 @@ Key Features:
 """
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
@@ -275,8 +274,12 @@ class BBUDataset(Dataset):
         if "input_ids" not in result:
             raise ValueError("Missing input_ids in preprocessed result")
 
+        # Extract ground truth objects for detection loss
+        gt_objects = extract_ground_truth_from_sample(sample)
+        result["ground_truth_objects"] = gt_objects
+
         data_logger.debug(
-            f"✅ Sample {idx} processed (automatic memory management enabled)"
+            f"✅ Sample {idx} processed with {len(gt_objects)} GT objects (automatic memory management enabled)"
         )
 
         return result
@@ -312,93 +315,55 @@ class BBUDataset(Dataset):
             return None
 
 
-def extract_ground_truth_objects_from_conversation(
-    conversations: List[Dict[str, str]],
-) -> Optional[List[Dict]]:
-    """
-    Extract ground truth objects from conversation format.
+def extract_ground_truth_from_sample(sample_data):
+    """Extract ground truth objects from conversation format with proper coordinate normalization"""
+    target = sample_data.get("target", {})
+    objects = target.get("objects", [])
+    images = target.get("images", [])
 
-    Prioritizes Qwen2.5-VL special token format, falls back to legacy JSON format.
-    """
-    for conv in conversations:
-        role = conv.get("role", conv.get("from", ""))
-        content = conv.get("content", conv.get("value", ""))
+    if not images:
+        return []
 
-        if role == "assistant" and content:
-            # First, try special token format (preferred)
-            objects = _extract_objects_with_special_tokens(content)
-            if objects:
-                return objects
+    # Load the first image to get actual dimensions after your scaling
+    from pathlib import Path
 
-            # Fallback to legacy JSON format for backward compatibility
-            try:
-                # Try to parse as JSON array
-                objects = json.loads(content)
-                if isinstance(objects, list):
-                    validated_objects = []
-                    for obj in objects:
-                        if isinstance(obj, dict) and "bbox" in obj and "desc" in obj:
-                            # Validate bbox format
-                            bbox = obj["bbox"]
-                            if isinstance(bbox, list) and len(bbox) == 4:
-                                validated_objects.append(
-                                    {"bbox": bbox, "description": obj["desc"]}
-                                )
+    from PIL import Image
 
-                    if validated_objects:
-                        return validated_objects
-            except (json.JSONDecodeError, KeyError, TypeError):
-                # If JSON parsing fails, try regex extraction
-                return _extract_objects_with_regex(content)
+    from src.config import config
 
-    return None
+    image_path = Path(config.data_root) / images[0]
+    try:
+        with Image.open(image_path) as img:
+            image_width, image_height = img.size
+    except Exception as e:
+        print(f"⚠️ Could not load image {image_path}: {e}")
+        return []
 
+    # Convert to detection format with normalized coordinates
+    gt_objects = []
+    for obj in objects:
+        box = obj.get("box", None)  # [x1, y1, x2, y2] absolute coordinates
+        desc = obj.get("desc", None)
 
-def _extract_objects_with_special_tokens(content: str) -> Optional[List[Dict]]:
-    """
-    Extract objects from Qwen2.5-VL special token format.
+        if box is None or desc is None:
+            continue  # Skip invalid objects
 
-    Format: <|object_ref_start|>description<|object_ref_end|><|box_start|>(x1, y1), (x2, y2)<|box_end|>
-    """
-    objects = []
+        # Normalize coordinates to [0, 1] using actual scaled image dimensions
+        # This preserves your dynamic resolution and scaling
+        normalized_box = [
+            box[0] / image_width,  # x1
+            box[1] / image_height,  # y1
+            box[2] / image_width,  # x2
+            box[3] / image_height,  # y2
+        ]
 
-    # Pattern to match special token format
-    pattern = r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|box_start\|>\(([^)]+)\),\s*\(([^)]+)\)<\|box_end\|>"
+        # Clamp coordinates to [0, 1] range to handle any edge cases
+        normalized_box = [max(0.0, min(1.0, coord)) for coord in normalized_box]
 
-    matches = re.findall(pattern, content, re.DOTALL)
+        # Keep using "box" and "desc" keys to match your data format
+        gt_objects.append({"box": normalized_box, "desc": desc})
 
-    for desc, coords1, coords2 in matches:
-        try:
-            # Parse coordinates: (x1, y1), (x2, y2)
-            x1, y1 = map(float, coords1.split(", "))
-            x2, y2 = map(float, coords2.split(", "))
-            bbox = [x1, y1, x2, y2]
-            objects.append({"bbox": bbox, "description": desc.strip()})
-        except (ValueError, IndexError):
-            continue
-
-    return objects if objects else None
-
-
-def _extract_objects_with_regex(content: str) -> Optional[List[Dict]]:
-    """Extract objects using regex when JSON parsing fails (legacy fallback)."""
-    objects = []
-
-    # Pattern for format: {bbox:[x1,y1,x2,y2],desc:'...'}
-    pattern = r'\{\s*bbox\s*:\s*\[([^\]]+)\]\s*,\s*desc\s*:\s*[\'"]([^\'\"]+)[\'"]\s*\}'
-
-    matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
-
-    for bbox_str, desc in matches:
-        try:
-            # Parse coordinates
-            coords = [float(x.strip()) for x in bbox_str.split(",")]
-            if len(coords) == 4:
-                objects.append({"bbox": coords, "description": desc.strip()})
-        except ValueError:
-            continue
-
-    return objects if objects else None
+    return gt_objects
 
 
 @dataclass
@@ -610,6 +575,16 @@ class StandardDataCollator:
         else:
             # No images in batch
             batch["image_counts_per_sample"] = [0] * batch_size
+
+        # 9. Extract ground truth objects for detection loss
+        ground_truth_objects = []
+        for instance in instances:
+            if "ground_truth_objects" in instance:
+                ground_truth_objects.append(instance["ground_truth_objects"])
+            else:
+                ground_truth_objects.append([])
+
+        batch["ground_truth_objects"] = ground_truth_objects
 
         return batch
 

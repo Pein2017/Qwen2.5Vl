@@ -1,3 +1,4 @@
+# ! As reference only, don't delete this file
 """
 Simplified Object Detection Loss for Qwen2.5-VL training.
 Decoupled design focusing only on detection loss calculation.

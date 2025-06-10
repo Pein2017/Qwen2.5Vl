@@ -37,13 +37,11 @@ class DirectConfig:
         self.attn_implementation: str = ""
         self.torch_dtype: str = ""
         self.use_cache: bool = False
-        self.use_model_wrapper: bool = False
 
         # Training settings
         self.num_train_epochs: int = 0
         self.per_device_train_batch_size: int = 0
         self.per_device_eval_batch_size: int = 0
-        self.total_batch_size: int = 0
         self.gradient_accumulation_steps: int = 0
         self.learning_rate: float = 0.0
         self.vision_lr: float = 0.0
@@ -90,17 +88,30 @@ class DirectConfig:
         self.save_token_analysis: bool = False
         self.save_raw_text: bool = False
 
-        # Loss settings
-        self.loss_type: str = ""
-        self.lm_weight: float = 0.0
-        self.bbox_weight: float = 0.0
-        self.giou_weight: float = 0.0
-        self.class_weight: float = 0.0
-        self.hungarian_matching: bool = False
-        self.detection_mode: str = ""
-        self.inference_frequency: int = 0
-        self.max_generation_length: int = 0
-        self.use_semantic_similarity: bool = False
+        # Detection loss configuration (Open Vocabulary Dense Captioning)
+        self.detection_num_queries: int = 50  # Number of object queries
+        self.detection_max_caption_length: int = 32  # Maximum caption length in tokens
+
+        # Loss component weights
+        self.detection_bbox_weight: float = 5.0  # L1 + GIoU loss weight
+        self.detection_giou_weight: float = 2.0  # GIoU loss weight
+        self.detection_objectness_weight: float = 1.0  # Object presence loss weight
+        self.detection_caption_weight: float = 2.0  # Caption generation loss weight
+
+        self.detection_enabled: bool = True  # Enable detection training
+
+        # Detection learning rate (NEW)
+        self.detection_lr: float = 0.0  # Learning rate for detection head parameters
+
+        # Model architecture (match official Qwen2.5-VL 3B)
+        self.model_hidden_size: int = 3584  # 3B model hidden size
+        self.model_num_layers: int = 28  # Number of transformer layers
+        self.model_num_attention_heads: int = 28  # Number of attention heads
+        self.model_vocab_size: int = 152064  # Vocabulary size
+
+        # Training configuration
+        self.use_flash_attention: bool = True  # Use Flash Attention 2
+        self.mixed_precision: str = "bf16"  # Use bfloat16 for training
 
         # Performance settings
         self.dataloader_num_workers: int = 0
@@ -144,9 +155,14 @@ class DirectConfig:
         return self.llm_lr > 0
 
     @property
+    def tune_detection(self) -> bool:
+        """Auto-determine if detection head should be trained based on learning rate."""
+        return self.detection_lr > 0
+
+    @property
     def use_differential_lr(self) -> bool:
         """Auto-determine if differential learning rates should be used."""
-        lrs = [self.vision_lr, self.mlp_lr, self.llm_lr]
+        lrs = [self.vision_lr, self.mlp_lr, self.llm_lr, self.detection_lr]
         active_lrs = [lr for lr in lrs if lr > 0]
         return len(set(active_lrs)) > 1
 
@@ -202,7 +218,16 @@ def init_config(
     config = DirectConfig()
 
     # Directly set all attributes from flat YAML with type conversion
+    # Skip computed properties that can't be set directly
+    computed_properties = {"output_dir"}
+
     for key, value in config_dict.items():
+        if key in computed_properties:
+            print(
+                f"Info: Skipping computed property '{key}' - value derived automatically"
+            )
+            continue
+
         if hasattr(config, key):
             # Get the expected type from the default value
             default_value = getattr(config, key)

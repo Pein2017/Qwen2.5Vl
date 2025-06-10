@@ -1,7 +1,7 @@
 """
 Model components for Qwen2.5-VL training.
 
-Includes model wrapper, patches, and attention optimizations.
+Includes detection wrapper, patches, and attention optimizations.
 
 CRITICAL: Comprehensive Qwen2.5-VL Fixes
 =========================================
@@ -10,7 +10,7 @@ This module includes critical fixes for Qwen2.5-VL models that resolve:
 2. Visual processing edge cases that cause reshape failures
 3. Proper handling of both 3B and 7B model configurations
 
-The fixes are automatically applied when importing ModelWrapper, but you can
+The fixes are automatically applied when importing the detection wrapper, but you can
 also test and verify them manually:
 
     from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
@@ -30,10 +30,10 @@ from .patches import (
     official_apply_multimodal_rotary_pos_emb,
     verify_qwen25_patches,
 )
-from .wrapper import ModelWrapper
+from .wrapper import Qwen25VLWithDetection
 
 __all__ = [
-    "ModelWrapper",
+    "Qwen25VLWithDetection",
     "apply_comprehensive_qwen25_fixes",
     "verify_qwen25_patches",
     "official_apply_multimodal_rotary_pos_emb",

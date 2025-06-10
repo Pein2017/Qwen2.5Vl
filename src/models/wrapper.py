@@ -1,224 +1,476 @@
+"""
+Qwen2.5-VL Model Wrapper with Detection Capabilities
+
+This module provides a wrapper around the official Qwen2.5-VL model
+that adds object detection capabilities while preserving all original functionality.
+"""
+
 import torch
-from transformers import (
-    AutoProcessor,
-    AutoTokenizer,
-    Qwen2_5_VLForConditionalGeneration,
-)
+import torch.nn as nn
+from transformers import Qwen2_5_VLForConditionalGeneration
 
 from src.config import config
-from src.logger_utils import get_model_logger
-from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
 
 def _get_torch_dtype(dtype_str: str) -> torch.dtype:
-    """Convert string to torch dtype with explicit mapping."""
-    dtype_mapping = {
+    """Convert string dtype to torch dtype."""
+    dtype_map = {
         "float32": torch.float32,
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
-        "int8": torch.int8,
-        "int16": torch.int16,
-        "int32": torch.int32,
-        "int64": torch.int64,
+        "auto": torch.bfloat16,  # Default to bfloat16 for auto
     }
-
-    if dtype_str not in dtype_mapping:
-        raise ValueError(
-            f"Unsupported dtype: {dtype_str}. Supported: {list(dtype_mapping.keys())}"
-        )
-
-    return dtype_mapping[dtype_str]
+    return dtype_map.get(dtype_str.lower(), torch.bfloat16)
 
 
-class ModelWrapper:
-    """Wrapper for Qwen2.5VL model with simplified device handling."""
+class Qwen25VLWithDetection(nn.Module):
+    """
+    Wrapper around official Qwen2.5-VL model with detection capabilities.
 
-    def __init__(self, logger=None):
-        self.logger = logger or get_model_logger()
-        self.model = None
-        self.tokenizer = None
-        self.image_processor = None
+    This wrapper adds a detection head while preserving all original functionality
+    of the Qwen2.5-VL model for generation tasks.
 
-    def load_all(self):
-        """Load model, tokenizer, and image processor."""
-        self.logger.info(f"Loading model components for {config.model_size} model...")
+    SIMPLIFIED: Only supports loading from official model path with randomly initialized detection head.
+    """
 
-        # Apply comprehensive Qwen2.5-VL fixes
-        self.logger.info("🔧 Applying comprehensive Qwen2.5-VL fixes...")
-        if not apply_comprehensive_qwen25_fixes():
-            raise RuntimeError("Failed to apply Qwen2.5-VL fixes")
+    def __init__(
+        self,
+        base_model_path: str,
+        num_queries: int = 50,
+        max_caption_length: int = 32,
+        tokenizer=None,
+    ):
+        super().__init__()
 
-        # Convert torch_dtype from config
-        torch_dtype = _get_torch_dtype(config.torch_dtype)
-        self.logger.info(f"🔧 Using torch_dtype: {torch_dtype}")
+        # Store tokenizer for detection head initialization
+        self.tokenizer = tokenizer
 
-        # Load model
-        self.logger.info(
-            f"📥 Loading {config.model_size} model from {config.model_path}"
-        )
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            config.model_path,
+        # Load official Qwen2.5-VL model with proper configuration
+        self.base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            base_model_path,
+            torch_dtype=_get_torch_dtype(config.torch_dtype),
             attn_implementation=config.attn_implementation,
-            torch_dtype=torch_dtype,
         )
 
-        # Verify all patches
-        self.logger.info("🔍 Verifying all patches...")
-        if not verify_qwen25_patches():
-            raise RuntimeError("Patch verification failed")
 
-        # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            config.model_path,
-            model_max_length=config.model_max_length,
-            padding_side="right",
-            use_fast=False,
+        # Initialize detection head if enabled
+        self.detection_head = None
+        if config.detection_enabled:
+            self.detection_enabled = True  # Set flag for forward method
+            self._init_detection_head()
+        else:
+            self.detection_enabled = False
+
+        # Share token embedding from base model
+        if self.detection_head is not None:
+            self.detection_head.set_token_embedding(
+                self.base_model.get_input_embeddings()
+            )
+
+        # Store our custom config for internal use, but expose base model config for DeepSpeed
+        self._custom_config = config
+
+        # Move detection head to same device as base model
+        device = next(self.base_model.parameters()).device
+
+        # Move to device (dtype already set during initialization)
+        if self.detection_head is not None:
+            self.detection_head = self.detection_head.to(device=device)
+
+    def _init_detection_head(self):
+        """Initialize the detection head with proper configuration."""
+        from src.config import config
+        from src.models.detection_head import DetectionHead
+
+        # Get configuration - use the correct attribute names from base_flat.yaml
+        num_queries = config.detection_num_queries
+        max_caption_length = config.detection_max_caption_length
+        # Use the tokenizer stored in the instance instead of config.tokenizer
+        tokenizer = self.tokenizer
+        target_dtype = _get_torch_dtype(config.torch_dtype)
+
+        # Add detection head using official config with correct dtype (randomly initialized)
+        self.detection_head = DetectionHead(
+            config=self.base_model.config,
+            num_queries=num_queries,
+            max_caption_length=max_caption_length,
+            dtype=target_dtype,
+            tokenizer=tokenizer,
         )
 
-        self.logger.info(
-            f"✅ Tokenizer loaded with max_length: {config.model_max_length}"
-        )
+        # Share token embedding from base model
+        self.detection_head.set_token_embedding(self.base_model.get_input_embeddings())
 
-        # Load image processor
-        processor = AutoProcessor.from_pretrained(config.model_path)
-        self.image_processor = processor.image_processor
+    def forward(self, **inputs):
+        """
+        Forward pass that preserves all functionality and returns combined loss during training.
+        """
+        # Debug logging to see if this method is called
+        if (
+            self.training
+            and hasattr(self, "detection_enabled")
+            and self.detection_enabled
+        ):
+            print(
+                f"🔍 WRAPPER FORWARD: training={self.training}, detection_enabled={self.detection_enabled}"
+            )
 
-        # CRITICAL FIX: Use pixel constraints from data_conversion/vision_process.py
-        # These values match exactly what was used during data preparation
-        # Import the constants from data conversion
-        import os
-        import sys
+        # Store original ground truth objects for detection loss (don't pop them)
+        # The trainer will handle detection loss computation
+        
+        # Remove ground truth objects from model inputs (but keep them in original inputs)
+        model_inputs = inputs.copy()
+        model_inputs.pop("ground_truth_objects", None)
+        model_inputs.pop("image_counts_per_sample", None)
 
-        data_conversion_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "data_conversion"
-        )
-        sys.path.insert(0, data_conversion_path)
+        # Standard Qwen2.5-VL forward pass with all parameters preserved
+        outputs = self.base_model(**model_inputs)
 
+        # The trainer will handle detection loss computation, so we just return the base model outputs
+        # This ensures no duplicate loss computation
+        return outputs
+
+    def generate(self, **kwargs):
+        """Disable detection during generation to maintain compatibility"""
+        old_detection_enabled = self.detection_enabled
+        self.detection_enabled = False
         try:
-            from vision_process import IMAGE_FACTOR, MAX_PIXELS, MIN_PIXELS
-
-            # Apply the exact same pixel constraints used during data conversion
-            self.image_processor.min_pixels = MIN_PIXELS  # 4 * 28 * 28 = 3136
-            self.image_processor.max_pixels = MAX_PIXELS  # 128 * 28 * 28 = 100352
-
-            # Also set size constraints if the processor supports them
-            if hasattr(self.image_processor, "size"):
-                if isinstance(self.image_processor.size, dict):
-                    self.image_processor.size["min_pixels"] = MIN_PIXELS
-                    self.image_processor.size["max_pixels"] = MAX_PIXELS
-                else:
-                    # Create size dict if it doesn't exist
-                    self.image_processor.size = {
-                        "min_pixels": MIN_PIXELS,
-                        "max_pixels": MAX_PIXELS,
-                    }
-
-            self.logger.info(
-                f"✅ Image processor configured with data_conversion/vision_process.py constants:"
-            )
-            self.logger.info(
-                f"   min_pixels: {self.image_processor.min_pixels} (4 * 28 * 28)"
-            )
-            self.logger.info(
-                f"   max_pixels: {self.image_processor.max_pixels} (128 * 28 * 28)"
-            )
-            self.logger.info(f"   image_factor: {IMAGE_FACTOR}")
-
-        except ImportError as e:
-            self.logger.error(
-                f"❌ Failed to import from data_conversion/vision_process.py: {e}"
-            )
-            self.logger.error(
-                "   Using fallback values from vision_process.py in project root"
-            )
-
-            # Fallback to the values from the project root vision_process.py
-            from vision_process import MAX_PIXELS, MIN_PIXELS
-
-            self.image_processor.min_pixels = MIN_PIXELS
-            self.image_processor.max_pixels = MAX_PIXELS
-
+            return self.base_model.generate(**kwargs)
         finally:
-            # Clean up sys.path
-            if data_conversion_path in sys.path:
-                sys.path.remove(data_conversion_path)
+            self.detection_enabled = old_detection_enabled
 
-        self.logger.info(
-            f"   patch_size: {self.image_processor.patch_size if hasattr(self.image_processor, 'patch_size') else 'Not set'}"
-        )
-        self.logger.info(
-            f"   merge_size: {self.image_processor.merge_size if hasattr(self.image_processor, 'merge_size') else 'Not set'}"
-        )
+    def prepare_inputs_for_generation(self, **kwargs):
+        """Delegate to base model's preparation method"""
+        return self.base_model.prepare_inputs_for_generation(**kwargs)
 
-        if hasattr(self.image_processor, "size"):
-            self.logger.info(f"   size constraints: {self.image_processor.size}")
+    def get_rope_index(self, **kwargs):
+        """Delegate to base model's RoPE calculation"""
+        return self.base_model.get_rope_index(**kwargs)
 
-        # Configure training
-        self._configure_training()
+    def resize_token_embeddings(self, new_num_tokens):
+        """Delegate to base model for token embedding resizing"""
+        return self.base_model.resize_token_embeddings(new_num_tokens)
 
-        self.logger.info(f"✅ All {config.model_size} components loaded successfully")
+    @property
+    def device(self):
+        """Return the device of the base model"""
+        return next(self.base_model.parameters()).device
 
-        # Model info
-        total_params = sum(p.numel() for p in self.model.parameters())
-        self.logger.info(f"   Total parameters: {total_params:,}")
-        self.logger.info(f"   Model dtype: {self.model.dtype}")
-        self.logger.info(f"   Model device: {next(self.model.parameters()).device}")
+    def train(self, mode=True):
+        """Override train mode to handle both base model and detection head"""
+        super().train(mode)
+        self.base_model.train(mode)
+        self.detection_head.train(mode)
+        return self
 
-        return self.model, self.tokenizer, self.image_processor
+    def eval(self):
+        """Override eval mode to handle both base model and detection head"""
+        super().eval()
+        self.base_model.eval()
+        self.detection_head.eval()
+        return self
 
-    def _configure_training(self):
-        """Configure which components to train."""
-        # Vision encoder
-        for param in self.model.visual.named_parameters():
-            param[1].requires_grad = config.tune_vision
-
-        # Vision-language connector
-        for param in self.model.visual.merger.named_parameters():
-            param[1].requires_grad = config.tune_mlp
-
-        # Language model
-        for param in self.model.model.named_parameters():
-            param[1].requires_grad = config.tune_llm
-        self.model.lm_head.requires_grad = config.tune_llm
-
-        # Print stats
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(
-            p.numel() for p in self.model.parameters() if p.requires_grad
-        )
-        self.logger.info(
-            f"Parameters: {trainable_params:,}/{total_params:,} trainable ({trainable_params / total_params * 100:.1f}%)"
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        """Enable gradient checkpointing on the base model"""
+        return self.base_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs
         )
 
-    def create_parameter_groups(self):
-        """Create parameter groups with simplified learning rate configuration."""
-        if not config.use_differential_lr:
-            # Single learning rate for all parameters
-            return [{"params": self.model.parameters(), "lr": config.learning_rate}]
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing on the base model"""
+        return self.base_model.gradient_checkpointing_disable()
 
-        # Differential learning rates
-        param_groups = []
+    def load_detection_head_weights(self, detection_head_path: str):
+        """
+        Load detection head weights from a saved checkpoint.
 
-        if config.tune_vision:
-            vision_params = [
-                p for p in self.model.visual.parameters() if p.requires_grad
-            ]
-            if vision_params:
-                param_groups.append({"params": vision_params, "lr": config.vision_lr})
+        Args:
+            detection_head_path: Path to the detection head weights file (.pth)
+        """
+        import os
 
-        if config.tune_mlp:
-            mlp_params = [
-                p for p in self.model.visual.merger.parameters() if p.requires_grad
-            ]
-            if mlp_params:
-                param_groups.append({"params": mlp_params, "lr": config.mlp_lr})
+        import torch
 
-        if config.tune_llm:
-            llm_params = [p for p in self.model.model.parameters() if p.requires_grad]
-            llm_params.extend(
-                [p for p in self.model.lm_head.parameters() if p.requires_grad]
+        if not os.path.exists(detection_head_path):
+            raise FileNotFoundError(
+                f"Detection head weights not found: {detection_head_path}"
             )
-            if llm_params:
-                param_groups.append({"params": llm_params, "lr": config.llm_lr})
 
-        return param_groups
+        # Load detection head state dict
+        detection_state_dict = torch.load(detection_head_path, map_location=self.device)
+
+        # Load weights into detection head
+        self.detection_head.load_state_dict(detection_state_dict)
+
+        print(f"✅ Detection head weights loaded from: {detection_head_path}")
+
+    def save_detection_head_weights(self, output_dir: str):
+        """
+        Save detection head weights to a directory.
+
+        Args:
+            output_dir: Directory to save detection head weights
+        """
+        import json
+        import os
+
+        import torch
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save detection head weights
+        detection_state_dict = self.detection_head.state_dict()
+        detection_path = os.path.join(output_dir, "detection_head.pth")
+        torch.save(detection_state_dict, detection_path)
+
+        # Save detection head config with UNIFIED filename (same as trainer)
+        detection_config = {
+            "num_queries": self.detection_head.num_queries,
+            "max_caption_length": self.detection_head.max_caption_length,
+            "hidden_size": self.detection_head.hidden_size,
+            "vocab_size": self.detection_head.vocab_size,
+            "detection_enabled": True,
+            "checkpoint_type": "unified",  # Marker for unified checkpoint
+        }
+
+        # Use the UNIFIED config filename (same as trainer)
+        config_path = os.path.join(output_dir, "detection_config.json")
+        with open(config_path, "w") as f:
+            json.dump(detection_config, f, indent=2)
+
+        print(f"✅ Detection head weights saved to: {detection_path}")
+        print(f"✅ Detection head config saved to: {config_path}")
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_path: str,
+        num_queries: int = None,
+        max_caption_length: int = None,
+        tokenizer=None,
+        **kwargs,
+    ):
+        """
+        Unified loading method that automatically detects checkpoint type.
+
+        This method works with:
+        1. Base Qwen2.5-VL models (e.g., "Qwen/Qwen2.5-VL-3B-Instruct")
+        2. Unified checkpoints with detection head (created by our trainer)
+
+        Args:
+            model_path: Path to model (base model or checkpoint directory)
+            num_queries: Number of detection queries (auto-detected from checkpoint)
+            max_caption_length: Max caption length (auto-detected from checkpoint)
+            tokenizer: Tokenizer for the model
+            **kwargs: Additional arguments
+
+        Returns:
+            Qwen25VLWithDetection: Model with appropriate weights loaded
+        """
+
+        # Check what type of checkpoint this is
+        checkpoint_info = cls._analyze_checkpoint(model_path)
+
+        if checkpoint_info["type"] == "unified":
+            return cls._load_unified_checkpoint(
+                model_path, num_queries, max_caption_length, tokenizer, **kwargs
+            )
+        else:  # base model
+            return cls._load_base_model(
+                model_path, num_queries, max_caption_length, tokenizer, **kwargs
+            )
+
+    @classmethod
+    def _analyze_checkpoint(cls, model_path: str) -> dict:
+        """Analyze checkpoint to determine its type and available components."""
+        import json
+        import os
+
+        # Check for unified checkpoint markers
+        detection_config_path = os.path.join(model_path, "detection_config.json")
+        detection_head_path = os.path.join(model_path, "detection_head.pth")
+
+        if os.path.exists(detection_config_path) and os.path.exists(
+            detection_head_path
+        ):
+            # Load detection config to get parameters
+            with open(detection_config_path, "r") as f:
+                detection_config = json.load(f)
+
+            return {
+                "type": "unified",
+                "has_detection": True,
+                "detection_config": detection_config,
+                "detection_head_path": detection_head_path,
+            }
+        else:
+            # Base model without detection head
+            return {
+                "type": "base",
+                "has_detection": False,
+            }
+
+    @classmethod
+    def _load_unified_checkpoint(
+        cls,
+        model_path: str,
+        num_queries: int,
+        max_caption_length: int,
+        tokenizer,
+        **kwargs,
+    ):
+        """Load from unified checkpoint created by our trainer."""
+        checkpoint_info = cls._analyze_checkpoint(model_path)
+        detection_config = checkpoint_info["detection_config"]
+
+        # Use config values if not explicitly provided
+        if num_queries is None:
+            num_queries = detection_config.get("num_queries", 100)
+        if max_caption_length is None:
+            max_caption_length = detection_config.get("max_caption_length", 32)
+
+        print(f"🔄 Loading unified checkpoint from: {model_path}")
+        print(f"   Detection queries: {num_queries}")
+        print(f"   Max caption length: {max_caption_length}")
+
+        # Create model with checkpoint as base model path
+        model = cls(
+            base_model_path=model_path,
+            num_queries=num_queries,
+            max_caption_length=max_caption_length,
+            tokenizer=tokenizer,
+        )
+
+        # Load detection head weights
+        model.load_detection_head_weights(checkpoint_info["detection_head_path"])
+
+        print(f"✅ Unified checkpoint loaded successfully")
+        return model
+
+    @classmethod
+    def _load_base_model(
+        cls,
+        model_path: str,
+        num_queries: int,
+        max_caption_length: int,
+        tokenizer,
+        **kwargs,
+    ):
+        """Load base model without detection head (randomly initialized)."""
+        # Use defaults if not provided
+        if num_queries is None:
+            num_queries = 100
+        if max_caption_length is None:
+            max_caption_length = 32
+
+        print(f"🔄 Loading base model from: {model_path}")
+        print(f"   Detection head will be randomly initialized")
+        print(f"   Detection queries: {num_queries}")
+        print(f"   Max caption length: {max_caption_length}")
+
+        # Create model with randomly initialized detection head
+        model = cls(
+            base_model_path=model_path,
+            num_queries=num_queries,
+            max_caption_length=max_caption_length,
+            tokenizer=tokenizer,
+        )
+
+        print(f"✅ Base model loaded with random detection head")
+        return model
+
+    @staticmethod
+    def inspect_checkpoint(model_path: str) -> dict:
+        """
+        Inspect a checkpoint to understand its type and contents.
+
+        This is a utility function to help users understand what type of
+        checkpoint they have without loading the full model.
+
+        Args:
+            model_path: Path to model or checkpoint directory
+
+        Returns:
+            dict: Information about the checkpoint
+        """
+        import os
+
+        checkpoint_info = Qwen25VLWithDetection._analyze_checkpoint(model_path)
+
+        # Add more detailed information
+        result = {
+            "path": model_path,
+            "type": checkpoint_info["type"],
+            "has_detection_head": checkpoint_info["has_detection"],
+            "description": "",
+            "files_found": [],
+        }
+
+        # Check what files exist
+        common_files = [
+            "config.json",
+            "model.safetensors",
+            "pytorch_model.bin",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "detection_head.pth",
+            "detection_config.json",
+        ]
+
+        for file in common_files:
+            file_path = os.path.join(model_path, file)
+            if os.path.exists(file_path):
+                result["files_found"].append(file)
+
+        # Add descriptions
+        if checkpoint_info["type"] == "unified":
+            result["description"] = (
+                "Unified checkpoint with both base model and detection head"
+            )
+            if "detection_config" in checkpoint_info:
+                result["detection_config"] = checkpoint_info["detection_config"]
+        else:
+            result["description"] = "Base Qwen2.5-VL model without detection head"
+
+        return result
+
+    @staticmethod
+    def print_checkpoint_info(model_path: str):
+        """
+        Print human-readable information about a checkpoint.
+
+        Args:
+            model_path: Path to model or checkpoint directory
+        """
+        info = Qwen25VLWithDetection.inspect_checkpoint(model_path)
+
+        print(f"📁 Checkpoint Analysis: {model_path}")
+        print(f"   Type: {info['type'].upper()}")
+        print(f"   Description: {info['description']}")
+        print(f"   Has Detection Head: {'✅' if info['has_detection_head'] else '❌'}")
+
+        if info["files_found"]:
+            print(f"   Files Found:")
+            for file in info["files_found"]:
+                print(f"     - {file}")
+
+        if "detection_config" in info:
+            config = info["detection_config"]
+            print(f"   Detection Config:")
+            print(f"     - Queries: {config.get('num_queries', 'N/A')}")
+            print(
+                f"     - Max Caption Length: {config.get('max_caption_length', 'N/A')}"
+            )
+            print(f"     - Hidden Size: {config.get('hidden_size', 'N/A')}")
+            print(f"     - Vocab Size: {config.get('vocab_size', 'N/A')}")
+
+        print()
+
+    def set_detection_loss_fn(self, detection_loss_fn):
+        """Set the detection loss function for use in forward pass."""
+        self._detection_loss_fn = detection_loss_fn
+
+    @property
+    def config(self):
+        """Return the base model's config for DeepSpeed compatibility"""
+        return self.base_model.config
