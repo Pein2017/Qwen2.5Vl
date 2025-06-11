@@ -480,7 +480,7 @@ class BBUTrainer(Trainer):
             self.evaluate(ignore_keys=ignore_keys_for_eval)
 
         if self.control.should_save:
-            self._save_checkpoint(model, trial, metrics=None)
+            self._save_checkpoint(model, trial)
             self.control = self.callback_handler.on_save(
                 self.args, self.state, self.control
             )

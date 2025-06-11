@@ -1,6 +1,5 @@
 import os
 import shutil
-from typing import Dict, Optional
 
 import torch
 from transformers import (
@@ -208,82 +207,3 @@ class BestCheckpointCallback(TrainerCallback):
             self.logger.warning(
                 f"⚠️  Force deletion also failed for {checkpoint_path}: {e}"
             )
-
-
-class DetectionLossLoggingCallback(TrainerCallback):
-    """
-    Custom callback that integrates detection losses with standard trainer logging.
-
-    This callback ensures that detection loss components are logged alongside
-    standard metrics like train_loss, eval_loss, etc., and appear in TensorBoard
-    with the same frequency and format as standard trainer logs.
-    """
-
-    def __init__(self):
-        """Initialize the detection loss logging callback."""
-        self.last_logged_step = -1
-
-    def on_log(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        logs: Optional[Dict[str, float]] = None,
-        **kwargs,
-    ):
-        """
-        Called when the trainer logs metrics.
-
-        This integrates detection losses with the standard logging mechanism.
-        """
-        if logs is None:
-            logs = {}
-
-        # Check if we have detection losses stored in the trainer state
-        if hasattr(state, "detection_losses") and state.detection_losses:
-            current_step = state.global_step
-
-            # Only add detection losses if we haven't already logged them for this step
-            if (
-                current_step != self.last_logged_step
-                and current_step in state.detection_losses
-            ):
-                detection_losses = state.detection_losses[current_step]
-
-                # Add detection losses to the standard logs with proper naming
-                for loss_name, loss_value in detection_losses.items():
-                    if loss_name == "total_loss":
-                        # Map total_loss to detection_loss for clarity
-                        log_key = "train_detection_loss"
-                    else:
-                        # Use standard naming convention: train_{component}_loss
-                        log_key = f"train_{loss_name}"
-                        if not log_key.endswith("_loss"):
-                            log_key += "_loss"
-
-                    logs[log_key] = loss_value
-
-                # Update the last logged step to avoid duplicates
-                self.last_logged_step = current_step
-
-                # Clean up old detection losses to prevent memory buildup
-                # Keep only the last 100 steps
-                if len(state.detection_losses) > 100:
-                    old_steps = sorted(state.detection_losses.keys())[:-100]
-                    for old_step in old_steps:
-                        del state.detection_losses[old_step]
-
-    def on_evaluate(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        logs: Optional[Dict[str, float]] = None,
-        **kwargs,
-    ):
-        """
-        Called during evaluation to potentially add detection-specific eval metrics.
-        """
-        # This can be extended to add evaluation-specific detection metrics
-        # For now, we just ensure the callback is properly integrated
-        pass
