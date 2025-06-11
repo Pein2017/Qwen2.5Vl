@@ -30,35 +30,41 @@ def extract_phrases_from_description(description: str) -> List[str]:
     if not description:
         return []
 
-    # Parse the description to get components
-    components = ResponseFormatter.parse_description_string(description)
+    # If the description contains semicolons, it's a structured English string
+    if ";" in description:
+        # Parse the description to get components
+        components = ResponseFormatter.parse_description_string(description)
+        phrases = []
 
-    phrases = []
+        # Extract object_type
+        object_type = components.get("object_type", "").strip()
+        if object_type and object_type != "none":
+            phrases.append(object_type)
 
-    # Extract object_type
-    object_type = components.get("object_type", "").strip()
-    if object_type and object_type != "none":
-        phrases.append(object_type)
+        # Extract property
+        property_value = components.get("property", "").strip()
+        if property_value and property_value != "none":
+            # Split on commas for multiple properties
+            if "," in property_value:
+                phrases.extend(
+                    [p.strip() for p in property_value.split(",") if p.strip()]
+                )
+            else:
+                phrases.append(property_value)
 
-    # Extract property
-    property_value = components.get("property", "").strip()
-    if property_value and property_value != "none":
-        # Split on commas for multiple properties
-        if "," in property_value:
-            phrases.extend([p.strip() for p in property_value.split(",") if p.strip()])
-        else:
-            phrases.append(property_value)
+        # Extract extra_info
+        extra_info = components.get("extra_info", "").strip()
+        if extra_info and extra_info != "none":
+            # Split on commas for multiple extra info items
+            if "," in extra_info:
+                phrases.extend([e.strip() for e in extra_info.split(",") if e.strip()])
+            else:
+                phrases.append(extra_info)
 
-    # Extract extra_info
-    extra_info = components.get("extra_info", "").strip()
-    if extra_info and extra_info != "none":
-        # Split on commas for multiple extra info items
-        if "," in extra_info:
-            phrases.extend([e.strip() for e in extra_info.split(",") if e.strip()])
-        else:
-            phrases.append(extra_info)
-
-    return phrases
+        return phrases
+    else:
+        # Otherwise, it's a direct Chinese description; split by comma
+        return [p.strip() for p in description.split(",") if p.strip()]
 
 
 def extract_unique_phrases(input_jsonl: str) -> Dict[str, int]:

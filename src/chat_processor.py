@@ -21,6 +21,14 @@ from PIL import Image
 
 from src.config import config
 from src.logger_utils import get_chat_logger
+from src.prompt import (
+    CHINESE_BASE_PROMPT,
+    CHINESE_CANDIDATES_SECTION,
+    CHINESE_FEW_SHOT_SECTION,
+    ENGLISH_BASE_PROMPT,
+    ENGLISH_CANDIDATES_SECTION,
+    ENGLISH_FEW_SHOT_SECTION,
+)
 from src.tokens import SpecialTokens
 
 logger = get_chat_logger()
@@ -55,11 +63,15 @@ class ChatProcessor:
         # Initialize special tokens (only for vision tokens, not for object detection)
         self.tokens = SpecialTokens()
 
+        # Get language from global config
+        self.language = config.language
+
         # Build system prompt using global config
         self.system_prompt = self._build_system_prompt()
 
         # Log configuration
         logger.info(f"✅ ChatProcessor initialized:")
+        logger.info(f"   Language: {self.language}")
         logger.info(f"   Data root: {config.data_root}")
         logger.info(f"   Model max length: {config.max_total_length}")
         logger.info(f"   Use candidates: {config.use_candidates}")
@@ -74,43 +86,14 @@ class ChatProcessor:
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
 
-        base_prompt = """You are an object-detection assistant for telecom-equipment inspection.
-You must follow these rules exactly, in English only.
-
-=== ROLE & CONSTRAINTS ===
-1. You are Q-Vision-QC, specializing in telecom-equipment quality control.
-2. You receive a single image; you must detect all objects matching the allowed descriptions.
-3. You must NOT mention, transcribe, or translate any watermark, timestamp, or overlay text in the upper-left corner.
-4. Output only detection results in JSON format—no extra text, no apologies, no commentary.
-
-=== OUTPUT FORMAT ===
-Return a JSON array where each object is represented as:
-{"bbox": [x1, y1, x2, y2], "description": "object_description"}
-
-- Each detected object = one JSON object in the array
-- "bbox": [x1, y1, x2, y2] where (x1,y1) = top-left corner, (x2,y2) = bottom-right corner (absolute pixel coordinates)
-- "description": MUST be EXACTLY one of the allowed phrases (see "Allowed Descriptions")
-- Sort objects by increasing y (top→bottom). If y is identical, sort by x (left→right)
-- Use proper JSON formatting with double quotes
-
-Example output:
-[
-  {"bbox": [229, 0, 474, 974], "description": "zte bbu"},
-  {"bbox": [419, 2, 461, 36], "description": "install screw correct"},
-  {"bbox": [20, 10, 476, 974], "description": "cabinet fully occupied"}
-]
-
-If NO objects detected: return an empty array []
-
-=== SORTING EXAMPLE ===
-If object A has top-left (y=8,x=200) and object B has (y=10,x=5), list A first (8<10).
-If two objects share the same y, e.g. (y=20,x=50) and (y=20,x=10), list the one with smaller x first (10<50).
-
-=== EDGE CASES ===
-- If you see absolutely no object that matches the list, return [] (empty array)
-- If you cannot match any allowed description verbatim, skip and leave the output empty
-- Never include extra fields or modify the JSON structure
-- Ensure valid JSON syntax with proper escaping if needed"""
+        if self.language == "chinese":
+            base_prompt = CHINESE_BASE_PROMPT
+            candidates_template = CHINESE_CANDIDATES_SECTION
+            few_shot_section = CHINESE_FEW_SHOT_SECTION
+        else:  # English
+            base_prompt = ENGLISH_BASE_PROMPT
+            candidates_template = ENGLISH_CANDIDATES_SECTION
+            few_shot_section = ENGLISH_FEW_SHOT_SECTION
 
         # Add candidate phrases if provided
         if config.use_candidates and config.candidates_file:
@@ -126,45 +109,13 @@ If two objects share the same y, e.g. (y=20,x=50) and (y=20,x=10), list the one 
                     [f"{i + 1}) {phrase}" for i, phrase in enumerate(phrase_list)]
                 )
 
-                candidates_section = f"""
-
-=== ALLOWED DESCRIPTIONS (Choose EXACTLY one) ===
-{formatted_phrases}
-
-- If the object in the image has no exact match in this list, do NOT invent a new phrase—output empty array
-- Copy–paste exactly (case, punctuation, spelling) from the above
-- Example: if you see a ZTE BBU module, type "zte bbu" not "ZTE BBU\""""
-
+                # Format the template with the phrases
+                candidates_section = candidates_template.format(
+                    formatted_phrases=formatted_phrases
+                )
                 base_prompt += candidates_section
             else:
                 logger.warning(f"Candidates file not found: {config.candidates_file}")
-
-        # Add few-shot examples section
-        few_shot_section = """
-
-=== FEW-SHOT EXAMPLES ===
-User: <IMAGE>
-Assistant:
-[
-  {"bbox": [229, 0, 474, 974], "description": "zte bbu"},
-  {"bbox": [419, 2, 461, 36], "description": "install screw correct"},
-  {"bbox": [20, 10, 476, 974], "description": "cabinet fully occupied"}
-]
-
-—
-User: <IMAGE>
-Assistant:
-[
-  {"bbox": [0, 0, 475, 621], "description": "huawei bbu"},
-  {"bbox": [46, 492, 149, 581], "description": "install screw incorrect, rust"},
-  {"bbox": [190, 653, 446, 771], "description": "label matches"}
-]
-
-— END OF EXAMPLES —
-
-Now it's your turn:
-User: <IMAGE>
-Assistant:"""
 
         return base_prompt + few_shot_section
 
@@ -176,13 +127,17 @@ Assistant:"""
             raw_sample: Sample with 'examples' and 'target' structure
 
         Returns:
-            Dict containing input_ids, labels, attention_mask, pixel_values, image_grid_thw
+            Dict containing input_ids, labels, attention_mask, pixel_values, image_grid_thw, and ground_truth_objects
         """
         # 1. Create conversation messages
         conversation_messages = self._create_conversation_messages(raw_sample)
 
-        # 2. Process images and expand vision tokens
-        processed_conversation, images = self._process_images_and_tokens(
+        # 2. Process images, expand vision tokens, and get image dimensions
+        (
+            processed_conversation,
+            images,
+            image_dims,
+        ) = self._process_images_and_tokens(
             conversation_messages, self._extract_all_image_paths(raw_sample)
         )
 
@@ -192,12 +147,18 @@ Assistant:"""
         # 4. Process images for model input
         pixel_values, image_grid_thw = self._process_images_for_model(images)
 
+        # 5. Extract and normalize ground truth objects for the target image
+        ground_truth_objects = self._extract_and_normalize_ground_truth(
+            raw_sample, image_dims
+        )
+
         return {
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": torch.ones_like(input_ids),
             "pixel_values": pixel_values,
             "image_grid_thw": image_grid_thw,
+            "ground_truth_objects": ground_truth_objects,
         }
 
     def _create_conversation_messages(
@@ -272,7 +233,7 @@ Assistant:"""
             desc = obj.get("desc", "unknown")
 
             # Create JSON object
-            json_obj = {"bbox": box, "description": desc}
+            json_obj = {"bbox_2d": box, "label": desc}
             json_objects.append(json_obj)
 
         # Return formatted JSON array
@@ -280,7 +241,7 @@ Assistant:"""
 
     def _process_images_and_tokens(
         self, conversation: List[Dict[str, str]], image_paths: List[str]
-    ) -> Tuple[List[Dict[str, str]], List[Image.Image]]:
+    ) -> Tuple[List[Dict[str, str]], List[Image.Image], List[Tuple[int, int]]]:
         """
         Process images and expand vision tokens in conversation.
 
@@ -288,6 +249,7 @@ Assistant:"""
         """
         processed_conversation = []
         images = []
+        image_dims = []
         image_index = 0
 
         for message in conversation:
@@ -297,63 +259,105 @@ Assistant:"""
             while "<image>" in content and image_index < len(image_paths):
                 # Load image
                 image_path = self.data_root / image_paths[image_index]
-                image = Image.open(image_path).convert("RGB")
-                images.append(image)
+                try:
+                    image = Image.open(image_path).convert("RGB")
+                    images.append(image)
+                    image_dims.append(image.size)  # (width, height)
+                except Exception as e:
+                    logger.error(f"Failed to load image: {image_path}, error: {e}")
+                    # Remove the placeholder and skip to the next image
+                    content = content.replace("<image>", "", 1)
+                    image_index += 1
+                    continue
 
-                # Calculate vision tokens needed
-                num_image_tokens = self._calculate_image_tokens(image)
+                # Calculate number of vision tokens required for this image
+                num_vision_tokens = self._calculate_image_tokens(image)
 
                 # Create vision token sequence
-                vision_tokens = (
-                    f"{self.tokens.VISION_START}"
-                    f"{self.tokens.IMAGE_PAD * num_image_tokens}"
-                    f"{self.tokens.VISION_END}"
+                vision_token_sequence = (
+                    self.tokens.VISION_START
+                    + self.tokens.IMAGE_PAD * num_vision_tokens
+                    + self.tokens.VISION_END
                 )
 
                 # Replace placeholder with vision tokens
-                content = content.replace("<image>", vision_tokens, 1)
+                content = content.replace("<image>", vision_token_sequence, 1)
                 image_index += 1
 
             processed_conversation.append({"role": message["role"], "content": content})
 
-        return processed_conversation, images
+        # Final validation
+        if image_index != len(image_paths):
+            logger.warning(
+                f"Mismatch between image placeholders and image paths. "
+                f"Found {image_index} placeholders, but {len(image_paths)} images."
+            )
+
+        return processed_conversation, images, image_dims
 
     def _calculate_image_tokens(self, image: Image.Image) -> int:
-        """
-        Calculate number of image tokens needed for this image.
-
-        OFFICIAL APPROACH: Use processor directly, trust its grid_thw output,
-        and properly account for spatial merging that reduces token count.
-        """
-        # Use processor directly like official QwenVL implementation
-        visual_processed = self.image_processor.preprocess(image, return_tensors="pt")
-
-        # Extract grid_thw from processor output (official approach)
-        grid_thw = visual_processed["image_grid_thw"][0]  # Shape: [T, H, W]
-
-        # CRITICAL FIX: Calculate tokens using official formula with proper merge operation
-        # The formula is: grid_thw.prod() // merge_length, where merge_length = merge_size**2
-        # EXPLICIT: Get merge_size from image processor - no defaults
-        if hasattr(self.image_processor, "merge_size"):
-            merge_size = self.image_processor.merge_size
-        else:
-            raise ValueError(
-                "Cannot determine merge_size - image processor must have merge_size"
+        """Calculate the number of vision tokens for a given image."""
+        # Use the configured image processor to get the grid size
+        try:
+            grid_thw = self.image_processor.get_grid_thw(
+                {"pixel_values": torch.randn(1, 3, image.height, image.width)}
             )
+        except Exception:
+            # Fallback for older image processors
+            patch_size = self.image_processor.patch_size
+            grid_h = image.height // patch_size
+            grid_w = image.width // patch_size
+            grid_thw = torch.tensor([1, grid_h, grid_w])
+
+        # Default merge size for Qwen2.5-VL is 2
+        merge_size = 2
         merge_length = merge_size**2
+        num_tokens = grid_thw.prod().item() // merge_length
 
-        # This is the OFFICIAL token calculation from the processor
-        tokens = grid_thw.prod().item() // merge_length
+        return int(num_tokens)
 
-        logger.debug(f"Image tokens calculation:")
-        logger.debug(f"  Original size: {image.size}")
-        logger.debug(f"  Grid THW: {grid_thw.tolist()}")
-        logger.debug(f"  Merge size: {merge_size}")
-        logger.debug(f"  Merge length: {merge_length}")
-        logger.debug(f"  Pre-merge tokens: {grid_thw.prod().item()}")
-        logger.debug(f"  Final tokens (after merge): {tokens}")
+    def _extract_and_normalize_ground_truth(
+        self, sample: Dict[str, Any], image_dims: List[Tuple[int, int]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Extracts GT objects from the target and normalizes their bounding boxes.
+        """
+        target = sample.get("target", sample)
+        target_objects = target.get("objects", [])
 
-        return tokens
+        # The last image in the list corresponds to the target.
+        if not image_dims or not target_objects:
+            return []
+
+        target_image_dims = image_dims[-1]
+        width, height = target_image_dims
+
+        normalized_objects = []
+        for obj in target_objects:
+            box = obj.get("box")
+            desc = obj.get("desc")
+
+            if box is None or desc is None:
+                continue
+
+            # Validate box format and coordinates
+            if not (isinstance(box, list) and len(box) == 4) or not (
+                0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height
+            ):
+                logger.warning(
+                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}. Skipping."
+                )
+                continue
+
+            normalized_box = [
+                box[0] / width,
+                box[1] / height,
+                box[2] / width,
+                box[3] / height,
+            ]
+            normalized_objects.append({"box": normalized_box, "desc": desc})
+
+        return normalized_objects
 
     def _tokenize_conversation(
         self, conversation: List[Dict[str, str]]

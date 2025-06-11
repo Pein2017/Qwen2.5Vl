@@ -17,127 +17,135 @@ Usage:
     data_root = config.data_root
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional, Union
 
 import yaml
 
 
+@dataclass
 class DirectConfig:
     """
     Direct configuration access - all values are flat and accessible directly.
     No nested structures, no parameter passing, no conversions.
     """
 
-    def __init__(self):
-        # Model settings
-        self.model_path: str = ""
-        self.model_size: str = ""
-        self.model_max_length: int = 0
-        self.attn_implementation: str = ""
-        self.torch_dtype: str = ""
-        self.use_cache: bool = False
+    # Model settings
+    model_path: str
+    model_size: str
+    model_max_length: int
+    attn_implementation: str
+    torch_dtype: str
+    use_cache: bool
 
-        # Training settings
-        self.num_train_epochs: int = 0
-        self.per_device_train_batch_size: int = 0
-        self.per_device_eval_batch_size: int = 0
-        self.gradient_accumulation_steps: int = 0
-        self.learning_rate: float = 0.0
-        self.vision_lr: float = 0.0
-        self.mlp_lr: float = 0.0
-        self.llm_lr: float = 0.0
-        self.warmup_ratio: float = 0.0
-        self.weight_decay: float = 0.0
-        self.max_grad_norm: float = 0.0
-        self.lr_scheduler_type: str = ""
-        self.gradient_checkpointing: bool = False
-        self.bf16: bool = False
-        self.fp16: bool = False
+    # Training settings
+    num_train_epochs: int
+    per_device_train_batch_size: int
+    per_device_eval_batch_size: int
+    gradient_accumulation_steps: int
+    learning_rate: float
+    vision_lr: float
+    mlp_lr: float
+    llm_lr: float
+    detection_lr: float
+    warmup_ratio: float
+    weight_decay: float
+    max_grad_norm: float
+    lr_scheduler_type: str
+    gradient_checkpointing: bool
+    bf16: bool
+    fp16: bool
 
-        # Data settings
-        self.train_data_path: str = ""
-        self.val_data_path: str = ""
-        self.data_root: str = ""
-        self.max_total_length: int = 0
-        self.use_candidates: bool = False
-        self.candidates_file: str = ""
-        self.collator_type: str = ""
-        self.multi_round: bool = False
-        self.max_examples: int = 0
+    # Data settings
+    train_data_path: str
+    val_data_path: str
+    data_root: str
+    max_total_length: int
+    use_candidates: bool
+    candidates_file: str
+    collator_type: str
+    multi_round: bool
+    max_examples: int
+    language: str
 
-        # Evaluation settings
-        self.eval_strategy: str = ""
-        self.eval_steps: int = 0
-        self.save_strategy: str = ""
-        self.save_steps: int = 0
-        self.save_total_limit: int = 0
+    # Evaluation settings
+    eval_strategy: str
+    eval_steps: int
+    save_strategy: str
+    save_steps: int
+    save_total_limit: int
 
-        # Logging settings
-        self.logging_steps: int = 0
-        self.logging_dir: Optional[str] = None
-        self.log_level: str = ""
-        self.report_to: str = ""
-        self.verbose: bool = False
-        self.disable_tqdm: bool = False
+    # Logging settings
+    logging_steps: int
+    logging_dir: Optional[str]
+    log_level: str
+    report_to: str
+    verbose: bool
+    disable_tqdm: bool
 
-        # Monitoring settings
-        self.enable_monitoring: bool = False
-        self.monitor_log_dir: str = ""
-        self.save_predictions: bool = False
-        self.save_token_analysis: bool = False
-        self.save_raw_text: bool = False
+    # Monitoring settings
+    enable_monitoring: bool
+    save_predictions: bool
+    save_token_analysis: bool
+    save_raw_text: bool
 
-        # Detection loss configuration (Open Vocabulary Dense Captioning)
-        self.detection_num_queries: int = 50  # Number of object queries
-        self.detection_max_caption_length: int = 32  # Maximum caption length in tokens
+    # Detection loss configuration (End-to-End Training)
+    detection_enabled: bool
+    detection_num_queries: int
+    detection_max_caption_length: int
 
-        # Loss component weights
-        self.detection_bbox_weight: float = 5.0  # L1 + GIoU loss weight
-        self.detection_giou_weight: float = 2.0  # GIoU loss weight
-        self.detection_objectness_weight: float = 1.0  # Object presence loss weight
-        self.detection_caption_weight: float = 2.0  # Caption generation loss weight
+    # Loss component weights
+    detection_bbox_weight: float
+    detection_giou_weight: float
+    detection_objectness_weight: float
+    detection_caption_weight: float
 
-        self.detection_enabled: bool = True  # Enable detection training
+    # Focal Loss specific weights
+    detection_focal_loss_gamma: float
+    detection_focal_loss_alpha: float
 
-        # Detection learning rate (NEW)
-        self.detection_lr: float = 0.0  # Learning rate for detection head parameters
+    # Model architecture (match official Qwen2.5-VL)
+    model_hidden_size: int
+    model_num_layers: int
+    model_num_attention_heads: int
+    model_vocab_size: int
 
-        # Model architecture (match official Qwen2.5-VL 3B)
-        self.model_hidden_size: int = 3584  # 3B model hidden size
-        self.model_num_layers: int = 28  # Number of transformer layers
-        self.model_num_attention_heads: int = 28  # Number of attention heads
-        self.model_vocab_size: int = 152064  # Vocabulary size
+    # Training configuration
+    use_flash_attention: bool
+    mixed_precision: str
 
-        # Training configuration
-        self.use_flash_attention: bool = True  # Use Flash Attention 2
-        self.mixed_precision: str = "bf16"  # Use bfloat16 for training
+    # Performance settings
+    dataloader_num_workers: int
+    pin_memory: bool
+    prefetch_factor: int
+    batching_strategy: str
+    remove_unused_columns: bool
 
-        # Performance settings
-        self.dataloader_num_workers: int = 0
-        self.pin_memory: bool = False
-        self.prefetch_factor: int = 0
-        self.batching_strategy: str = ""
-        self.remove_unused_columns: bool = False
+    # Output settings
+    output_dir: str
+    run_name: Optional[str]
+    tb_dir: str
 
-        # Output settings
-        self.output_base_dir: str = ""
-        self.run_name: Optional[str] = None
-        self.tb_dir: str = ""
+    # Stability settings
+    max_consecutive_nan: int
+    max_consecutive_zero: int
+    max_nan_ratio: float
+    nan_monitoring_window: int
+    allow_occasional_nan: bool
+    nan_recovery_enabled: bool
+    learning_rate_reduction_factor: float
+    gradient_clip_reduction_factor: float
 
-        # Stability settings
-        self.max_consecutive_nan: int = 0
-        self.max_consecutive_zero: int = 0
-        self.max_nan_ratio: float = 0.0
-        self.nan_monitoring_window: int = 0
-        self.allow_occasional_nan: bool = False
-        self.nan_recovery_enabled: bool = False
-        self.learning_rate_reduction_factor: float = 0.0
-        self.gradient_clip_reduction_factor: float = 0.0
+    # Debug settings
+    test_samples: int
+    test_forward_pass: bool
 
-        # Debug settings
-        self.test_samples: int = 0
-        self.test_forward_pass: bool = False
+    # --- Derived Paths (set automatically) ---
+    run_output_dir: str = field(init=False)
+    tensorboard_dir: str = field(init=False)
+    log_file_dir: str = field(init=False)
+    monitor_log_dir: str = field(init=False)
 
     @property
     def tune_vision(self) -> bool:
@@ -166,27 +174,17 @@ class DirectConfig:
         active_lrs = [lr for lr in lrs if lr > 0]
         return len(set(active_lrs)) > 1
 
-    @property
-    def output_dir(self) -> str:
-        """Get full output directory path."""
-        if self.run_name:
-            return f"{self.output_base_dir}/{self.run_name}"
-        return self.output_base_dir
-
 
 # Global singleton instance
 config: Optional[DirectConfig] = None
 
 
-def init_config(
-    config_path: str, overrides: Optional[Dict[str, Any]] = None
-) -> DirectConfig:
+def init_config(config_path: str) -> DirectConfig:
     """
     Initialize global configuration from flat YAML file.
 
     Args:
         config_path: Path to YAML configuration file
-        overrides: Optional dictionary of override values
 
     Returns:
         DirectConfig: Initialized configuration
@@ -210,53 +208,73 @@ def init_config(
     with open(config_file, "r") as f:
         config_dict = yaml.safe_load(f)
 
-    # Apply overrides if provided
-    if overrides:
-        config_dict.update(overrides)
+    # Manually convert types before dataclass instantiation
+    from dataclasses import fields
+    from typing import get_args, get_origin
 
-    # Create and populate config
-    config = DirectConfig()
-
-    # Directly set all attributes from flat YAML with type conversion
-    # Skip computed properties that can't be set directly
-    computed_properties = {"output_dir"}
+    field_map = {f.name: f.type for f in fields(DirectConfig)}
+    converted_dict = {}
 
     for key, value in config_dict.items():
-        if key in computed_properties:
-            print(
-                f"Info: Skipping computed property '{key}' - value derived automatically"
+        if key not in field_map:
+            continue  # Let the dataclass handle extra keys
+
+        target_type = field_map[key]
+        origin_type = get_origin(target_type)
+
+        # Handle Optional[T]
+        if origin_type is Union:
+            # Assumes Optional[T] is Union[T, NoneType]
+            actual_type = next(
+                (t for t in get_args(target_type) if t is not type(None)), None
             )
+            if actual_type:
+                target_type = actual_type
+            else:
+                converted_dict[key] = None
+                continue
+
+        if value is None:
+            converted_dict[key] = None
             continue
 
-        if hasattr(config, key):
-            # Get the expected type from the default value
-            default_value = getattr(config, key)
-            expected_type = type(default_value)
-
-            # Convert value to expected type if needed
-            if expected_type is not type(None) and value is not None:
-                try:
-                    if expected_type is bool:
-                        # Handle boolean conversion properly
-                        converted_value = (
-                            bool(value)
-                            if not isinstance(value, str)
-                            else value.lower() in ("true", "1", "yes", "on")
-                        )
-                    else:
-                        converted_value = expected_type(value)
-                    setattr(config, key, converted_value)
-                except (ValueError, TypeError) as e:
-                    print(
-                        f"Warning: Could not convert '{key}' value '{value}' to {expected_type.__name__}: {e}"
-                    )
-                    setattr(config, key, value)  # Use original value as fallback
+        # Perform type conversion
+        try:
+            if target_type is bool and isinstance(value, str):
+                converted_dict[key] = value.lower() in ("true", "1", "yes")
             else:
-                setattr(config, key, value)
-        else:
-            print(f"Warning: Unknown config key '{key}' ignored")
+                converted_dict[key] = target_type(value)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Config error: Could not convert '{key}' with value '{value}' to type {target_type.__name__}"
+            ) from e
 
-    # Validate configuration
+    # Create and populate config using dictionary unpacking
+    try:
+        config = DirectConfig(**converted_dict)
+    except TypeError as e:
+        raise ValueError(f"Configuration error: Missing or extra keys in YAML. {e}")
+
+    # --- Automatically derive and set paths ---
+    if not config.run_name:
+        raise ValueError("`run_name` must be defined in the configuration.")
+
+    # 1. Main output directory for the run
+    config.run_output_dir = str(Path(config.output_dir) / config.run_name)
+
+    # 2. TensorBoard directory
+    config.tensorboard_dir = str(Path(config.tb_dir) / config.run_name)
+
+    # 3. Log file directory
+    config.log_file_dir = str(Path(config.output_dir) / "logs")
+
+    # 4. Monitor log directory
+    config.monitor_log_dir = str(Path(config.output_dir) / "monitor")
+
+    # Create directories
+    Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Validate the final configuration
     _validate_config(config)
 
     return config
@@ -284,30 +302,19 @@ def get_config() -> DirectConfig:
 
 
 def _validate_config(cfg: DirectConfig):
-    """Validate configuration for common issues."""
+    """Validate configuration values."""
+    if not cfg.model_path:
+        raise ValueError("model_path cannot be empty")
+    if not cfg.train_data_path or not cfg.val_data_path:
+        raise ValueError("train_data_path and val_data_path must be specified")
 
-    # Check that at least one learning rate is non-zero
-    if cfg.vision_lr == 0 and cfg.mlp_lr == 0 and cfg.llm_lr == 0:
+    if cfg.language not in ["english", "chinese"]:
         raise ValueError(
-            "At least one learning rate (vision_lr, mlp_lr, llm_lr) must be > 0"
+            f"language must be 'english' or 'chinese' in YAML config, but got: '{cfg.language}'"
         )
+    # Add more validation rules as needed...
 
-    # Check use_cache and gradient_checkpointing compatibility
-    if cfg.use_cache and cfg.gradient_checkpointing:
-        raise ValueError(
-            "use_cache=True is incompatible with gradient_checkpointing=True. "
-            "Set either use_cache=False or gradient_checkpointing=False."
-        )
 
-    # Check paths exist
-    if not Path(cfg.model_path).exists():
-        raise ValueError(f"Model path does not exist: {cfg.model_path}")
-
-    data_root = Path(cfg.data_root)
-    train_path = data_root / cfg.train_data_path
-    val_path = data_root / cfg.val_data_path
-
-    if not train_path.exists():
-        raise ValueError(f"Training data not found: {train_path}")
-    if not val_path.exists():
-        raise ValueError(f"Validation data not found: {val_path}")
+def setup_logging(config: DirectConfig):
+    # Implementation of setup_logging function
+    pass

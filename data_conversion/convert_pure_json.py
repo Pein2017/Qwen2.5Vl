@@ -56,8 +56,8 @@ def main():
     parser.add_argument(
         "--map_file",
         type=str,
-        required=True,
-        help="Absolute path to the token map JSON file (e.g., /data4/swift/data_conversion/token_map.json).",
+        default=None,
+        help="Absolute path to the token map JSON file, required for English.",
     )
     parser.add_argument(
         "--resize",
@@ -65,18 +65,30 @@ def main():
         default=False,
         help="Enable image resizing and bounding box scaling",
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="english",
+        choices=["english", "chinese"],
+        help="Specify the language for label extraction.",
+    )
     args = parser.parse_args()
     input_folder_path = Path(args.input_folder).resolve()
     output_image_folder_path = Path(args.output_image_folder).resolve()
     output_jsonl_path = Path(args.output_jsonl).resolve()
-    token_map_path = Path(args.map_file).resolve()
 
     # Define response types directly in script (no command line argument needed)
     response_types = {"object_type", "property", "extra_info"}
     logger.info(f"Using response types: {sorted(response_types)}")
+    logger.info(f"Language mode: {args.language}")
 
     # Initialize core modules
-    token_mapper = TokenMapper(token_map_path)
+    token_mapper = None
+    if args.language == "english":
+        if not args.map_file:
+            raise ValueError("--map_file is required for English language mode.")
+        token_map_path = Path(args.map_file).resolve()
+        token_mapper = TokenMapper(token_map_path)
 
     if not input_folder_path.is_dir():
         raise FileNotFoundError(
@@ -116,14 +128,28 @@ def main():
         objects_bbox = []
 
         def extract_and_process_fields(source_dict):
-            """Extract and process fields using core modules."""
-            # Use FieldStandardizer to extract content
-            content_dict = FieldStandardizer.extract_content_dict(
-                source_dict, token_mapper
-            )
-
-            # Convert to string format using ResponseFormatter
-            return ResponseFormatter.format_to_string(content_dict, response_types)
+            """Extract and process fields based on language."""
+            if args.language == "chinese":
+                content_zh = source_dict.get("contentZh", {})
+                if not content_zh:
+                    return ""
+                # Join all values from the contentZh dictionary, handling lists
+                processed_values = []
+                for v in content_zh.values():
+                    if isinstance(v, list):
+                        # Join list elements into a single string
+                        processed_values.append(", ".join(map(str, v)))
+                    elif v:
+                        # Append non-empty string values
+                        processed_values.append(str(v))
+                return ", ".join(processed_values)
+            else:  # English
+                # Use FieldStandardizer to extract content
+                content_dict = FieldStandardizer.extract_content_dict(
+                    source_dict.get("content", {}), token_mapper
+                )
+                # Convert to string format using ResponseFormatter
+                return ResponseFormatter.format_to_string(content_dict, response_types)
 
         # Process dataList format
         if "dataList" in data:
@@ -141,7 +167,11 @@ def main():
                 content_string = extract_and_process_fields(props)
 
                 allowed_props_keys = {"question", "question_ex", "label"}
-                for key in props.keys():
+                # Allow 'contentZh' and 'content' in properties
+                props_keys_to_check = {
+                    k for k in props.keys() if k not in ["contentZh", "content"]
+                }
+                for key in props_keys_to_check:
                     if key not in allowed_props_keys:
                         raise ValueError(
                             f"Unexpected key '{key}' in properties for dataList item {item_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_props_keys}"
@@ -162,11 +192,10 @@ def main():
                 x2, y2 = coords[2]
                 objects_bbox.append([x1, y1, x2, y2])
 
-                content_from_feature = feature_data.get("properties", {}).get(
-                    "content", {}
-                )
-                content_string = extract_and_process_fields(content_from_feature)
+                properties = feature_data.get("properties", {})
+                content_string = extract_and_process_fields(properties)
 
+                content_from_feature = properties.get("content", {})
                 allowed_content_keys = {"label", "question", "question_ex"}
                 for key in content_from_feature.keys():
                     if key not in allowed_content_keys:
@@ -249,26 +278,24 @@ def main():
         }
         processed_samples.append(sample)
 
-    # Check for missing tokens
-    missing_tokens = token_mapper.get_missing_tokens()
-    if missing_tokens:
-        logger.error(
-            f"Found {len(missing_tokens)} token(s) that are not in the token_map and are not empty strings."
-        )
-        logger.error(
-            "Please add them to your token_map.json or ensure they are empty strings. Missing tokens:"
-        )
-        for token in sorted(list(missing_tokens)):
-            logger.error(token)
-        logger.error("Output JSONL file will NOT be created due to missing tokens.")
-        return
-
-    with open(output_jsonl_path, "w", encoding="utf-8") as out_f:
+    with open(output_jsonl_path, "w", encoding="utf-8") as f:
         for sample in processed_samples:
-            out_f.write(json.dumps(sample, ensure_ascii=False) + "\n")
-    logger.info(
-        f"Successfully wrote {len(processed_samples)} samples to JSONL: {output_jsonl_path}"
-    )
+            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+    logger.info(f"✅ Successfully converted {len(processed_samples)} files.")
+    logger.info(f"Intermediate JSONL file saved to: {output_jsonl_path}")
+
+    # Report missing tokens if applicable
+    if args.language == "english" and token_mapper:
+        missing_tokens = token_mapper.get_missing_tokens()
+        if missing_tokens:
+            logger.warning(
+                f"Found {len(missing_tokens)} tokens in data that are not in the token map:"
+            )
+            for token in sorted(missing_tokens):
+                logger.warning(f"  - '{token}'")
+        else:
+            logger.info("All tokens found in the token map.")
 
 
 if __name__ == "__main__":

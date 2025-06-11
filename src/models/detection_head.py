@@ -18,7 +18,12 @@ class DetectionHead(nn.Module):
     """
 
     def __init__(
-        self, config, num_queries=50, max_caption_length=32, dtype=None, tokenizer=None
+        self,
+        config,
+        num_queries: int,
+        max_caption_length: int,
+        tokenizer,
+        dtype=None,
     ):
         super().__init__()
         # Use official config dimensions
@@ -271,7 +276,7 @@ class DetectionHead(nn.Module):
         ).unsqueeze(0)
 
         # Reshape for processing: (B*N, max_len, D)
-        caption_features = caption_features.view(B * N, self.max_caption_length, D)
+        caption_features = caption_features.reshape(B * N, self.max_caption_length, D)
 
         # Apply causal attention using the caption decoder
         # Use self-attention with causal masking
@@ -287,7 +292,7 @@ class DetectionHead(nn.Module):
         )  # (B*N, max_len, vocab_size)
 
         # Reshape back: (B, N, max_len, vocab_size)
-        caption_logits = caption_logits.view(B, N, self.max_caption_length, -1)
+        caption_logits = caption_logits.reshape(B, N, self.max_caption_length, -1)
 
         return caption_logits
 
@@ -361,7 +366,7 @@ class DetectionHead(nn.Module):
             ).unsqueeze(0)
 
             # Reshape for decoder: (B*N, current_length, D)
-            sequence_features = sequence_features.view(B * N, current_length, D)
+            sequence_features = sequence_features.reshape(B * N, current_length, D)
 
             # Create object context for cross-attention
             object_context = object_features.unsqueeze(1).expand(
@@ -370,7 +375,7 @@ class DetectionHead(nn.Module):
             object_context = (
                 object_context.transpose(1, 2)
                 .contiguous()
-                .view(B * N, current_length, D)
+                .reshape(B * N, current_length, D)
             )
 
             # Apply caption decoder with cross-attention to object features
@@ -384,7 +389,7 @@ class DetectionHead(nn.Module):
             next_logits = self.caption_head(last_features)  # (B*N, vocab_size)
 
             # Reshape back: (B, N, vocab_size)
-            next_logits = next_logits.view(B, N, -1)
+            next_logits = next_logits.reshape(B, N, -1)
             all_logits.append(next_logits)
 
             # Sample next token (greedy decoding)

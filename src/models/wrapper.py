@@ -36,9 +36,9 @@ class Qwen25VLWithDetection(nn.Module):
     def __init__(
         self,
         base_model_path: str,
-        num_queries: int = 50,
-        max_caption_length: int = 32,
-        tokenizer=None,
+        num_queries: int,
+        max_caption_length: int,
+        tokenizer,
     ):
         super().__init__()
 
@@ -51,7 +51,6 @@ class Qwen25VLWithDetection(nn.Module):
             torch_dtype=_get_torch_dtype(config.torch_dtype),
             attn_implementation=config.attn_implementation,
         )
-
 
         # Initialize detection head if enabled
         self.detection_head = None
@@ -105,19 +104,10 @@ class Qwen25VLWithDetection(nn.Module):
         """
         Forward pass that preserves all functionality and returns combined loss during training.
         """
-        # Debug logging to see if this method is called
-        if (
-            self.training
-            and hasattr(self, "detection_enabled")
-            and self.detection_enabled
-        ):
-            print(
-                f"🔍 WRAPPER FORWARD: training={self.training}, detection_enabled={self.detection_enabled}"
-            )
 
         # Store original ground truth objects for detection loss (don't pop them)
         # The trainer will handle detection loss computation
-        
+
         # Remove ground truth objects from model inputs (but keep them in original inputs)
         model_inputs = inputs.copy()
         model_inputs.pop("ground_truth_objects", None)

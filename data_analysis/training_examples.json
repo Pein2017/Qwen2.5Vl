@@ -9,66 +9,66 @@
           300,
           676
         ],
-        "description": "label matches"
+        "description": "标签/匹配"
       }
     ]
   },
   "medium": {
-    "image": "ds_rescaled/QC-20240307-0027549_4394129.jpeg",
+    "image": "ds_rescaled/QC-20230303-0000509_40522.jpeg",
     "objects": [
       {
         "bbox": [
+          260,
           0,
-          0,
-          51,
-          88
+          532,
+          288
         ],
-        "description": "install screw correct"
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 挡风板/安装"
       },
       {
         "bbox": [
           0,
-          0,
-          419,
-          552
+          4,
+          527,
+          655
         ],
-        "description": "huawei bbu"
+        "description": "机柜空间/满载"
       },
       {
         "bbox": [
-          41,
-          437,
-          132,
-          516
+          136,
+          167,
+          532,
+          634
         ],
-        "description": "install screw incorrect, rust"
+        "description": "BBU品牌/华为"
       },
       {
         "bbox": [
-          50,
-          484,
-          420,
-          890
+          277,
+          188,
+          349,
+          258
         ],
-        "description": "huawei bbu"
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
       },
       {
         "bbox": [
-          71,
-          496,
-          154,
-          573
+          186,
+          442,
+          227,
+          502
         ],
-        "description": "install screw correct"
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
       },
       {
         "bbox": [
-          168,
-          580,
-          393,
-          685
+          128,
+          465,
+          525,
+          665
         ],
-        "description": "label matches"
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 挡风板/安装"
       }
     ]
   },
@@ -82,7 +82,7 @@
           419,
           891
         ],
-        "description": "zte bbu"
+        "description": "BBU品牌/中兴"
       },
       {
         "bbox": [
@@ -91,7 +91,7 @@
           406,
           33
         ],
-        "description": "install screw correct"
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
       },
       {
         "bbox": [
@@ -100,7 +100,7 @@
           420,
           891
         ],
-        "description": "cabinet fully occupied"
+        "description": "机柜空间/满载"
       },
       {
         "bbox": [
@@ -109,7 +109,7 @@
           261,
           57
         ],
-        "description": "install screw correct"
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
       },
       {
         "bbox": [
@@ -118,7 +118,7 @@
           257,
           193
         ],
-        "description": "non-fiber cable, binding aligned horizontally and vertically"
+        "description": "绑扎工艺符合横平竖直的要求, 线缆/非光纤"
       },
       {
         "bbox": [
@@ -127,7 +127,7 @@
           202,
           896
         ],
-        "description": "bbu shield installed, shield orientation correct, shield unobstructed"
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 挡风板/安装"
       },
       {
         "bbox": [
@@ -136,7 +136,7 @@
           218,
           182
         ],
-        "description": "label matches"
+        "description": "标签/匹配"
       },
       {
         "bbox": [
@@ -145,7 +145,7 @@
           290,
           567
         ],
-        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+        "description": "光纤弯曲半径合理, 有蛇形管保护, 线缆/光纤"
       },
       {
         "bbox": [
@@ -154,7 +154,7 @@
           262,
           554
         ],
-        "description": "cpri connection correct"
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
       },
       {
         "bbox": [
@@ -163,7 +163,7 @@
           334,
           711
         ],
-        "description": "cpri connection correct"
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
       },
       {
         "bbox": [
@@ -172,7 +172,7 @@
           314,
           738
         ],
-        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+        "description": "光纤弯曲半径合理, 有蛇形管保护, 线缆/光纤"
       },
       {
         "bbox": [
@@ -181,7 +181,7 @@
           299,
           712
         ],
-        "description": "label matches"
+        "description": "标签/匹配"
       },
       {
         "bbox": [
@@ -190,7 +190,7 @@
           234,
           787
         ],
-        "description": "label matches"
+        "description": "标签/匹配"
       },
       {
         "bbox": [
@@ -199,242 +199,242 @@
           132,
           886
         ],
-        "description": "label matches"
+        "description": "标签/匹配"
       }
     ]
   },
   "diverse": {
-    "image": "ds_rescaled/QC-20230222-0000297_272972.jpeg",
+    "image": "ds_rescaled/QC-20230225-0000413_34154.jpeg",
     "objects": [
       {
         "bbox": [
-          153,
-          101,
-          389,
-          629
-        ],
-        "description": "cabinet not fully occupied, match"
-      },
-      {
-        "bbox": [
-          318,
-          108,
-          329,
-          119
-        ],
-        "description": "install screw correct"
-      },
-      {
-        "bbox": [
-          235,
-          113,
-          332,
-          631
-        ],
-        "description": "huawei bbu"
-      },
-      {
-        "bbox": [
-          178,
-          126,
-          300,
-          188
-        ],
-        "description": "fiber cable, fibre bend radius proper, armour protection"
-      },
-      {
-        "bbox": [
-          189,
-          129,
-          235,
-          599
-        ],
-        "description": "bbu shield installed, shield orientation correct, shield unobstructed"
-      },
-      {
-        "bbox": [
-          265,
-          178,
-          306,
-          228
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          302,
-          186,
-          318,
-          238
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          189,
-          218,
-          277,
-          372
-        ],
-        "description": "fiber cable, fibre bend radius proper, armour protection"
-      },
-      {
-        "bbox": [
-          211,
-          362,
-          265,
-          382
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          248,
-          372,
-          282,
-          422
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          277,
-          376,
-          298,
-          406
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          125,
-          382,
-          218,
-          456
-        ],
-        "description": "fiber cable, fibre bend radius proper, armour protection"
-      },
-      {
-        "bbox": [
-          228,
-          432,
-          250,
-          455
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          141,
-          577,
-          230,
-          658
-        ],
-        "description": "non-fiber cable, binding aligned horizontally and vertically"
-      },
-      {
-        "bbox": [
-          276,
-          611,
-          286,
-          621
-        ],
-        "description": "cabinet grounding correct"
-      },
-      {
-        "bbox": [
-          319,
-          614,
-          332,
-          625
-        ],
-        "description": "install screw correct"
-      }
-    ]
-  },
-  "rare": {
-    "image": "ds_rescaled/QC-20230301-0000486_2850863.jpeg",
-    "objects": [
-      {
-        "bbox": [
-          10,
           0,
-          420,
+          60,
+          426,
+          710
+        ],
+        "description": "符合, 机柜空间/非满载"
+      },
+      {
+        "bbox": [
+          370,
+          78,
+          382,
+          97
+        ],
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
+      },
+      {
+        "bbox": [
+          260,
+          80,
+          379,
+          712
+        ],
+        "description": "BBU品牌/华为"
+      },
+      {
+        "bbox": [
+          277,
+          87,
+          288,
+          100
+        ],
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
+      },
+      {
+        "bbox": [
+          190,
+          92,
+          272,
+          697
+        ],
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 挡风板/安装"
+      },
+      {
+        "bbox": [
+          33,
+          106,
+          126,
+          651
+        ],
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 其他, 挡风板安装位置错误, 挡风板/安装"
+      },
+      {
+        "bbox": [
+          36,
+          116,
+          50,
+          131
+        ],
+        "description": "连接点（螺丝）/BBU安装螺丝/连接正确"
+      },
+      {
+        "bbox": [
+          0,
+          123,
+          55,
           647
         ],
-        "description": "cabinet fully occupied"
+        "description": "BBU品牌/华为"
       },
       {
         "bbox": [
-          0,
-          14,
-          420,
-          351
+          321,
+          169,
+          343,
+          216
         ],
-        "description": "zte bbu"
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
       },
       {
         "bbox": [
-          140,
-          133,
-          339,
-          247
+          288,
+          171,
+          315,
+          281
         ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          80,
-          270,
-          168,
-          357
-        ],
-        "description": "cpri connection correct"
-      },
-      {
-        "bbox": [
-          209,
-          317,
-          420,
-          436
-        ],
-        "description": "label matches"
-      },
-      {
-        "bbox": [
-          57,
-          318,
-          146,
-          470
-        ],
-        "description": "label matches"
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
       },
       {
         "bbox": [
           1,
-          336,
-          420,
-          474
+          207,
+          22,
+          251
         ],
-        "description": "ericsson bbu"
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
       },
       {
         "bbox": [
-          195,
-          410,
-          282,
-          493
+          16,
+          212,
+          68,
+          596
         ],
-        "description": "cpri connection correct"
+        "description": "光纤弯曲半径合理, 无蛇形管/铠装保护, 线缆/光纤"
       },
+      {
+        "bbox": [
+          173,
+          218,
+          241,
+          611
+        ],
+        "description": "光纤弯曲半径合理, 有蛇形管保护, 线缆/光纤"
+      },
+      {
+        "bbox": [
+          270,
+          468,
+          284,
+          486
+        ],
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
+      },
+      {
+        "bbox": [
+          17,
+          635,
+          36,
+          654
+        ],
+        "description": "未拧紧, 连接点（螺丝）/BBU安装螺丝/连接错误"
+      },
+      {
+        "bbox": [
+          143,
+          674,
+          259,
+          727
+        ],
+        "description": "绑扎工艺符合横平竖直的要求, 线缆/非光纤"
+      }
+    ]
+  },
+  "rare": {
+    "image": "ds_rescaled/QC-20230307-0000567_47950.jpeg",
+    "objects": [
       {
         "bbox": [
           0,
-          459,
-          342,
-          564
+          0,
+          513,
+          704
         ],
-        "description": "fiber cable, fibre bend radius proper, snake tube protection"
+        "description": "符合, 机柜空间/非满载"
+      },
+      {
+        "bbox": [
+          140,
+          0,
+          207,
+          690
+        ],
+        "description": "挡风板与设备品牌匹配, 挡风板安装方向正确, 挡风板安装无遮挡, 挡风板/安装"
+      },
+      {
+        "bbox": [
+          199,
+          0,
+          343,
+          711
+        ],
+        "description": "BBU品牌/华为"
+      },
+      {
+        "bbox": [
+          221,
+          313,
+          326,
+          728
+        ],
+        "description": "光纤弯曲半径合理, 有蛇形管保护, 有铠装保护, 线缆/光纤"
+      },
+      {
+        "bbox": [
+          265,
+          332,
+          299,
+          380
+        ],
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
+      },
+      {
+        "bbox": [
+          13,
+          359,
+          210,
+          668
+        ],
+        "description": "光纤弯曲半径合理, 有蛇形管保护, 线缆/光纤"
+      },
+      {
+        "bbox": [
+          192,
+          365,
+          243,
+          399
+        ],
+        "description": "连接点（螺丝）/CPRI光缆和BBU连接点/连接正确"
+      },
+      {
+        "bbox": [
+          152,
+          454,
+          230,
+          553
+        ],
+        "description": "标签/匹配"
+      },
+      {
+        "bbox": [
+          170,
+          577,
+          271,
+          728
+        ],
+        "description": "绑扎工艺符合横平竖直的要求, 线缆/非光纤"
       }
     ]
   }

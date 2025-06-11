@@ -263,29 +263,17 @@ class BBUDataset(Dataset):
         return self._get_item(idx)
 
     def _get_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Process a single sample using ChatProcessor."""
-        sample = self.data[idx]
+        """Internal getter to handle data processing and GT extraction."""
+        raw_sample = self.data[idx]
 
-        # Process using the chat processor
-        result = self.chat_processor.process_sample(sample)
-        data_logger.debug(f"✅ Successfully processed sample {idx}")
+        # ChatProcessor now handles all data conversion, including GT extraction
+        # and normalization, providing a complete, model-ready sample.
+        processed_data = self.chat_processor.process_sample(raw_sample)
 
-        # Validate result
-        if "input_ids" not in result:
-            raise ValueError("Missing input_ids in preprocessed result")
-
-        # Extract ground truth objects for detection loss
-        gt_objects = extract_ground_truth_from_sample(sample)
-        result["ground_truth_objects"] = gt_objects
-
-        data_logger.debug(
-            f"✅ Sample {idx} processed with {len(gt_objects)} GT objects (automatic memory management enabled)"
-        )
-
-        return result
+        return processed_data
 
     def _load_data(self) -> List[Dict]:
-        """Load and validate data from JSONL file."""
+        """Load data from JSONL file."""
         # Load raw data
         raw_data = read_jsonl(self.data_path)
         print(f"📊 Loaded {len(raw_data)} raw samples from {self.data_path}")
@@ -316,54 +304,15 @@ class BBUDataset(Dataset):
 
 
 def extract_ground_truth_from_sample(sample_data):
-    """Extract ground truth objects from conversation format with proper coordinate normalization"""
-    target = sample_data.get("target", {})
-    objects = target.get("objects", [])
-    images = target.get("images", [])
-
-    if not images:
-        return []
-
-    # Load the first image to get actual dimensions after your scaling
-    from pathlib import Path
-
-    from PIL import Image
-
-    from src.config import config
-
-    image_path = Path(config.data_root) / images[0]
-    try:
-        with Image.open(image_path) as img:
-            image_width, image_height = img.size
-    except Exception as e:
-        print(f"⚠️ Could not load image {image_path}: {e}")
-        return []
-
-    # Convert to detection format with normalized coordinates
-    gt_objects = []
-    for obj in objects:
-        box = obj.get("box", None)  # [x1, y1, x2, y2] absolute coordinates
-        desc = obj.get("desc", None)
-
-        if box is None or desc is None:
-            continue  # Skip invalid objects
-
-        # Normalize coordinates to [0, 1] using actual scaled image dimensions
-        # This preserves your dynamic resolution and scaling
-        normalized_box = [
-            box[0] / image_width,  # x1
-            box[1] / image_height,  # y1
-            box[2] / image_width,  # x2
-            box[3] / image_height,  # y2
-        ]
-
-        # Clamp coordinates to [0, 1] range to handle any edge cases
-        normalized_box = [max(0.0, min(1.0, coord)) for coord in normalized_box]
-
-        # Keep using "box" and "desc" keys to match your data format
-        gt_objects.append({"box": normalized_box, "desc": desc})
-
-    return gt_objects
+    """
+    DEPRECATED: This function is no longer needed as the ChatProcessor
+    now handles ground truth extraction and normalization directly.
+    Kept for historical reference but should not be used.
+    """
+    raise DeprecationWarning(
+        "extract_ground_truth_from_sample is deprecated and should not be called. "
+        "Use the ChatProcessor's process_sample method instead."
+    )
 
 
 @dataclass

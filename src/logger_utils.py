@@ -345,6 +345,11 @@ def get_sample_logger() -> PrefixedLogger:
     return get_logger("sample")
 
 
+def get_detection_logger() -> PrefixedLogger:
+    """Get logger for detection operations."""
+    return get_logger("detection")
+
+
 # Backward compatibility aliases
 configure_global_logging = configure_logging
 get_raw_data_logger_legacy = get_raw_data_logger

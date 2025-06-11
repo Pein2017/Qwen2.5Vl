@@ -1,8 +1,41 @@
 """
-Unified BBU Trainer using the direct configuration system.
+Unified BBU Trainer with Robust Loss Logging.
 
-This implementation uses the new direct config access that eliminates
-parameter passing and provides flat, direct access to all config values.
+This module extends the standard HuggingFace Trainer to provide fine-grained
+logging for a multi-component loss function (language modeling, bounding box,
+caption, and objectness) while ensuring accurate, per-step reporting even with
+gradient accumulation and frequent evaluations.
+
+Key Implementation Details:
+1.  **Component Loss Accumulation:**
+    - The `compute_loss` method calculates the final combined loss for
+      backpropagation.
+    - It also tracks each individual loss component (e.g., `_current_lm_loss`)
+      and adds it to a corresponding accumulator (e.g., `_accumulated_lm_loss`)
+      for each micro-batch (i.e., each forward pass).
+
+2.  **Per-Step Average Logging:**
+    - The `_maybe_log_save_evaluate` method is called by the Trainer's main loop
+      AFTER a full gradient accumulation cycle is complete.
+    - It averages each accumulated component loss by dividing it by the number of
+      gradient accumulation steps.
+    - The final reported `loss` is the sum of these averaged components,
+      ensuring it accurately reflects the loss for that specific training step.
+    - All accumulators are reset to zero immediately after logging, preparing
+      them for the next accumulation cycle.
+
+3.  **Isolated Evaluation:**
+    - The `evaluate` method is "sandboxed" to prevent state corruption.
+    - Before evaluation begins, it saves the current state of the training
+      loss accumulators.
+    - It then runs the entire evaluation, using the same accumulators but for
+      evaluation batches.
+    - CRUCIALLY, after evaluation is complete, it restores the saved training
+      accumulators, ensuring that the evaluation process does not interfere
+      with the training loop's loss tracking.
+
+This design guarantees that training and evaluation logging are independent and
+that reported training losses are correctly averaged per step.
 """
 
 from typing import Any, Dict, Optional, Tuple, Union
@@ -16,7 +49,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from transformers.trainer_utils import SaveStrategy
 
 from src.config import config
 from src.data import BBUDataset, create_data_collator
@@ -32,24 +64,29 @@ class BBUTrainer(Trainer):
     while maintaining clean separation of concerns.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, config=None, image_processor=None, **kwargs):
+        # Inject config object or fallback to global
+        from src.config import config as _global_config
+
+        self.config = config or _global_config
         super().__init__(*args, **kwargs)
         self.logger = get_training_logger()
+        self.image_processor = image_processor
 
-        # Simple accumulators for loss components (like tr_loss)
-        self._accumulated_lm_loss = 0.0
-        self._accumulated_bbox_loss = 0.0
-        self._accumulated_caption_loss = 0.0
-        self._accumulated_objectness_loss = 0.0
+        # Simple attributes to store the latest loss components for logging
+        self._current_lm_loss: float = 0.0
+        self._current_bbox_loss: float = 0.0
+        self._current_caption_loss: float = 0.0
+        self._current_objectness_loss: float = 0.0
 
         # Initialize training monitor if enabled
         self.monitor = None
-        if config.enable_monitoring:
+        if self.config.enable_monitoring:
             self._init_monitor()
 
         # Initialize object detection loss if configured
         self.detection_loss = None
-        if config.detection_enabled:
+        if self.config.detection_enabled:
             self._init_detection_loss()
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
@@ -92,6 +129,11 @@ class BBUTrainer(Trainer):
         detection_path = os.path.join(output_dir, "detection_head.pth")
         torch.save(detection_state_dict, detection_path)
 
+        # Save image processor config
+        if self.image_processor:
+            self.image_processor.save_pretrained(output_dir)
+            self.logger.info(f"💾 Image processor config saved to: {output_dir}")
+
         # Save detection head configuration with UNIFIED filename
         detection_config = {
             "num_queries": self.model.detection_head.num_queries,
@@ -115,17 +157,17 @@ class BBUTrainer(Trainer):
         from src.training.monitor import create_training_monitor
 
         self.monitor = create_training_monitor(
-            log_dir=config.monitor_log_dir,
-            save_predictions=config.save_predictions,
-            save_token_analysis=config.save_token_analysis,
-            save_raw_text=config.save_raw_text,
+            log_dir=self.config.monitor_log_dir,
+            save_predictions=self.config.save_predictions,
+            save_token_analysis=self.config.save_token_analysis,
+            save_raw_text=self.config.save_raw_text,
         )
 
         self.logger.info("🔍 Training monitor initialized in BBUTrainer")
-        self.logger.info(f"   Monitor log directory: {config.monitor_log_dir}")
-        self.logger.info(f"   Save predictions: {config.save_predictions}")
-        self.logger.info(f"   Save token analysis: {config.save_token_analysis}")
-        self.logger.info(f"   Save raw text: {config.save_raw_text}")
+        self.logger.info(f"   Monitor log directory: {self.config.monitor_log_dir}")
+        self.logger.info(f"   Save predictions: {self.config.save_predictions}")
+        self.logger.info(f"   Save token analysis: {self.config.save_token_analysis}")
+        self.logger.info(f"   Save raw text: {self.config.save_raw_text}")
 
     def _init_detection_loss(self):
         """Initialize object detection loss with config parameters."""
@@ -133,26 +175,115 @@ class BBUTrainer(Trainer):
 
         # Initialize with tokenizer for caption loss computation
         self.detection_loss = DetectionLoss(
-            bbox_weight=config.detection_bbox_weight,
-            giou_weight=config.detection_giou_weight,
-            objectness_weight=config.detection_objectness_weight,
-            caption_weight=config.detection_caption_weight,
+            bbox_weight=self.config.detection_bbox_weight,
+            giou_weight=self.config.detection_giou_weight,
+            objectness_weight=self.config.detection_objectness_weight,
+            caption_weight=self.config.detection_caption_weight,
             tokenizer=self.tokenizer,
+            focal_loss_gamma=self.config.detection_focal_loss_gamma,
+            focal_loss_alpha=self.config.detection_focal_loss_alpha,
         )
 
         self.logger.info("🎯 Detection loss initialized in BBUTrainer")
-        self.logger.info(f"   bbox_weight: {config.detection_bbox_weight}")
-        self.logger.info(f"   giou_weight: {config.detection_giou_weight}")
-        self.logger.info(f"   objectness_weight: {config.detection_objectness_weight}")
-        self.logger.info(f"   caption_weight: {config.detection_caption_weight}")
+        self.logger.info(f"   bbox_weight: {self.config.detection_bbox_weight}")
+        self.logger.info(f"   giou_weight: {self.config.detection_giou_weight}")
+        self.logger.info(
+            f"   objectness_weight: {self.config.detection_objectness_weight}"
+        )
+        self.logger.info(f"   caption_weight: {self.config.detection_caption_weight}")
+        self.logger.info(
+            f"   focal_loss_gamma: {self.config.detection_focal_loss_gamma}"
+        )
+        self.logger.info(
+            f"   focal_loss_alpha: {self.config.detection_focal_loss_alpha}"
+        )
+
+    def init_param_groups(self):
+        """Initializes parameter groups for differential learning rate."""
+        self.logger.info(
+            "🔧 Initializing parameter groups for differential learning rate..."
+        )
+
+        # Based on the reference implementation in the official qwenvl finetuning repo.
+        param_groups = {
+            "vision": [],
+            "merger": [],
+            "llm": [],
+            "detection": [],
+        }
+
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            # Correct parameter name matching based on the model's structure.
+            # The order is critical: check for the most specific names first.
+            if "detection_head" in name:
+                param_groups["detection"].append(param)
+            # "merger" is part of the vision tower, so check for it *before* "visual".
+            elif "merger" in name:
+                param_groups["merger"].append(param)
+            elif "visual" in name:
+                param_groups["vision"].append(param)
+            else:
+                param_groups["llm"].append(param)
+
+        # Store for optimizer creation
+        self._param_groups = param_groups
+
+        # Log the parameter distribution
+        for group, params in param_groups.items():
+            num_params = sum(p.numel() for p in params)
+            if num_params > 0:
+                self.logger.info(
+                    f"   - Group '{group}': {len(params)} tensors, {num_params / 1e6:.2f}M params"
+                )
+
+    def create_optimizer(self):
+        """
+        Create the optimizer with differential learning rates if configured.
+        """
+        if not self.config.use_differential_lr or not hasattr(self, "_param_groups"):
+            self.logger.info("🚀 Creating standard optimizer...")
+            return super().create_optimizer()
+
+        self.logger.info("🚀 Creating optimizer with differential learning rates...")
+
+        lr_map = {
+            "vision": self.config.vision_lr,
+            "merger": self.config.mlp_lr,
+            "llm": self.config.llm_lr,
+            "detection": self.config.detection_lr,
+        }
+
+        optimizer_grouped_parameters = []
+        for group_name, params in self._param_groups.items():
+            if params:
+                lr = lr_map[group_name]
+                optimizer_grouped_parameters.append(
+                    {
+                        "params": params,
+                        "lr": lr,
+                    }
+                )
+                self.logger.info(f"   - Group '{group_name}' assigned LR: {lr}")
+
+        optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args)
+        self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+        self.logger.info(
+            "✅ Optimizer with differential learning rates created successfully."
+        )
+        return self.optimizer
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
         """
         Compute loss with end-to-end object detection integration.
-
-        Returns enhanced loss information for automatic logging.
+        The Trainer handles loss accumulation and averaging, so we just
+        return the final combined loss. Individual components are stored
+        as attributes for logging.
         """
         # Extract and store GT objects separately
         ground_truth_objects = self._extract_ground_truth_objects(inputs)
@@ -170,27 +301,20 @@ class BBUTrainer(Trainer):
 
         # Standard LM loss from base model
         lm_loss = outputs.loss
+        self._current_lm_loss = lm_loss.item()  # Store for logging
 
-        # Detection loss computation (if enabled and GT available)
-        detection_loss_components = {}
+        # Detection loss computation
         total_detection_loss = 0.0
 
         if (
-            config.detection_enabled
+            self.config.detection_enabled
+            and self.detection_loss is not None
             and ground_truth_objects
             and any(len(gt) > 0 for gt in ground_truth_objects)
         ):
-            # Get hidden states from wrapper model output
-            if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
-                hidden_states = outputs.hidden_states[-1]  # Final layer
-            else:
-                # Fallback: call base model directly to get hidden states
-                base_outputs = model.base_model(**model_inputs)
-                hidden_states = base_outputs.hidden_states[-1]
-
+            hidden_states = outputs.hidden_states[-1]
             attention_mask = model_inputs.get("attention_mask")
 
-            # Call detection head directly
             detection_outputs = model.detection_head(
                 hidden_states,
                 attention_mask,
@@ -198,176 +322,105 @@ class BBUTrainer(Trainer):
                 training=model.training,
             )
 
-            # Check for bbox saturation and reinitialize if needed
-            if (
-                hasattr(model, "detection_head")
-                and "pred_boxes_raw" in detection_outputs
-            ):
-                raw_boxes = detection_outputs["pred_boxes_raw"]
-                max_raw = raw_boxes.abs().max().item()
-
-                # If raw predictions are extremely large (>10), reinitialize
-                if (
-                    max_raw > 10.0 and self.state.global_step % 50 == 0
-                ):  # Check every 50 steps
-                    self.logger.warning(
-                        f"🚨 Bbox saturation detected! Max raw value: {max_raw:.2f}"
-                    )
-                    self.logger.warning("🔄 Reinitializing bbox head weights...")
-                    model.detection_head.reinitialize_bbox_head()
-
-            # Compute detection loss and get individual components
-            detection_loss_result = self.detection_loss(
+            detection_loss_components = self.detection_loss(
                 detection_outputs, ground_truth_objects
             )
 
-            # Handle detection loss result
-            if isinstance(detection_loss_result, dict):
-                total_detection_loss = detection_loss_result.get("total_loss", 0.0)
-                detection_loss_components = {
-                    k: v for k, v in detection_loss_result.items() if k != "total_loss"
-                }
-            else:
-                total_detection_loss = detection_loss_result
+            # The detection_loss module returns weighted losses
+            total_detection_loss = detection_loss_components["total_loss"]
 
-        # Store loss components and accumulate them (simple approach)
-        self._current_lm_loss = (
-            lm_loss.item() if isinstance(lm_loss, torch.Tensor) else lm_loss
-        )
-        self._current_bbox_loss = detection_loss_components.get("bbox_loss", 0.0)
-        self._current_caption_loss = detection_loss_components.get("caption_loss", 0.0)
-        self._current_objectness_loss = detection_loss_components.get(
-            "objectness_loss", 0.0
-        )
+            # Store unweighted components for logging
+            self._current_bbox_loss = self.detection_loss.last_bbox_loss.item()
+            self._current_caption_loss = self.detection_loss.last_caption_loss.item()
+            self._current_objectness_loss = (
+                self.detection_loss.last_objectness_loss.item()
+            )
+        else:
+            # Reset detection losses if not computed
+            self._current_bbox_loss = 0.0
+            self._current_caption_loss = 0.0
+            self._current_objectness_loss = 0.0
 
-        # Accumulate loss components (simple approach)
-        self._accumulated_lm_loss += self._current_lm_loss
-        self._accumulated_bbox_loss += self._current_bbox_loss
-        self._accumulated_caption_loss += self._current_caption_loss
-        self._accumulated_objectness_loss += self._current_objectness_loss
+        # Total loss for backpropagation
+        total_loss = lm_loss + total_detection_loss
 
-        # Compute final combined loss for backpropagation
-        final_loss = lm_loss + total_detection_loss
-
-        # Handle token averaging if needed (BEFORE returning)
-        if (
-            self.args.average_tokens_across_devices
-            and (self.model_accepts_loss_kwargs or self.compute_loss_func)
-            and num_items_in_batch is not None
-        ):
-            final_loss *= self.accelerator.num_processes
-
-        # CRITICAL: Return the COMBINED loss (LM + detection) as the main loss
-        # This ensures the trainer uses our full loss for optimization and logging
-        return (final_loss, outputs) if return_outputs else final_loss
+        return (total_loss, outputs) if return_outputs else total_loss
 
     def _maybe_log_save_evaluate(
-        self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time
+        self,
+        tr_loss,
+        grad_norm,
+        model,
+        trial,
+        epoch,
+        ignore_keys_for_eval,
+        start_time,
+        learning_rate=None,
     ):
         """
-        Override to add our custom loss components to the logs.
+        Log metrics using the standard `self.log()` method.
+        The base Trainer class handles averaging and timing.
         """
-        if (
-            self.control.should_log
-            and self.state.global_step > self._globalstep_last_logged
-        ):
-            logs: dict[str, float] = {}
+        if self.control.should_log:
+            logs: Dict[str, float] = {}
 
-            # Standard tr_loss handling (same as parent, scaled by gradient accumulation)
+            # The `tr_loss` passed from the Trainer is already averaged correctly.
             tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
-            tr_loss -= tr_loss  # Reset tr_loss to zero
-            # Compute denominator including gradient accumulation steps
-            steps_since_last_log = self.state.global_step - self._globalstep_last_logged
-            accumulation_steps = getattr(self.args, "gradient_accumulation_steps", None)
-            if accumulation_steps is None:
-                raise ValueError("gradient_accumulation_steps is not set")
-            denom = steps_since_last_log * accumulation_steps
-            logs["loss"] = round(tr_loss_scalar / denom, 4)
 
-            # Add our custom loss components using accumulated values (same pattern as tr_loss)
-            steps_since_last_log = self.state.global_step - self._globalstep_last_logged
-            # Account for gradient accumulation steps
-            accumulation_steps = getattr(self.args, "gradient_accumulation_steps", None)
-            if accumulation_steps is None:
-                raise ValueError("gradient_accumulation_steps is not set")
+            # Add all loss components to the log
+            logs["loss"] = tr_loss_scalar
+            logs["lm_loss"] = self._current_lm_loss
+            if self.config.detection_enabled:
+                logs["bbox_loss"] = self._current_bbox_loss
+                logs["caption_loss"] = self._current_caption_loss
+                logs["objectness_loss"] = self._current_objectness_loss
 
-            denominator = steps_since_last_log * accumulation_steps
-            if hasattr(self, "_accumulated_lm_loss"):
-                logs["lm_loss"] = round(self._accumulated_lm_loss / denominator, 4)
-                self._accumulated_lm_loss = 0.0  # Reset after logging
-            if hasattr(self, "_accumulated_bbox_loss"):
-                logs["bbox_loss"] = round(self._accumulated_bbox_loss / denominator, 4)
-                self._accumulated_bbox_loss = 0.0  # Reset after logging
-            if hasattr(self, "_accumulated_caption_loss"):
-                logs["caption_loss"] = round(
-                    self._accumulated_caption_loss / denominator, 4
-                )
-                self._accumulated_caption_loss = 0.0  # Reset after logging
-            if hasattr(self, "_accumulated_objectness_loss"):
-                logs["objectness_loss"] = round(
-                    self._accumulated_objectness_loss / denominator, 4
-                )
-                self._accumulated_objectness_loss = 0.0  # Reset after logging
+            # Add learning rate
+            learning_rate = self._get_learning_rate()
+            logs["learning_rate"] = learning_rate
 
-            # Add gradient norm and learning rate (same as parent)
-            if grad_norm is not None:
-                logs["grad_norm"] = (
-                    grad_norm.detach().item()
-                    if isinstance(grad_norm, torch.Tensor)
-                    else grad_norm
-                )
-            logs["learning_rate"] = self._get_learning_rate()
+            self.log(logs)
 
-            # Update tracking variables (same as parent)
-            self._total_loss_scalar += tr_loss_scalar
-            self._globalstep_last_logged = self.state.global_step
-            self.store_flos()
-
-            # Log everything
-            self.log(logs, start_time)
-
-        # Handle evaluation and saving (same as parent)
-        metrics = None
         if self.control.should_evaluate:
-            metrics = self._evaluate(trial, ignore_keys_for_eval)
-            is_new_best_metric = self._determine_best_metric(
-                metrics=metrics, trial=trial
-            )
-
-            if self.args.save_strategy == SaveStrategy.BEST:
-                self.control.should_save = is_new_best_metric
+            self.evaluate(ignore_keys=ignore_keys_for_eval)
 
         if self.control.should_save:
-            self._save_checkpoint(model, trial)
+            self._save_checkpoint(model, trial, metrics=None)
             self.control = self.callback_handler.on_save(
                 self.args, self.state, self.control
             )
 
-    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
+    def log(self, logs: Dict[str, float]) -> None:
         """
-        Standard log method - no custom logic needed since _maybe_log_save_evaluate handles everything.
+        Logs the values in `logs` to the appropriate writer.
+        This method is called by `_maybe_log_save_evaluate` and `evaluate`.
         """
-        # Call parent log method - this handles all-reduce for distributed training
-        super().log(logs, start_time)
+        # In training, state.global_step is the current step.
+        # In evaluation, it is the step number of the last training step.
+        if self.state.is_world_process_zero:
+            self.logger.info(f"Step {self.state.global_step}: {logs}")
+        super().log(logs)
 
     def _extract_ground_truth_objects(self, inputs):
-        """Extract ground truth objects from batch inputs"""
+        """Extracts ground truth objects from inputs if they exist."""
         ground_truth_objects = []
 
         for batch_idx in range(inputs["input_ids"].shape[0]):
             if "ground_truth_objects" in inputs:
                 gt_objects = inputs["ground_truth_objects"][batch_idx]
-                self.logger.info(
-                    f"🔍 DEBUG: Found GT objects for batch {batch_idx}: {len(gt_objects)} objects"
+                self.logger.debug(
+                    f"🔍 Found GT objects for batch {batch_idx}: {len(gt_objects)} objects"
                 )
             else:
                 gt_objects = []
-                self.logger.info(f"🔍 DEBUG: No GT objects found for batch {batch_idx}")
+                self.logger.debug(f"🔍 No GT objects found for batch {batch_idx}")
 
             ground_truth_objects.append(gt_objects)
 
         total_gt_objects = sum(len(gt_objs) for gt_objs in ground_truth_objects)
-        self.logger.info(f"🔍 DEBUG: Total GT objects across batch: {total_gt_objects}")
+        self.logger.debug(
+            f"🔍 DEBUG: Total GT objects across batch: {total_gt_objects}"
+        )
 
         return ground_truth_objects
 
@@ -397,9 +450,9 @@ class BBUTrainer(Trainer):
 
         # DEBUG: Log final ground truth objects
         total_gt_objects = sum(len(gt_objs) for gt_objs in ground_truth_objects)
-        self.logger.info(f"🔍 DEBUG: Total GT objects across batch: {total_gt_objects}")
-        self.logger.info(
-            f"🔍 DEBUG: GT objects per sample: {[len(gt_objs) for gt_objs in ground_truth_objects]}"
+        self.logger.debug(f"🔍 Total GT objects across batch: {total_gt_objects}")
+        self.logger.debug(
+            f"🔍 GT objects per sample: {[len(gt_objs) for gt_objs in ground_truth_objects]}"
         )
 
         # Add to model inputs
@@ -420,91 +473,17 @@ class BBUTrainer(Trainer):
             self.monitor.finalize_session()
         super().on_train_end(args, state, control, **kwargs)
 
-    def create_optimizer(self):
+    def create_optimizer_and_scheduler(self, num_training_steps: int):
         """
-        Create optimizer with separate parameter groups for different learning rates.
-
-        This enables detection head to have its own learning rate separate from
-        the base model components.
+        Override to setup optimizer and cosine scheduler for differential learning rates.
         """
-        if config.use_differential_lr and config.tune_detection:
-            self.logger.info(
-                "🔧 Creating optimizer with differential learning rates..."
-            )
-
-            # Collect parameters for different components
-            param_groups = []
-
-            # Base model parameters (vision, MLP, LLM)
-            base_params = []
-            base_param_names = []
-
-            # Detection head parameters
-            detection_params = []
-            detection_param_names = []
-
-            # Categorize all model parameters
-            for name, param in self.model.named_parameters():
-                if not param.requires_grad:
-                    continue
-
-                if "detection_head" in name:
-                    detection_params.append(param)
-                    detection_param_names.append(name)
-                else:
-                    base_params.append(param)
-                    base_param_names.append(name)
-
-            # Create parameter groups with different learning rates
-            if base_params:
-                param_groups.append(
-                    {
-                        "params": base_params,
-                        "lr": config.learning_rate,  # Use general learning rate for base model
-                        "weight_decay": self.args.weight_decay,
-                    }
-                )
-                self.logger.info(
-                    f"   Base model params: {len(base_params)} (lr={config.learning_rate})"
-                )
-
-            if detection_params and config.tune_detection:
-                param_groups.append(
-                    {
-                        "params": detection_params,
-                        "lr": config.detection_lr,  # Use detection-specific learning rate
-                        "weight_decay": self.args.weight_decay,
-                    }
-                )
-                self.logger.info(
-                    f"   Detection head params: {len(detection_params)} (lr={config.detection_lr})"
-                )
-
-                # Log detection parameter names for debugging
-                self.logger.info(
-                    f"   Detection parameters: {detection_param_names[:5]}..."
-                )  # Show first 5
-
-            # Create optimizer with parameter groups
-            optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(
-                self.args
-            )
-            optimizer_kwargs["params"] = param_groups
-
-            self.optimizer = optimizer_cls(**optimizer_kwargs)
-
-            self.logger.info(
-                f"✅ Created optimizer with {len(param_groups)} parameter groups"
-            )
-
-        else:
-            # Use default optimizer creation
-            self.logger.info(
-                "🔧 Using default optimizer (no differential learning rates)"
-            )
-            super().create_optimizer()
-
-        return self.optimizer
+        # Create optimizer with multi-stage differential LRs
+        optimizer = self.create_optimizer()
+        # Create LR scheduler based on lr_scheduler_type and num_training_steps
+        self.create_scheduler(
+            num_training_steps=num_training_steps, optimizer=optimizer
+        )
+        return optimizer, self.lr_scheduler
 
     def prediction_step(
         self,
@@ -566,11 +545,19 @@ class BBUTrainer(Trainer):
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
         """Override evaluation to include individual loss components in metrics."""
+        # Save training accumulators to prevent interference from evaluation
+        saved_accumulators = {
+            "lm": self._current_lm_loss,
+            "bbox_reg": self._current_bbox_loss,
+            "caption": self._current_caption_loss,
+            "objectness": self._current_objectness_loss,
+        }
+
         # Reset accumulators before evaluation
-        self._accumulated_lm_loss = 0.0
-        self._accumulated_bbox_loss = 0.0
-        self._accumulated_caption_loss = 0.0
-        self._accumulated_objectness_loss = 0.0
+        self._current_lm_loss = 0.0
+        self._current_bbox_loss = 0.0
+        self._current_caption_loss = 0.0
+        self._current_objectness_loss = 0.0
         # Run base evaluation (logs default eval metrics)
         metrics = super().evaluate(
             eval_dataset=eval_dataset,
@@ -582,22 +569,24 @@ class BBUTrainer(Trainer):
         num_batches = len(eval_loader)
         if num_batches > 0:
             metrics[f"{metric_key_prefix}_lm_loss"] = round(
-                self._accumulated_lm_loss / num_batches, 4
+                self._current_lm_loss / num_batches, 4
             )
             metrics[f"{metric_key_prefix}_bbox_loss"] = round(
-                self._accumulated_bbox_loss / num_batches, 4
+                self._current_bbox_loss / num_batches, 4
             )
             metrics[f"{metric_key_prefix}_caption_loss"] = round(
-                self._accumulated_caption_loss / num_batches, 4
+                self._current_caption_loss / num_batches, 4
             )
             metrics[f"{metric_key_prefix}_objectness_loss"] = round(
-                self._accumulated_objectness_loss / num_batches, 4
+                self._current_objectness_loss / num_batches, 4
             )
-            # Also expose without prefix for consistency with training logs
-            metrics["lm_loss"] = metrics[f"{metric_key_prefix}_lm_loss"]
-            metrics["bbox_loss"] = metrics[f"{metric_key_prefix}_bbox_loss"]
-            metrics["caption_loss"] = metrics[f"{metric_key_prefix}_caption_loss"]
-            metrics["objectness_loss"] = metrics[f"{metric_key_prefix}_objectness_loss"]
+
+        # Restore training accumulators
+        self._current_lm_loss = saved_accumulators["lm"]
+        self._current_bbox_loss = saved_accumulators["bbox_reg"]
+        self._current_caption_loss = saved_accumulators["caption"]
+        self._current_objectness_loss = saved_accumulators["objectness"]
+
         # Log extended metrics
         self.log(metrics)
         return metrics
@@ -817,43 +806,37 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 def create_trainer(
     training_args: Optional[TrainingArguments] = None, **kwargs
 ) -> BBUTrainer:
-    """
-    Create BBU trainer with all components using direct config access.
-    This matches the trainer creation in train_qwen.py.
-    """
-    logger = get_training_logger()
-    logger.info("🏋️ Creating BBU trainer...")
+    """Creates a unified BBU trainer with all necessary components."""
+    from src.training.trainer import BBUTrainer, set_model_training_params
 
     # Setup model and tokenizer
     model, tokenizer, image_processor = setup_model_and_tokenizer()
 
-    # Setup data module
+    # Set requires_grad for trainable components based on config
+    set_model_training_params(model)
+
+    # Setup data module (dataset and collator)
     data_module = setup_data_module(tokenizer, image_processor)
 
-    # Create callbacks
-    callbacks = []
-
-    # NOTE: Detection loss logging is now handled directly in compute_loss method
-    # No need for separate callback
-
-    # Create BBUTrainer with object detection loss integration
+    # Create trainer
     trainer = BBUTrainer(
         model=model,
-        processing_class=tokenizer,  # Use processing_class instead of tokenizer
         args=training_args,
-        train_dataset=data_module["train_dataset"],
-        eval_dataset=data_module["eval_dataset"],
-        data_collator=data_module["data_collator"],
-        callbacks=callbacks,
-        **kwargs,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
+        **data_module,
     )
+
+    # Initialize param groups for differential learning rate
+    if config.use_differential_lr:
+        trainer.init_param_groups()
 
     # Set the detection loss function in the model wrapper after trainer creation
     if config.detection_enabled and hasattr(trainer.model, "set_detection_loss_fn"):
         trainer.model.set_detection_loss_fn(trainer.detection_loss)
-        logger.info("🎯 Detection loss function set in model wrapper")
+        trainer.logger.info("🎯 Detection loss function set in model wrapper")
 
-    logger.info("✅ BBU trainer created successfully")
+    trainer.logger.info("✅ BBU trainer created successfully")
     return trainer
 
 

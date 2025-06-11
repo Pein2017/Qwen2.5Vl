@@ -9,6 +9,11 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
+from src.logger_utils import get_detection_logger
+from src.utils import IGNORE_INDEX
+
+logger = get_detection_logger()
+
 
 class DetectionLoss(nn.Module):
     """
@@ -22,22 +27,27 @@ class DetectionLoss(nn.Module):
 
     def __init__(
         self,
-        bbox_weight=5.0,
-        giou_weight=2.0,
-        objectness_weight=1.0,
-        caption_weight=0.1,
-        tokenizer=None,
+        bbox_weight: float,
+        giou_weight: float,
+        objectness_weight: float,
+        caption_weight: float,
+        focal_loss_gamma: float,
+        focal_loss_alpha: float,
+        tokenizer,
     ):
         super().__init__()
         self.bbox_weight = bbox_weight
         self.giou_weight = giou_weight
         self.objectness_weight = objectness_weight
         self.caption_weight = caption_weight
+        self.focal_loss_gamma = focal_loss_gamma
+        self.focal_loss_alpha = focal_loss_alpha
 
         # Tokenizer for caption processing
         self.tokenizer = tokenizer
         if tokenizer is None:
             raise ValueError("Tokenizer is required for caption loss computation")
+        self.ignore_index = IGNORE_INDEX
 
     def forward(self, pred_outputs, ground_truth_objects):
         """
@@ -59,7 +69,8 @@ class DetectionLoss(nn.Module):
         caption_logits = pred_outputs["caption_logits"]  # (B, N, max_len, vocab_size)
 
         batch_size = pred_boxes.shape[0]
-        total_loss = 0.0
+        num_gt_total = 0
+        device = pred_boxes.device
 
         # Track loss components for debugging
         total_bbox_loss = 0.0
@@ -67,95 +78,111 @@ class DetectionLoss(nn.Module):
         total_objectness_loss = 0.0
 
         for b in range(batch_size):
+            gt_objects_sample = ground_truth_objects[b]
+            num_gt_sample = len(gt_objects_sample)
+            num_gt_total += num_gt_sample
+            num_queries = pred_boxes.shape[1]
+            max_caption_len = caption_logits.shape[2]
+
             # Hungarian matching for this sample
             matched_pred_idx, matched_gt_idx = self._hungarian_match(
                 pred_boxes[b],  # (N, 4)
                 pred_objectness[b],  # (N,)
-                ground_truth_objects[b],  # List[Dict]
+                gt_objects_sample,  # List[Dict]
             )
 
+            # --- Caption Loss (for all queries) ---
+            # Create target tensor for all queries, init with ignore_index
+            target_captions = torch.full(
+                (num_queries, max_caption_len),
+                self.ignore_index,
+                dtype=torch.long,
+                device=device,
+            )
+
+            # 1. Targets for matched queries (ground truth descriptions)
+            if len(matched_gt_idx) > 0:
+                gt_texts = [gt_objects_sample[i]["desc"] for i in matched_gt_idx]
+                tokenized_captions = self.tokenizer(
+                    gt_texts,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=max_caption_len,
+                    return_tensors="pt",
+                ).input_ids.to(device)
+
+                target_captions[matched_pred_idx] = tokenized_captions
+
+            # 2. Target for unmatched queries ("no object" / EOS token)
+            unmatched_pred_idx = [
+                i for i in range(num_queries) if i not in matched_pred_idx
+            ]
+            if len(unmatched_pred_idx) > 0:
+                target_captions[unmatched_pred_idx, 0] = self.tokenizer.eos_token_id
+
+            # Compute cross-entropy loss for all queries
+            caption_loss = F.cross_entropy(
+                caption_logits[b].permute(0, 2, 1),  # (N, vocab_size, max_len)
+                target_captions,  # (N, max_len)
+                ignore_index=self.ignore_index,
+            )
+            total_caption_loss += caption_loss
+            # --- End Caption Loss ---
+
             # Bbox regression loss for matched objects
-            bbox_loss = 0.0
-            caption_loss = 0.0
             if len(matched_pred_idx) > 0:
                 bbox_loss = self._bbox_loss(
                     pred_boxes[b][matched_pred_idx],
-                    ground_truth_objects[b],
+                    gt_objects_sample,
                     matched_gt_idx,
                 )
-
-                # Caption generation loss for matched objects
-                caption_loss = self._caption_loss(
-                    caption_logits[b][
-                        matched_pred_idx
-                    ],  # (num_matched, max_len, vocab_size)
-                    ground_truth_objects[b],
-                    matched_gt_idx,
-                )
-
-                # Ensure losses are non-negative
-                bbox_loss = torch.clamp(bbox_loss, min=0.0)
-                caption_loss = torch.clamp(caption_loss, min=0.0)
-
-                # Accumulate unweighted losses for individual tracking
-                total_bbox_loss += (
-                    bbox_loss.item() if hasattr(bbox_loss, "item") else bbox_loss
-                )
-                total_caption_loss += (
-                    caption_loss.item()
-                    if hasattr(caption_loss, "item")
-                    else caption_loss
-                )
-
-                # Add weighted losses to total (for backward compatibility)
-                sample_loss = (
-                    self.bbox_weight * bbox_loss + self.caption_weight * caption_loss
-                )
-                total_loss += sample_loss
+                total_bbox_loss += bbox_loss
 
             # Objectness loss for all predictions
             objectness_loss = self._objectness_loss(
                 pred_objectness[b],  # (N,)
                 matched_pred_idx,  # Indices of matched predictions
-                len(ground_truth_objects[b]),  # Number of GT objects
             )
+            total_objectness_loss += objectness_loss
 
-            # Ensure objectness loss is non-negative
-            objectness_loss = torch.clamp(objectness_loss, min=0.0)
+        # Normalize by total number of ground truth objects in the batch
+        # This is the standard DETR approach for stable loss scaling.
+        if num_gt_total > 0:
+            final_bbox_loss = total_bbox_loss / num_gt_total
+            final_caption_loss = total_caption_loss / num_gt_total
+        else:
+            final_bbox_loss = total_bbox_loss  # Avoid division by zero
+            final_caption_loss = total_caption_loss
 
-            total_loss += self.objectness_weight * objectness_loss
-            total_objectness_loss += (
-                objectness_loss.item()
-                if hasattr(objectness_loss, "item")
-                else objectness_loss
-            )
+        # Objectness loss is averaged by batch size
+        final_objectness_loss = (
+            total_objectness_loss / batch_size
+            if batch_size > 0
+            else total_objectness_loss
+        )
 
-        # Average over batch
-        final_loss = total_loss / batch_size if batch_size > 0 else total_loss
+        # Apply final weights
+        weighted_bbox_loss = self.bbox_weight * final_bbox_loss
+        weighted_caption_loss = self.caption_weight * final_caption_loss
+        weighted_objectness_loss = self.objectness_weight * final_objectness_loss
 
-        # Ensure final loss is non-negative
-        final_loss = torch.clamp(final_loss, min=0.0)
+        # Total loss for backpropagation
+        final_loss = (
+            weighted_bbox_loss + weighted_caption_loss + weighted_objectness_loss
+        )
 
-        # Return detailed loss components for enhanced logging (already weighted)
+        # Return detailed loss components for enhanced logging
         loss_components = {
             "total_loss": final_loss,
-            "bbox_loss": (total_bbox_loss / batch_size * self.bbox_weight)
-            if batch_size > 0
-            else 0.0,
-            "caption_loss": (total_caption_loss / batch_size * self.caption_weight)
-            if batch_size > 0
-            else 0.0,
-            "objectness_loss": (
-                total_objectness_loss / batch_size * self.objectness_weight
-            )
-            if batch_size > 0
-            else 0.0,
+            "bbox_loss": weighted_bbox_loss,
+            "caption_loss": weighted_caption_loss,
+            "objectness_loss": weighted_objectness_loss,
         }
 
-        # Store individual loss components for backward compatibility (weighted)
-        self.last_bbox_loss = loss_components["bbox_loss"]
-        self.last_caption_loss = loss_components["caption_loss"]
-        self.last_objectness_loss = loss_components["objectness_loss"]
+        # Store individual loss components for backward compatibility (unweighted)
+        self.last_bbox_loss = final_bbox_loss
+        self.last_caption_loss = final_caption_loss
+        self.last_objectness_loss = final_objectness_loss
 
         # Debug logging every few steps
         if hasattr(self, "_debug_counter"):
@@ -164,17 +191,15 @@ class DetectionLoss(nn.Module):
             self._debug_counter = 0
 
         if self._debug_counter % 1 == 0:
-            print(f"🔍 DETECTION LOSS DEBUG:")
-            print(f"   Bbox loss (weighted): {loss_components['bbox_loss']:.6f}")
-            print(f"   Caption loss (weighted): {loss_components['caption_loss']:.6f}")
-            print(
-                f"   Objectness loss (weighted): {loss_components['objectness_loss']:.6f}"
-            )
-            print(
+            logger.debug(f"🔍 DETECTION LOSS DEBUG:")
+            logger.debug(f"   Bbox loss: {final_bbox_loss:.6f}")
+            logger.debug(f"   Caption loss: {final_caption_loss:.6f}")
+            logger.debug(f"   Objectness loss: {final_objectness_loss:.6f}")
+            logger.debug(
                 f"   Final loss: {final_loss.item() if hasattr(final_loss, 'item') else final_loss:.6f}"
             )
-            print(
-                f"   Weights: bbox={self.bbox_weight}, caption={self.caption_weight}, objectness={self.objectness_weight}"
+            logger.debug(
+                f"   Weights: bbox={self.bbox_weight}, giou={self.giou_weight}, caption={self.caption_weight}, objectness={self.objectness_weight}"
             )
 
             # Add debugging for predictions vs ground truth
@@ -184,10 +209,12 @@ class DetectionLoss(nn.Module):
                 pred_box = pred_outputs["pred_boxes"][0, 0].detach().cpu().tolist()
                 pred_obj = torch.sigmoid(pred_outputs["pred_objectness"][0, 0]).item()
 
-                print(f"   Sample GT box: {gt_box}")
-                print(f"   Sample pred box: {pred_box}")  # Show actual float values
-                print(f"   Sample pred objectness: {pred_obj:.3f}")
-                print(
+                logger.debug(f"   Sample GT box: {gt_box}")
+                logger.debug(
+                    f"   Sample pred box: {pred_box}"
+                )  # Show actual float values
+                logger.debug(f"   Sample pred objectness: {pred_obj:.3f}")
+                logger.debug(
                     f"   Num GT objects in batch: {[len(gt) for gt in ground_truth_objects]}"
                 )
 
@@ -214,22 +241,32 @@ class DetectionLoss(nn.Module):
         N, M = pred_boxes.shape[0], gt_boxes.shape[0]
         cost_matrix = torch.zeros(N, M, device=pred_boxes.device)
 
+        # Use weights for cost calculation to balance components
+        bbox_weight = self.bbox_weight
+        giou_weight = self.giou_weight
+        objectness_weight = self.objectness_weight
+
         for i in range(N):
             for j in range(M):
-                # Bbox cost (L1 + GIoU) - reduced scaling
-                bbox_cost = F.l1_loss(pred_boxes[i], gt_boxes[j], reduction="sum")
+                # Bbox cost (L1 + GIoU)
+                l1_cost = F.l1_loss(pred_boxes[i], gt_boxes[j], reduction="sum")
                 giou_cost = (
                     1
                     - self._compute_giou(
                         pred_boxes[i : i + 1], gt_boxes[j : j + 1]
-                    ).item()
+                    ).squeeze()
                 )
 
                 # Objectness cost (encourage high confidence for matched objects)
                 # Apply sigmoid here since detection head outputs raw logits
-                objectness_cost = (1 - torch.sigmoid(pred_objectness[i])).item()
+                objectness_cost = 1 - torch.sigmoid(pred_objectness[i])
 
-                cost_matrix[i, j] = bbox_cost + giou_cost + objectness_cost
+                # Weighted sum of costs
+                cost_matrix[i, j] = (
+                    bbox_weight * l1_cost
+                    + giou_weight * giou_cost
+                    + objectness_weight * objectness_cost
+                )
 
         # Hungarian assignment
         if SCIPY_AVAILABLE:
@@ -240,7 +277,6 @@ class DetectionLoss(nn.Module):
 
     def _bbox_loss(self, pred_boxes, gt_objects, gt_indices):
         """L1 + GIoU loss for matched boxes"""
-        # Extract normalized boxes from GT - use "box" key from your data format
         gt_boxes = torch.stack(
             [
                 torch.tensor(
@@ -250,104 +286,46 @@ class DetectionLoss(nn.Module):
             ]
         )
 
-        # GT boxes should already be normalized by extract_ground_truth_from_sample
-
-        # L1 loss (always positive)
+        # L1 regression loss
         l1_loss = F.l1_loss(pred_boxes, gt_boxes, reduction="mean")
 
-        # GIoU loss (ensure positive)
-        giou = self._compute_giou(pred_boxes, gt_boxes)
-        giou_loss = (1 - giou).mean()
+        # GIoU loss
+        giou_loss = (
+            1 - self._compute_giou(pred_boxes, gt_boxes).diag()
+        ).mean()  # Use diag for matched pairs
 
-        # Ensure GIoU loss is positive (since GIoU can be negative, 1-GIoU can be > 2)
-        giou_loss = torch.clamp(giou_loss, min=0.0, max=2.0)
+        return l1_loss + giou_loss
 
-        total_bbox_loss = l1_loss + giou_loss
+    def _objectness_loss(self, pred_objectness, matched_pred_idx):
+        """
+        Focal loss for object presence to handle class imbalance.
+        """
+        num_queries = pred_objectness.shape[0]
+        device = pred_objectness.device
 
-        # Final safeguard
-        total_bbox_loss = torch.clamp(total_bbox_loss, min=0.0)
-
-        return total_bbox_loss
-
-    def _objectness_loss(self, pred_objectness, matched_pred_idx, num_gt_objects):
-        """Binary classification loss for object presence"""
-        # Create objectness targets
-        objectness_targets = torch.zeros_like(pred_objectness)
+        # Create target tensor: 1 for matched queries, 0 for others
+        target_objectness = torch.zeros(num_queries, device=device)
         if len(matched_pred_idx) > 0:
-            objectness_targets[matched_pred_idx] = 1.0
+            target_objectness[matched_pred_idx] = 1.0
 
-        # Binary cross entropy loss with logits (detection head outputs raw logits)
-        return F.binary_cross_entropy_with_logits(pred_objectness, objectness_targets)
+        # Compute BCE loss without reduction to apply focal scaling
+        bce_loss = F.binary_cross_entropy_with_logits(
+            pred_objectness, target_objectness, reduction="none"
+        )
 
-    def _caption_loss(self, caption_logits, gt_objects, gt_indices):
-        """Improved language modeling loss for caption generation with proper next-token prediction"""
-        # caption_logits: (num_matched, max_len, vocab_size)
-        # gt_objects: List[Dict] with "desc" field from your data format
-        # gt_indices: indices into gt_objects for matched predictions
+        # Compute probabilities and p_t for focal loss
+        p = torch.sigmoid(pred_objectness)
+        p_t = p * target_objectness + (1 - p) * (1 - target_objectness)
+        modulating_factor = (1.0 - p_t) ** self.focal_loss_gamma
 
-        if len(gt_indices) == 0:
-            return torch.tensor(0.0, device=caption_logits.device)
+        # Compute alpha factor
+        alpha_t = self.focal_loss_alpha * target_objectness + (
+            1 - self.focal_loss_alpha
+        ) * (1 - target_objectness)
 
-        total_caption_loss = 0.0
-        num_valid_captions = 0
+        focal_loss = alpha_t * modulating_factor * bce_loss
 
-        for i, gt_idx in enumerate(gt_indices):
-            # Get ground truth description - use "desc" key from your data format
-            gt_description = gt_objects[gt_idx]["desc"]
-
-            # Tokenize the description
-            gt_tokens = self.tokenizer.encode(
-                gt_description, add_special_tokens=False, return_tensors="pt"
-            ).to(caption_logits.device)  # (1, seq_len)
-
-            # Get prediction logits for this object
-            pred_logits = caption_logits[i]  # (max_len, vocab_size)
-
-            # Compute next-token prediction loss
-            if gt_tokens.shape[1] > 0:
-                max_len = pred_logits.shape[0]
-                gt_seq_len = min(gt_tokens.shape[1], max_len)
-
-                if gt_seq_len > 0:
-                    if gt_seq_len > 1:
-                        # Use logits from positions 0 to seq_len-2 to predict tokens 1 to seq_len-1
-                        pred_logits_for_loss = pred_logits[
-                            : gt_seq_len - 1
-                        ]  # (seq_len-1, vocab_size)
-                        target_tokens = gt_tokens[0, 1:gt_seq_len]  # (seq_len-1,)
-
-                        caption_loss = F.cross_entropy(
-                            pred_logits_for_loss,
-                            target_tokens,
-                            reduction="mean",
-                        )
-
-                        # Ensure caption loss is non-negative
-                        caption_loss = torch.clamp(caption_loss, min=0.0)
-
-                        total_caption_loss += caption_loss
-                        num_valid_captions += 1
-                    else:
-                        # Single token case - predict the first token
-                        caption_loss = F.cross_entropy(
-                            pred_logits[0:1],  # (1, vocab_size)
-                            gt_tokens[0, 0:1],  # (1,)
-                            reduction="mean",
-                        )
-
-                        # Ensure caption loss is non-negative
-                        caption_loss = torch.clamp(caption_loss, min=0.0)
-
-                        total_caption_loss += caption_loss
-                        num_valid_captions += 1
-
-        if num_valid_captions > 0:
-            final_caption_loss = total_caption_loss / num_valid_captions
-            # Final safeguard
-            final_caption_loss = torch.clamp(final_caption_loss, min=0.0)
-            return final_caption_loss
-        else:
-            return torch.tensor(0.0, device=caption_logits.device)
+        return focal_loss.mean()
 
     def _compute_giou(self, boxes1, boxes2):
         """Compute GIoU between two sets of boxes"""

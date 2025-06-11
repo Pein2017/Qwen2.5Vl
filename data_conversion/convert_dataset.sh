@@ -40,6 +40,7 @@ INCLUDE_EXAMPLES=true
 MAX_EXAMPLES=1
 RESPONSE_TYPES="object_type property extra_info"
 USE_CANDIDATES=true
+LANGUAGE="chinese" # "english" or "chinese"
 
 # Environment setup
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
@@ -47,6 +48,7 @@ export MODELSCOPE_CACHE="/data4/swift/modelscope/hub"
 
 echo "🚀 Starting Clean Data Conversion Pipeline"
 echo "=========================================="
+echo "Language: $LANGUAGE"
 echo "Mode: Multi-Image Few-Shot Learning with Clean Architecture"
 echo "Include Examples: $INCLUDE_EXAMPLES"
 echo "Max Examples per Sample: $MAX_EXAMPLES"
@@ -83,12 +85,21 @@ echo "🔄 Step 2: Converting raw JSONs to intermediate JSONL (regenerating)..."
 # Remove existing files to force regeneration
 rm -f "$TEMP_JSONL"
 
-python "${DATA_CONVERSION_DIR}/convert_pure_json.py" \
+# Base command
+CMD="python ${DATA_CONVERSION_DIR}/convert_pure_json.py \
     --input_folder "$INPUT_DIR" \
     --output_image_folder "$RESCALED_DIR" \
     --output_jsonl "$TEMP_JSONL" \
-    --map_file "$MAP_FILE" \
-    --resize
+    --language "$LANGUAGE" \
+    --resize"
+
+# Add map_file only for English
+if [[ "$LANGUAGE" == "english" ]]; then
+    CMD="$CMD --map_file \"$MAP_FILE\""
+fi
+
+# Execute the command
+eval $CMD
 
 echo "✅ Raw JSON conversion complete"
 

@@ -113,10 +113,14 @@ class CleanSemanticConverter:
             # Convert to clean semantic format
             clean_objects = []
             for ref_desc, bbox in zip(ref_list, bbox_list):
-                # Convert verbose description to compact format
-                compact_desc = self._convert_verbose_to_compact(ref_desc)
+                # If 'ref_desc' contains ';', it's a verbose English description
+                if ";" in ref_desc:
+                    compact_desc = self._convert_verbose_to_compact(ref_desc)
+                else:
+                    # Otherwise, it's a direct Chinese description
+                    compact_desc = ref_desc
 
-                clean_objects.append({"box": bbox, "desc": compact_desc})
+                clean_objects.append({"box": bbox, "desc": compact_desc or "unknown"})
 
             return {"images": images, "objects": clean_objects}
 
@@ -155,7 +159,15 @@ class CleanSemanticConverter:
 
         for obj in category_examples.get("objects", []):
             if "bbox" in obj and "description" in obj:
-                example_objects.append({"box": obj["bbox"], "desc": obj["description"]})
+                desc = obj["description"]
+                # Handle both verbose and compact/Chinese descriptions in examples
+                if ";" in desc:
+                    compact_desc = self._convert_verbose_to_compact(desc)
+                else:
+                    compact_desc = desc
+                example_objects.append(
+                    {"box": obj["bbox"], "desc": compact_desc or "unknown"}
+                )
 
         return {"images": example_images, "objects": example_objects}
 

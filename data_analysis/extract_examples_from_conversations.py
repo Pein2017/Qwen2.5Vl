@@ -107,11 +107,15 @@ def analyze_sample_complexity(sample: Dict[str, Any]) -> Dict[str, Any]:
 
                 # Parse ref string or dict and convert to compact format
                 if isinstance(ref, str):
-                    # Parse verbose format and convert to compact
-                    components = ResponseFormatter.parse_description_string(ref)
-                    description = CompactResponseFormatter.format_to_compact_string(
-                        components
-                    )
+                    if ";" in ref:
+                        # Parse verbose format and convert to compact
+                        components = ResponseFormatter.parse_description_string(ref)
+                        description = CompactResponseFormatter.format_to_compact_string(
+                            components
+                        )
+                    else:
+                        # It's a direct Chinese description
+                        description = ref
                 elif isinstance(ref, dict):
                     # Convert dict to compact format using standardized field names only
                     object_type = ref.get("object_type", "")
@@ -148,13 +152,17 @@ def analyze_sample_complexity(sample: Dict[str, Any]) -> Dict[str, Any]:
 
     for obj in objects:
         description = obj.get("description", "")
-        # For compact format, parse back to components for analysis
-        components = CompactResponseFormatter.parse_compact_string(description)
+        if ";" in description:
+            # For compact format, parse back to components for analysis
+            components = CompactResponseFormatter.parse_compact_string(description)
 
-        object_types.append(components.get("object_type", ""))
-        property_value = components.get("property", "")
-        if property_value and property_value != "none":
-            questions.append(property_value)
+            object_types.append(components.get("object_type", ""))
+            property_value = components.get("property", "")
+            if property_value and property_value != "none":
+                questions.append(property_value)
+        else:
+            # For Chinese descriptions, the description is the object type
+            object_types.append(description)
 
     # Calculate complexity score
     num_objects = len(objects)
