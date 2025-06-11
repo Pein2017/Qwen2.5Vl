@@ -46,7 +46,7 @@ class DirectConfig:
     gradient_accumulation_steps: int
     learning_rate: float
     vision_lr: float
-    mlp_lr: float
+    merger_lr: float
     llm_lr: float
     detection_lr: float
     warmup_ratio: float
@@ -94,6 +94,15 @@ class DirectConfig:
     detection_enabled: bool
     detection_num_queries: int
     detection_max_caption_length: int
+
+    # Detection Head Architecture
+    detection_decoder_nhead: int
+    detection_decoder_dim_feedforward_factor: float
+    detection_decoder_num_layers: int
+    detection_caption_decoder_nhead: int
+    detection_caption_decoder_dim_feedforward_factor: float
+    detection_caption_decoder_num_layers: int
+    detection_head_dropout: float
 
     # Loss component weights
     detection_bbox_weight: float
@@ -155,7 +164,7 @@ class DirectConfig:
     @property
     def tune_mlp(self) -> bool:
         """Auto-determine if MLP connector should be trained based on learning rate."""
-        return self.mlp_lr > 0
+        return self.merger_lr > 0
 
     @property
     def tune_llm(self) -> bool:
@@ -170,7 +179,7 @@ class DirectConfig:
     @property
     def use_differential_lr(self) -> bool:
         """Auto-determine if differential learning rates should be used."""
-        lrs = [self.vision_lr, self.mlp_lr, self.llm_lr, self.detection_lr]
+        lrs = [self.vision_lr, self.merger_lr, self.llm_lr, self.detection_lr]
         active_lrs = [lr for lr in lrs if lr > 0]
         return len(set(active_lrs)) > 1
 
@@ -266,10 +275,10 @@ def init_config(config_path: str) -> DirectConfig:
     config.tensorboard_dir = str(Path(config.tb_dir) / config.run_name)
 
     # 3. Log file directory
-    config.log_file_dir = str(Path(config.output_dir) / "logs")
+    config.log_file_dir = str(Path(config.run_output_dir) / "logs")
 
     # 4. Monitor log directory
-    config.monitor_log_dir = str(Path(config.output_dir) / "monitor")
+    config.monitor_log_dir = str(Path(config.run_output_dir) / "monitor")
 
     # Create directories
     Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)

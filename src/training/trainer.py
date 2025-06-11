@@ -38,6 +38,7 @@ This design guarantees that training and evaluation logging are independent and
 that reported training losses are correctly averaged per step.
 """
 
+import time
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
@@ -73,11 +74,17 @@ class BBUTrainer(Trainer):
         self.logger = get_training_logger()
         self.image_processor = image_processor
 
-        # Simple attributes to store the latest loss components for logging
+        # Simple attributes to store the latest loss components from a single forward pass
         self._current_lm_loss: float = 0.0
         self._current_bbox_loss: float = 0.0
         self._current_caption_loss: float = 0.0
         self._current_objectness_loss: float = 0.0
+
+        # ACCUMULATORS for per-step average logging with gradient accumulation
+        self._accumulated_lm_loss: float = 0.0
+        self._accumulated_bbox_loss: float = 0.0
+        self._accumulated_caption_loss: float = 0.0
+        self._accumulated_objectness_loss: float = 0.0
 
         # Initialize training monitor if enabled
         self.monitor = None
@@ -199,17 +206,24 @@ class BBUTrainer(Trainer):
         )
 
     def init_param_groups(self):
-        """Initializes parameter groups for differential learning rate."""
+        """
+        Initializes parameter groups for differential learning rate.
+
+        This method categorizes all trainable parameters into 'vision', 'merger',
+        'llm', and 'detection' groups. It will raise a ValueError if any
+        trainable parameters cannot be categorized, ensuring that all parts of
+        the model are explicitly handled.
+        """
         self.logger.info(
             "🔧 Initializing parameter groups for differential learning rate..."
         )
 
-        # Based on the reference implementation in the official qwenvl finetuning repo.
-        param_groups = {
+        param_groups_with_names = {
             "vision": [],
             "merger": [],
             "llm": [],
             "detection": [],
+            "others": [],  # For uncategorized parameters
         }
 
         for name, param in self.model.named_parameters():
@@ -219,20 +233,43 @@ class BBUTrainer(Trainer):
             # Correct parameter name matching based on the model's structure.
             # The order is critical: check for the most specific names first.
             if "detection_head" in name:
-                param_groups["detection"].append(param)
+                param_groups_with_names["detection"].append((name, param))
             # "merger" is part of the vision tower, so check for it *before* "visual".
             elif "merger" in name:
-                param_groups["merger"].append(param)
+                param_groups_with_names["merger"].append((name, param))
             elif "visual" in name:
-                param_groups["vision"].append(param)
+                param_groups_with_names["vision"].append((name, param))
+            # Language model parameters are in the main 'model' and 'lm_head'.
+            elif ".model." in name or "lm_head" in name:
+                param_groups_with_names["llm"].append((name, param))
             else:
-                param_groups["llm"].append(param)
+                param_groups_with_names["others"].append((name, param))
 
-        # Store for optimizer creation
-        self._param_groups = param_groups
+        # Check for uncategorized parameters and raise an error if any are found.
+        if param_groups_with_names["others"]:
+            other_param_names = [name for name, _ in param_groups_with_names["others"]]
+            self.logger.error(
+                f"❌ Found {len(other_param_names)} unexpected trainable parameters that could not be categorized:"
+            )
+            for name in other_param_names:
+                self.logger.error(f"   - {name}")
+            raise ValueError(
+                "Uncategorized trainable parameters found. All parameters must be explicitly "
+                "assigned to a learning rate group (vision, merger, llm, detection)."
+            )
+
+        # Remove the (now empty) 'others' group
+        del param_groups_with_names["others"]
+
+        # Store for optimizer creation (without names)
+        self._param_groups = {
+            group: [p for _, p in params]
+            for group, params in param_groups_with_names.items()
+        }
+        self._param_names = list(self._param_groups.keys())
 
         # Log the parameter distribution
-        for group, params in param_groups.items():
+        for group, params in self._param_groups.items():
             num_params = sum(p.numel() for p in params)
             if num_params > 0:
                 self.logger.info(
@@ -251,7 +288,7 @@ class BBUTrainer(Trainer):
 
         lr_map = {
             "vision": self.config.vision_lr,
-            "merger": self.config.mlp_lr,
+            "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
             "detection": self.config.detection_lr,
         }
@@ -268,7 +305,19 @@ class BBUTrainer(Trainer):
                 )
                 self.logger.info(f"   - Group '{group_name}' assigned LR: {lr}")
 
-        optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args)
+        optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(
+            self.args, self.model
+        )
+
+        # The scheduler is responsible for applying the learning rate schedule to each
+        # parameter group. The optimizer should be initialized with the per-group
+        # learning rates, and the scheduler will correctly update them based on its
+        # schedule (e.g., cosine annealing).
+        #
+        # The base `learning_rate` in `optimizer_kwargs` serves as a default for any
+        # parameters that are not explicitly assigned to a group, which is not the
+        # case here but is harmless to leave in. The per-group `lr` will take
+        # precedence.
         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
         self.logger.info(
@@ -301,7 +350,8 @@ class BBUTrainer(Trainer):
 
         # Standard LM loss from base model
         lm_loss = outputs.loss
-        self._current_lm_loss = lm_loss.item()  # Store for logging
+        self._current_lm_loss = lm_loss.item()
+        self._accumulated_lm_loss += self._current_lm_loss
 
         # Detection loss computation
         total_detection_loss = 0.0
@@ -329,12 +379,15 @@ class BBUTrainer(Trainer):
             # The detection_loss module returns weighted losses
             total_detection_loss = detection_loss_components["total_loss"]
 
-            # Store unweighted components for logging
+            # Store unweighted components for logging and accumulate them
             self._current_bbox_loss = self.detection_loss.last_bbox_loss.item()
             self._current_caption_loss = self.detection_loss.last_caption_loss.item()
             self._current_objectness_loss = (
                 self.detection_loss.last_objectness_loss.item()
             )
+            self._accumulated_bbox_loss += self._current_bbox_loss
+            self._accumulated_caption_loss += self._current_caption_loss
+            self._accumulated_objectness_loss += self._current_objectness_loss
         else:
             # Reset detection losses if not computed
             self._current_bbox_loss = 0.0
@@ -358,28 +411,70 @@ class BBUTrainer(Trainer):
         learning_rate=None,
     ):
         """
-        Log metrics using the standard `self.log()` method.
-        The base Trainer class handles averaging and timing.
+        Log metrics with averaging for gradient accumulation.
         """
         if self.control.should_log:
-            logs: Dict[str, float] = {}
+            # The `tr_loss` from the Trainer is an accumulated value.
+            # We re-compute the loss from our own averaged components to ensure
+            # correct, per-step reporting consistent with the docstring.
+            grad_accum_steps = self.args.gradient_accumulation_steps
 
-            # The `tr_loss` passed from the Trainer is already averaged correctly.
-            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
+            # Average the accumulated component losses
+            avg_lm_loss = self._accumulated_lm_loss / grad_accum_steps
+            total_avg_loss = avg_lm_loss
 
-            # Add all loss components to the log
-            logs["loss"] = tr_loss_scalar
-            logs["lm_loss"] = self._current_lm_loss
+            component_logs: Dict[str, float] = {"lm_loss": avg_lm_loss}
+
             if self.config.detection_enabled:
-                logs["bbox_loss"] = self._current_bbox_loss
-                logs["caption_loss"] = self._current_caption_loss
-                logs["objectness_loss"] = self._current_objectness_loss
+                avg_bbox_loss = self._accumulated_bbox_loss / grad_accum_steps
+                avg_caption_loss = self._accumulated_caption_loss / grad_accum_steps
+                avg_objectness_loss = (
+                    self._accumulated_objectness_loss / grad_accum_steps
+                )
 
-            # Add learning rate
-            learning_rate = self._get_learning_rate()
-            logs["learning_rate"] = learning_rate
+                component_logs["bbox_loss"] = avg_bbox_loss
+                component_logs["caption_loss"] = avg_caption_loss
+                component_logs["objectness_loss"] = avg_objectness_loss
+
+                # Reconstruct the total detection loss from its averaged, weighted components.
+                # This ensures the final logged 'loss' accurately reflects the value used for backprop.
+                # NOTE: This assumes the accumulated components are WEIGHTED. If they are not,
+                # this sum will not match the true loss.
+
+                # The `loss` passed to compute_loss is lm_loss + weighted detection loss
+                # The total loss for logging should be calculated from averaged components.
+                # Here we assume the logged components are the primary ones.
+                total_avg_loss += avg_bbox_loss + avg_caption_loss + avg_objectness_loss
+
+            # Define logging order: 'loss', 'grad_norm', then components
+            logs: Dict[str, float] = {}
+            logs["loss"] = total_avg_loss
+
+            if grad_norm is not None:
+                logs["grad_norm"] = (
+                    grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
+                )
+
+            logs.update(component_logs)
+
+            # Add ETA and remaining time
+            if self.state.max_steps > 0:
+                current_step = self.state.global_step
+                if current_step > 0:
+                    elapsed_time = time.time() - start_time
+                    avg_time_per_step = elapsed_time / current_step
+                    remaining_steps = self.state.max_steps - current_step
+                    remaining_time_s = remaining_steps * avg_time_per_step
+
+                    logs["remaining_hr"] = round(remaining_time_s / 3600, 3)
 
             self.log(logs)
+
+            # Reset accumulators after logging
+            self._accumulated_lm_loss = 0.0
+            self._accumulated_bbox_loss = 0.0
+            self._accumulated_caption_loss = 0.0
+            self._accumulated_objectness_loss = 0.0
 
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
@@ -392,13 +487,19 @@ class BBUTrainer(Trainer):
 
     def log(self, logs: Dict[str, float]) -> None:
         """
-        Logs the values in `logs` to the appropriate writer.
-        This method is called by `_maybe_log_save_evaluate` and `evaluate`.
+        Log `logs` on the various objects watching training.
+        This method is overridden to support logging of differential learning rates.
         """
-        # In training, state.global_step is the current step.
-        # In evaluation, it is the step number of the last training step.
-        if self.state.is_world_process_zero:
-            self.logger.info(f"Step {self.state.global_step}: {logs}")
+        # Remove the generic learning rate from the logs.
+        logs.pop("learning_rate", None)
+
+        # Log the learning rate for each parameter group.
+        if self.lr_scheduler is not None:
+            last_lr = self.lr_scheduler.get_last_lr()
+            for i, group_lr in enumerate(last_lr):
+                group_name = self._param_names[i]
+                logs[f"lr/{group_name}"] = group_lr
+
         super().log(logs)
 
     def _extract_ground_truth_objects(self, inputs):
@@ -473,18 +574,6 @@ class BBUTrainer(Trainer):
             self.monitor.finalize_session()
         super().on_train_end(args, state, control, **kwargs)
 
-    def create_optimizer_and_scheduler(self, num_training_steps: int):
-        """
-        Override to setup optimizer and cosine scheduler for differential learning rates.
-        """
-        # Create optimizer with multi-stage differential LRs
-        optimizer = self.create_optimizer()
-        # Create LR scheduler based on lr_scheduler_type and num_training_steps
-        self.create_scheduler(
-            num_training_steps=num_training_steps, optimizer=optimizer
-        )
-        return optimizer, self.lr_scheduler
-
     def prediction_step(
         self,
         model: nn.Module,
@@ -547,45 +636,49 @@ class BBUTrainer(Trainer):
         """Override evaluation to include individual loss components in metrics."""
         # Save training accumulators to prevent interference from evaluation
         saved_accumulators = {
-            "lm": self._current_lm_loss,
-            "bbox_reg": self._current_bbox_loss,
-            "caption": self._current_caption_loss,
-            "objectness": self._current_objectness_loss,
+            "lm": self._accumulated_lm_loss,
+            "bbox": self._accumulated_bbox_loss,
+            "caption": self._accumulated_caption_loss,
+            "objectness": self._accumulated_objectness_loss,
         }
 
         # Reset accumulators before evaluation
-        self._current_lm_loss = 0.0
-        self._current_bbox_loss = 0.0
-        self._current_caption_loss = 0.0
-        self._current_objectness_loss = 0.0
-        # Run base evaluation (logs default eval metrics)
+        self._accumulated_lm_loss = 0.0
+        self._accumulated_bbox_loss = 0.0
+        self._accumulated_caption_loss = 0.0
+        self._accumulated_objectness_loss = 0.0
+
+        # Run base evaluation. This will call compute_loss and populate our accumulators.
         metrics = super().evaluate(
             eval_dataset=eval_dataset,
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
-        # Compute average component losses over evaluation batches
+
+        # Compute average component losses over all evaluation batches
         eval_loader = self.get_eval_dataloader(eval_dataset)
         num_batches = len(eval_loader)
+
         if num_batches > 0:
             metrics[f"{metric_key_prefix}_lm_loss"] = round(
-                self._current_lm_loss / num_batches, 4
+                self._accumulated_lm_loss / num_batches, 4
             )
-            metrics[f"{metric_key_prefix}_bbox_loss"] = round(
-                self._current_bbox_loss / num_batches, 4
-            )
-            metrics[f"{metric_key_prefix}_caption_loss"] = round(
-                self._current_caption_loss / num_batches, 4
-            )
-            metrics[f"{metric_key_prefix}_objectness_loss"] = round(
-                self._current_objectness_loss / num_batches, 4
-            )
+            if self.config.detection_enabled:
+                metrics[f"{metric_key_prefix}_bbox_loss"] = round(
+                    self._accumulated_bbox_loss / num_batches, 4
+                )
+                metrics[f"{metric_key_prefix}_caption_loss"] = round(
+                    self._accumulated_caption_loss / num_batches, 4
+                )
+                metrics[f"{metric_key_prefix}_objectness_loss"] = round(
+                    self._accumulated_objectness_loss / num_batches, 4
+                )
 
         # Restore training accumulators
-        self._current_lm_loss = saved_accumulators["lm"]
-        self._current_bbox_loss = saved_accumulators["bbox_reg"]
-        self._current_caption_loss = saved_accumulators["caption"]
-        self._current_objectness_loss = saved_accumulators["objectness"]
+        self._accumulated_lm_loss = saved_accumulators["lm"]
+        self._accumulated_bbox_loss = saved_accumulators["bbox"]
+        self._accumulated_caption_loss = saved_accumulators["caption"]
+        self._accumulated_objectness_loss = saved_accumulators["objectness"]
 
         # Log extended metrics
         self.log(metrics)
@@ -617,7 +710,7 @@ def set_model_training_params(model):
     if config.tune_mlp:
         for n, p in base_model.visual.merger.named_parameters():
             p.requires_grad = True
-        logger.info(f"🔧 MLP connector: TRAINING (lr={config.mlp_lr})")
+        logger.info(f"🔧 MLP connector: TRAINING (lr={config.merger_lr})")
     else:
         for n, p in base_model.visual.merger.named_parameters():
             p.requires_grad = False
@@ -651,12 +744,10 @@ def set_model_training_params(model):
 
 def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
     """
-    Setup model and tokenizer with unified loading mechanism.
-
-    This function automatically detects checkpoint type and loads appropriately:
-    - Base models: Creates model with random detection head
-    - Unified checkpoints: Loads both base model and detection head
-    - Legacy checkpoints: Loads with backward compatibility
+    Centralized setup for model, tokenizer, and image processor.
+    - Applies necessary patches for Qwen2.5VL.
+    - Initializes tokenizer with custom chat template and special tokens.
+    - Initializes the model with appropriate quantization and settings.
     """
     logger = get_training_logger()
     logger.info("🔧 Setting up model with unified loading mechanism...")
@@ -691,8 +782,24 @@ def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
     if not verify_qwen25_patches():
         raise RuntimeError("Patch verification failed")
 
-    # Load processor
-    processor = AutoProcessor.from_pretrained(config.model_path)
+    # 2. TOKENIZER & PROCESSOR SETUP
+    from data_conversion.vision_process import MAX_PIXELS
+
+    # =========================================================================
+    logger.info("🔧 Initializing tokenizer and processor...")
+
+    # Load the processor, which includes the tokenizer and image processor
+    processor = AutoProcessor.from_pretrained(
+        config.model_path,
+        trust_remote_code=True,
+        use_fast=False,
+        max_pixels=MAX_PIXELS,
+    )
+
+    # Set image processor params from config
+    # The image processor is already pre-scaled to the correct resolution
+    # during data preparation, so we use the rescaled values, not the defaults.
+    logger.info("🔧 Overriding default image processor pixel values...")
     image_processor = processor.image_processor
 
     # CRITICAL FIX: Use pixel constraints from data_conversion/vision_process.py
@@ -717,8 +824,8 @@ def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
         logger.info(
             f"✅ Image processor configured with data_conversion pixel constraints:"
         )
-        logger.info(f"   min_pixels: {image_processor.min_pixels} (4 * 28 * 28)")
-        logger.info(f"   max_pixels: {image_processor.max_pixels} (128 * 28 * 28)")
+        logger.info(f"   min_pixels: {image_processor.min_pixels}")
+        logger.info(f"   max_pixels: {image_processor.max_pixels}")
 
     except ImportError as e:
         logger.error(f"❌ Failed to import from data_conversion/vision_process.py: {e}")

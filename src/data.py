@@ -30,7 +30,7 @@ from src.logger_utils import get_data_logger
 from src.tokens import SpecialTokens
 from src.utils import IGNORE_INDEX
 
-data_logger = get_data_logger()
+logger = get_data_logger()
 
 
 def read_jsonl(path: str) -> List[Dict]:
@@ -105,7 +105,7 @@ class BBUDataset(Dataset):
         is_training = "train" in self.data_path.lower()
         min_images = 2 if is_training else 1
 
-        print(
+        logger.debug(
             f"🔍 Validating simplified JSONL samples with minimum {min_images} images ({'training' if is_training else 'validation'} mode)"
         )
 
@@ -227,16 +227,16 @@ class BBUDataset(Dataset):
 
         validation_ratio = len(valid_samples) / len(raw_data)
         if validation_ratio < 0.8:  # Less than 80% valid samples
-            print(
+            logger.debug(
                 f"⚠️ WARNING: Only {validation_ratio:.1%} of samples passed validation!"
             )
-            print("   Consider reviewing your data quality and format.")
+            logger.debug("   Consider reviewing your data quality and format.")
 
         return valid_samples
 
     def _calculate_sequence_lengths(self):
         """Pre-calculate sequence lengths for optimization."""
-        print("📏 Pre-calculating sequence lengths...")
+        logger.debug("📏 Pre-calculating sequence lengths...")
         lengths = []
 
         for i in range(min(100, len(self.data))):  # Sample first 100 for estimation
@@ -248,7 +248,7 @@ class BBUDataset(Dataset):
 
         self._sequence_lengths = lengths
         avg_length = sum(lengths) / len(lengths) if lengths else 8192
-        print(f"📏 Average sequence length: {avg_length:.0f} tokens")
+        logger.debug(f"📏 Average sequence length: {avg_length:.0f} tokens")
 
     @property
     def sequence_lengths(self):
@@ -276,11 +276,11 @@ class BBUDataset(Dataset):
         """Load data from JSONL file."""
         # Load raw data
         raw_data = read_jsonl(self.data_path)
-        print(f"📊 Loaded {len(raw_data)} raw samples from {self.data_path}")
+        logger.debug(f"📊 Loaded {len(raw_data)} raw samples from {self.data_path}")
 
         # Basic validation and filtering
         validated_data = self._validate_and_filter_samples(raw_data)
-        print(f"📊 After validation: {len(validated_data)} valid samples")
+        logger.debug(f"📊 After validation: {len(validated_data)} valid samples")
 
         return validated_data
 
@@ -294,12 +294,14 @@ class BBUDataset(Dataset):
 
             with open(self.candidates_file, "r") as f:
                 candidates = json.load(f)
-            print(
+            logger.debug(
                 f"📊 Loaded {len(candidates)} candidate phrases from {self.candidates_file}"
             )
             return candidates
         except Exception as e:
-            print(f"⚠️ Failed to load candidates from {self.candidates_file}: {e}")
+            logger.debug(
+                f"⚠️ Failed to load candidates from {self.candidates_file}: {e}"
+            )
             return None
 
 
@@ -353,12 +355,12 @@ class StandardDataCollator:
                         total_final_tokens += grid.prod().item() // merge_length
 
                     pre_merge_tokens = instance["pixel_values"].shape[0]
-                    data_logger.debug(
+                    logger.debug(
                         f"Sample {i}: {pre_merge_tokens} pre-merge → {total_final_tokens} final tokens"
                     )
                 else:
                     vision_tokens = instance["pixel_values"].shape[0]
-                    data_logger.debug(
+                    logger.debug(
                         f"Sample {i}: {vision_tokens} vision tokens (no grid_thw)"
                     )
 
@@ -396,23 +398,23 @@ class StandardDataCollator:
             )
 
         # Log comprehensive sequence information for debugging
-        data_logger.debug(f"📊 BATCH SEQUENCE INFO:")
-        data_logger.debug(f"   Batch size: {batch_size}")
-        data_logger.debug(f"   Individual lengths: {sequence_lengths}")
-        data_logger.debug(f"   Max length in batch: {batch_max_length}")
-        data_logger.debug(f"   Min length in batch: {min(sequence_lengths)}")
-        data_logger.debug(f"   Total tokens (sum): {sum(sequence_lengths)}")
+        logger.debug(f"📊 BATCH SEQUENCE INFO:")
+        logger.debug(f"   Batch size: {batch_size}")
+        logger.debug(f"   Individual lengths: {sequence_lengths}")
+        logger.debug(f"   Max length in batch: {batch_max_length}")
+        logger.debug(f"   Min length in batch: {min(sequence_lengths)}")
+        logger.debug(f"   Total tokens (sum): {sum(sequence_lengths)}")
 
         # Log vision token information
         total_images = sum(info["image_count"] for info in vision_info)
-        data_logger.debug(f"🖼️ VISION TOKEN INFO:")
-        data_logger.debug(f"   Total images in batch: {total_images}")
-        data_logger.debug(
+        logger.debug(f"🖼️ VISION TOKEN INFO:")
+        logger.debug(f"   Total images in batch: {total_images}")
+        logger.debug(
             f"   Samples with images: {sum(1 for info in vision_info if info['has_images'])}"
         )
         for i, info in enumerate(vision_info):
             if info["has_images"]:
-                data_logger.debug(
+                logger.debug(
                     f"   Sample {i}: {info['image_count']} images, seq_len={info['seq_len']}"
                 )
 
@@ -450,12 +452,12 @@ class StandardDataCollator:
         }
 
         # Log final attention mask info for flash attention debugging
-        data_logger.debug(f"🎯 ATTENTION MASK INFO:")
-        data_logger.debug(f"   Attention mask shape: {attention_mask.shape}")
-        data_logger.debug(f"   Attention mask dtype: {attention_mask.dtype}")
+        logger.debug(f"🎯 ATTENTION MASK INFO:")
+        logger.debug(f"   Attention mask shape: {attention_mask.shape}")
+        logger.debug(f"   Attention mask dtype: {attention_mask.dtype}")
         mask_lengths = attention_mask.sum(dim=-1).tolist()
-        data_logger.debug(f"   Attention mask lengths: {mask_lengths}")
-        data_logger.debug(f"   Uniform attention masks: {len(set(mask_lengths)) == 1}")
+        logger.debug(f"   Attention mask lengths: {mask_lengths}")
+        logger.debug(f"   Uniform attention masks: {len(set(mask_lengths)) == 1}")
 
         # 7. Handle position_ids if provided
         if any(pos_ids is not None for pos_ids in position_ids_list):
@@ -502,7 +504,7 @@ class StandardDataCollator:
             # Ensure bf16 precision for pixel_values
             if batch["pixel_values"].dtype != torch.bfloat16:
                 batch["pixel_values"] = batch["pixel_values"].to(torch.bfloat16)
-                data_logger.debug(f"🔧 Converted pixel_values to bf16")
+                logger.debug(f"🔧 Converted pixel_values to bf16")
 
             # Handle image grid info - REQUIRED if pixel_values exist
             grid_thw_list = [
@@ -519,8 +521,8 @@ class StandardDataCollator:
                 )
 
             batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
-            data_logger.debug(f"🖼️ Image grid info: {batch['image_grid_thw'].shape}")
-            data_logger.debug(f"🖼️ Image counts per sample: {image_counts_per_sample}")
+            logger.debug(f"🖼️ Image grid info: {batch['image_grid_thw'].shape}")
+            logger.debug(f"🖼️ Image counts per sample: {image_counts_per_sample}")
         else:
             # No images in batch
             batch["image_counts_per_sample"] = [0] * batch_size

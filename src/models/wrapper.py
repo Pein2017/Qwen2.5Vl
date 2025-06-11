@@ -93,8 +93,15 @@ class Qwen25VLWithDetection(nn.Module):
             config=self.base_model.config,
             num_queries=num_queries,
             max_caption_length=max_caption_length,
-            dtype=target_dtype,
             tokenizer=tokenizer,
+            detection_decoder_nhead=config.detection_decoder_nhead,
+            detection_decoder_dim_feedforward_factor=config.detection_decoder_dim_feedforward_factor,
+            detection_decoder_num_layers=config.detection_decoder_num_layers,
+            detection_caption_decoder_nhead=config.detection_caption_decoder_nhead,
+            detection_caption_decoder_dim_feedforward_factor=config.detection_caption_decoder_dim_feedforward_factor,
+            detection_caption_decoder_num_layers=config.detection_caption_decoder_num_layers,
+            detection_head_dropout=config.detection_head_dropout,
+            dtype=target_dtype,
         )
 
         # Share token embedding from base model

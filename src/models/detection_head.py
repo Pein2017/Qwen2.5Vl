@@ -23,6 +23,13 @@ class DetectionHead(nn.Module):
         num_queries: int,
         max_caption_length: int,
         tokenizer,
+        detection_decoder_nhead: int,
+        detection_decoder_dim_feedforward_factor: float,
+        detection_decoder_num_layers: int,
+        detection_caption_decoder_nhead: int,
+        detection_caption_decoder_dim_feedforward_factor: float,
+        detection_caption_decoder_num_layers: int,
+        detection_head_dropout: float,
         dtype=None,
     ):
         super().__init__()
@@ -44,56 +51,58 @@ class DetectionHead(nn.Module):
         # Token embedding will be set from base model (no separate embedding needed)
         self.token_embedding = None
 
-        # Cross-attention decoder (lightweight - 2 layers only)
+        # Cross-attention decoder
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=self.hidden_size,
-            nhead=min(
-                16, config.num_attention_heads // 4
-            ),  # Further reduce heads for efficiency
-            dim_feedforward=self.hidden_size,  # Much smaller feedforward
+            nhead=detection_decoder_nhead,
+            dim_feedforward=int(
+                self.hidden_size * detection_decoder_dim_feedforward_factor
+            ),
             batch_first=True,
-            norm_first=True,  # Pre-norm like Qwen2.5
-            activation="gelu",  # Use GELU activation (supported by PyTorch)
+            norm_first=True,
+            activation="gelu",
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=2)
+        self.decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=detection_decoder_num_layers
+        )
 
         # Bounding box prediction head
         self.bbox_head = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size // 4),
             nn.SiLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(detection_head_dropout),
             nn.Linear(self.hidden_size // 4, 4),
-            # Remove sigmoid - will apply in forward pass with proper initialization
         )
 
         # Object presence/confidence head
         self.objectness_head = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size // 4),
             nn.SiLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(detection_head_dropout),
             nn.Linear(self.hidden_size // 4, 1),
-            # Remove sigmoid here - loss function will handle it
         )
 
         # Caption generation head - generates tokens autoregressively
         self.caption_head = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.SiLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(detection_head_dropout),
             nn.Linear(self.hidden_size, self.vocab_size),  # Predict vocabulary tokens
         )
 
-        # Caption decoder for autoregressive generation (lightweight)
+        # Caption decoder for autoregressive generation
         self.caption_decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(
                 d_model=self.hidden_size,
-                nhead=16,
-                dim_feedforward=self.hidden_size * 2,
+                nhead=detection_caption_decoder_nhead,
+                dim_feedforward=int(
+                    self.hidden_size * detection_caption_decoder_dim_feedforward_factor
+                ),
                 batch_first=True,
                 norm_first=True,
                 activation="gelu",
             ),
-            num_layers=2,  # Much fewer layers
+            num_layers=detection_caption_decoder_num_layers,
         )
 
         # Use proper special tokens from tokenizer if available
