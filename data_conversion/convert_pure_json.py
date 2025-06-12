@@ -12,6 +12,7 @@ example outut:
 import argparse
 import json
 import logging
+import shutil
 from pathlib import Path
 
 from core_modules import (
@@ -104,181 +105,251 @@ def main():
     processed_samples = []
 
     for input_json_file_abs_path in file_list:
-        data = json.load(input_json_file_abs_path.open("r", encoding="utf-8"))
+        try:
+            data = json.load(input_json_file_abs_path.open("r", encoding="utf-8"))
 
-        # Extract original annotation dimensions
-        height = data.get("info", {}).get("height")
-        width = data.get("info", {}).get("width")
+            # Extract original annotation dimensions
+            height = data.get("info", {}).get("height")
+            width = data.get("info", {}).get("width")
 
-        # Derive image path directly from JSON filename
-        base = input_json_file_abs_path.stem
-        jpeg_path = input_folder_path / f"{base}.jpeg"
-        jpg_path = input_folder_path / f"{base}.jpg"
-        if jpeg_path.is_file():
-            original_image_abs_path = jpeg_path
-        elif jpg_path.is_file():
-            original_image_abs_path = jpg_path
-        else:
-            logger.error(f"Image file not found for {input_json_file_abs_path}")
-            raise FileNotFoundError(
-                f"Image file not found for {input_json_file_abs_path}"
-            )
+            # Derive image path directly from JSON filename
+            jpeg_path = input_json_file_abs_path.with_suffix(".jpeg")
+            jpg_path = input_json_file_abs_path.with_suffix(".jpg")
 
-        objects_ref = []
-        objects_bbox = []
-
-        def extract_and_process_fields(source_dict):
-            """Extract and process fields based on language."""
-            if args.language == "chinese":
-                content_zh = source_dict.get("contentZh", {})
-                if not content_zh:
-                    return ""
-                # Join all values from the contentZh dictionary, handling lists
-                processed_values = []
-                for v in content_zh.values():
-                    if isinstance(v, list):
-                        # Join list elements into a single string
-                        processed_values.append(", ".join(map(str, v)))
-                    elif v:
-                        # Append non-empty string values
-                        processed_values.append(str(v))
-                return ", ".join(processed_values)
-            else:  # English
-                # Use FieldStandardizer to extract content
-                content_dict = FieldStandardizer.extract_content_dict(
-                    source_dict.get("content", {}), token_mapper
-                )
-                # Convert to string format using ResponseFormatter
-                return ResponseFormatter.format_to_string(content_dict, response_types)
-
-        # Process dataList format
-        if "dataList" in data:
-            for item_idx, item_data in enumerate(data["dataList"]):
-                coords = item_data.get("coordinates", [])
-                if len(coords) < 2:
-                    raise ValueError(
-                        f"Invalid coordinates in dataList item {item_idx} for {input_json_file_abs_path}"
-                    )
-                x1, y1 = coords[0]
-                x2, y2 = coords[1]
-                objects_bbox.append([x1, y1, x2, y2])
-
-                props = item_data.get("properties", {}) or {}
-                content_string = extract_and_process_fields(props)
-
-                allowed_props_keys = {"question", "question_ex", "label"}
-                # Allow 'contentZh' and 'content' in properties
-                props_keys_to_check = {
-                    k for k in props.keys() if k not in ["contentZh", "content"]
-                }
-                for key in props_keys_to_check:
-                    if key not in allowed_props_keys:
-                        raise ValueError(
-                            f"Unexpected key '{key}' in properties for dataList item {item_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_props_keys}"
-                        )
-                objects_ref.append(content_string)
-
-        # Process markResult format
-        elif "markResult" in data and isinstance(
-            data.get("markResult", {}).get("features"), list
-        ):
-            for feature_idx, feature_data in enumerate(data["markResult"]["features"]):
-                coords = feature_data.get("geometry", {}).get("coordinates", [])
-                if not isinstance(coords, list) or len(coords) < 3:
-                    raise ValueError(
-                        f"Invalid coordinates in markResult feature {feature_idx} for {input_json_file_abs_path}"
-                    )
-                x1, y1 = coords[0]
-                x2, y2 = coords[2]
-                objects_bbox.append([x1, y1, x2, y2])
-
-                properties = feature_data.get("properties", {})
-                content_string = extract_and_process_fields(properties)
-
-                content_from_feature = properties.get("content", {})
-                allowed_content_keys = {"label", "question", "question_ex"}
-                for key in content_from_feature.keys():
-                    if key not in allowed_content_keys:
-                        raise ValueError(
-                            f"Unexpected key '{key}' in content for markResult feature {feature_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_content_keys}"
-                        )
-                objects_ref.append(content_string)
-        else:
-            logger.warning(
-                f"No annotation entries (dataList or markResult.features) found in {input_json_file_abs_path}, skipping file."
-            )
-            continue
-
-        # Sort objects by bounding box coordinates using ObjectProcessor
-        objects_ref, objects_bbox = ObjectProcessor.sort_objects_by_position(
-            objects_ref, objects_bbox
-        )
-
-        # Process image resizing
-        orig_img_pil = Image.open(original_image_abs_path)
-
-        # Determine relative path of the image within the input folder
-        relative_image_path_to_input_dir = original_image_abs_path.relative_to(
-            input_folder_path
-        )
-
-        # Always ensure the output image path exists
-        rescaled_image_abs_path = (
-            output_image_folder_path / relative_image_path_to_input_dir
-        ).resolve()
-        rescaled_image_abs_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if args.resize:
-            # Perform image resizing and adjust bounding boxes
-            orig_width, orig_height = orig_img_pil.size
-            new_height, new_width = smart_resize(orig_height, orig_width)
-
-            if new_height != orig_height or new_width != orig_width:
-                logger.debug(
-                    f"Resized image from {orig_height}x{orig_width} to {new_height}x{new_width}"
-                )
-                # Save resized image
-                resized_img_pil = orig_img_pil.resize(
-                    (new_width, new_height), Image.Resampling.LANCZOS
-                )
-                resized_img_pil.save(str(rescaled_image_abs_path))
+            if jpeg_path.is_file():
+                original_image_abs_path = jpeg_path
+            elif jpg_path.is_file():
+                original_image_abs_path = jpg_path
             else:
-                # No actual resizing needed, but still copy the image
-                logger.debug(
-                    f"No resizing needed for {original_image_abs_path}, copying original"
+                logger.error(f"Image file not found for {input_json_file_abs_path}")
+                raise FileNotFoundError(
+                    f"Image file not found for {input_json_file_abs_path}"
                 )
-                orig_img_pil.save(str(rescaled_image_abs_path))
 
-            # Adjust bounding boxes according to scale using ObjectProcessor
-            scale_x = new_width / orig_width
-            scale_y = new_height / orig_height
-            scaled_objects_bbox = [
-                ObjectProcessor.scale_bbox(bbox, scale_x, scale_y)
-                for bbox in objects_bbox
-            ]
-        else:
-            # No resizing: copy original image and keep original bounding boxes
-            logger.debug(
-                f"Copying original image without resizing: {original_image_abs_path}"
+            # Get real image size from the file
+            with Image.open(original_image_abs_path) as img:
+                real_width, real_height = img.size
+
+            # Log the findings
+            logger.info(f"Processing {input_json_file_abs_path.name}:")
+            if width != real_width or height != real_height:
+                logger.warning(
+                    f"  Dimension mismatch! JSON: {width}x{height}, Actual: {real_width}x{real_height}"
+                )
+            else:
+                logger.info(f"  Dimensions: {width}x{height}")
+
+            objects_ref = []
+            objects_bbox = []
+
+            def extract_and_process_fields(source_dict):
+                """Extract and process fields based on language."""
+                if args.language == "chinese":
+                    content_zh = source_dict.get("contentZh", {})
+                    if not content_zh:
+                        return ""
+                    # Join all values from the contentZh dictionary, handling lists
+                    processed_values = []
+                    for v in content_zh.values():
+                        if isinstance(v, list):
+                            # Join list elements into a single string
+                            processed_values.append(", ".join(map(str, v)))
+                        elif v:
+                            # Append non-empty string values
+                            processed_values.append(str(v))
+                    return ", ".join(processed_values)
+                else:  # English
+                    # Use FieldStandardizer to extract content
+                    content_dict = FieldStandardizer.extract_content_dict(
+                        source_dict.get("content", {}), token_mapper
+                    )
+                    # Convert to string format using ResponseFormatter
+                    return ResponseFormatter.format_to_string(
+                        content_dict, response_types
+                    )
+
+            # Process dataList format
+            if "dataList" in data:
+                for item_idx, item_data in enumerate(data["dataList"]):
+                    coords = item_data.get("coordinates", [])
+                    if len(coords) < 2:
+                        raise ValueError(
+                            f"Invalid coordinates in dataList item {item_idx} for {input_json_file_abs_path}"
+                        )
+                    x1, y1 = coords[0]
+                    x2, y2 = coords[1]
+                    objects_bbox.append(
+                        [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+                    )
+
+                    props = item_data.get("properties", {}) or {}
+                    content_string = extract_and_process_fields(props)
+
+                    allowed_props_keys = {"question", "question_ex", "label"}
+                    # Allow 'contentZh' and 'content' in properties
+                    props_keys_to_check = {
+                        k for k in props.keys() if k not in ["contentZh", "content"]
+                    }
+                    for key in props_keys_to_check:
+                        if key not in allowed_props_keys:
+                            raise ValueError(
+                                f"Unexpected key '{key}' in properties for dataList item {item_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_props_keys}"
+                            )
+                    objects_ref.append(content_string)
+
+            # Process markResult format
+            elif "markResult" in data and isinstance(
+                data.get("markResult", {}).get("features"), list
+            ):
+                for feature_idx, feature_data in enumerate(
+                    data["markResult"]["features"]
+                ):
+                    geometry = feature_data.get("geometry", {})
+                    coords = geometry.get("coordinates", [])
+
+                    # Ensure coordinates are in a list of lists and have at least one point
+                    if (
+                        not isinstance(coords, list)
+                        or len(coords) == 0
+                        or not isinstance(coords[0], list)
+                        or len(coords[0]) < 1
+                    ):
+                        raise ValueError(
+                            f"Invalid coordinates in markResult feature {feature_idx} for {input_json_file_abs_path}"
+                        )
+
+                    # For polygons, coords can be a list of points or a list containing a list of points.
+                    # This handles both `[[x,y], ...]` and `[[[x,y], ...]]` structures.
+                    points = coords
+                    if (
+                        points
+                        and isinstance(points[0], list)
+                        and points[0]
+                        and isinstance(points[0][0], list)
+                    ):
+                        points = points[0]
+
+                    # Extract min/max to form the bounding box
+                    if not points or any(len(p) != 2 for p in points):
+                        raise ValueError(
+                            f"Invalid points list in markResult feature {feature_idx} for {input_json_file_abs_path}"
+                        )
+
+                    x_coords = [p[0] for p in points]
+                    y_coords = [p[1] for p in points]
+
+                    objects_bbox.append(
+                        [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+                    )
+
+                    properties = feature_data.get("properties", {})
+                    content_string = extract_and_process_fields(properties)
+
+                    content_from_feature = properties.get("content", {})
+                    allowed_content_keys = {"label", "question", "question_ex"}
+                    for key in content_from_feature.keys():
+                        if key not in allowed_content_keys:
+                            raise ValueError(
+                                f"Unexpected key '{key}' in content for markResult feature {feature_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_content_keys}"
+                            )
+                    objects_ref.append(content_string)
+            else:
+                logger.warning(
+                    f"No annotation entries (dataList or markResult.features) found in {input_json_file_abs_path}, skipping file."
+                )
+                continue
+
+            # Sort objects by bounding box coordinates using ObjectProcessor
+            objects_ref, objects_bbox = ObjectProcessor.sort_objects_by_position(
+                objects_ref, objects_bbox
             )
-            orig_img_pil.save(str(rescaled_image_abs_path))
-            scaled_objects_bbox = objects_bbox
 
-        # Build image path prefix from the output_image_folder argument
-        final_image_path_for_jsonl = str(
-            Path(args.output_image_folder) / relative_image_path_to_input_dir
-        )
+            logger.info(f"  Found {len(objects_bbox)} objects.")
+            for i, bbox in enumerate(objects_bbox):
+                logger.debug(f"    Original bbox {i}: {bbox}")
 
-        # Write output sample
-        sample = {
-            "images": [final_image_path_for_jsonl],
-            "objects": {"ref": objects_ref, "bbox": scaled_objects_bbox},
-            "height": height,
-            "width": width,
-        }
-        processed_samples.append(sample)
+            # Process image resizing
+            if args.resize:
+                try:
+                    output_image_abs_path = (
+                        output_image_folder_path / original_image_abs_path.name
+                    )
+                    new_height, new_width = smart_resize(
+                        height=real_height, width=real_width
+                    )
 
-    with open(output_jsonl_path, "w", encoding="utf-8") as f:
+                    # Resize and save the image
+                    with Image.open(original_image_abs_path) as img:
+                        resized_img = img.resize(
+                            (new_width, new_height), Image.Resampling.LANCZOS
+                        )
+                        resized_img.save(output_image_abs_path)
+
+                    logger.info(f"  Resized image to: {new_width}x{new_height}")
+
+                    # Scale bounding boxes using JSON dimensions
+                    scaled_objects_bbox = []
+                    for bbox in objects_bbox:
+                        try:
+                            scaled_bbox = ObjectProcessor.scale_bbox(
+                                bbox,
+                                original_width=width,  # Use JSON width
+                                original_height=height,  # Use JSON height
+                                new_width=new_width,
+                                new_height=new_height,
+                            )
+                            scaled_objects_bbox.append(scaled_bbox)
+                        except ValueError as e:
+                            logger.error(
+                                f"Error scaling bounding box for file: {original_image_abs_path.name}"
+                            )
+                            logger.error(f"  Problematic BBox: {bbox}")
+                            logger.error(f"  JSON dimensions: {width}x{height}")
+                            logger.error(
+                                f"  Actual image dimensions: {real_width}x{real_height}"
+                            )
+                            logger.error(
+                                f"  Target resize dimensions: {new_width}x{new_height}"
+                            )
+                            raise e
+
+                    for i, bbox in enumerate(scaled_objects_bbox):
+                        logger.debug(f"    Scaled bbox {i}: {bbox}")
+
+                    objects_bbox = scaled_objects_bbox
+                    width, height = new_width, new_height
+
+                except Exception as e:
+                    print(f"Error processing file: {input_json_file_abs_path}")
+                    raise e
+            else:
+                # If not resizing, still copy the image to the output directory
+                output_image_abs_path = (
+                    output_image_folder_path / original_image_abs_path.name
+                )
+                if not output_image_abs_path.exists():
+                    shutil.copy(original_image_abs_path, output_image_abs_path)
+
+            # Build image path for JSONL relative to the script's execution location
+            try:
+                final_image_path_for_jsonl = str(
+                    output_image_abs_path.relative_to(output_jsonl_path.parent.parent)
+                )
+            except ValueError:
+                final_image_path_for_jsonl = str(output_image_abs_path)
+
+            sample = {
+                "images": [final_image_path_for_jsonl],
+                "objects": {"ref": objects_ref, "bbox": objects_bbox},
+                "height": height,
+                "width": width,
+            }
+            processed_samples.append(sample)
+        except Exception as e:
+            print(f"Error processing file: {input_json_file_abs_path}")
+            raise e
+
+    with output_jsonl_path.open("w", encoding="utf-8") as f:
         for sample in processed_samples:
             f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 

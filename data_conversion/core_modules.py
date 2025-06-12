@@ -247,24 +247,107 @@ class ObjectProcessor:
             return [], []
 
     @staticmethod
-    def validate_bbox(bbox: List[float]) -> bool:
-        """Validate bounding box format [x1, y1, x2, y2]."""
-        return (
-            isinstance(bbox, list)
-            and len(bbox) == 4
-            and all(isinstance(coord, (int, float)) for coord in bbox)
-        )
+    def validate_bbox(
+        bbox: List[float], image_width: int = None, image_height: int = None
+    ) -> bool:
+        """
+        Validate a single bounding box with enhanced checks.
+
+        Args:
+            bbox: A list of 4 numbers [x_min, y_min, x_max, y_max].
+            image_width: Optional width of the image to check bounds.
+            image_height: Optional height of the image to check bounds.
+
+        Raises:
+            ValueError: If the bounding box is invalid.
+        """
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"Bbox must be a list of 4 elements, but got: {bbox}")
+
+        if not all(isinstance(coord, (int, float)) for coord in bbox):
+            raise ValueError(f"Bbox coordinates must be numbers, but got: {bbox}")
+
+        x_min, y_min, x_max, y_max = bbox
+
+        if x_min > x_max:
+            x_min, x_max = x_max, x_min
+        if y_min > y_max:
+            y_min, y_max = y_max, y_min
+
+        bbox = [x_min, y_min, x_max, y_max]
+
+        if x_min >= x_max or y_min >= y_max:
+            raise ValueError(
+                f"Invalid bbox, x_min must be less than x_max and y_min must be less than y_max, but got: {bbox}"
+            )
+
+        if x_min < 0 or y_min < 0 or x_max < 0 or y_max < 0:
+            raise ValueError(f"Bbox coordinates cannot be negative, but got: {bbox}")
+
+        if image_width is not None and image_height is not None:
+            if x_max > image_width or y_max > image_height:
+                raise ValueError(
+                    f"Bbox {bbox} exceeds image dimensions ({image_width}x{image_height})"
+                )
+        return True
 
     @staticmethod
-    def scale_bbox(bbox: List[float], scale_x: float, scale_y: float) -> List[int]:
-        """Scale bounding box coordinates."""
-        x1, y1, x2, y2 = bbox
-        return [
-            round(x1 * scale_x),
-            round(y1 * scale_y),
-            round(x2 * scale_x),
-            round(y2 * scale_y),
-        ]
+    def scale_bbox(
+        bbox: List[float],
+        original_width: int,
+        original_height: int,
+        new_width: int,
+        new_height: int,
+    ) -> List[int]:
+        """
+        Scale a bounding box from original to new image dimensions with robust validation.
+        """
+        # Skip initial validation, as there can be mismatches between annotation
+        # dimensions and image file dimensions (e.g., from rotation).
+        # The final bbox is clamped and validated later.
+        # ObjectProcessor.validate_bbox(
+        #     bbox, image_width=original_width, image_height=original_height
+        # )
+
+        x_scale = new_width / original_width
+        y_scale = new_height / original_height
+
+        x_min, y_min, x_max, y_max = bbox
+
+        # Scale and convert to integers
+        scaled_x1 = int(round(x_min * x_scale))
+        scaled_y1 = int(round(y_min * y_scale))
+        scaled_x2 = int(round(x_max * x_scale))
+        scaled_y2 = int(round(y_max * y_scale))
+
+        # Ensure x_min <= x_max and y_min <= y_max by ordering the scaled coordinates.
+        new_x_min = min(scaled_x1, scaled_x2)
+        new_y_min = min(scaled_y1, scaled_y2)
+        new_x_max = max(scaled_x1, scaled_x2)
+        new_y_max = max(scaled_y1, scaled_y2)
+
+        # Clamp coordinates to new image dimensions
+        new_x_min = max(0, new_x_min)
+        new_y_min = max(0, new_y_min)
+        new_x_max = min(new_width, new_x_max)
+        new_y_max = min(new_height, new_y_max)
+
+        # If the box is degenerate (0 width or height), expand it to a minimum of 1x1 pixel.
+        if new_x_min >= new_x_max:
+            new_x_max = new_x_min + 1
+        if new_y_min >= new_y_max:
+            new_y_max = new_y_min + 1
+
+        # Final clamp to ensure the expanded box does not exceed image boundaries.
+        new_x_max = min(new_width, new_x_max)
+        new_y_max = min(new_height, new_y_max)
+
+        final_bbox = [new_x_min, new_y_min, new_x_max, new_y_max]
+        ObjectProcessor.validate_bbox(
+            final_bbox, image_width=new_width, image_height=new_height
+        )
+
+        return final_bbox
 
 
 class DataValidator:

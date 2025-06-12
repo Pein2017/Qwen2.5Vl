@@ -344,10 +344,12 @@ class ChatProcessor:
             if not (isinstance(box, list) and len(box) == 4) or not (
                 0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height
             ):
-                logger.warning(
-                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}. Skipping."
+                logger.error(
+                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}."
                 )
-                continue
+                raise RuntimeError(
+                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}."
+                )
 
             normalized_box = [
                 box[0] / width,
