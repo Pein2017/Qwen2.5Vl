@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class UnifiedLogger:
@@ -41,7 +41,7 @@ class UnifiedLogger:
         log_level: str = "INFO",
         verbose: bool = False,
         console_level: Optional[str] = None,
-    ):
+    ) -> None:
         """
         Configure the unified logging system.
 
@@ -180,7 +180,7 @@ class PrefixedLogger:
     Logger wrapper that adds a prefix to all log messages.
     """
 
-    def __init__(self, logger: logging.Logger, prefix: str):
+    def __init__(self, logger: logging.Logger, prefix: str) -> None:
         self._logger = logger
         self._prefix = prefix
 
@@ -188,23 +188,23 @@ class PrefixedLogger:
         """Format message with prefix."""
         return f"[{self._prefix}] {message}"
 
-    def debug(self, message: str):
+    def debug(self, message: str) -> None:
         """Log debug message with prefix."""
         self._logger.debug(self._format_message(message))
 
-    def info(self, message: str):
+    def info(self, message: str) -> None:
         """Log info message with prefix."""
         self._logger.info(self._format_message(message))
 
-    def warning(self, message: str):
+    def warning(self, message: str) -> None:
         """Log warning message with prefix."""
         self._logger.warning(self._format_message(message))
 
-    def error(self, message: str):
+    def error(self, message: str) -> None:
         """Log error message with prefix."""
         self._logger.error(self._format_message(message))
 
-    def critical(self, message: str):
+    def critical(self, message: str) -> None:
         """Log critical message with prefix."""
         self._logger.critical(self._format_message(message))
 
@@ -221,8 +221,8 @@ def configure_logging(
     log_level: str = "INFO",
     verbose: bool = False,
     console_level: Optional[str] = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> None:
     """
     Configure the unified logging system.
 

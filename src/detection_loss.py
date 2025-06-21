@@ -9,7 +9,15 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
+from typing import Any, Dict, List, Tuple, Union
+
+from transformers import PreTrainedTokenizerBase
+
 from src.logger_utils import get_detection_logger
+from src.schema import (
+    DetectionPredictions,
+    LossDictType,
+)  # typing
 from src.utils import IGNORE_INDEX
 
 logger = get_detection_logger()
@@ -33,8 +41,8 @@ class DetectionLoss(nn.Module):
         caption_weight: float,
         focal_loss_gamma: float,
         focal_loss_alpha: float,
-        tokenizer,
-    ):
+        tokenizer: PreTrainedTokenizerBase,
+    ) -> None:
         super().__init__()
         self.bbox_weight = bbox_weight
         self.giou_weight = giou_weight
@@ -49,7 +57,11 @@ class DetectionLoss(nn.Module):
             raise ValueError("Tokenizer is required for caption loss computation")
         self.ignore_index = IGNORE_INDEX
 
-    def forward(self, pred_outputs, ground_truth_objects):
+    def forward(
+        self,
+        pred_outputs: Union[DetectionPredictions, Dict[str, torch.Tensor]],
+        ground_truth_objects: List[List[Dict[str, Any]]],
+    ) -> LossDictType:
         """
         Compute detection loss using Hungarian matching.
 
@@ -64,16 +76,50 @@ class DetectionLoss(nn.Module):
         Returns:
             dict: Detailed detection loss components
         """
-        pred_boxes = pred_outputs["pred_boxes"]  # (B, N, 4)
-        pred_objectness = pred_outputs["pred_objectness"]  # (B, N)
-        caption_logits = pred_outputs["caption_logits"]  # (B, N, max_len, vocab_size)
+        if isinstance(pred_outputs, DetectionPredictions):
+            preds = pred_outputs
+        else:
+            # Legacy dict – wrap into dataclass for validation
+            preds = DetectionPredictions(**pred_outputs)
+
+        pred_boxes = preds.pred_boxes
+        pred_objectness = preds.pred_objectness
+        caption_logits = preds.caption_logits
 
         batch_size = pred_boxes.shape[0]
         num_gt_total = 0
         device = pred_boxes.device
 
-        # Track loss components for debugging
-        total_bbox_loss = 0.0
+        # Wrapper to upcast inputs to float32 for stable loss computation
+        def upcast_and_execute(loss_fn, *args):
+            # Move to a new function to ensure memory is released after execution
+            def execute(*casted_args):
+                return loss_fn(*casted_args)
+
+            # Only upcast tensor arguments, leave others untouched
+            casted_args = []
+            for arg in args:
+                if isinstance(arg, torch.Tensor):
+                    casted_args.append(arg.float())
+                else:
+                    casted_args.append(arg)
+
+            return execute(*casted_args)
+
+        def _compute_caption_loss(logits, targets):
+            """Compute cross-entropy loss with the correct dimensions."""
+            # Ensure targets are Long type for cross-entropy
+            if targets.dtype != torch.long:
+                targets = targets.long()
+            return F.cross_entropy(
+                logits.permute(0, 2, 1),  # (N, vocab_size, max_len)
+                targets,  # (N, max_len)
+                ignore_index=self.ignore_index,
+            )
+
+        # Track loss components for debugging (separate bbox components)
+        total_l1_loss = 0.0
+        total_giou_loss = 0.0
         total_caption_loss = 0.0
         total_objectness_loss = 0.0
 
@@ -120,41 +166,50 @@ class DetectionLoss(nn.Module):
             if len(unmatched_pred_idx) > 0:
                 target_captions[unmatched_pred_idx, 0] = self.tokenizer.eos_token_id
 
-            # Compute cross-entropy loss for all queries
-            caption_loss = F.cross_entropy(
-                caption_logits[b].permute(0, 2, 1),  # (N, vocab_size, max_len)
-                target_captions,  # (N, max_len)
-                ignore_index=self.ignore_index,
+            # Compute cross-entropy loss for all queries in float32
+            caption_loss = upcast_and_execute(
+                _compute_caption_loss, caption_logits[b], target_captions
             )
             total_caption_loss += caption_loss
             # --- End Caption Loss ---
 
             # Bbox regression loss for matched objects
             if len(matched_pred_idx) > 0:
-                bbox_loss = self._bbox_loss(
+                l1_loss_val, giou_loss_val = upcast_and_execute(
+                    self._bbox_loss,
                     pred_boxes[b][matched_pred_idx],
                     gt_objects_sample,
                     matched_gt_idx,
                 )
-                total_bbox_loss += bbox_loss
+                total_l1_loss += l1_loss_val
+                total_giou_loss += giou_loss_val
 
             # Objectness loss for all predictions
-            objectness_loss = self._objectness_loss(
+            objectness_loss = upcast_and_execute(
+                self._objectness_loss,
                 pred_objectness[b],  # (N,)
                 matched_pred_idx,  # Indices of matched predictions
             )
             total_objectness_loss += objectness_loss
 
-        # Normalize by total number of ground truth objects in the batch
-        # This is the standard DETR approach for stable loss scaling.
-        if num_gt_total > 0:
-            final_bbox_loss = total_bbox_loss / num_gt_total
-            final_caption_loss = total_caption_loss / num_gt_total
-        else:
-            final_bbox_loss = total_bbox_loss  # Avoid division by zero
-            final_caption_loss = total_caption_loss
+        # ------------------------------------------------------------------
+        # Loss normalisation strategy
+        # Stabler normalisation: divide by (num_gt + ε·num_queries) so images
+        # with few objects are not overweighted and zero-GT images are still
+        # well-defined.
+        epsilon = 1e-3
+        denom = num_gt_total + epsilon * batch_size * pred_boxes.shape[1]
 
-        # Objectness loss is averaged by batch size
+        final_l1_loss = total_l1_loss / denom
+        final_giou_loss = total_giou_loss / denom
+
+        # Caption loss – average across batch (caption_loss is already token &
+        # query averaged inside _compute_caption_loss).
+        final_caption_loss = (
+            total_caption_loss / batch_size if batch_size > 0 else total_caption_loss
+        )
+
+        # Objectness loss is averaged by batch size as before
         final_objectness_loss = (
             total_objectness_loss / batch_size
             if batch_size > 0
@@ -162,7 +217,9 @@ class DetectionLoss(nn.Module):
         )
 
         # Apply final weights
-        weighted_bbox_loss = self.bbox_weight * final_bbox_loss
+        weighted_bbox_loss = (
+            self.bbox_weight * final_l1_loss + self.giou_weight * final_giou_loss
+        )
         weighted_caption_loss = self.caption_weight * final_caption_loss
         weighted_objectness_loss = self.objectness_weight * final_objectness_loss
 
@@ -175,12 +232,16 @@ class DetectionLoss(nn.Module):
         loss_components = {
             "total_loss": final_loss,
             "bbox_loss": weighted_bbox_loss,
+            "bbox_l1_loss": final_l1_loss,
+            "bbox_giou_loss": final_giou_loss,
             "caption_loss": weighted_caption_loss,
             "objectness_loss": weighted_objectness_loss,
         }
 
         # Store individual loss components for backward compatibility (unweighted)
-        self.last_bbox_loss = final_bbox_loss
+        self.last_bbox_loss = final_l1_loss + final_giou_loss
+        self.last_l1_loss = final_l1_loss
+        self.last_giou_loss = final_giou_loss
         self.last_caption_loss = final_caption_loss
         self.last_objectness_loss = final_objectness_loss
 
@@ -192,7 +253,7 @@ class DetectionLoss(nn.Module):
 
         if self._debug_counter % 1 == 0:
             logger.debug(f"🔍 DETECTION LOSS DEBUG:")
-            logger.debug(f"   Bbox loss: {final_bbox_loss:.6f}")
+            logger.debug(f"   Bbox loss: {final_l1_loss + final_giou_loss:.6f}")
             logger.debug(f"   Caption loss: {final_caption_loss:.6f}")
             logger.debug(f"   Objectness loss: {final_objectness_loss:.6f}")
             logger.debug(
@@ -206,8 +267,8 @@ class DetectionLoss(nn.Module):
             if len(ground_truth_objects) > 0 and len(ground_truth_objects[0]) > 0:
                 # Show first batch, first GT object
                 gt_box = ground_truth_objects[0][0]["box"]
-                pred_box = pred_outputs["pred_boxes"][0, 0].detach().cpu().tolist()
-                pred_obj = torch.sigmoid(pred_outputs["pred_objectness"][0, 0]).item()
+                pred_box = pred_boxes[0, 0].detach().cpu().tolist()
+                pred_obj = torch.sigmoid(pred_objectness[0, 0]).item()
 
                 logger.debug(f"   Sample GT box: {gt_box}")
                 logger.debug(
@@ -220,17 +281,19 @@ class DetectionLoss(nn.Module):
 
         return loss_components
 
-    def _hungarian_match(self, pred_boxes, pred_objectness, gt_objects):
+    def _hungarian_match(
+        self,
+        pred_boxes: torch.Tensor,
+        pred_objectness: torch.Tensor,
+        gt_objects: List[Dict[str, Any]],
+    ) -> Tuple[List[int], List[int]]:
         """Hungarian matching using bbox + objectness costs"""
         if len(gt_objects) == 0:
             return [], []
 
         # Convert GT to tensors - use "box" key from your data format
         gt_boxes = torch.stack(
-            [
-                torch.tensor(obj["box"], dtype=torch.float32, device=pred_boxes.device)
-                for obj in gt_objects
-            ]
+            [self._box_to_tensor(obj["box"], pred_boxes.device) for obj in gt_objects]
         )  # (M, 4)
 
         # GT boxes are in pixel coordinates, need to normalize them
@@ -275,13 +338,16 @@ class DetectionLoss(nn.Module):
         else:
             raise ValueError("scipy is not available, please install it")
 
-    def _bbox_loss(self, pred_boxes, gt_objects, gt_indices):
-        """L1 + GIoU loss for matched boxes"""
+    def _bbox_loss(
+        self,
+        pred_boxes: torch.Tensor,
+        gt_objects: List[Dict[str, Any]],
+        gt_indices: List[int],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return separate L1 and GIoU losses"""
         gt_boxes = torch.stack(
             [
-                torch.tensor(
-                    gt_objects[i]["box"], dtype=torch.float32, device=pred_boxes.device
-                )
+                self._box_to_tensor(gt_objects[i]["box"], pred_boxes.device)
                 for i in gt_indices
             ]
         )
@@ -289,14 +355,16 @@ class DetectionLoss(nn.Module):
         # L1 regression loss
         l1_loss = F.l1_loss(pred_boxes, gt_boxes, reduction="mean")
 
-        # GIoU loss
-        giou_loss = (
-            1 - self._compute_giou(pred_boxes, gt_boxes).diag()
-        ).mean()  # Use diag for matched pairs
+        # GIoU loss (converted to positive loss)
+        giou_loss = (1 - torch.diag(self._compute_giou(pred_boxes, gt_boxes))).mean()
 
-        return l1_loss + giou_loss
+        return l1_loss, giou_loss
 
-    def _objectness_loss(self, pred_objectness, matched_pred_idx):
+    def _objectness_loss(
+        self,
+        pred_objectness: torch.Tensor,
+        matched_pred_idx: List[int],
+    ) -> torch.Tensor:
         """
         Focal loss for object presence to handle class imbalance.
         """
@@ -327,8 +395,14 @@ class DetectionLoss(nn.Module):
 
         return focal_loss.mean()
 
-    def _compute_giou(self, boxes1, boxes2):
-        """Compute GIoU between two sets of boxes"""
+    def _compute_giou(
+        self,
+        boxes1: torch.Tensor,
+        boxes2: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute Generalized Intersection over Union (GIoU) between two sets of boxes.
+        """
         # boxes format: [x1, y1, x2, y2] normalized to [0,1]
 
         # Ensure boxes are valid (x1 < x2, y1 < y2)
@@ -385,3 +459,16 @@ class DetectionLoss(nn.Module):
         giou = torch.clamp(giou, min=-1.0, max=1.0)
 
         return giou
+
+    def _box_to_tensor(self, box: Any, device: torch.device) -> torch.Tensor:
+        """Convert a box (list/tuple/Tensor) to a float32 Tensor on *device*.
+
+        This utility prevents the common ``torch.tensor(existing_tensor)`` anti-pattern
+        that triggers the *copy construct* warning from PyTorch by forwarding
+        Tensors via ``.to`` instead of re-wrapping them.
+        """
+        if isinstance(box, torch.Tensor):
+            # Only device / dtype cast – no new allocation if already correct.
+            return box.to(device=device, dtype=torch.float32)
+        # Assume sequence of 4 coordinates; let any error surfacing here be explicit.
+        return torch.tensor(box, dtype=torch.float32, device=device)

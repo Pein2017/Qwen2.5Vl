@@ -72,7 +72,7 @@
     "只能识别到部分光纤，无法判断弯曲半径是否合理": "only part of the fibre is visible, unable to assess bend radius",
     "图片中光纤同时装有铠装和蛇形管，一般不需要这么做": "fibre is protected by both armour and snake tube, which is usually unnecessary",
     "安装位置错误": "installation position incorrect",
-    "挡风板安装位置错误": "shield installed in wrong position",
-    "挡风板安装螺丝未上全": "shield screws not fully installed",
+    "BBUBBU挡风板安装位置错误": "shield installed in wrong position",
+    "BBUBBU挡风板安装螺丝未上全": "shield screws not fully installed",
     "没有插入bbu设备": "BBU not inserted"
 }

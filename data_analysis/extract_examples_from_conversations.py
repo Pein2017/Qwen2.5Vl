@@ -161,7 +161,7 @@ def analyze_sample_complexity(sample: Dict[str, Any]) -> Dict[str, Any]:
             if property_value and property_value != "none":
                 questions.append(property_value)
         else:
-            # For Chinese descriptions, the description is the object type
+            # For Chinese descriptions, treat entire string as object_type surrogate for complexity analysis
             object_types.append(description)
 
     # Calculate complexity score
@@ -272,8 +272,39 @@ def select_best_examples(
             # Convert to example format
             analysis = best_sample["_analysis"]
 
-            # Use objects directly (already in compact format from analysis)
-            objects = analysis["objects"]
+            # Filter object descriptions to requested response types
+            objects = []
+            for obj in analysis["objects"]:
+                desc = obj.get("description", "")
+                # For verbose/compact English style, use filter util
+                if ";" in desc:
+                    desc = ResponseFormatter.filter_description_by_response_types(
+                        desc, response_types
+                    )
+                else:
+                    # Chinese description: handle slash & comma delimiters
+                    def filter_chinese(text: str) -> str:
+                        segments = [
+                            seg.strip() for seg in text.split(",") if seg.strip()
+                        ]
+                        collected = []
+                        for seg in segments:
+                            parts = [p.strip() for p in seg.split("/") if p.strip()]
+                            # Ensure at least obj_type present
+                            obj_type = parts[0] if parts else ""
+                            prop = parts[1] if len(parts) > 1 else ""
+                            extra = parts[2] if len(parts) > 2 else ""
+
+                            if "object_type" in response_types and obj_type:
+                                collected.append(obj_type)
+                            if "property" in response_types and prop:
+                                collected.append(prop)
+                            if "extra_info" in response_types and extra:
+                                collected.append(extra)
+                        return ", ".join(collected)
+
+                    desc = filter_chinese(desc)
+                objects.append({**obj, "description": desc})
 
             example = {"image": analysis["image"], "objects": objects}
 

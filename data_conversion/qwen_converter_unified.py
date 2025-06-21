@@ -6,10 +6,11 @@ Converts intermediate JSONL (with verbose format) to clean semantic data format.
 Uses compact descriptions without schema wrappers and "none" values.
 
 Input format (intermediate JSONL):
-{"images": ["path.jpg"], "objects": {"ref": ["object_type:X;property:Y;extra_info:Z"], "bbox": [[x1,y1,x2,y2]]}}
+- English: {"images": ["path.jpg"], "objects": {"ref": ["object_type:X;property:Y;extra_info:Z"], "bbox": [[x1,y1,x2,y2]]}}
+- Chinese: {"images": ["path.jpg"], "objects": {"ref": ["类型/属性/额外信息"], "bbox": [[x1,y1,x2,y2]]}}
 
 Output format (clean semantic):
-{"images": ["path.jpg"], "objects": [{"box": [x1,y1,x2,y2], "desc": "type, property, extra_info"}]}
+{"images": ["path.jpg"], "objects": [{"box": [x1,y1,x2,y2], "desc": "type/property/extra_info"}]}
 
 Extended format (multi-round with examples):
 {
@@ -31,12 +32,17 @@ from pathlib import Path
 from typing import Dict, List, Set
 
 sys.path.append(str(Path(__file__).parent))
-from core_modules import CompactResponseFormatter
+from core_modules import ResponseFormatter
 
-# Configure logging
+# Configure logging to file
+LOG_FILE = Path(__file__).parent / "convert.log"
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename=str(LOG_FILE),
+    filemode="a",
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,11 +89,45 @@ class CleanSemanticConverter:
             logger.error(f"Failed to load examples: {e}")
             return {}
 
+    def _filter_slash_description(self, description: str) -> str:
+        """Filters a slash-separated description based on response_types."""
+        # Unify separator: convert commas to slashes
+        description = description.replace(", ", "/").replace(",", "/")
+        parts = [p.strip() for p in description.split("/") if p.strip()]
+        final_parts = []
+        if "object_type" in self.response_types and len(parts) > 0:
+            final_parts.append(parts[0])
+        if "property" in self.response_types and len(parts) > 1:
+            final_parts.append(parts[1])
+        if "extra_info" in self.response_types and len(parts) > 2:
+            final_parts.append(parts[2])
+        return "/".join(final_parts)
+
     def _convert_verbose_to_compact(self, verbose_desc: str) -> str:
-        """Convert verbose description to compact format."""
-        return CompactResponseFormatter.convert_from_verbose_format(
-            verbose_desc, self.response_types
-        )
+        """Convert verbose (semicolon-separated) description to compact (slash-separated) format."""
+        if not verbose_desc:
+            return "unknown"
+        components = ResponseFormatter.parse_description_string(verbose_desc)
+        final_parts = []
+        if (
+            "object_type" in self.response_types
+            and components.get("object_type")
+            and components["object_type"] != "none"
+        ):
+            final_parts.append(components["object_type"])
+        if (
+            "property" in self.response_types
+            and components.get("property")
+            and components["property"] != "none"
+        ):
+            final_parts.append(components["property"])
+        if (
+            "extra_info" in self.response_types
+            and components.get("extra_info")
+            and components["extra_info"] != "none"
+        ):
+            final_parts.append(components["extra_info"])
+        return "/".join(final_parts)
 
     def _convert_sample(self, sample: Dict) -> Dict:
         """Convert a single sample from intermediate to clean semantic format."""
@@ -118,9 +158,14 @@ class CleanSemanticConverter:
                     compact_desc = self._convert_verbose_to_compact(ref_desc)
                 else:
                     # Otherwise, it's a direct Chinese description
-                    compact_desc = ref_desc
+                    compact_desc = self._filter_slash_description(ref_desc)
 
-                clean_objects.append({"box": bbox, "desc": compact_desc or "unknown"})
+                # Fail-fast if description is empty
+                if not compact_desc:
+                    raise ValueError(
+                        f"Empty description for ref_desc '{ref_desc}' in sample: {sample}"
+                    )
+                clean_objects.append({"box": bbox, "desc": compact_desc})
 
             return {"images": images, "objects": clean_objects}
 
@@ -164,35 +209,58 @@ class CleanSemanticConverter:
                 if ";" in desc:
                     compact_desc = self._convert_verbose_to_compact(desc)
                 else:
-                    compact_desc = desc
-                example_objects.append(
-                    {"box": obj["bbox"], "desc": compact_desc or "unknown"}
-                )
+                    compact_desc = self._filter_slash_description(desc)
+                # Fail-fast if example description is empty
+                if not compact_desc:
+                    raise ValueError(
+                        f"Empty example description for desc '{desc}' in examples file"
+                    )
+                example_objects.append({"box": obj["bbox"], "desc": compact_desc})
 
         return {"images": example_images, "objects": example_objects}
 
     def _create_multi_round_sample(
         self, target_sample: Dict, max_examples: int = 1
     ) -> Dict:
-        """Create multi-round sample with examples and target."""
-        # If max_examples is 0, return simple format
-        if max_examples <= 0:
+        """Create multi-round sample with examples from diverse categories."""
+        if max_examples <= 0 or not self.examples:
             return target_sample
 
-        num_objects = len(target_sample.get("objects", []))
+        # Shuffle categories to pick diverse examples
+        cats = list(self.examples.keys())
+        random.shuffle(cats)
+        selected_cats = cats[:max_examples]
 
-        # Get examples
         examples = []
-        for _ in range(max_examples):
-            example = self._get_example_by_category(num_objects)
-            if example:
-                examples.append(example)
+        for cat in selected_cats:
+            # Retrieve category examples (could be dict or list)
+            cat_items = self.examples.get(cat)
+            if not cat_items:
+                continue
+            items = cat_items if isinstance(cat_items, list) else [cat_items]
+            ex_data = random.choice(items)
+            # Build example entry
+            example_images = [ex_data.get("image", "")]
+            example_objects = []
+            for obj in ex_data.get("objects", []):
+                desc = obj.get("description", obj.get("desc", ""))
+                if ";" in desc:
+                    compact_desc = self._convert_verbose_to_compact(desc)
+                else:
+                    compact_desc = self._filter_slash_description(desc)
+                # Fail-fast if multi-round example description is empty
+                if not compact_desc:
+                    raise ValueError(
+                        f"Empty multi-round example description for desc '{desc}'"
+                    )
+                example_objects.append(
+                    {"box": obj.get("bbox", obj.get("box", [])), "desc": compact_desc}
+                )
+            examples.append({"images": example_images, "objects": example_objects})
 
-        # Create multi-round format
         if examples:
             return {"examples": examples, "target": target_sample}
         else:
-            # Fallback to simple format if no examples available
             return target_sample
 
     def convert_and_split(
@@ -297,12 +365,22 @@ def main():
         "--max_examples", type=int, default=1, help="Maximum examples per sample"
     )
     parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: INFO)",
+    )
+    parser.add_argument(
         "--response_types",
         default="object_type property extra_info",
         help="Space-separated response types to include",
     )
 
     args = parser.parse_args()
+
+    # Configure logging level
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
 
     # Parse response types
     response_types = set(args.response_types.split())

@@ -5,11 +5,17 @@ This module provides a wrapper around the official Qwen2.5-VL model
 that adds object detection capabilities while preserving all original functionality.
 """
 
+from typing import Any, Tuple, Union
+
 import torch
 import torch.nn as nn
-from transformers import Qwen2_5_VLForConditionalGeneration
+from transformers import PreTrainedTokenizerBase, Qwen2_5_VLForConditionalGeneration
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+    Qwen2_5_VLCausalLMOutputWithPast,
+)
 
 from src.config import config
+from src.models.patches import apply_comprehensive_qwen25_fixes
 
 
 def _get_torch_dtype(dtype_str: str) -> torch.dtype:
@@ -38,19 +44,24 @@ class Qwen25VLWithDetection(nn.Module):
         base_model_path: str,
         num_queries: int,
         max_caption_length: int,
-        tokenizer,
-    ):
+        tokenizer: PreTrainedTokenizerBase,
+    ) -> None:
         super().__init__()
 
         # Store tokenizer for detection head initialization
-        self.tokenizer = tokenizer
+        self.tokenizer: PreTrainedTokenizerBase = tokenizer
 
         # Load official Qwen2.5-VL model with proper configuration
-        self.base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            base_model_path,
-            torch_dtype=_get_torch_dtype(config.torch_dtype),
-            attn_implementation=config.attn_implementation,
+        self.base_model: Qwen2_5_VLForConditionalGeneration = (
+            Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                base_model_path,
+                torch_dtype=_get_torch_dtype(config.torch_dtype),
+                attn_implementation=config.attn_implementation,
+            )
         )
+
+        # CRITICAL: Apply fixes for mRoPE and visual processing
+        apply_comprehensive_qwen25_fixes()
 
         # Initialize detection head if enabled
         self.detection_head = None
@@ -88,26 +99,35 @@ class Qwen25VLWithDetection(nn.Module):
         tokenizer = self.tokenizer
         target_dtype = _get_torch_dtype(config.torch_dtype)
 
-        # Add detection head using official config with correct dtype (randomly initialized)
+        # Ensure the number of cross-attention heads divides the model hidden size
+        hf_num_heads = self.base_model.config.num_attention_heads
+        d_model = self.base_model.config.hidden_size
+        if d_model % hf_num_heads != 0:
+            raise ValueError(
+                f"Cannot set detection head nhead={hf_num_heads} with hidden_size={d_model}; must divide evenly"
+            )
+        # Add detection head using official config with matching head count
         self.detection_head = DetectionHead(
             config=self.base_model.config,
             num_queries=num_queries,
             max_caption_length=max_caption_length,
             tokenizer=tokenizer,
-            detection_decoder_nhead=config.detection_decoder_nhead,
             detection_decoder_dim_feedforward_factor=config.detection_decoder_dim_feedforward_factor,
             detection_decoder_num_layers=config.detection_decoder_num_layers,
-            detection_caption_decoder_nhead=config.detection_caption_decoder_nhead,
             detection_caption_decoder_dim_feedforward_factor=config.detection_caption_decoder_dim_feedforward_factor,
             detection_caption_decoder_num_layers=config.detection_caption_decoder_num_layers,
             detection_head_dropout=config.detection_head_dropout,
+            adapter_bottleneck_ratio=config.detection_adapter_bottleneck_ratio,
+            adapter_num_layers=config.detection_adapter_num_layers,
             dtype=target_dtype,
         )
 
         # Share token embedding from base model
         self.detection_head.set_token_embedding(self.base_model.get_input_embeddings())
 
-    def forward(self, **inputs):
+    def forward(
+        self, **inputs: Any
+    ) -> Union[Tuple[Any, ...], Qwen2_5_VLCausalLMOutputWithPast]:
         """
         Forward pass that preserves all functionality and returns combined loss during training.
         """
@@ -203,10 +223,7 @@ class Qwen25VLWithDetection(nn.Module):
 
     def save_detection_head_weights(self, output_dir: str):
         """
-        Save detection head weights to a directory.
-
-        Args:
-            output_dir: Directory to save detection head weights
+        Save detection head weights and configuration to `output_dir`.
         """
         import json
         import os
@@ -245,6 +262,7 @@ class Qwen25VLWithDetection(nn.Module):
         num_queries: int = None,
         max_caption_length: int = None,
         tokenizer=None,
+        load_detection_head: bool = True,
         **kwargs,
     ):
         """
@@ -259,6 +277,7 @@ class Qwen25VLWithDetection(nn.Module):
             num_queries: Number of detection queries (auto-detected from checkpoint)
             max_caption_length: Max caption length (auto-detected from checkpoint)
             tokenizer: Tokenizer for the model
+            load_detection_head: Whether to load the detection head weights
             **kwargs: Additional arguments
 
         Returns:
@@ -269,9 +288,15 @@ class Qwen25VLWithDetection(nn.Module):
         checkpoint_info = cls._analyze_checkpoint(model_path)
 
         if checkpoint_info["type"] == "unified":
-            return cls._load_unified_checkpoint(
-                model_path, num_queries, max_caption_length, tokenizer, **kwargs
-            )
+            if load_detection_head:
+                return cls._load_unified_checkpoint(
+                    model_path, num_queries, max_caption_length, tokenizer, **kwargs
+                )
+            else:
+                # Load just the base model part inside the unified directory
+                return cls._load_base_model(
+                    model_path, num_queries, max_caption_length, tokenizer, **kwargs
+                )
         else:  # base model
             return cls._load_base_model(
                 model_path, num_queries, max_caption_length, tokenizer, **kwargs
@@ -471,3 +496,59 @@ class Qwen25VLWithDetection(nn.Module):
     def config(self):
         """Return the base model's config for DeepSpeed compatibility"""
         return self.base_model.config
+
+    # ------------------------------------------------------------------
+    # HuggingFace compatibility helpers
+    # ------------------------------------------------------------------
+
+    def save_pretrained(self, save_directory: str, **kwargs):
+        """Save the base model (with full HF metadata) + detection head.
+
+        This makes the unified checkpoint fully reloadable via
+        `from_pretrained(save_directory)` without any manual copying.
+
+        Args:
+            save_directory: Target directory.
+            **kwargs: Forwarded to the underlying `save_pretrained` call of the
+                base model. Common useful kwargs are `safe_serialization=True`
+                and `max_shard_size="2GB"`.
+        """
+
+        import os
+
+        os.makedirs(save_directory, exist_ok=True)
+
+        # ------------------------------------------------------------------
+        # 1. Save the base Qwen2.5-VL model. This writes:
+        #    • config.json
+        #    • generation_config.json
+        #    • model.safetensors  (or sharded *.index.json + shards)
+        #    • tokenizer / special-token files if they already exist in the
+        #      directory and we pass `is_main_process=True` (handled by Trainer)
+        # ------------------------------------------------------------------
+
+        # Ensure safe serialization unless the caller overrides it.
+        default_kwargs = {
+            "safe_serialization": True,
+            "max_shard_size": "2GB",
+        }
+        default_kwargs.update(kwargs)
+
+        # Delegate to the underlying HF model
+        self.base_model.save_pretrained(save_directory, **default_kwargs)
+
+        # Also persist generation config explicitly if available (HF does not
+        # always write it automatically for older versions).
+        if getattr(self.base_model, "generation_config", None) is not None:
+            self.base_model.generation_config.save_pretrained(save_directory)
+
+        # ------------------------------------------------------------------
+        # 2. Save detection-specific weights & metadata
+        # ------------------------------------------------------------------
+        if self.detection_head is not None:
+            self.save_detection_head_weights(save_directory)
+
+        # NOTE: Tokenizer / processor saving is handled by Trainer once per
+        # checkpoint; duplicating here is unnecessary and may overwrite user
+        # modifications.
+        print(f"✅ save_pretrained completed for directory: {save_directory}")

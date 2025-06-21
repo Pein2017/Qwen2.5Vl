@@ -14,21 +14,31 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set, Union
 
 from core_modules import ResponseFormatter
 
-# Configure logging
+# Configure logging to file
+LOG_FILE = Path(__file__).parent / "convert.log"
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename=str(LOG_FILE),
+    filemode="a",
 )
+
 logger = logging.getLogger(__name__)
 
 
-def extract_phrases_from_description(description: str) -> List[str]:
-    """Extract meaningful phrases from a description string."""
+def extract_phrases_from_description(
+    description: str, response_types: Set[str]
+) -> List[str]:
+    """Extract meaningful phrases from a description string, respecting chosen response types."""
     if not description:
         return []
+
+    # Unify separator: convert commas to slashes
+    description = description.replace(", ", "/").replace(",", "/")
 
     # If the description contains semicolons, it's a structured English string
     if ";" in description:
@@ -36,39 +46,41 @@ def extract_phrases_from_description(description: str) -> List[str]:
         components = ResponseFormatter.parse_description_string(description)
         phrases = []
 
-        # Extract object_type
-        object_type = components.get("object_type", "").strip()
-        if object_type and object_type != "none":
-            phrases.append(object_type)
-
-        # Extract property
-        property_value = components.get("property", "").strip()
-        if property_value and property_value != "none":
-            # Split on commas for multiple properties
-            if "," in property_value:
-                phrases.extend(
-                    [p.strip() for p in property_value.split(",") if p.strip()]
-                )
+        # Helper to push phrases conditionally
+        def maybe_add(items: Union[str, List[str]], key: str):
+            if key not in response_types:
+                return
+            if not items:
+                return
+            if isinstance(items, list):
+                for item in items:
+                    if item and item != "none":
+                        phrases.append(item)
             else:
-                phrases.append(property_value)
+                item_str = str(items).strip()
+                if item_str and item_str != "none":
+                    if "," in item_str:
+                        phrases.extend(
+                            [p.strip() for p in item_str.split(",") if p.strip()]
+                        )
+                    else:
+                        phrases.append(item_str)
 
-        # Extract extra_info
-        extra_info = components.get("extra_info", "").strip()
-        if extra_info and extra_info != "none":
-            # Split on commas for multiple extra info items
-            if "," in extra_info:
-                phrases.extend([e.strip() for e in extra_info.split(",") if e.strip()])
-            else:
-                phrases.append(extra_info)
+        maybe_add(components.get("object_type", "").strip(), "object_type")
+        maybe_add(components.get("property", "").strip(), "property")
+        maybe_add(components.get("extra_info", "").strip(), "extra_info")
 
         return phrases
     else:
-        # Otherwise, it's a direct Chinese description; split by comma
-        return [p.strip() for p in description.split(",") if p.strip()]
+        # Chinese descriptions: return each slash-delimited or plain segment as a whole phrase
+        segments = [s.strip() for s in description.split(",") if s.strip()]
+        return segments
 
 
-def extract_unique_phrases(input_jsonl: str) -> Dict[str, int]:
-    """Extract all unique phrases from the JSONL file with frequency counts."""
+def extract_unique_phrases(
+    input_jsonl: str, response_types: Set[str]
+) -> Dict[str, int]:
+    """Extract all unique phrases from the JSONL file with frequency counts, using selected response types."""
     phrase_counter = Counter()
     total_samples = 0
 
@@ -90,7 +102,7 @@ def extract_unique_phrases(input_jsonl: str) -> Dict[str, int]:
 
                 # Process each reference description
                 for ref_desc in ref_items:
-                    phrases = extract_phrases_from_description(ref_desc)
+                    phrases = extract_phrases_from_description(ref_desc, response_types)
                     for phrase in phrases:
                         phrase_counter[phrase] += 1
 
@@ -181,8 +193,23 @@ def main():
         default=1,
         help="Minimum frequency threshold for including phrases (default: 1)",
     )
+    parser.add_argument(
+        "--response_types",
+        default="object_type property extra_info",
+        help="Space-separated response types to consider when extracting phrases.",
+    )
+    parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: INFO)",
+    )
 
     args = parser.parse_args()
+
+    # Configure logging level
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
 
     # Validate input file
     if not Path(args.input_jsonl).exists():
@@ -190,7 +217,8 @@ def main():
         return
 
     # Extract phrases
-    phrases_dict = extract_unique_phrases(args.input_jsonl)
+    response_types = set(args.response_types.split())
+    phrases_dict = extract_unique_phrases(args.input_jsonl, response_types)
 
     # Save results
     save_phrases(phrases_dict, args.output_phrases, args.min_frequency)

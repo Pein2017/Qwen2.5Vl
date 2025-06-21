@@ -1,7 +1,7 @@
 import json
 import re
 import warnings
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import torch
 from sentence_transformers import SentenceTransformer
@@ -31,7 +31,7 @@ class ResponseParser:
     Also supports legacy formats and handles incomplete/truncated responses.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Initialize parser logger
         from src.logger_utils import get_logger
 
@@ -52,7 +52,9 @@ class ResponseParser:
         else:
             self.sentence_transformer = None
 
-    def parse_response(self, response_text: str, sample_index: int = -1) -> List[Dict]:
+    def parse_response(
+        self, response_text: str, sample_index: int = -1
+    ) -> List[Dict[str, Any]]:
         """
         Parse response text into list of bbox objects.
 
@@ -206,7 +208,7 @@ class ResponseParser:
 
         return text
 
-    def _parse_clean_json_format(self, text: str) -> List[Dict]:
+    def _parse_clean_json_format(self, text: str) -> List[Dict[str, Any]]:
         """
         Parse the new clean JSON format with robust error handling.
 
@@ -287,7 +289,7 @@ class ResponseParser:
             self.parser_logger.debug(f"🔍 Clean JSON: Unexpected error - {e}")
             return []
 
-    def _parse_partial_json_format(self, text: str) -> List[Dict]:
+    def _parse_partial_json_format(self, text: str) -> List[Dict[str, Any]]:
         """
         Parse incomplete/truncated JSON by extracting complete objects.
 
@@ -449,7 +451,7 @@ class ResponseParser:
         self.parser_logger.debug(f"🔍 Regex extraction: Found {len(objects)} objects")
         return objects
 
-    def _parse_legacy_json_format(self, text: str) -> List[Dict]:
+    def _parse_legacy_json_format(self, text: str) -> List[Dict[str, Any]]:
         """Parse legacy JSON format with 'desc' key."""
         try:
             parsed = json.loads(text)
@@ -475,7 +477,7 @@ class ResponseParser:
         except (json.JSONDecodeError, TypeError):
             return []
 
-    def _parse_special_tokens(self, text: str) -> List[Dict]:
+    def _parse_special_tokens(self, text: str) -> List[Dict[str, Any]]:
         """Parse Qwen2.5-VL special token format."""
         pattern = r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|box_start\|>\(([^)]+)\),\s*\(([^)]+)\)<\|box_end\|>"
         matches = re.findall(pattern, text, re.DOTALL)
@@ -514,7 +516,7 @@ class ResponseParser:
 
         return objects
 
-    def _parse_unquoted_format(self, text: str) -> List[Dict]:
+    def _parse_unquoted_format(self, text: str) -> List[Dict[str, Any]]:
         """Parse unquoted format using regex."""
         pattern = r'\{bbox:\s*\[([^\]]+)\]\s*,\s*desc:\s*[\'"]([^\'"]+)[\'"]\s*\}'
         matches = re.findall(pattern, text)
@@ -530,7 +532,9 @@ class ResponseParser:
 
         return objects
 
-    def _validate_and_filter_objects(self, objects: List[Dict]) -> List[Dict]:
+    def _validate_and_filter_objects(
+        self, objects: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
         Validate and filter parsed objects with enhanced error handling.
 

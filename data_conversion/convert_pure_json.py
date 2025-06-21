@@ -16,7 +16,6 @@ import shutil
 from pathlib import Path
 
 from core_modules import (
-    FieldStandardizer,
     ObjectProcessor,
     ResponseFormatter,
     TokenMapper,
@@ -25,11 +24,27 @@ from PIL import Image
 
 from vision_process import smart_resize
 
-# Configure logging
+# Configure logging to file
+LOG_FILE = Path(__file__).parent / "convert.log"
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename=str(LOG_FILE),
+    filemode="a",
 )
+
 logger = logging.getLogger(__name__)
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
 def main():
@@ -62,34 +77,51 @@ def main():
     )
     parser.add_argument(
         "--resize",
-        action="store_true",
-        default=False,
-        help="Enable image resizing and bounding box scaling",
+        type=str2bool,
+        required=True,
+        help="Enable image resizing and bounding box scaling (True/False)",
     )
     parser.add_argument(
         "--language",
-        type=str,
-        default="english",
+        required=True,
         choices=["english", "chinese"],
         help="Specify the language for label extraction.",
     )
+    parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level (default: INFO)",
+    )
+    parser.add_argument(
+        "--response_types",
+        type=str,
+        default="object_type property",
+        help='A space-separated string of response types to include. Example: "object_type property extra_info".',
+    )
     args = parser.parse_args()
-    input_folder_path = Path(args.input_folder).resolve()
+
+    # Further processing
+    input_folder_path = Path(args.input_folder)
     output_image_folder_path = Path(args.output_image_folder).resolve()
     output_jsonl_path = Path(args.output_jsonl).resolve()
 
-    # Define response types directly in script (no command line argument needed)
-    response_types = {"object_type", "property", "extra_info"}
+    # Parse response types from CLI and convert to a set
+    response_types = set(args.response_types.split())
     logger.info(f"Using response types: {sorted(response_types)}")
     logger.info(f"Language mode: {args.language}")
 
     # Initialize core modules
     token_mapper = None
-    if args.language == "english":
-        if not args.map_file:
-            raise ValueError("--map_file is required for English language mode.")
+    if args.map_file:
         token_map_path = Path(args.map_file).resolve()
         token_mapper = TokenMapper(token_map_path)
+    elif args.language == "english":
+        raise ValueError("--map_file is required for English language mode.")
+
+    # Configure logging level
+    logger.setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
 
     if not input_folder_path.is_dir():
         raise FileNotFoundError(
@@ -126,21 +158,31 @@ def main():
                     f"Image file not found for {input_json_file_abs_path}"
                 )
 
-            # Get real image size from the file
+            # Define the output path for the potentially rescaled image
+            output_image_rel_path = original_image_abs_path.relative_to(
+                input_folder_path
+            )
+            output_image_abs_path = output_image_folder_path / output_image_rel_path
+            output_image_abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Obtain the actual pixel dimensions directly from the image. All
+            # images are expected to have been normalised (EXIF orientation
+            # removed) beforehand by `strip_exif_orientation.py`. Any mismatch
+            # between these dimensions and those recorded in the JSON is an
+            # error.
             with Image.open(original_image_abs_path) as img:
                 real_width, real_height = img.size
 
             # Log the findings
-            logger.info(f"Processing {input_json_file_abs_path.name}:")
-            if width != real_width or height != real_height:
-                logger.warning(
-                    f"  Dimension mismatch! JSON: {width}x{height}, Actual: {real_width}x{real_height}"
+            logger.debug(f"Processing {input_json_file_abs_path.name}:")
+            # Fail-fast on dimension mismatch between JSON and actual image
+            if not (width == real_width and height == real_height):
+                raise ValueError(
+                    f"Dimension mismatch for {input_json_file_abs_path.name}: JSON reports {width}x{height} but image is {real_width}x{real_height}."
                 )
-            else:
-                logger.info(f"  Dimensions: {width}x{height}")
 
-            objects_ref = []
-            objects_bbox = []
+            objects_ref: list[str] = []
+            objects_bbox: list[list[float]] = []
 
             def extract_and_process_fields(source_dict):
                 """Extract and process fields based on language."""
@@ -148,25 +190,71 @@ def main():
                     content_zh = source_dict.get("contentZh", {})
                     if not content_zh:
                         return ""
-                    # Join all values from the contentZh dictionary, handling lists
-                    processed_values = []
-                    for v in content_zh.values():
-                        if isinstance(v, list):
-                            # Join list elements into a single string
-                            processed_values.append(", ".join(map(str, v)))
-                        elif v:
-                            # Append non-empty string values
-                            processed_values.append(str(v))
-                    return ", ".join(processed_values)
+                    # Extract label entries from contentZh: keys containing '标签'
+                    label_values = []
+                    for key, v in content_zh.items():
+                        if "标签" in key:
+                            if isinstance(v, list):
+                                label_values.append(", ".join(map(str, v)))
+                            elif v:
+                                label_values.append(str(v))
+                    if not label_values:
+                        return ""
+                    # Use the first label entry
+                    label_string = label_values[0]
+                    # Split into object_type/property/extra_info
+                    parts = [p.strip() for p in label_string.split("/")]
+                    object_type = parts[0] if len(parts) >= 1 else ""
+                    property_value = parts[1] if len(parts) >= 2 else ""
+                    extra_info = parts[2] if len(parts) >= 3 else ""
+                    # Map tokens if mapper is available
+                    content_dict = {
+                        "object_type": token_mapper.map_token(object_type)
+                        if token_mapper
+                        else object_type,
+                        "property": token_mapper.map_token(property_value)
+                        if token_mapper
+                        else property_value,
+                        "extra_info": token_mapper.map_token(extra_info)
+                        if token_mapper
+                        else extra_info,
+                    }
+                    # For Chinese mode, preserve grouping with slash
+                    group_parts = []
+                    if content_dict["object_type"]:
+                        group_parts.append(content_dict["object_type"])
+                    if content_dict["property"]:
+                        group_parts.append(content_dict["property"])
+                    if content_dict["extra_info"]:
+                        group_parts.append(content_dict["extra_info"])
+                    # Normalize separators: replace commas with slashes
+                    content_string = "/".join(group_parts)
+                    content_string = content_string.replace(", ", "/").replace(",", "/")
+                    return content_string
                 else:  # English
-                    # Use FieldStandardizer to extract content
-                    content_dict = FieldStandardizer.extract_content_dict(
-                        source_dict.get("content", {}), token_mapper
-                    )
-                    # Convert to string format using ResponseFormatter
-                    return ResponseFormatter.format_to_string(
+                    # Extract fields directly with unified naming (fallback to old names)
+                    content_dict_raw = {
+                        "object_type": source_dict.get("object_type")
+                        or source_dict.get("label", ""),
+                        "property": source_dict.get("property")
+                        or source_dict.get("question", ""),
+                        "extra_info": source_dict.get("extra_info")
+                        or source_dict.get("question_ex", ""),
+                    }
+
+                    # Apply token mapping to each field (English mode only)
+                    content_dict = {
+                        k: token_mapper.map_token(v)
+                        if args.language == "english"
+                        else v
+                        for k, v in content_dict_raw.items()
+                    }
+                    # Convert to string format using ResponseFormatter and normalize separators
+                    content_string = ResponseFormatter.format_to_string(
                         content_dict, response_types
                     )
+                    content_string = content_string.replace(", ", "/").replace(",", "/")
+                    return content_string
 
             # Process dataList format
             if "dataList" in data:
@@ -185,7 +273,14 @@ def main():
                     props = item_data.get("properties", {}) or {}
                     content_string = extract_and_process_fields(props)
 
-                    allowed_props_keys = {"question", "question_ex", "label"}
+                    allowed_props_keys = {
+                        "object_type",
+                        "property",
+                        "extra_info",
+                        "label",
+                        "question",
+                        "question_ex",
+                    }
                     # Allow 'contentZh' and 'content' in properties
                     props_keys_to_check = {
                         k for k in props.keys() if k not in ["contentZh", "content"]
@@ -246,7 +341,14 @@ def main():
                     content_string = extract_and_process_fields(properties)
 
                     content_from_feature = properties.get("content", {})
-                    allowed_content_keys = {"label", "question", "question_ex"}
+                    allowed_content_keys = {
+                        "object_type",
+                        "property",
+                        "extra_info",
+                        "label",
+                        "question",
+                        "question_ex",
+                    }
                     for key in content_from_feature.keys():
                         if key not in allowed_content_keys:
                             raise ValueError(
@@ -259,21 +361,34 @@ def main():
                 )
                 continue
 
-            # Sort objects by bounding box coordinates using ObjectProcessor
+            # Sort objects by bounding box coordinates (no extra orientation
+            # transform needed because we already applied EXIF transpose to the
+            # image; the annotation coordinates are defined in that oriented
+            # space).
+
             objects_ref, objects_bbox = ObjectProcessor.sort_objects_by_position(
                 objects_ref, objects_bbox
             )
 
-            logger.info(f"  Found {len(objects_bbox)} objects.")
+            logger.debug(f"  Found {len(objects_bbox)} objects.")
             for i, bbox in enumerate(objects_bbox):
                 logger.debug(f"    Original bbox {i}: {bbox}")
 
             # Process image resizing
             if args.resize:
                 try:
+                    # Preserve the original directory structure **inside** the
+                    # rescaled folder so that downstream components (e.g.
+                    # visualisation scripts) can locate the image using the
+                    # same relative path regardless of whether `--resize` is
+                    # enabled.
                     output_image_abs_path = (
-                        output_image_folder_path / original_image_abs_path.name
+                        output_image_folder_path / output_image_rel_path
                     )
+                    output_image_abs_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Important: use the oriented dimensions here.  We reuse
+                    # `real_height` / `real_width` which already reflect EXIF
+                    # orientation.
                     new_height, new_width = smart_resize(
                         height=real_height, width=real_width
                     )
@@ -285,7 +400,7 @@ def main():
                         )
                         resized_img.save(output_image_abs_path)
 
-                    logger.info(f"  Resized image to: {new_width}x{new_height}")
+                    logger.debug(f"  Resized image to: {new_width}x{new_height}")
 
                     # Scale bounding boxes using JSON dimensions
                     scaled_objects_bbox = []
@@ -293,8 +408,8 @@ def main():
                         try:
                             scaled_bbox = ObjectProcessor.scale_bbox(
                                 bbox,
-                                original_width=width,  # Use JSON width
-                                original_height=height,  # Use JSON height
+                                original_width=real_width,
+                                original_height=real_height,
                                 new_width=new_width,
                                 new_height=new_height,
                             )
@@ -323,10 +438,11 @@ def main():
                     print(f"Error processing file: {input_json_file_abs_path}")
                     raise e
             else:
-                # If not resizing, still copy the image to the output directory
-                output_image_abs_path = (
-                    output_image_folder_path / original_image_abs_path.name
-                )
+                # Keep the directory structure when simply copying the image
+                # (no resize).  This guarantees path consistency regardless of
+                # whether --resize is enabled.
+                output_image_abs_path = output_image_folder_path / output_image_rel_path
+                output_image_abs_path.parent.mkdir(parents=True, exist_ok=True)
                 if not output_image_abs_path.exists():
                     shutil.copy(original_image_abs_path, output_image_abs_path)
 

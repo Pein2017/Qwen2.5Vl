@@ -1,6 +1,20 @@
 import torch
 import torch.nn as nn
 
+from src.config import config as global_config
+from src.models.detection_adapter import DetectionAdapter
+from src.schema import (  # Shape validation helper
+    AttentionMaskType,
+    CaptionLogitsType,
+    DetectionPredictions,
+    FlattenVisionFeatType,
+    LLMTokenType,
+    ObjectQueriesType,
+    VisionFeatType,
+    assert_tensor_shape,
+    assert_vision_features,
+)
+
 
 class DetectionHead(nn.Module):
     """
@@ -23,16 +37,19 @@ class DetectionHead(nn.Module):
         num_queries: int,
         max_caption_length: int,
         tokenizer,
-        detection_decoder_nhead: int,
         detection_decoder_dim_feedforward_factor: float,
         detection_decoder_num_layers: int,
-        detection_caption_decoder_nhead: int,
         detection_caption_decoder_dim_feedforward_factor: float,
         detection_caption_decoder_num_layers: int,
         detection_head_dropout: float,
+        adapter_bottleneck_ratio: int,
+        adapter_num_layers: int,
         dtype=None,
     ):
         super().__init__()
+        # Derive attention head counts from the base model config
+        detection_decoder_nhead = config.num_attention_heads
+        detection_caption_decoder_nhead = config.num_attention_heads
         # Use official config dimensions
         self.hidden_size = config.hidden_size  # 8192 for 72B, 3584 for 7B
         self.num_queries = num_queries
@@ -44,6 +61,20 @@ class DetectionHead(nn.Module):
         if dtype is None:
             dtype = torch.float32  # Default fallback
         self.target_dtype = dtype
+
+        # Adapter module to reshape hidden states before detection decoding
+        bottleneck = self.hidden_size // adapter_bottleneck_ratio
+        self.adapter = DetectionAdapter(
+            hidden_size=self.hidden_size,
+            bottleneck=bottleneck,
+            num_layers=adapter_num_layers,
+        )
+        # Adapter module for raw vision features from the vision tower
+        self.vision_adapter = DetectionAdapter(
+            hidden_size=self.hidden_size,
+            bottleneck=bottleneck,
+            num_layers=adapter_num_layers,
+        )
 
         # Object queries for DETR-style detection
         self.object_queries = nn.Embedding(num_queries, self.hidden_size)
@@ -146,18 +177,12 @@ class DetectionHead(nn.Module):
                     if layer.bias is not None:
                         nn.init.constant_(layer.bias, 0)
 
-        # Special initialization for bbox head to prevent saturation
-        for i, layer in enumerate(self.bbox_head):
+        # Initialize bbox head with Xavier for diverse predictions and zero bias
+        for layer in self.bbox_head:
             if isinstance(layer, nn.Linear):
-                nn.init.normal_(layer.weight, std=0.01)
+                nn.init.xavier_uniform_(layer.weight)
                 if layer.bias is not None:
-                    if i == len(self.bbox_head) - 1:  # Last layer (output layer)
-                        # Initialize bias to predict boxes around center with reasonable size
-                        # Format: [x1, y1, x2, y2] -> bias for [0.25, 0.25, 0.75, 0.75] after sigmoid
-                        # sigmoid^-1(0.25) ≈ -1.1, sigmoid^-1(0.75) ≈ 1.1
-                        nn.init.constant_(layer.bias, 0.0)  # Start with center bias
-                    else:
-                        nn.init.constant_(layer.bias, 0)
+                    nn.init.constant_(layer.bias, 0.0)
 
     def reinitialize_bbox_head(self):
         """Reinitialize bbox head weights to fix saturation issues"""
@@ -177,29 +202,45 @@ class DetectionHead(nn.Module):
 
         print("✅ Bbox head weights reinitialized successfully")
 
+    @assert_tensor_shape
     def forward(
-        self, hidden_states, attention_mask, ground_truth_objects=None, training=True
-    ):
+        self,
+        hidden_states: LLMTokenType | list[LLMTokenType],
+        attention_mask: AttentionMaskType,
+        vision_feats: VisionFeatType | FlattenVisionFeatType,
+        ground_truth_objects: list | None = None,
+        training: bool = True,
+    ) -> DetectionPredictions:
         """
         Forward pass for detection head.
 
         Args:
             hidden_states: (B, S, hidden_size) - final LLM hidden states
             attention_mask: (B, S) - to mask padded tokens
+            vision_feats: (B, S, hidden_size) - optional vision features
             ground_truth_objects: List[List[Dict]] - GT objects for training
             training: bool - whether in training mode
 
         Returns:
-            Dict containing predictions and features
+            DetectionPredictions dataclass containing predictions and features
         """
         # hidden_states: (B, S, hidden_size) - final LLM hidden states
         # attention_mask: (B, S) - to mask padded tokens
+        # vision_feats: (B, S, hidden_size) - optional vision features
         # ground_truth_objects: List[List[Dict]] - GT objects for training
+        # training: bool - whether in training mode
 
-        B, S, D = hidden_states.shape
+        # If a list of per-layer hidden states is passed, pick the configured layer for box supervision
+        if isinstance(hidden_states, (list, tuple)):
+            layer_idx = getattr(global_config, "detection_feature_layer", -1)
+            box_memory = hidden_states[layer_idx]
+        else:
+            box_memory = hidden_states
+
+        B, S, D = box_memory.shape  # type: ignore
 
         # Ensure all detection head components match input dtype
-        input_dtype = hidden_states.dtype
+        input_dtype = box_memory.dtype
         if self.object_queries.weight.dtype != input_dtype:
             # Convert all modules to the correct dtype
             self.to(dtype=input_dtype)
@@ -208,13 +249,42 @@ class DetectionHead(nn.Module):
         queries = self.object_queries.weight.unsqueeze(0).expand(B, -1, -1)  # (B, N, D)
 
         # Cross-attention: queries attend to LLM hidden states
-        memory_key_padding_mask = (
-            ~attention_mask if attention_mask is not None else None
+        # Create key padding mask: True for positions to mask (padding tokens)
+        if attention_mask is not None:
+            # attention_mask: 1 for real tokens, 0 for padding
+            memory_key_padding_mask = ~attention_mask.to(torch.bool)
+        else:
+            memory_key_padding_mask = None
+
+        # Prepare two-stream memory: language-adapted + optional vision-adapted
+        lang_adapted = self.adapter(box_memory)
+        # vision_feats must be provided (runtime enforced)
+        assert_vision_features(vision_feats)
+        # Ensure vision_feats has matching dtype
+        if vision_feats.dtype != lang_adapted.dtype:
+            vision_feats = vision_feats.to(dtype=lang_adapted.dtype)
+
+        # Adapt raw vision features
+        vis_adapted = self.vision_adapter(vision_feats)
+        # If single batch instance, add batch dim
+        if vis_adapted.ndim == 2:
+            vis_adapted = vis_adapted.unsqueeze(0)  # (1, SV, D)
+        # If batch dimension mismatches, expand for each batch sample
+        if vis_adapted.size(0) != B:
+            vis_adapted = vis_adapted.expand(B, -1, -1)
+
+        # vision tokens are never masked
+        vis_len = vis_adapted.size(1)
+        vis_mask = torch.zeros(
+            (B, vis_len), dtype=torch.bool, device=vis_adapted.device
         )
 
-        decoded_queries = self.decoder(
-            tgt=queries,  # (B, N, D)
-            memory=hidden_states,  # (B, S, D)
+        # Concatenate vision then language memory
+        memory = torch.cat([vis_adapted, lang_adapted], dim=1)
+        memory_key_padding_mask = torch.cat([vis_mask, memory_key_padding_mask], dim=1)
+        decoded_queries: ObjectQueriesType = self.decoder(
+            tgt=queries,
+            memory=memory,
             memory_key_padding_mask=memory_key_padding_mask,
         )
 
@@ -228,110 +298,125 @@ class DetectionHead(nn.Module):
         # Caption generation
         if training and ground_truth_objects is not None:
             # Teacher forcing during training
-            caption_logits = self._generate_captions_teacher_forcing(
+            caption_logits: CaptionLogitsType = self._generate_captions_teacher_forcing(
                 decoded_queries, ground_truth_objects
             )
         else:
             # Autoregressive generation during inference
-            caption_logits = self._generate_captions_autoregressive(decoded_queries)
+            caption_logits: CaptionLogitsType = self._generate_captions_autoregressive(
+                decoded_queries
+            )
 
-        return {
-            "pred_boxes": pred_boxes,
-            "pred_boxes_raw": pred_boxes_raw,  # Add raw predictions for debugging
-            "pred_objectness": pred_objectness.squeeze(-1),  # (B, N)
-            "caption_logits": caption_logits,  # (B, N, max_len, vocab_size)
-            "object_features": decoded_queries,
-        }
+        # Wrap into structured dataclass (performs its own validation)
+        preds = DetectionPredictions(
+            pred_boxes=pred_boxes,
+            pred_boxes_raw=pred_boxes_raw,
+            pred_objectness=pred_objectness.squeeze(-1),
+            caption_logits=caption_logits,
+            object_features=decoded_queries,
+        )
+
+        return preds
 
     def _generate_captions_teacher_forcing(self, object_features, ground_truth_objects):
-        """Generate captions using teacher forcing during training"""
+        """Generate caption logits with *true* teacher forcing so that the
+        caption decoder sees exactly the same type of token embeddings it will
+        encounter at inference time.  For each object-query we feed the
+        (shifted-right) ground-truth caption tokens if the query is expected
+        to correspond to a ground-truth object; otherwise we feed a single EOS
+        token followed by PAD.  This eliminates the train/inference mismatch
+        where the previous implementation re-used object feature vectors as
+        token embeddings."""
+
         B, N, D = object_features.shape
         device = object_features.device
         dtype = object_features.dtype
 
-        if self.tokenizer is None:
-            return self._generate_captions_fallback(object_features)
+        assert self.tokenizer is not None, (
+            "Tokenizer is required for caption generation"
+        )
 
-        # For training, we'll generate all positions at once but with proper causal masking
-        # This is more efficient than true autoregressive generation during training
+        # ------------------------------------------------------------------
+        # 1. Build the *input* token matrix for teacher forcing
+        # ------------------------------------------------------------------
+        max_len = self.max_caption_length
+        pad_id = self.pad_token_id
+        eos_id = self.end_token_id
 
-        # Create a simple causal mask for the caption decoder
+        # (B, N, L) filled with PAD
+        input_ids = torch.full((B, N, max_len), pad_id, dtype=torch.long, device=device)
+
+        for b in range(B):
+            gt_objs = ground_truth_objects[b]
+            num_gt = len(gt_objs)
+            # Limit to N queries; extra GT objects will be handled by Hungarian
+            # matching in the loss function.
+            for q in range(N):
+                if q < num_gt:
+                    # Encode description – include special tokens so that the
+                    # teacher-forced sequence matches the target used in
+                    # DetectionLoss.
+                    tokens = self.tokenizer(
+                        gt_objs[q]["desc"],
+                        padding="max_length",
+                        truncation=True,
+                        max_length=max_len,
+                        return_tensors="pt",
+                    ).input_ids.to(device)
+                    input_ids[b, q] = tokens[0]
+                else:
+                    # Unmatched query → only EOS token (position 0).  Targets
+                    # in DetectionLoss will also be EOS for these queries.
+                    input_ids[b, q, 0] = eos_id
+
+        # ------------------------------------------------------------------
+        # 2. Token + position embeddings  →  caption features  (B*N, L, D)
+        # ------------------------------------------------------------------
+        token_embeds = self.token_embedding(input_ids.view(-1, max_len))  # (B*N,L,D)
+        if token_embeds.dtype != dtype:
+            token_embeds = token_embeds.to(dtype)
+
+        # Rotary-style sinusoidal positional encodings (sin,cos)
+        position_ids = torch.arange(max_len, device=device).float()  # (L,)
+        # Compute inverse frequencies for half dim
+        inv_freq = 1.0 / (
+            10000 ** (torch.arange(0, D, 2, device=device).float() / D)
+        )  # (D/2,)
+        # Outer product: (L, D/2)
+        sinusoid_inp = torch.einsum("i,j->ij", position_ids, inv_freq)
+        sin_part = sinusoid_inp.sin()  # (L, D/2)
+        cos_part = sinusoid_inp.cos()  # (L, D/2)
+        # Interleave sin and cos to shape (L, D)
+        pos_emb = torch.zeros((max_len, D), dtype=dtype, device=device)
+        pos_emb[:, 0::2] = sin_part
+        pos_emb[:, 1::2] = cos_part
+        caption_features = token_embeds + pos_emb  # (B*N, L, D)
+
+        # ------------------------------------------------------------------
+        # 3. Transformer decoding with cross-attention to the object feature
+        # ------------------------------------------------------------------
         causal_mask = torch.triu(
-            torch.ones(
-                self.max_caption_length,
-                self.max_caption_length,
-                device=device,
-                dtype=torch.bool,
-            ),
-            diagonal=1,
-        )  # Upper triangular mask
-
-        # Create position embeddings for caption positions
-        position_ids = torch.arange(self.max_caption_length, device=device)
-        position_embeddings = torch.sin(
-            position_ids.float().unsqueeze(-1)
-            / 10000.0 ** (torch.arange(D, device=device).float() / D)
-        ).to(dtype)  # (max_len, D) - match input dtype
-
-        # Expand object features for all caption positions
-        # (B, N, D) -> (B, N, max_len, D)
-        expanded_features = object_features.unsqueeze(2).expand(
-            B, N, self.max_caption_length, D
+            torch.ones(max_len, max_len, device=device, dtype=torch.bool), 1
         )
 
-        # Add position embeddings
-        caption_features = expanded_features + position_embeddings.unsqueeze(
-            0
-        ).unsqueeze(0)
+        # Flatten object_features to (B*N, 1, D) memory for cross-attention
+        memory = object_features.reshape(B * N, D).unsqueeze(1)
 
-        # Reshape for processing: (B*N, max_len, D)
-        caption_features = caption_features.reshape(B * N, self.max_caption_length, D)
-
-        # Apply causal attention using the caption decoder
-        # Use self-attention with causal masking
-        decoded_features = self.caption_decoder(
+        decoded = self.caption_decoder(
             tgt=caption_features,
-            memory=caption_features,  # Self-attention
+            memory=memory,
             tgt_mask=causal_mask,
-        )  # (B*N, max_len, D)
+        )  # (B*N, L, D)
 
-        # Generate logits for each position
-        caption_logits = self.caption_head(
-            decoded_features
-        )  # (B*N, max_len, vocab_size)
+        # ------------------------------------------------------------------
+        # 4. Project to vocabulary and reshape back to (B, N, L, V)
+        # ------------------------------------------------------------------
+        logits = self.caption_head(decoded)  # (B*N, L, vocab)
+        logits = logits.reshape(B, N, max_len, -1)
 
-        # Reshape back: (B, N, max_len, vocab_size)
-        caption_logits = caption_logits.reshape(B, N, self.max_caption_length, -1)
-
-        return caption_logits
-
-    def _generate_captions_fallback(self, object_features):
-        """Fallback caption generation when no tokenizer is available"""
-        B, N, D = object_features.shape
-        device = object_features.device
-        dtype = object_features.dtype
-
-        # Create position embeddings
-        position_ids = torch.arange(self.max_caption_length, device=device)
-        position_embeddings = torch.sin(
-            position_ids.float().unsqueeze(-1)
-            / 10000.0 ** (torch.arange(D, device=device).float() / D)
-        ).to(dtype)  # (max_len, D) - match input dtype
-
-        # Expand and add position embeddings
-        expanded_features = object_features.unsqueeze(2).expand(
-            B, N, self.max_caption_length, D
-        )
-        caption_features = expanded_features + position_embeddings.unsqueeze(
-            0
-        ).unsqueeze(0)
-
-        # Generate logits
-        caption_logits = self.caption_head(
-            caption_features
-        )  # (B, N, max_len, vocab_size)
-
-        return caption_logits
+        # Clamp extreme values to keep the loss finite
+        logits = torch.clamp(logits, -20.0, 20.0)
+        return logits
 
     def _generate_captions_autoregressive(self, object_features):
         """Generate captions autoregressively during inference"""
@@ -413,14 +498,17 @@ class DetectionHead(nn.Module):
 
         # Pad remaining positions if needed
         while len(all_logits) < self.max_caption_length:
-            pad_logits = torch.full_like(all_logits[0], -float("inf"))
-            pad_logits[..., self.pad_token_id] = (
-                0.0  # Only pad token has reasonable probability
-            )
+            # Create logits where pad token is highly likely, but avoid -inf
+            # to prevent numerical instability if the target is not the pad token.
+            pad_logits = torch.zeros_like(all_logits[0])
+            pad_logits[..., self.pad_token_id] = 1e9  # A large value
             all_logits.append(pad_logits)
 
         # Stack to get (B, N, max_len, vocab_size)
         caption_logits = torch.stack(all_logits, dim=2)
+
+        # Prevent extreme logit values that cause loss explosion
+        caption_logits = torch.clamp(caption_logits, min=-20.0, max=20.0)
 
         return caption_logits
 

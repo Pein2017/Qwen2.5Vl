@@ -6,7 +6,7 @@ Object detection now uses pure JSON format instead of special tokens.
 """
 
 import json
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from src.logger_utils import get_tokens_logger
 
@@ -120,14 +120,14 @@ class SpecialTokens:
 class TokenFormatter:
     """Helper class for formatting content with special tokens (vision only)."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.tokens = SpecialTokens()
 
     def format_conversation_turn(self, role: str, content: str) -> str:
         """Format a single conversation turn."""
         return self.tokens.format_chat_message(role, content)
 
-    def format_complete_conversation(self, messages: list) -> str:
+    def format_complete_conversation(self, messages: List[Dict[str, str]]) -> str:
         """Format a complete conversation."""
         formatted_turns = []
 
@@ -142,7 +142,7 @@ class TokenFormatter:
 
         return "\n".join(formatted_turns)
 
-    def format_objects_as_json(self, objects: list) -> str:
+    def format_objects_as_json(self, objects: List[Dict[str, Any]]) -> str:
         """
         Format objects as JSON array (new Qwen2.5-VL compatible format).
 

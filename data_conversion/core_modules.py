@@ -300,49 +300,41 @@ class ObjectProcessor:
         new_height: int,
     ) -> List[int]:
         """
-        Scale a bounding box from original to new image dimensions with robust validation.
+        Scale a bounding box from the original image dimensions to the resized
+        dimensions.
+
+        Fail-fast philosophy:
+        1. The original bounding box must be fully inside the original image. If
+           not, a ValueError is raised.
+        2. The scaled bounding box must be fully inside the resized image. If
+           not, a ValueError is raised.
+        3. No automatic clamping, expansion, or silent correction is applied.
         """
-        # Skip initial validation, as there can be mismatches between annotation
-        # dimensions and image file dimensions (e.g., from rotation).
-        # The final bbox is clamped and validated later.
-        # ObjectProcessor.validate_bbox(
-        #     bbox, image_width=original_width, image_height=original_height
-        # )
+        # Validate the original bounding box first
+        ObjectProcessor.validate_bbox(
+            bbox, image_width=original_width, image_height=original_height
+        )
 
         x_scale = new_width / original_width
         y_scale = new_height / original_height
 
         x_min, y_min, x_max, y_max = bbox
 
-        # Scale and convert to integers
+        # Scale and round to integer pixel coordinates
         scaled_x1 = int(round(x_min * x_scale))
         scaled_y1 = int(round(y_min * y_scale))
         scaled_x2 = int(round(x_max * x_scale))
         scaled_y2 = int(round(y_max * y_scale))
 
-        # Ensure x_min <= x_max and y_min <= y_max by ordering the scaled coordinates.
+        # Ensure correct ordering after scaling
         new_x_min = min(scaled_x1, scaled_x2)
         new_y_min = min(scaled_y1, scaled_y2)
         new_x_max = max(scaled_x1, scaled_x2)
         new_y_max = max(scaled_y1, scaled_y2)
 
-        # Clamp coordinates to new image dimensions
-        new_x_min = max(0, new_x_min)
-        new_y_min = max(0, new_y_min)
-        new_x_max = min(new_width, new_x_max)
-        new_y_max = min(new_height, new_y_max)
-
-        # If the box is degenerate (0 width or height), expand it to a minimum of 1x1 pixel.
-        if new_x_min >= new_x_max:
-            new_x_max = new_x_min + 1
-        if new_y_min >= new_y_max:
-            new_y_max = new_y_min + 1
-
-        # Final clamp to ensure the expanded box does not exceed image boundaries.
-        new_x_max = min(new_width, new_x_max)
-        new_y_max = min(new_height, new_y_max)
-
         final_bbox = [new_x_min, new_y_min, new_x_max, new_y_max]
+
+        # Validate the scaled bounding box against the new image dimensions
         ObjectProcessor.validate_bbox(
             final_bbox, image_width=new_width, image_height=new_height
         )
@@ -417,69 +409,48 @@ class CompactResponseFormatter:
     def format_to_compact_string(
         content_dict: Dict[str, Any], response_types: Set[str] = None
     ) -> str:
-        """Convert content dictionary to natural language comma-separated format without schema wrappers."""
+        """Convert content dictionary to a structured, slash-separated format."""
         if response_types is None:
             response_types = {"object_type", "property", "extra_info"}
 
         parts = []
 
-        # Add object_type if requested - no "object_type:" prefix
+        # Add object_type if requested
         if "object_type" in response_types:
             object_type = content_dict.get("object_type", "").strip()
             if object_type and object_type != "none":
                 parts.append(object_type)
 
-        # Add property if requested and meaningful - no "property:" prefix
+        # Add property if requested
         if "property" in response_types:
-            property_value = content_dict.get("property", "").strip()
+            property_value = content_dict.get("property", "")
             if property_value and property_value != "none":
                 if isinstance(property_value, list):
-                    # Join multiple properties with commas
-                    property_parts = [
-                        str(p).strip()
-                        for p in property_value
-                        if str(p).strip() and str(p).strip() != "none"
-                    ]
-                    if property_parts:
-                        parts.extend(property_parts)
-                elif property_value:
-                    # Split on commas if multiple values are comma-separated
-                    if "," in property_value:
-                        property_parts = [
-                            p.strip()
-                            for p in property_value.split(",")
-                            if p.strip() and p.strip() != "none"
+                    parts.extend(
+                        [
+                            str(p).strip()
+                            for p in property_value
+                            if str(p).strip() and str(p).strip() != "none"
                         ]
-                        parts.extend(property_parts)
-                    else:
-                        parts.append(property_value)
+                    )
+                else:
+                    parts.append(str(property_value).strip())
 
-        # Add extra_info if requested and meaningful - no "extra_info:" prefix
+        # Add extra_info if requested
         if "extra_info" in response_types:
-            extra_info = content_dict.get("extra_info", "").strip()
+            extra_info = content_dict.get("extra_info", "")
             if extra_info and extra_info != "none":
                 if isinstance(extra_info, list):
-                    # Join multiple extra_info with commas
-                    extra_parts = [
-                        str(e).strip()
-                        for e in extra_info
-                        if str(e).strip() and str(e).strip() != "none"
-                    ]
-                    if extra_parts:
-                        parts.extend(extra_parts)
-                elif extra_info:
-                    # Split on commas if multiple values are comma-separated
-                    if "," in extra_info:
-                        extra_parts = [
-                            e.strip()
-                            for e in extra_info.split(",")
-                            if e.strip() and e.strip() != "none"
+                    parts.extend(
+                        [
+                            str(e).strip()
+                            for e in extra_info
+                            if str(e).strip() and str(e).strip() != "none"
                         ]
-                        parts.extend(extra_parts)
-                    else:
-                        parts.append(extra_info)
+                    )
+                else:
+                    parts.append(str(extra_info).strip())
 
-        # Join with comma separator for natural reading
         # Filter out empty parts and deduplicate
         clean_parts = []
         seen = set()
@@ -489,25 +460,24 @@ class CompactResponseFormatter:
                 clean_parts.append(part)
                 seen.add(part)
 
-        return ", ".join(clean_parts) if clean_parts else "unknown"
+        # Join with slash separator for a structured format
+        return "/".join(clean_parts) if clean_parts else "unknown"
 
     @staticmethod
     def parse_compact_string(description: str) -> Dict[str, str]:
         """Parse compact description back into components (best effort)."""
-        # This is for validation/debugging - the compact format prioritizes generation simplicity
         components = {"object_type": "", "property": "", "extra_info": ""}
 
         if not description or description == "unknown":
             return components
 
-        # For natural language format, we assume first part is object_type
-        parts = [p.strip() for p in description.split(",") if p.strip()]
+        # For the compact format, we assume the first part is object_type
+        parts = [p.strip() for p in description.split("/") if p.strip()]
         if parts:
             components["object_type"] = parts[0]
             if len(parts) > 1:
-                # Remaining parts are properties/details
-                components["property"] = ", ".join(parts[1:])
-
+                # The rest are considered properties/extra_info
+                components["property"] = "/".join(parts[1:])
         return components
 
     @staticmethod

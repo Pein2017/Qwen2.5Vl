@@ -22,11 +22,13 @@ DATA_CONVERSION_DIR="data_conversion"   # Script directory
 
 # Intermediate files
 TEMP_JSONL="${DATA_CONVERSION_DIR}/qwen_combined.jsonl"
-MAP_FILE="${DATA_CONVERSION_DIR}/token_map.json" # don't delete this
+# Token map files for English and Chinese
+MAP_FILE_EN="${DATA_CONVERSION_DIR}/token_map.json"   # English token map
+MAP_FILE_ZH="${DATA_CONVERSION_DIR}/token_map_zh.json" # Chinese token map
 
 # Final clean semantic data (only output we need)
-CLEAN_TRAIN="data/605_clean_train.jsonl"
-CLEAN_VAL="data/605_clean_val.jsonl"
+CLEAN_TRAIN="data/605_objecttype_property_train.jsonl"
+CLEAN_VAL="data/605_objecttype_property_val.jsonl"
 
 # Support files
 EXAMPLES_FILE="data_analysis/training_examples.json"
@@ -38,9 +40,11 @@ SEED=42
 MULTI_ROUND=true
 INCLUDE_EXAMPLES=true
 MAX_EXAMPLES=1
-RESPONSE_TYPES="object_type property extra_info"
+# Allow configuring multiple response types: object_type, property, extra_info
+RESPONSE_TYPES="object_type property"
 USE_CANDIDATES=true
 LANGUAGE="chinese" # "english" or "chinese"
+RESIZE=true
 
 # Environment setup
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
@@ -82,20 +86,22 @@ FINAL_COUNT=$(find "$RESCALED_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' 
 echo "   ✅ Copied $FINAL_COUNT images to $RESCALED_DIR"
 
 echo "🔄 Step 2: Converting raw JSONs to intermediate JSONL (regenerating)..."
-# Remove existing files to force regeneration
-rm -f "$TEMP_JSONL"
 
 # Base command
 CMD="python ${DATA_CONVERSION_DIR}/convert_pure_json.py \
-    --input_folder "$INPUT_DIR" \
-    --output_image_folder "$RESCALED_DIR" \
-    --output_jsonl "$TEMP_JSONL" \
-    --language "$LANGUAGE" \
-    --resize"
+    --input_folder \"$INPUT_DIR\" \
+    --output_image_folder \"$RESCALED_DIR\" \
+    --output_jsonl \"$TEMP_JSONL\" \
+    --language \"$LANGUAGE\" \
+    --resize $RESIZE \
+    --response_types \"$RESPONSE_TYPES\" \
+    --log_level DEBUG"
 
-# Add map_file only for English
+# Add map_file based on language
 if [[ "$LANGUAGE" == "english" ]]; then
-    CMD="$CMD --map_file \"$MAP_FILE\""
+    CMD="$CMD --map_file \"$MAP_FILE_EN\""
+elif [[ "$LANGUAGE" == "chinese" ]]; then
+    CMD="$CMD --map_file \"$MAP_FILE_ZH\""
 fi
 
 # Execute the command
@@ -118,7 +124,8 @@ if [[ "$USE_CANDIDATES" == "true" ]]; then
     python "${DATA_CONVERSION_DIR}/extract_unique_phrases.py" \
         --input_jsonl "$TEMP_JSONL" \
         --output_phrases "$CANDIDATES_FILE" \
-        --min_frequency 1
+        --min_frequency 1 \
+        --response_types "$RESPONSE_TYPES"
     echo "✅ Phrase extraction complete"
 fi
 
@@ -132,7 +139,7 @@ if [[ "$INCLUDE_EXAMPLES" == "true" ]]; then
         python "data_analysis/extract_examples_from_conversations.py" \
             "$TEMP_JSONL" \
             --output "$EXAMPLES_FILE" \
-            --num_examples 10 \
+            --num_examples 5 \
             --response_types $RESPONSE_TYPES \
             --seed $SEED
         echo "✅ Example extraction complete"

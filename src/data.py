@@ -16,24 +16,27 @@ Key Features:
 
 import json
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
-import transformers
 from torch.utils.data import Dataset
+from transformers import PreTrainedTokenizerBase
+from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 
 from src.chat_processor import ChatProcessor
 from src.config import config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
+from src.schema import assert_collated_batch  # Runtime batch validation
 from src.tokens import SpecialTokens
 from src.utils import IGNORE_INDEX
 
 logger = get_data_logger()
 
 
-def read_jsonl(path: str) -> List[Dict]:
+def read_jsonl(path: str) -> List[Dict[str, Any]]:
     """Read JSONL file and return list of dictionaries."""
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line.strip()) for line in f if line.strip()]
@@ -44,10 +47,10 @@ class BBUDataset(Dataset):
 
     def __init__(
         self,
-        tokenizer,
-        image_processor,
+        tokenizer: PreTrainedTokenizerBase,
+        image_processor: Qwen2VLImageProcessor,
         data_path: str,
-    ):
+    ) -> None:
         """
         Initialize BBU Dataset using global configuration.
         All configuration values are accessed from the global config singleton.
@@ -97,7 +100,9 @@ class BBUDataset(Dataset):
         """Get candidates file path from global config."""
         return config.candidates_file
 
-    def _validate_and_filter_samples(self, raw_data: List[Dict]) -> List[Dict]:
+    def _validate_and_filter_samples(
+        self, raw_data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Validate and filter samples with strict requirements."""
         valid_samples = []
 
@@ -251,11 +256,11 @@ class BBUDataset(Dataset):
         logger.debug(f"📏 Average sequence length: {avg_length:.0f} tokens")
 
     @property
-    def sequence_lengths(self):
+    def sequence_lengths(self) -> List[int]:
         """Get sequence lengths for optimization."""
         return self._sequence_lengths
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -289,23 +294,30 @@ class BBUDataset(Dataset):
         if not self.candidates_file:
             return None
 
+        import json
+
+        if not Path(self.candidates_file).exists():
+            raise FileNotFoundError(
+                f"Candidates file not found: {self.candidates_file}. Failing fast as per project policy."
+            )
+
         try:
-            import json
-
-            with open(self.candidates_file, "r") as f:
+            with open(self.candidates_file, "r", encoding="utf-8") as f:
                 candidates = json.load(f)
-            logger.debug(
-                f"📊 Loaded {len(candidates)} candidate phrases from {self.candidates_file}"
-            )
-            return candidates
-        except Exception as e:
-            logger.debug(
-                f"⚠️ Failed to load candidates from {self.candidates_file}: {e}"
-            )
-            return None
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Candidates file {self.candidates_file} is not valid JSON: {e}"
+            ) from e
+
+        logger.debug(
+            f"📊 Loaded {len(candidates)} candidate phrases from {self.candidates_file}"
+        )
+        return candidates
 
 
-def extract_ground_truth_from_sample(sample_data):
+def extract_ground_truth_from_sample(
+    sample_data: Dict[str, Any],
+) -> List[Dict[str, Any]]:
     """
     DEPRECATED: This function is no longer needed as the ChatProcessor
     now handles ground truth extraction and normalization directly.
@@ -326,9 +338,11 @@ class StandardDataCollator:
     and flash attention compatibility.
     """
 
-    tokenizer: transformers.PreTrainedTokenizer
+    tokenizer: PreTrainedTokenizerBase
 
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+    def __call__(
+        self, instances: Sequence[Dict[str, Any]]
+    ) -> Dict[str, Union[torch.Tensor, List[int]]]:
         """
         Collate batch with optimized memory management for flash attention.
 
@@ -537,15 +551,22 @@ class StandardDataCollator:
 
         batch["ground_truth_objects"] = ground_truth_objects
 
+        # Ensure optional keys are always present for schema validation
+        batch.setdefault("pixel_values", None)
+        batch.setdefault("image_grid_thw", None)
+
+        # Fail-fast shape validation (raises AssertionError on mismatch)
+        assert_collated_batch(batch)
+
         return batch
 
 
 def create_data_collator(
-    tokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     max_total_length: Optional[int] = None,
     collator_type: str = "flattened",
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Create a data collator based on the specified type.
 

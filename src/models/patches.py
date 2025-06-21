@@ -143,6 +143,23 @@ def safe_visual_forward(original_forward):
 
         # Only apply safe handling during inference
         try:
+            # ------------------------------------------------------------------
+            # Ensure vision tensors reside on **exactly** the same CUDA device as
+            # the Vision Transformer weights.  When the wrapper upstream only
+            # moves top-level dict values, race conditions or overlooked nested
+            # references can still leave a CPU tensor here which Triton rejects
+            # with the dreaded:
+            #     "Pointer argument (at 0) cannot be accessed from Triton"
+            # ------------------------------------------------------------------
+
+            target_device = next(self.parameters()).device  # e.g. cuda:0
+
+            if torch.is_tensor(pixel_values) and pixel_values.device != target_device:
+                pixel_values = pixel_values.to(device=target_device, non_blocking=True)
+
+            if torch.is_tensor(grid_thw) and grid_thw.device != target_device:
+                grid_thw = grid_thw.to(device=target_device, non_blocking=True)
+
             # Validate inputs before processing
             if pixel_values.numel() == 0 or pixel_values.shape[0] == 0:
                 logger.warning(
@@ -271,6 +288,11 @@ def apply_comprehensive_qwen25_fixes():
             logger.info("✅ Safe visual forward patch applied for generation")
         else:
             logger.warning("⚠️ Visual transformer class not found - patch not applied")
+
+        # We intentionally **skip** the legacy qwenvl Flash-Attention override.
+        # Keeping the stock HuggingFace implementation ensures padded boolean
+        # masks are handled correctly without extra assumptions.
+        logger.info("🔇 qwenvl Flash-Attention override skipped – using HF default")
 
         logger.info("✅ All Qwen2.5-VL fixes applied successfully")
         logger.info("   - mRoPE: Uses official doubling logic + batch fix")

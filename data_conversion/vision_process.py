@@ -95,14 +95,28 @@ def smart_resize(
 
 
 def to_rgb(pil_image: Image.Image) -> Image.Image:
+    """Convert arbitrary PIL image to an RGB image with correct EXIF orientation.
+
+    The function first applies :pyfunc:`PIL.ImageOps.exif_transpose` so that any
+    orientation information stored in the image metadata (including horizontal
+    flips that annotators relied on) is materialised in the pixel data.  This
+    guarantees that subsequent width/height queries as well as all geometric
+    computations (e.g. smart_resize and bbox scaling) align with the
+    annotation space.
+
+    A white background is composited for images with an alpha channel to avoid
+    introducing transparency artefacts that can confuse downstream vision
+    models.
+    """
+
     if pil_image.mode == "RGBA":
         white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
         white_background.paste(
             pil_image, mask=pil_image.split()[3]
         )  # Use alpha channel as mask
         return white_background
-    else:
-        return pil_image.convert("RGB")
+
+    return pil_image.convert("RGB")
 
 
 def fetch_image(

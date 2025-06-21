@@ -49,6 +49,7 @@ class DirectConfig:
     merger_lr: float
     llm_lr: float
     detection_lr: float
+    adapter_lr: float
     warmup_ratio: float
     weight_decay: float
     max_grad_norm: float
@@ -84,25 +85,21 @@ class DirectConfig:
     verbose: bool
     disable_tqdm: bool
 
-    # Monitoring settings
-    enable_monitoring: bool
-    save_predictions: bool
-    save_token_analysis: bool
-    save_raw_text: bool
-
     # Detection loss configuration (End-to-End Training)
     detection_enabled: bool
     detection_num_queries: int
     detection_max_caption_length: int
 
     # Detection Head Architecture
-    detection_decoder_nhead: int
     detection_decoder_dim_feedforward_factor: float
     detection_decoder_num_layers: int
-    detection_caption_decoder_nhead: int
     detection_caption_decoder_dim_feedforward_factor: float
     detection_caption_decoder_num_layers: int
     detection_head_dropout: float
+
+    # Adapter hyperparameters for detection head
+    detection_adapter_bottleneck_ratio: int
+    detection_adapter_num_layers: int
 
     # Loss component weights
     detection_bbox_weight: float
@@ -150,11 +147,13 @@ class DirectConfig:
     test_samples: int
     test_forward_pass: bool
 
+    # Training schedule tweaks
+    detection_freeze_epochs: int
+
     # --- Derived Paths (set automatically) ---
     run_output_dir: str = field(init=False)
     tensorboard_dir: str = field(init=False)
     log_file_dir: str = field(init=False)
-    monitor_log_dir: str = field(init=False)
 
     @property
     def tune_vision(self) -> bool:
@@ -276,9 +275,6 @@ def init_config(config_path: str) -> DirectConfig:
 
     # 3. Log file directory
     config.log_file_dir = str(Path(config.run_output_dir) / "logs")
-
-    # 4. Monitor log directory
-    config.monitor_log_dir = str(Path(config.run_output_dir) / "monitor")
 
     # Create directories
     Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)

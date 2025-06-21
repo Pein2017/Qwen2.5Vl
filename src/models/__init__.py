@@ -24,7 +24,6 @@ also test and verify them manually:
 For full verification, run: python src/models/test_fixes.py
 """
 
-from .attention import enable_flash_attention, replace_qwen2_vl_attention_class
 from .patches import (
     apply_comprehensive_qwen25_fixes,
     official_apply_multimodal_rotary_pos_emb,
@@ -37,6 +36,4 @@ __all__ = [
     "apply_comprehensive_qwen25_fixes",
     "verify_qwen25_patches",
     "official_apply_multimodal_rotary_pos_emb",
-    "enable_flash_attention",
-    "replace_qwen2_vl_attention_class",
 ]

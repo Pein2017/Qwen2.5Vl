@@ -111,7 +111,9 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
     return data
 
 
-def debug_input_shapes(inputs: Dict, prefix: str = "", log_level: str = "DEBUG"):
+def debug_input_shapes(
+    inputs: Dict[str, Any], prefix: str = "", log_level: str = "DEBUG"
+) -> None:
     """
     Debug function to log all input tensor shapes.
 
@@ -146,7 +148,7 @@ def debug_input_shapes(inputs: Dict, prefix: str = "", log_level: str = "DEBUG")
 # ============================================================================
 
 
-def prepare_inputs_for_forward(inputs: Dict) -> Dict:
+def prepare_inputs_for_forward(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Prepare inputs for model.forward() call during training.
 
@@ -175,8 +177,8 @@ def prepare_inputs_for_forward(inputs: Dict) -> Dict:
 
 
 def prepare_inputs_for_generate(
-    inputs: Dict, prompt_end_indices: Optional[List[int]] = None
-) -> Tuple[Dict, List[int]]:
+    inputs: Dict[str, Any], prompt_end_indices: Optional[List[int]] = None
+) -> Tuple[Dict[str, Any], List[int]]:
     """
     Prepare inputs for model.generate() call during inference.
 
@@ -269,7 +271,7 @@ def prepare_inputs_for_generate(
     return generation_inputs, prompt_end_indices
 
 
-def _validate_and_fix_shapes(inputs: Dict) -> Dict:
+def _validate_and_fix_shapes(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validate and fix shape mismatches between input_ids and attention_mask.
 
@@ -332,7 +334,7 @@ def _validate_and_fix_shapes(inputs: Dict) -> Dict:
     return fixed_inputs
 
 
-def filter_inputs_for_model(inputs: Dict) -> Dict:
+def filter_inputs_for_model(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Filter inputs to only include parameters accepted by the official Qwen2.5-VL model.
 
@@ -379,7 +381,7 @@ def filter_inputs_for_model(inputs: Dict) -> Dict:
     return filtered_inputs
 
 
-def filter_inputs_for_generation(inputs: Dict) -> Dict:
+def filter_inputs_for_generation(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Filter inputs for model.generate() calls.
 
@@ -425,7 +427,7 @@ def filter_inputs_for_generation(inputs: Dict) -> Dict:
 # ============================================================================
 
 
-def validate_attention_mask_consistency(inputs: Dict) -> bool:
+def validate_attention_mask_consistency(inputs: Dict[str, Any]) -> bool:
     """
     DEPRECATED: Use prepare_inputs_for_forward/generate instead.
 
@@ -441,7 +443,7 @@ def validate_attention_mask_consistency(inputs: Dict) -> bool:
     return inputs["input_ids"].shape == inputs["attention_mask"].shape
 
 
-def fix_attention_mask_mismatch(inputs: Dict) -> Dict:
+def fix_attention_mask_mismatch(inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     DEPRECATED: Use prepare_inputs_for_forward/generate instead.
 
@@ -453,7 +455,9 @@ def fix_attention_mask_mismatch(inputs: Dict) -> Dict:
     return _validate_and_fix_shapes(inputs)
 
 
-def safe_prepare_inputs(inputs: Dict, validate_shapes: bool = True) -> Dict:
+def safe_prepare_inputs(
+    inputs: Dict[str, Any], validate_shapes: bool = True
+) -> Dict[str, Any]:
     """
     DEPRECATED: Use prepare_inputs_for_forward/generate instead.
 

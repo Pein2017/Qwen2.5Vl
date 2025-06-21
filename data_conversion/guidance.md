@@ -1,298 +1,322 @@
-# Qwen2.5-VL Data Conversion Guide
+# Qwen2.5-VL Data Conversion & Preprocessing Guide
 
+## Table of Contents
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Pipeline Steps](#pipeline-steps)
+- [Script Reference](#script-reference)
+- [Data Formats](#data-formats)
+
+---
+
+<a name="overview"></a>
 ## Overview
+This guide explains each step of the data conversion pipeline for Qwen2.5-VL, turning raw JSON annotations and images into training-ready JSONL files. Examples of inputs and outputs are provided to illustrate what each script does under the hood.
 
-This guide documents the complete data conversion pipeline for Qwen2.5-VL reference-based grounding, incorporating all latest improvements and the compact format. The pipeline converts raw telecom equipment inspection data into training-ready format with enhanced prompts and few-shot learning.
+<a name="prerequisites"></a>
+## Prerequisites
+- Activate the Conda environment: `conda activate ms`
+- Ensure the following are installed: Python ≥3.8, Pillow, torch, torchvision, requests
+- Set `PYTHONPATH` to the project root:
+  ```bash
+  export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
+  ```
 
-## Key Features
-
-### ✅ **Ultra-Compact Format**
-- **Natural language descriptions**: Comma-separated instead of structured format
-- **Minimal tokens**: `{bbox:[x1,y1,x2,y2],desc:'object_type, quality_details'}`
-- **Unquoted field names**: `bbox` and `desc` (not `"bbox"` and `"desc"`)
-- **English-only enforcement**: Explicit requirement to prevent Chinese output
-- **Strict format compliance**: Clear instructions about exact output format
-
-### ✅ **Enhanced System Prompts**
-- **Clear modular structure**: Distinct sections for format, instructions, and phrases
-- **Categorized phrase organization**: Logical grouping by equipment type
-- **Language control**: "Respond ONLY in English (never use Chinese characters)"
-- **Format enforcement**: "Output EXACTLY this format" with examples
-- **Process guidance**: Step-by-step inspection process for multi-image mode
-
-### ✅ **Proper Few-Shot Structure**
-- **Split examples**: Each example as separate user ↔ assistant turns
-- **Natural conversation flow**: Compatible with Jinja template processing
-- **Real data examples**: Uses actual training data for better learning
-- **Minimal user prompts**: Just `<image>` after system prompt establishes context
-
-### ✅ **Reference-Based Grounding**
-- **System-level candidate integration**: Phrases in system prompt for consistency
-- **Global configuration**: Easy toggle between dense captioning and reference modes
-- **Token efficiency**: Shared system prompt across conversation turns
-- **Better few-shot learning**: Consistent candidate context across examples
-
-## System Prompt Structure
-
-### Multi-Image Mode with Candidates
-```text
-You are Q-Vision-QC, an expert assistant specialized in telecom-equipment inspection.
-Your task: produce exactly one JSON array of detected objects for each input image.
-
-OUTPUT FORMAT:
-- A JSON array where each element has:
-    bbox: [x1, y1, x2, y2],
-    desc: 'comma-separated object_type and details'
-- Sort by top-to-bottom (increasing y), then left-to-right (increasing x).
-- Use unquoted keys: bbox and desc.
-- Wrap string in single quotes. No whitespace or comments outside the JSON.
-- Always respond in English only.
-- Output only the JSON array (no extra text or explanations).
-
-MULTI-ROUND INSTRUCTIONS:
-1) You will see K example rounds. Each round has:
-   - A user turn with `<image>`
-   - An assistant turn with the correct JSON array.
-
-2) Then you will see one final user turn with `<image>`. Your job is to reply with the JSON array for that image.
-
-AVAILABLE PHRASES FOR REFERENCE (choose only those matching visible objects):
-
-1. BBU Types:
-   - huawei bbu
-   - zte bbu
-   - ericsson bbu
-
-2. Shield/Baffle Equipment:
-   - bbu shield installed
-   - bbu shield not installed
-   - shield orientation correct
-   - shield unobstructed
-   - shield obstructed
-   - shield brand mismatch
-   - shield installed in wrong position
-   - shield screws not fully installed
-
-3. Cabinet Status:
-   - cabinet fully occupied
-   - cabinet not fully occupied
-   - cabinet grounding correct
-   - cabinet grounding incorrect
-
-4. Screw/Installation:
-   - install screw correct
-   - install screw incorrect
-   - floor screw installed
-   - not tightened
-   - installation position incorrect
-
-5. Cable/Connection:
-   - fiber cable
-   - non-fiber cable
-   - fibre bend radius proper
-   - fibre bend radius improper
-   - snake tube protection
-   - armour protection
-   - no snake tube or armour protection
-   - fibre is protected by both armour and snake tube
-   - cpri connection correct
-   - cpri connection incorrect
-   - odf connection correct
-   - binding aligned horizontally and vertically
-   - binding not aligned horizontally and vertically
-   - only part of the fibre is visible
-   - copper exposed
-
-6. Label/Marking:
-   - label matches
-   - label does not match
-   - match
-   - not match
-
-7. Other Abnormal:
-   - rust
-   - bbu not inserted
-   - foreign object above bbu
-   - unable to assess bend radius
-   - which is usually unnecessary
-   - other case
-
-Select phrases that apply to objects visible in the image. You may use multiple phrases per object (e.g., 'huawei bbu, shield orientation correct, shield unobstructed').
+<a name="quick-start"></a>
+## Quick Start
+To run the entire pipeline with default settings:
+```bash
+cd /data4/Qwen2.5-VL-main
+data_conversion/convert_dataset.sh
 ```
+The script will orchestrate all steps. Customize parameters at the top of `convert_dataset.sh` as needed.
 
-## Conversation Structure
+<a name="pipeline-steps"></a>
+## Pipeline Steps
 
-### Proper Few-Shot Format
+### 1. Fix EXIF Orientation (Optional)
+**Script:** `data_conversion/strip_exif_orientation.py`
+
+**What it does:**
+Applies EXIF orientation transforms in-place to ensure image pixel data matches annotations, then strips metadata.
+
+**Example:**
+```
+$ python data_conversion/strip_exif_orientation.py ds --dry-run
+2025-05-01 12:00:00 - INFO - Processed 100 images, modified 30
+$ python data_conversion/strip_exif_orientation.py ds
+2025-05-01 12:00:10 - INFO - Processed 100 images, modified 30
+```
+- **Input:** Folder `ds/` with JPEG/PNG images
+- **Output:** Same folder with images rotated and metadata removed
+
+---
+
+### 2. Raw JSON → Intermediate JSONL
+**Script:** `data_conversion/convert_pure_json.py`
+
+**What it does:**
+1. Reads each raw JSON annotation under `ds/`.
+2. Validates `info.width/height` against actual image dimensions (fail-fast on mismatch).
+3. Extracts bounding boxes from `dataList` or `markResult.features`.
+4. Reads labels (`object_type`, `property`, `extra_info`), applies token mapping.
+5. Sorts objects top-to-bottom, left-to-right.
+6. Resizes images to multiples of 28px via `vision_process.smart_resize`, scales bboxes.
+7. Saves rescaled images under `ds_rescaled/` preserving directory structure.
+8. Writes intermediate JSONL: one sample per line.
+
+**Sample Raw JSON (ds/0001.json):**
 ```json
 {
-  "conversations": [
+  "info": {"width": 900, "height": 1200},
+  "dataList": [
     {
-      "role": "system",
-      "content": "[MULTI_IMAGE_SYSTEM_PROMPT with candidates]"
-    },
-    // Example 1
-    {
-      "role": "user",
-      "content": "<image>"
-    },
-    {
-      "role": "assistant",
-      "content": "[{bbox:[0,0,85,140],desc:'install screw correct'},{bbox:[0,0,699,879],desc:'huawei bbu'},{bbox:[68,696,220,823],desc:'install screw incorrect, rust'}]"
-    },
-    // Example 2
-    {
-      "role": "user",
-      "content": "<image>"
-    },
-    {
-      "role": "assistant",
-      "content": "[{bbox:[16,0,672,1038],desc:'cabinet fully occupied'},{bbox:[0,22,672,563],desc:'zte bbu'},{bbox:[223,213,542,397],desc:'cpri connection correct'}]"
-    },
-    // Example 3
-    {
-      "role": "user",
-      "content": "<image>"
-    },
-    {
-      "role": "assistant",
-      "content": "[{bbox:[114,98,337,1400],desc:'bbu shield installed, shield orientation correct, shield unobstructed'},{bbox:[183,714,483,886],desc:'fiber cable, fibre bend radius proper, snake tube protection'}]"
-    },
-    // Query
-    {
-      "role": "user",
-      "content": "<image>"
+      "coordinates": [[100,50],[400,300]],
+      "properties": {"contentZh": {"标签": ["挡风板/安装"]}}
     }
-  ],
-  "images": ["example1.jpg", "example2.jpg", "example3.jpg", "query.jpg"]
+  ]
 }
 ```
 
-## Response Format Examples
-
-### Simple Objects
-```json
-{bbox:[336,0,698,1392],desc:'zte bbu'}
-{bbox:[279,924,656,1092],desc:'label matches'}
-{bbox:[616,3,677,52],desc:'install screw correct'}
-```
-
-### Objects with Multiple Attributes
-```json
-{bbox:[114,98,337,1400],desc:'bbu shield installed, shield orientation correct, shield unobstructed'}
-{bbox:[183,714,483,886],desc:'fiber cable, fibre bend radius proper, snake tube protection'}
-{bbox:[68,696,220,823],desc:'install screw incorrect, rust'}
-```
-
-### Complex Scenes
-```json
-[
-  {bbox:[0,0,85,140],desc:'install screw correct'},
-  {bbox:[0,0,699,879],desc:'huawei bbu'},
-  {bbox:[183,714,483,886],desc:'fiber cable, fibre bend radius proper, snake tube protection'},
-  {bbox:[355,755,436,866],desc:'cpri connection correct'},
-  {bbox:[378,917,498,1112],desc:'label matches'}
-]
-```
-
-## Pipeline Usage
-
-### Enable Reference-Based Grounding
+**Command:**
 ```bash
-cd /data4/Qwen2.5-VL-main
-./data_conversion/toggle_candidates.sh enable
-./data_conversion/convert_dataset.sh
+python data_conversion/convert_pure_json.py \
+  --input_folder ds \
+  --output_image_folder ds_rescaled \
+  --output_jsonl data_conversion/qwen_combined.jsonl \
+  --language chinese \
+  --resize true \
+  --response_types "object_type property"
 ```
 
-### Disable (Return to Dense Captioning)
-```bash
-./data_conversion/toggle_candidates.sh disable
-./data_conversion/convert_dataset.sh
+**Sample Output Line:**
+```json
+{
+  "images": ["ds_rescaled/0001.jpeg"],
+  "objects": {
+    "ref": ["挡风板/安装"],
+    "bbox": [[100,50,400,300]]
+  },
+  "height": 784,
+  "width": 448
+}
+```
+*(Note: heights/widths shown after smart_resize.)*
+
+---
+
+### 3. Extract Candidate Phrases
+**Script:** `data_conversion/extract_unique_phrases.py`
+
+**What it does:**
+Scans the intermediate JSONL, parses each `objects.ref` string, extracts meaningful tokens per specified response types, and counts frequencies.
+
+**Sample Input JSONL Entry:**
+```json
+{
+  "objects": {"ref": [
+      "object_type:bbu;property:match;extra_info:none",
+      "object_type:install screw correct;property:none;extra_info:none"
+  ], "bbox": [[0,0,85,140],[304,353,390,438]]}
+}
 ```
 
-### Manual Conversion
+**Command:**
 ```bash
-# Extract candidate phrases
 python data_conversion/extract_unique_phrases.py \
-    --input_jsonl data_conversion/qwen_combined.jsonl \
-    --output_phrases data_conversion/candidate_phrases.json
+  --input_jsonl data_conversion/qwen_combined.jsonl \
+  --output_phrases data_conversion/candidate_phrases.json \
+  --min_frequency 1 \
+  --response_types "object_type property" 
+```
 
-# Convert with candidates
+**Sample Output (candidate_phrases.json):**
+```json
+{
+  "metadata": {
+    "total_unique_phrases": 2,
+    "min_frequency_threshold": 1,
+    "most_common_phrase": ["bbu", 100]
+  },
+  "phrases": {"bbu": 100, "install screw correct": 80},
+  "phrase_list": ["bbu", "install screw correct"]
+}
+```
+
+---
+
+### 4. Extract Few-Shot Examples
+**Script:** `data_analysis/extract_examples_from_conversations.py`
+
+**What it does:**
+Analyzes intermediate JSONL samples to select representative few-shot examples by complexity (object count, diversity, question types).
+Categorizes into `sparse`, `medium`, `dense`, `diverse`, and `rare`, then picks top samples per category.
+
+**Sample Input (qwen_combined.jsonl):**
+```json
+{
+  "images": ["ds_rescaled/0001.jpeg"],
+  "objects": {"ref":["object_type:bbu;property:match;extra_info:none"],
+               "bbox":[[100,50,400,300]]}
+}
+```
+
+**Command:**
+```bash
+python data_analysis/extract_examples_from_conversations.py \
+  data_conversion/qwen_combined.jsonl \
+  --output data_analysis/training_examples.json \
+  --num_examples 5 \
+  --seed 42 \
+  --response_types object_type property
+```
+
+**Sample Output (training_examples.json):**
+```json
+{
+  "sparse": {
+    "image": "ds_rescaled/0001.jpeg",
+    "objects": [
+      {"bbox": [100,50,400,300], "description": "bbu/match"}
+    ]
+  },
+  "medium": { ... },
+  "dense": { ... }
+}
+```
+
+---
+
+### 5. Convert to Clean Semantic Data
+**Script:** `data_conversion/qwen_converter_unified.py`
+
+**What it does:**
+Transforms intermediate JSONL into training-ready JSONL with simple or multi-round format:
+- **Simple**: list of images + objects with `box` and `desc` fields
+- **Multi-round**: includes `examples` array followed by `target`
+
+**Sample Input:**
+```json
+{
+  "images": ["ds_rescaled/0001.jpeg"],
+  "objects": {"ref":["object_type:bbu;property:match;extra_info:none"],
+               "bbox":[[100,50,400,300]]}
+}
+```
+
+**Command (simple):**
+```bash
 python data_conversion/qwen_converter_unified.py \
-    --input_jsonl data_conversion/qwen_combined.jsonl \
-    --output_train 603_candidates_train.jsonl \
-    --output_val 603_candidates_val.jsonl \
-    --use_candidates \
-    --candidates_file data_conversion/candidate_phrases.json \
-    --use_few_shot \
-    --examples_file data_analysis/training_examples.json
+  --input_jsonl data_conversion/qwen_combined.jsonl \
+  --output_train data/clean_train.jsonl \
+  --output_val data/clean_val.jsonl \
+  --val_ratio 0.1 \
+  --seed 42 \
+  --response_types "object_type property"
 ```
 
-## Key Benefits
-
-### 🎯 **Improved Model Performance**
-- **Simpler target format**: Easier for models to learn and generate
-- **Natural language patterns**: More intuitive comma-separated descriptions
-- **Reduced hallucination**: Clear categorized phrase lists provide better guidance
-- **Better few-shot learning**: Cleaner prompt structure teaches better patterns
-
-### 🚀 **Enhanced Efficiency**
-- **Reduced token count**: Compact format uses fewer tokens
-- **Faster training**: Simplified complexity speeds up learning
-- **Better compliance**: Clear format instructions improve output consistency
-- **Token efficiency**: System-level candidate integration avoids repetition
-
-### 🔧 **Superior Maintainability**
-- **Modular prompt structure**: Easy to modify and extend
-- **Clear separation of concerns**: System vs user prompt responsibilities
-- **Backward compatibility**: Automatic conversion from old formats
-- **Global configuration**: Easy mode switching and tuning
-
-## Migration from Old Format
-
-### Format Transformation
-**Before** (Structured):
+**Sample Simple Output Line:**
 ```json
-{bbox:[114,98,337,1400],desc:'object_type:bbu shield installed;property:shield orientation correct, shield unobstructed;extra_info:none'}
+{
+  "images": ["ds_rescaled/0001.jpeg"],
+  "objects": [
+    {"box": [100,50,400,300], "desc": "bbu/match"}
+  ]
+}
 ```
 
-**After** (Compact):
+**Command (multi-round):** add `--multi_round --include_examples --examples_file data_analysis/training_examples.json --max_examples 1`
+
+**Sample Multi-Round Output:**
 ```json
-{bbox:[114,98,337,1400],desc:'bbu shield installed, shield orientation correct, shield unobstructed'}
+{
+  "examples": [
+    {"images": ["ds_rescaled/0002.jpeg"], "objects": [
+      {"box": [200,100,500,350], "desc": "cabinet fully occupied"}
+    ]}
+  ],
+  "target": {
+    "images": ["ds_rescaled/0001.jpeg"],
+    "objects": [
+      {"box": [100,50,400,300], "desc": "bbu/match"}
+    ]
+  }
+}
 ```
 
-### Automatic Conversion
-The pipeline automatically converts old structured formats to the new compact format:
-- Removes `object_type:`, `property:`, `extra_info:` prefixes
-- Filters out "none" values
-- Joins components with comma separation
-- Deduplicates repeated phrases
-- Maintains semantic meaning
+---
 
-## File Structure
+### 6. Validate Outputs
+**Script:** `data_conversion/validate_jsonl.py`
 
-```
-data_conversion/
-├── convert_dataset.sh              # Main pipeline script
-├── toggle_candidates.sh            # Mode switching utility
-├── qwen_converter_unified.py       # Main converter with all features
-├── core_modules.py                 # Response formatting and utilities
-├── extract_unique_phrases.py       # Candidate phrase extraction
-├── guidance.md                     # This comprehensive guide
-└── candidate_phrases.json          # Generated candidate phrases
+**What it does:**
+Checks JSONL syntax, conversation structure, and special token consistency.
 
-data_analysis/
-├── extract_examples_from_conversations.py  # Few-shot example extraction
-└── training_examples.json                  # Generated few-shot examples
+**Command:**
+```bash
+python data_conversion/validate_jsonl.py \
+  --train_file data/clean_train.jsonl \
+  --val_file data/clean_val.jsonl \
+  --include_examples
 ```
 
-## Expected Performance Improvements
+**Sample Validation Log:**
+```
+Validating JSON format...
+✅ data/clean_train.jsonl: Valid JSONL format
+✅ data/clean_val.jsonl: Valid JSONL format
+Validating conversation structure...
+✅ data/clean_train.jsonl: Valid conversation structure
+✅ data/clean_val.jsonl: Valid conversation structure
+Validating special tokens...
+✅ data/clean_train.jsonl: Valid special token format
+```
 
-1. **Better Format Compliance**: Simpler target format is easier for models to learn
-2. **Reduced Hallucination**: Clear categorized phrase lists provide better guidance  
-3. **Improved Few-Shot Learning**: Cleaner prompt structure teaches better patterns
-4. **Faster Training**: Reduced token count and complexity
-5. **More Natural Output**: Comma-separated descriptions are more readable
-6. **Enhanced Consistency**: System-level candidate integration ensures uniform context
+---
 
-This enhanced pipeline provides a solid foundation for high-quality reference-based grounding with your real telecom equipment inspection data, incorporating all the latest improvements and best practices.
+<a name="script-reference"></a>
+## Script Reference
+- `convert_dataset.sh`: Full pipeline orchestration
+- `strip_exif_orientation.py`: EXIF fix and metadata strip
+- `convert_pure_json.py`: Raw JSON to intermediate JSONL
+- `extract_unique_phrases.py`: Candidate phrase extraction
+- `data_analysis/extract_examples_from_conversations.py`: Few-shot example selection
+- `qwen_converter_unified.py`: Clean semantic conversion & split
+- `validate_jsonl.py`: JSONL and conversation validation
 
+<a name="data-formats"></a>
+## Data Formats
+
+### Raw JSON
+Proprietary telecom inspection schema with `info`, `dataList` or `markResult.features`.
+
+### Intermediate JSONL
+```json
+{
+  "images": ["path/to/img.jpeg"],
+  "objects": {"ref": [...], "bbox": [[x1,y1,x2,y2], ...]},
+  "height": H, "width": W
+}
+```
+
+### Clean Semantic JSONL (Simple)
+```json
+{
+  "images": ["path/to/img.jpeg"],
+  "objects": [
+    {"box": [x1,y1,x2,y2], "desc": "type/property"},
+    ...
+  ]
+}
+```
+
+### Clean Semantic JSONL (Multi-Round)
+```json
+{
+  "examples": [...],
+  "target": { ... }
+}
+```
+
+---

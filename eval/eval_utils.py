@@ -123,7 +123,7 @@ class SimpleModelLoader:
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             pretrained_model_name_or_path=self.model_path,
             torch_dtype=self.torch_dtype,
-            attn_implementation="eager",  # Use eager for inference stability
+            attn_implementation="flash_attention_2",  # Use eager for inference stability
             device_map=None,  # Don't use device_map for inference
         )
 

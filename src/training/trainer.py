@@ -38,23 +38,28 @@ This design guarantees that training and evaluation logging are independent and
 that reported training losses are correctly averaged per step.
 """
 
+import re
 import time
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-import transformers
+from torch.optim import Optimizer
 from transformers import (
     AutoProcessor,
     AutoTokenizer,
+    PreTrainedTokenizerBase,
     Trainer,
     TrainingArguments,
 )
+from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 
 from src.config import config
+from src.config.global_config import DirectConfig
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
+from src.schema import GroundTruthObject
 
 
 class BBUTrainer(Trainer):
@@ -65,12 +70,76 @@ class BBUTrainer(Trainer):
     while maintaining clean separation of concerns.
     """
 
-    def __init__(self, *args, config=None, image_processor=None, **kwargs):
-        # Inject config object or fallback to global
-        from src.config import config as _global_config
+    # ------------------------------------------------------------------
+    # HF ≥4.41 emits a deprecation warning every time `.tokenizer` is
+    # accessed on a Trainer instance.  We access it frequently for
+    # logging/decoding, so we cache the reference (if provided) *before*
+    # calling the parent ctor, then overwrite the property with a plain
+    # attribute afterwards.  This silences the warning without touching
+    # upstream library code and keeps backward-compatibility for any
+    # external calls that expect `trainer.tokenizer` to exist.
+    # ------------------------------------------------------------------
+    tokenizer_ref = None
 
-        self.config = config or _global_config
+    def __init__(
+        self,
+        *args: Any,
+        cfg: Optional[DirectConfig] = None,
+        image_processor: Optional[Qwen2VLImageProcessor] = None,
+        **kwargs: Any,
+    ) -> None:
+        # --------------------------------------------------------------
+        # HF ≥4.41 emits a deprecation warning every time `.tokenizer` is
+        # accessed on a Trainer instance.  We access it frequently for
+        # logging/decoding, so we cache the reference (if provided) *before*
+        # calling the parent ctor, then overwrite the property with a plain
+        # attribute afterwards.  This silences the warning without touching
+        # upstream library code and keeps backward-compatibility for any
+        # external calls that expect `trainer.tokenizer` to exist.
+        # --------------------------------------------------------------
+        # Support legacy alias where callers used `config=` keyword.
+        if cfg is None and "config" in kwargs:
+            cfg = kwargs.pop("config")
+
+        tokenizer_ref = kwargs.get("tokenizer")
+
+        # ------------------------------------------------------------------
+        # Resolve configuration
+        # Priority:
+        #   1) Explicit `cfg` argument passed by caller
+        #   2) Global singleton initialised via src.config.init_config()
+        # Fail fast if neither is available.
+        # ------------------------------------------------------------------
+        from src.config import get_config
+
+        # Attempt to fetch already-initialised global configuration, if any.
+        try:
+            _global_cfg: Optional[DirectConfig] = get_config()
+        except RuntimeError:
+            _global_cfg = None
+
+        if cfg is not None:
+            self.config = cfg
+        elif _global_cfg is not None:
+            self.config = _global_cfg
+        else:
+            raise RuntimeError(
+                "DirectConfig not provided to BBUTrainer and global config has "
+                "not been initialised. Call src.config.init_config() before "
+                "creating the trainer or pass cfg=<DirectConfig>."
+            )
+
         super().__init__(*args, **kwargs)
+
+        # Overwrite the (deprecated) property with a direct attribute so
+        # future accesses skip the warning-emitting property defined in the
+        # parent class. We bypass the descriptor protocol via
+        # `object.__setattr__` to avoid invoking the original setter.
+        if tokenizer_ref is None and hasattr(self, "tokenizer"):
+            tokenizer_ref = object.__getattribute__(self, "tokenizer")
+
+        object.__setattr__(self, "tokenizer", tokenizer_ref)
+
         self.logger = get_training_logger()
         self.image_processor = image_processor
 
@@ -79,52 +148,86 @@ class BBUTrainer(Trainer):
         self._current_bbox_loss: float = 0.0
         self._current_caption_loss: float = 0.0
         self._current_objectness_loss: float = 0.0
+        self._current_bbox_l1_loss: float = 0.0
+        self._current_bbox_giou_loss: float = 0.0
 
         # ACCUMULATORS for per-step average logging with gradient accumulation
         self._accumulated_lm_loss: float = 0.0
-        self._accumulated_bbox_loss: float = 0.0
+        self._accumulated_bbox_l1_loss: float = 0.0
+        self._accumulated_bbox_giou_loss: float = 0.0
         self._accumulated_caption_loss: float = 0.0
         self._accumulated_objectness_loss: float = 0.0
 
-        # Initialize training monitor if enabled
-        self.monitor = None
-        if self.config.enable_monitoring:
-            self._init_monitor()
+        # Counter for the number of *micro-batches* processed since the last log.
+        # This allows us to report true per-batch averages even when `logging_steps`
+        # spans multiple optimizer steps (and thus multiple gradient-accumulation
+        # cycles).
+        self._micro_batch_count: int = 0
 
         # Initialize object detection loss if configured
         self.detection_loss = None
         if self.config.detection_enabled:
             self._init_detection_loss()
 
-    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        # Cache for per-step weight / grad norms (populated in training_step)
+        self._norm_cache: Dict[str, float] = {}
+
+    def _save(
+        self, output_dir: Optional[str] = None, state_dict: Optional[dict] = None
+    ) -> None:
+        """Save checkpoint in **sharded** form.
+
+        1. Always save the *base* Qwen2.5-VL model with `max_shard_size` so
+           enormous weights are split across multiple files (faster I/O).
+        2. If a detection head is present **and enabled**, save its weights
+           separately as `detection_head.pth` plus a small JSON config.
+        3. Tokenizer / processor and training args are stored with standard
+           Transformers helpers.
         """
-        Unified save method that creates a complete checkpoint directory.
 
-        This saves both the base model and detection head in a single directory,
-        making it compatible with HuggingFace's from_pretrained pattern.
+        import json
+        import os
 
-        Checkpoint structure:
-        checkpoint-N/
-        ├── config.json              # Base model config
-        ├── model.safetensors         # Base model weights
-        ├── tokenizer.json           # Tokenizer files
-        ├── detection_head.pth       # Detection head weights
-        ├── detection_config.json    # Detection head config
-        └── training_args.bin        # Training arguments
-        """
-        self.logger.info(f"💾 Saving unified checkpoint to: {output_dir}")
+        import torch
 
-        # Save base model using standard HuggingFace method
-        # This creates config.json, model.safetensors, etc.
-        super()._save(output_dir, state_dict)
+        if output_dir is None:
+            output_dir = self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
 
-        # Save detection head components if present
-        if hasattr(self.model, "detection_head") and output_dir is not None:
+        # --- 1. Save base model (sharded) ----------------------------------
+        base_model = getattr(self.model, "base_model", self.model)
+        self.logger.info("💾 Saving base Qwen2.5-VL model (sharded)…")
+        base_model.save_pretrained(
+            output_dir, max_shard_size="2GB", safe_serialization=True
+        )
+
+        # --- 2. Save tokenizer & processor ---------------------------------
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+
+        if self.image_processor is not None and hasattr(
+            self.image_processor, "to_dict"
+        ):
+            ip_cfg = self.image_processor.to_dict()
+            with open(
+                os.path.join(output_dir, "preprocessor_config.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(ip_cfg, f, indent=2, ensure_ascii=False)
+
+        # --- 3. Save detection head (if any) -------------------------------
+        if getattr(self.model, "detection_enabled", False) and hasattr(
+            self.model, "detection_head"
+        ):
             self._save_detection_components(output_dir)
 
-        self.logger.info(f"✅ Unified checkpoint saved successfully")
+        # --- 4. Save training args ----------------------------------------
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
 
-    def _save_detection_components(self, output_dir: str):
+        self.logger.info(f"✅ Checkpoint saved successfully → {output_dir}")
+
+    def _save_detection_components(self, output_dir: str) -> None:
         """Save detection head weights and configuration."""
         import json
         import os
@@ -136,10 +239,61 @@ class BBUTrainer(Trainer):
         detection_path = os.path.join(output_dir, "detection_head.pth")
         torch.save(detection_state_dict, detection_path)
 
-        # Save image processor config
+        # ------------------------------------------------------------------
+        # Save a CLEAN `preprocessor_config.json` for reload. We start from the
+        # base model's pristine file and only override the pixel limits the
+        # user may have tweaked. This prevents invalid key combinations that
+        # trigger `get_size_dict` errors at load time.
+        # ------------------------------------------------------------------
+
         if self.image_processor:
-            self.image_processor.save_pretrained(output_dir)
-            self.logger.info(f"💾 Image processor config saved to: {output_dir}")
+            base_model_dir = getattr(self.model.base_model, "name_or_path", None)
+            src_preproc = (
+                os.path.join(base_model_dir, "preprocessor_config.json")
+                if base_model_dir
+                else None
+            )
+            dst_preproc = os.path.join(output_dir, "preprocessor_config.json")
+
+            if src_preproc and os.path.exists(src_preproc):
+                with open(src_preproc, "r", encoding="utf-8") as f:
+                    preproc_cfg = json.load(f)
+            else:
+                preproc_cfg = {}
+
+            # Update only the pixel constraints the training pipeline may have
+            # changed. Keep other keys untouched and REMOVE any nested `size`
+            # dict which is not accepted by HF utils.
+            if hasattr(self.image_processor, "min_pixels"):
+                preproc_cfg["min_pixels"] = int(self.image_processor.min_pixels)
+            if hasattr(self.image_processor, "max_pixels"):
+                preproc_cfg["max_pixels"] = int(self.image_processor.max_pixels)
+
+            # Ensure allowed size keys only. Prefer `longest_edge` if user set
+            # something via `.size`.
+            if "size" in preproc_cfg:
+                size_dict = preproc_cfg["size"]
+                clean_size = {}
+                for key in (
+                    "height",
+                    "width",
+                    "shortest_edge",
+                    "longest_edge",
+                    "max_height",
+                    "max_width",
+                ):
+                    if key in size_dict:
+                        clean_size[key] = size_dict[key]
+                        break  # keep only the first valid key set
+                if clean_size:
+                    preproc_cfg["size"] = clean_size
+                else:
+                    preproc_cfg.pop("size")
+
+            with open(dst_preproc, "w", encoding="utf-8") as f:
+                json.dump(preproc_cfg, f, indent=2, ensure_ascii=False)
+
+            self.logger.info("💾 Cleaned preprocessor_config.json saved.")
 
         # Save detection head configuration with UNIFIED filename
         detection_config = {
@@ -156,27 +310,44 @@ class BBUTrainer(Trainer):
         with open(config_path, "w") as f:
             json.dump(detection_config, f, indent=2)
 
+        # ------------------------------------------------------------------
+        # Ensure essential HF files exist (config.json, generation_config.json).
+        # If the wrapper model cannot create them automatically (because it is
+        # not a PreTrainedModel), copy them from the original base model dir so
+        # that `from_pretrained()` works without manual intervention.
+        # ------------------------------------------------------------------
+
+        base_model_dir = getattr(self.model.base_model, "name_or_path", None)
+        if base_model_dir and os.path.isdir(base_model_dir):
+            for fname in ["config.json", "generation_config.json"]:
+                src = os.path.join(base_model_dir, fname)
+                dst = os.path.join(output_dir, fname)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try:
+                        import shutil
+
+                        shutil.copy(src, dst)
+                        self.logger.info(
+                            f"💾 Copied missing {fname} from base model directory."
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to copy {fname}: {e}")
+
+        # Fail-fast: verify that essential HF files are present post-save. This
+        # guards against broken checkpoints that would later crash
+        # `from_pretrained()` during evaluation or inference.
+        for critical in ["config.json", "generation_config.json"]:
+            critical_path = os.path.join(output_dir, critical)
+            assert os.path.exists(critical_path), (
+                f"Checkpoint incomplete – expected {critical_path} to exist. "
+                "Make sure save_pretrained() produced the file or it was copied "
+                "from the base model directory."
+            )
+
         self.logger.info(f"💾 Detection head saved to: {detection_path}")
         self.logger.info(f"💾 Detection config saved to: {config_path}")
 
-    def _init_monitor(self):
-        """Initialize training monitor for prediction and GT logging."""
-        from src.training.monitor import create_training_monitor
-
-        self.monitor = create_training_monitor(
-            log_dir=self.config.monitor_log_dir,
-            save_predictions=self.config.save_predictions,
-            save_token_analysis=self.config.save_token_analysis,
-            save_raw_text=self.config.save_raw_text,
-        )
-
-        self.logger.info("🔍 Training monitor initialized in BBUTrainer")
-        self.logger.info(f"   Monitor log directory: {self.config.monitor_log_dir}")
-        self.logger.info(f"   Save predictions: {self.config.save_predictions}")
-        self.logger.info(f"   Save token analysis: {self.config.save_token_analysis}")
-        self.logger.info(f"   Save raw text: {self.config.save_raw_text}")
-
-    def _init_detection_loss(self):
+    def _init_detection_loss(self) -> None:
         """Initialize object detection loss with config parameters."""
         from src.detection_loss import DetectionLoss
 
@@ -205,7 +376,7 @@ class BBUTrainer(Trainer):
             f"   focal_loss_alpha: {self.config.detection_focal_loss_alpha}"
         )
 
-    def init_param_groups(self):
+    def init_param_groups(self) -> None:
         """
         Initializes parameter groups for differential learning rate.
 
@@ -223,6 +394,7 @@ class BBUTrainer(Trainer):
             "merger": [],
             "llm": [],
             "detection": [],
+            "adapter": [],  # detection adapters (vision & lang)
             "others": [],  # For uncategorized parameters
         }
 
@@ -233,14 +405,17 @@ class BBUTrainer(Trainer):
             # Correct parameter name matching based on the model's structure.
             # The order is critical: check for the most specific names first.
             if "detection_head" in name:
-                param_groups_with_names["detection"].append((name, param))
+                if ".adapter" in name:
+                    param_groups_with_names["adapter"].append((name, param))
+                else:
+                    param_groups_with_names["detection"].append((name, param))
             # "merger" is part of the vision tower, so check for it *before* "visual".
             elif "merger" in name:
                 param_groups_with_names["merger"].append((name, param))
             elif "visual" in name:
                 param_groups_with_names["vision"].append((name, param))
             # Language model parameters are in the main 'model' and 'lm_head'.
-            elif ".model." in name or "lm_head" in name:
+            elif "model." in name or ".model." in name or "lm_head" in name:
                 param_groups_with_names["llm"].append((name, param))
             else:
                 param_groups_with_names["others"].append((name, param))
@@ -276,13 +451,29 @@ class BBUTrainer(Trainer):
                     f"   - Group '{group}': {len(params)} tensors, {num_params / 1e6:.2f}M params"
                 )
 
-    def create_optimizer(self):
+    def create_optimizer(self) -> Optimizer:
         """
         Create the optimizer with differential learning rates if configured.
         """
-        if not self.config.use_differential_lr or not hasattr(self, "_param_groups"):
-            self.logger.info("🚀 Creating standard optimizer...")
-            return super().create_optimizer()
+        # --------------------------------------------------------------
+        # Ensure parameter groups are initialised *before* the first call
+        # to HF Trainer's optimiser builder.  If they are missing at this
+        # point we compute them on-the-fly so that the very first optimiser
+        # contains the correct learning-rate buckets.
+        # --------------------------------------------------------------
+
+        if not self.config.use_differential_lr:
+            self.logger.info("🚀 Differential LR disabled → using standard optimizer…")
+            self.optimizer = super().create_optimizer()
+            self._wrap_optimizer_step()
+            return self.optimizer
+
+        # Differential LR *enabled* — make sure param groups exist
+        if not hasattr(self, "_param_groups"):
+            self.logger.info(
+                "🔧 _param_groups not found – running init_param_groups() now…"
+            )
+            self.init_param_groups()
 
         self.logger.info("🚀 Creating optimizer with differential learning rates...")
 
@@ -291,6 +482,7 @@ class BBUTrainer(Trainer):
             "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
             "detection": self.config.detection_lr,
+            "adapter": getattr(self.config, "adapter_lr", self.config.detection_lr),
         }
 
         optimizer_grouped_parameters = []
@@ -320,22 +512,156 @@ class BBUTrainer(Trainer):
         # precedence.
         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
+        self._wrap_optimizer_step()  # Capture grad norms before zero_grad
+
         self.logger.info(
             "✅ Optimizer with differential learning rates created successfully."
         )
         return self.optimizer
 
+    def _wrap_optimizer_step(self):
+        """Wrap ``optimizer.step`` so we can capture weight/grad norms right
+        before gradients are cleared by ``zero_grad``.  The wrapper is applied
+        once, immediately after the optimizer is created.  Captured statistics
+        are stored in ``self._norm_cache`` and consumed during the next call to
+        ``_maybe_log_save_evaluate``.  This guarantees that *train* logs always
+        contain the true gradient magnitudes, even when DeepSpeed/Accelerate
+        zero out the gradients before we reach the logging hook.
+        """
+
+        if getattr(self, "_optimizer_step_wrapped", False):
+            return  # Already wrapped
+
+        self._optimizer_step_wrapped = True
+
+        original_step = self.optimizer.step
+
+        def step_with_norm_capture(*args, **kwargs):  # type: ignore[override]
+            # Gradients are populated at this point (after backward, before
+            # zero_grad).  Capture norms **once per optimizer step**.
+            try:
+                self._norm_cache = self._capture_grad_weight_norms()
+            except Exception as exc:  # Fail-fast, but don't crash training
+                self.logger.warning(f"⚠️ Failed to capture weight/grad norms: {exc}")
+                self._norm_cache = {}
+
+            return original_step(*args, **kwargs)
+
+        # Monkey-patch the optimizer with a *bound* method so downstream
+        # utilities (e.g. ``torch.optim.lr_scheduler.patch_track_step_called``)
+        # that expect a **method** (and access ``.__func__``) continue to work.
+        # A plain function assigned to an instance attribute lacks the
+        # ``__func__`` attribute, which leads to an ``AttributeError`` during
+        # scheduler construction under recent PyTorch versions.
+
+        import types  # Local import to avoid polluting the module namespace.
+
+        # Wrap as an actual bound method tied to the optimizer instance. This
+        # preserves all expected method semantics (including ``__func__``)
+        # while still routing the call through our norm-capturing shim.
+        self.optimizer.step = types.MethodType(step_with_norm_capture, self.optimizer)  # type: ignore[assignment]
+
+    def _capture_grad_weight_norms(self) -> Dict[str, float]:
+        """Compute per-parameter-set weight and gradient L2 norms.
+
+        Returns a flat dict ready to be merged into the training logs, e.g.::
+
+            {
+                "wn/vision_adapter": 0.91,
+                "gn/vision_adapter": 0.03,
+                ...
+            }
+        """
+
+        norms: Dict[str, float] = {}
+
+        module_map = {
+            "vision_adapter": "detection_head.vision_adapter",
+            "lang_adapter": "detection_head.adapter",
+            "bbox_head": "detection_head.bbox_head",
+        }
+
+        # Build a quick lookup for named_modules once to avoid O(N²) search
+        named_modules = dict(self.model.named_modules())
+
+        for key, module_path in module_map.items():
+            module = None
+            # Prefer exact match first; fallback to suffix match for robustness
+            if module_path in named_modules:
+                module = named_modules[module_path]
+            else:
+                for name, mod in named_modules.items():
+                    if name.endswith(module_path):
+                        module = mod
+                        break
+
+            if module is None:
+                # Skip if the module does not exist (e.g., detection disabled)
+                continue
+
+            first_param = next(module.parameters())
+            weight_sq: torch.Tensor = torch.zeros((), device=first_param.device)  # type: ignore[arg-type]
+            grad_sq: torch.Tensor = torch.zeros_like(weight_sq)
+            param_cnt: int = 0
+
+            for p in module.parameters():
+                weight_sq += p.data.norm(2).pow(2)
+                if p.grad is not None:
+                    grad_sq += p.grad.norm(2).pow(2)
+                param_cnt += 1
+
+            if param_cnt == 0:
+                continue
+
+            # All-reduce for distributed so we get *global* norms, even with ZeRO
+            vec = torch.stack(
+                [
+                    weight_sq,
+                    grad_sq,
+                    torch.tensor(float(param_cnt), device=weight_sq.device),
+                ]
+            )
+            if torch.distributed.is_initialized():
+                torch.distributed.all_reduce(vec, op=torch.distributed.ReduceOp.SUM)
+
+            total_params = vec[2].item()
+            norms[f"wn/{key}"] = (vec[0].sqrt() / total_params).item()
+            norms[f"gn/{key}"] = (vec[1].sqrt() / total_params).item()
+
+        return norms
+
     def compute_loss(
-        self, model, inputs, return_outputs=False, num_items_in_batch=None
-    ):
+        self,
+        model: nn.Module,
+        inputs: Dict[str, Any],
+        return_outputs: bool = False,
+        num_items_in_batch: Optional[int] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
         Compute loss with end-to-end object detection integration.
         The Trainer handles loss accumulation and averaging, so we just
         return the final combined loss. Individual components are stored
         as attributes for logging.
         """
+        # ------------------------------------------------------------------
+        # Increment *micro-batch* counter **before** any early returns so that
+        # every forward pass is accounted for. We only count batches during
+        # training to avoid contaminating the counter with evaluation steps.
+        # ------------------------------------------------------------------
+        if model.training:
+            self._micro_batch_count += 1
+
         # Extract and store GT objects separately
         ground_truth_objects = self._extract_ground_truth_objects(inputs)
+
+        # Fail-fast sanity check: detection enabled but batch has no GT boxes
+        if self.config.detection_enabled and not any(
+            len(gt) > 0 for gt in ground_truth_objects
+        ):
+            raise ValueError(
+                "Detection training is enabled but the current batch contains no ground-truth objects. "
+                "Verify that your dataset JSON provides the 'objects' field for every sample."
+            )
 
         # Prepare clean inputs for model (remove GT objects)
         model_inputs = inputs.copy()
@@ -345,7 +671,7 @@ class BBUTrainer(Trainer):
         # Ensure we get hidden states for detection
         model_inputs["output_hidden_states"] = True
 
-        # Call the wrapper model - it will return only the LM outputs
+        # Standard forward; mixed-precision contexts are managed by HuggingFace Trainer + DeepSpeed/accelerate
         outputs = model(**model_inputs)
 
         # Standard LM loss from base model
@@ -356,19 +682,53 @@ class BBUTrainer(Trainer):
         # Detection loss computation
         total_detection_loss = 0.0
 
+        # ------------------------------------------------------------------
+        # Dynamic detection head freeze: optionally skip detection loss during
+        # the first `detection_freeze_epochs` to let the caption head warm up.
+        # ------------------------------------------------------------------
+
+        # Enable detection head training from the first epoch
+        detection_training_enabled = self.config.detection_enabled
+
         if (
-            self.config.detection_enabled
+            detection_training_enabled
             and self.detection_loss is not None
             and ground_truth_objects
             and any(len(gt) > 0 for gt in ground_truth_objects)
         ):
-            hidden_states = outputs.hidden_states[-1]
-            attention_mask = model_inputs.get("attention_mask")
+            # Prepare full list of LLM hidden states for detection
+            hidden_states_list = list(
+                outputs.hidden_states
+            )  # convert tuple to list for shape checking
+            # --------------------------------------------------------------
+            # 🔄  Re-use vision features computed *inside* the Qwen2.5-VL
+            # forward pass (exposed via the new `vision_embeds` attribute).
+            # This removes the need to call `model.base_model.visual(...)`
+            # a second time and therefore keeps a single, clean autograd
+            # graph flowing from both lm_loss *and* detection_loss back to
+            # the vision tower.
+            # --------------------------------------------------------------
 
+            vision_feats = getattr(outputs, "vision_embeds", None)
+
+            # Fail-fast: the detection head requires vision features computed
+            # inside the main forward pass.  If they are not present we raise
+            # an explicit error instead of silently re-computing them, which
+            # would create a second autograd graph and likely break ZeRO /
+            # gradient checkpointing.
+            if vision_feats is None:
+                raise RuntimeError(
+                    "Detection is enabled but `vision_embeds` are missing from the model output. "
+                    "Ensure that the patched Qwen2.5-VL forward method returns the vision features "
+                    "(see modeling_qwen2_5_vl.py) before enabling detection training."
+                )
+
+            # Detection head will pick and adapt the correct memory internally
             detection_outputs = model.detection_head(
-                hidden_states,
-                attention_mask,
-                ground_truth_objects,
+                hidden_states_list,
+                attention_mask=model_inputs.get("attention_mask"),
+                vision_feats=vision_feats,
+                ground_truth_objects=ground_truth_objects,
                 training=model.training,
             )
 
@@ -381,35 +741,90 @@ class BBUTrainer(Trainer):
 
             # Store unweighted components for logging and accumulate them
             self._current_bbox_loss = self.detection_loss.last_bbox_loss.item()
+            self._current_bbox_l1_loss = self.detection_loss.last_l1_loss.item()
+            self._current_bbox_giou_loss = self.detection_loss.last_giou_loss.item()
             self._current_caption_loss = self.detection_loss.last_caption_loss.item()
             self._current_objectness_loss = (
                 self.detection_loss.last_objectness_loss.item()
             )
-            self._accumulated_bbox_loss += self._current_bbox_loss
             self._accumulated_caption_loss += self._current_caption_loss
             self._accumulated_objectness_loss += self._current_objectness_loss
+            self._accumulated_bbox_l1_loss += self._current_bbox_l1_loss
+            self._accumulated_bbox_giou_loss += self._current_bbox_giou_loss
         else:
             # Reset detection losses if not computed
             self._current_bbox_loss = 0.0
+            self._current_bbox_l1_loss = 0.0
+            self._current_bbox_giou_loss = 0.0
             self._current_caption_loss = 0.0
             self._current_objectness_loss = 0.0
 
         # Total loss for backpropagation
         total_loss = lm_loss + total_detection_loss
 
+        # ------------------------------------------------------------------
+        # One-off debug: show the raw chat template for the FIRST train and
+        # FIRST eval step.  This helps verify that the data-pipeline inserts
+        # system / user / assistant roles and vision tokens correctly.
+        # ------------------------------------------------------------------
+        def _log_sample_once(mode: str):
+            flag_name = f"_debug_sample_logged_{mode}"
+            if getattr(self, flag_name, False):
+                return
+
+            setattr(self, flag_name, True)
+
+            # Take the 0-th sample of the current batch
+            sample_ids = inputs["input_ids"][0].tolist()
+            sample_labels = inputs["labels"][0].tolist() if "labels" in inputs else None
+
+            # Decode full sequence with special tokens
+            full_text = self.tokenizer.decode(sample_ids, skip_special_tokens=False)
+
+            # Replace long runs of <IMAGE_PAD>
+            pad_token = "<|image_pad|>"
+
+            def _compress_pad(match):
+                n = match.group(0).count(pad_token)
+                return f"{pad_token}*{n}"
+
+            full_text = re.sub(
+                rf"(?:{re.escape(pad_token)})+", _compress_pad, full_text
+            )
+
+            # Build target string (tokens where label != IGNORE_INDEX)
+            target_text = ""
+            if sample_labels is not None:
+                tgt_ids = [
+                    tid for tid, lab in zip(sample_ids, sample_labels) if lab != -100
+                ]
+                if tgt_ids:
+                    target_text = self.tokenizer.decode(
+                        tgt_ids, skip_special_tokens=False
+                    )
+            self.logger.info("📝 ===== Sample conversation ({}) =====".format(mode))
+            self.logger.info(full_text)
+            if target_text:
+                self.logger.info("📝 Target answer (labels≠IGNORE):")
+                self.logger.info(target_text)
+            self.logger.info("📝 ================================")
+
+        # Log once per mode
+        _log_sample_once("train" if model.training else "eval")
+
         return (total_loss, outputs) if return_outputs else total_loss
 
     def _maybe_log_save_evaluate(
         self,
-        tr_loss,
-        grad_norm,
-        model,
-        trial,
-        epoch,
-        ignore_keys_for_eval,
-        start_time,
-        learning_rate=None,
-    ):
+        tr_loss: Union[torch.Tensor, float],
+        grad_norm: Optional[Union[torch.Tensor, float]],
+        model: nn.Module,
+        trial: Any,
+        epoch: Optional[float],
+        ignore_keys_for_eval: Optional[List[str]],
+        start_time: float,
+        learning_rate: Optional[float] = None,
+    ) -> None:
         """
         Log metrics with averaging for gradient accumulation.
         """
@@ -417,22 +832,29 @@ class BBUTrainer(Trainer):
             # The `tr_loss` from the Trainer is an accumulated value.
             # We re-compute the loss from our own averaged components to ensure
             # correct, per-step reporting consistent with the docstring.
-            grad_accum_steps = self.args.gradient_accumulation_steps
-
             # Average the accumulated component losses
-            avg_lm_loss = self._accumulated_lm_loss / grad_accum_steps
+            num_micro_batches = max(1, self._micro_batch_count)
+
+            # Average the accumulated component losses across *all* micro-batches
+            # seen since the last log, independent of the gradient-accumulation
+            # configuration.
+            avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
             total_avg_loss = avg_lm_loss
 
             component_logs: Dict[str, float] = {"lm_loss": avg_lm_loss}
 
             if self.config.detection_enabled:
-                avg_bbox_loss = self._accumulated_bbox_loss / grad_accum_steps
-                avg_caption_loss = self._accumulated_caption_loss / grad_accum_steps
+                avg_bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
+                avg_bbox_giou_loss = (
+                    self._accumulated_bbox_giou_loss / num_micro_batches
+                )
+                avg_caption_loss = self._accumulated_caption_loss / num_micro_batches
                 avg_objectness_loss = (
-                    self._accumulated_objectness_loss / grad_accum_steps
+                    self._accumulated_objectness_loss / num_micro_batches
                 )
 
-                component_logs["bbox_loss"] = avg_bbox_loss
+                component_logs["bbox_l1_loss"] = avg_bbox_l1_loss
+                component_logs["bbox_giou_loss"] = avg_bbox_giou_loss
                 component_logs["caption_loss"] = avg_caption_loss
                 component_logs["objectness_loss"] = avg_objectness_loss
 
@@ -444,7 +866,12 @@ class BBUTrainer(Trainer):
                 # The `loss` passed to compute_loss is lm_loss + weighted detection loss
                 # The total loss for logging should be calculated from averaged components.
                 # Here we assume the logged components are the primary ones.
-                total_avg_loss += avg_bbox_loss + avg_caption_loss + avg_objectness_loss
+                total_avg_loss += (
+                    avg_bbox_l1_loss
+                    + avg_bbox_giou_loss
+                    + avg_caption_loss
+                    + avg_objectness_loss
+                )
 
             # Define logging order: 'loss', 'grad_norm', then components
             logs: Dict[str, float] = {}
@@ -456,6 +883,63 @@ class BBUTrainer(Trainer):
                 )
 
             logs.update(component_logs)
+
+            # ------------------------------------------------------------------
+            # Additional diagnostics: weight- and **gradient** norms.  For the
+            # **train** phase we capture these in ``_wrap_optimizer_step`` *before*
+            # DeepSpeed/Accelerate zero the grads.  If the cache is empty (e.g.,
+            # during evaluation), we fall back to a best-effort recomputation –
+            # grad norms will be zero in that case, which is expected.
+            # ------------------------------------------------------------------
+
+            if self._norm_cache:
+                logs.update(self._norm_cache)
+                # Clear after use so we don't accidentally reuse stale values.
+                self._norm_cache = {}
+            else:
+                mode_prefix = "train" if model.training else "eval"
+
+                module_names = {
+                    "vision_adapter": "detection_head.vision_adapter",
+                    "lang_adapter": "detection_head.adapter",
+                    "bbox_head": "detection_head.bbox_head",
+                }
+
+                for log_key, module_path in module_names.items():
+                    module = None
+                    for name, m in model.named_modules():
+                        if name.endswith(module_path):
+                            module = m
+                            break
+                    if module is None:
+                        continue  # Skip if module missing (e.g., detection disabled)
+                    with torch.no_grad():
+                        weight_sq, grad_sq, param_cnt = 0.0, 0.0, 0
+                        for p in module.parameters():
+                            weight_sq += p.data.norm(2).pow(2)
+                            if p.grad is not None:
+                                grad_sq += p.grad.norm(2).pow(2)
+                            param_cnt += 1
+
+                        device = next(module.parameters()).device
+                        vec = torch.tensor(
+                            [weight_sq, grad_sq, float(param_cnt)],
+                            device=device,
+                            dtype=torch.float32,
+                        )
+                        if torch.distributed.is_initialized():
+                            torch.distributed.all_reduce(
+                                vec, op=torch.distributed.ReduceOp.SUM
+                            )
+
+                        total_params = vec[2].item()
+                        if total_params > 0:
+                            logs[f"wn/{log_key}"] = (
+                                vec[0].sqrt() / total_params
+                            ).item()
+                            logs[f"gn/{log_key}"] = (
+                                vec[1].sqrt() / total_params
+                            ).item()
 
             # Add ETA and remaining time
             if self.state.max_steps > 0:
@@ -472,9 +956,14 @@ class BBUTrainer(Trainer):
 
             # Reset accumulators after logging
             self._accumulated_lm_loss = 0.0
-            self._accumulated_bbox_loss = 0.0
             self._accumulated_caption_loss = 0.0
             self._accumulated_objectness_loss = 0.0
+            self._accumulated_bbox_l1_loss = 0.0
+            self._accumulated_bbox_giou_loss = 0.0
+
+            # Also reset the micro-batch counter so the next logging window
+            # starts fresh.
+            self._micro_batch_count = 0
 
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
@@ -508,7 +997,13 @@ class BBUTrainer(Trainer):
 
         for batch_idx in range(inputs["input_ids"].shape[0]):
             if "ground_truth_objects" in inputs:
-                gt_objects = inputs["ground_truth_objects"][batch_idx]
+                raw_objs = inputs["ground_truth_objects"][batch_idx]
+                gt_objects = [
+                    obj
+                    if isinstance(obj, GroundTruthObject)
+                    else GroundTruthObject(box=obj["box"], desc=obj["desc"])
+                    for obj in raw_objs
+                ]
                 self.logger.debug(
                     f"🔍 Found GT objects for batch {batch_idx}: {len(gt_objects)} objects"
                 )
@@ -564,15 +1059,7 @@ class BBUTrainer(Trainer):
 
     def _extract_gt_from_conversation(self, inputs, batch_idx):
         """Extract ground truth objects from conversation if not provided directly"""
-        # This is a fallback method - ideally GT objects should be provided by data collator
-        # You can implement this based on your specific data format
         return []
-
-    def on_train_end(self, args, state, control, **kwargs):
-        """Finalize monitoring session when training ends."""
-        if self.monitor is not None:
-            self.monitor.finalize_session()
-        super().on_train_end(args, state, control, **kwargs)
 
     def prediction_step(
         self,
@@ -637,14 +1124,14 @@ class BBUTrainer(Trainer):
         # Save training accumulators to prevent interference from evaluation
         saved_accumulators = {
             "lm": self._accumulated_lm_loss,
-            "bbox": self._accumulated_bbox_loss,
+            "bbox_l1": self._accumulated_bbox_l1_loss,
+            "bbox_giou": self._accumulated_bbox_giou_loss,
             "caption": self._accumulated_caption_loss,
             "objectness": self._accumulated_objectness_loss,
         }
 
         # Reset accumulators before evaluation
         self._accumulated_lm_loss = 0.0
-        self._accumulated_bbox_loss = 0.0
         self._accumulated_caption_loss = 0.0
         self._accumulated_objectness_loss = 0.0
 
@@ -664,8 +1151,11 @@ class BBUTrainer(Trainer):
                 self._accumulated_lm_loss / num_batches, 4
             )
             if self.config.detection_enabled:
-                metrics[f"{metric_key_prefix}_bbox_loss"] = round(
-                    self._accumulated_bbox_loss / num_batches, 4
+                metrics[f"{metric_key_prefix}_bbox_l1_loss"] = round(
+                    self._accumulated_bbox_l1_loss / num_batches, 4
+                )
+                metrics[f"{metric_key_prefix}_bbox_giou_loss"] = round(
+                    self._accumulated_bbox_giou_loss / num_batches, 4
                 )
                 metrics[f"{metric_key_prefix}_caption_loss"] = round(
                     self._accumulated_caption_loss / num_batches, 4
@@ -676,7 +1166,6 @@ class BBUTrainer(Trainer):
 
         # Restore training accumulators
         self._accumulated_lm_loss = saved_accumulators["lm"]
-        self._accumulated_bbox_loss = saved_accumulators["bbox"]
         self._accumulated_caption_loss = saved_accumulators["caption"]
         self._accumulated_objectness_loss = saved_accumulators["objectness"]
 
@@ -687,62 +1176,53 @@ class BBUTrainer(Trainer):
 
 def set_model_training_params(model):
     """
-    Set model training parameters based on global configuration.
-    Configures which parts of the model should be trained.
+    Enable or disable training on model submodules (vision, mlp, llm, detection)
+    based on learning-rate flags and the global `detection_enabled` option.
     """
     logger = get_training_logger()
-
-    # Check if this is a wrapped model with detection head
     has_detection_head = hasattr(model, "detection_head")
     base_model = model.base_model if has_detection_head else model
 
-    # Vision encoder training
-    if config.tune_vision:
-        for n, p in base_model.visual.named_parameters():
-            p.requires_grad = True
-        logger.info(f"🔧 Vision encoder: TRAINING (lr={config.vision_lr})")
+    # Helper to toggle trainability via LR -------------------------------------------------
+    def _toggle(module_iter, lr_value: float, module_name: str):
+        trainable = lr_value != 0
+        for _, p in module_iter:
+            p.requires_grad = trainable
+        state = "TRAINING" if trainable else "FROZEN"
+        logger.info(f"🔧 {module_name}: {state} (lr={lr_value})")
+
+    # Vision encoder
+    _toggle(base_model.visual.named_parameters(), config.vision_lr, "Vision encoder")
+
+    # MLP connector (merger)
+    _toggle(
+        base_model.visual.merger.named_parameters(), config.merger_lr, "MLP connector"
+    )
+
+    # LLM backbone & lm_head
+    llm_trainable = config.llm_lr != 0
+    for _, p in base_model.model.named_parameters():
+        p.requires_grad = llm_trainable
+    if hasattr(base_model, "lm_head"):
+        base_model.lm_head.requires_grad = llm_trainable
+    logger.info(
+        f"🔧 LLM: {'TRAINING' if llm_trainable else 'FROZEN'} (lr={config.llm_lr})"
+    )
+
+    # Detection head (optional)
+    if config.detection_enabled and has_detection_head:
+        _toggle(
+            model.detection_head.named_parameters(),
+            config.detection_lr,
+            "Detection head",
+        )
     else:
-        for n, p in base_model.visual.named_parameters():
-            p.requires_grad = False
-        logger.info("🔧 Vision encoder: FROZEN")
-
-    # MLP connector training
-    if config.tune_mlp:
-        for n, p in base_model.visual.merger.named_parameters():
-            p.requires_grad = True
-        logger.info(f"🔧 MLP connector: TRAINING (lr={config.merger_lr})")
-    else:
-        for n, p in base_model.visual.merger.named_parameters():
-            p.requires_grad = False
-        logger.info("🔧 MLP connector: FROZEN")
-
-    # LLM training
-    if config.tune_llm:
-        for n, p in base_model.model.named_parameters():
-            p.requires_grad = True
-        base_model.lm_head.requires_grad = True
-        logger.info(f"🔧 LLM: TRAINING (lr={config.llm_lr})")
-    else:
-        for n, p in base_model.model.named_parameters():
-            p.requires_grad = False
-        base_model.lm_head.requires_grad = False
-        logger.info("🔧 LLM: FROZEN")
-
-    # Detection head training (NEW)
-    if has_detection_head:
-        if config.tune_detection:
-            for n, p in model.detection_head.named_parameters():
-                p.requires_grad = True
-            logger.info(f"🔧 Detection head: TRAINING (lr={config.detection_lr})")
-        else:
-            for n, p in model.detection_head.named_parameters():
-                p.requires_grad = False
-            logger.info("🔧 Detection head: FROZEN")
-    else:
-        logger.info("🔧 Detection head: NOT PRESENT")
+        logger.info("🔧 Detection head: DISABLED (config.detection_enabled False)")
 
 
-def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
+def setup_model_and_tokenizer() -> Tuple[
+    nn.Module, PreTrainedTokenizerBase, Qwen2VLImageProcessor
+]:
     """
     Centralized setup for model, tokenizer, and image processor.
     - Applies necessary patches for Qwen2.5VL.
@@ -765,20 +1245,40 @@ def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
         use_fast=False,
     )
 
-    # Import the detection wrapper
-    from src.models.wrapper import Qwen25VLWithDetection
+    # Load the model: either full detection wrapper or pure Qwen2.5-VL
+    if config.detection_enabled:
+        from src.models.wrapper import Qwen25VLWithDetection
 
-    # Use unified loading mechanism - automatically detects checkpoint type
-    logger.info(f"🔄 Loading model from: {config.model_path}")
-    model = Qwen25VLWithDetection.from_pretrained(
-        model_path=config.model_path,
-        num_queries=config.detection_num_queries,
-        max_caption_length=config.detection_max_caption_length,
-        tokenizer=tokenizer,
-    )
+        logger.info(
+            f"🔄 Loading Qwen2.5-VL with detection head from: {config.model_path}"
+        )
+        model = Qwen25VLWithDetection.from_pretrained(
+            model_path=config.model_path,
+            num_queries=config.detection_num_queries,
+            max_caption_length=config.detection_max_caption_length,
+            tokenizer=tokenizer,
+        )
+    else:
+        # Load base Qwen2.5-VL model without detection head
+        from transformers import Qwen2_5_VLForConditionalGeneration
 
-    # Verify all patches
-    logger.info("🔍 Verifying all patches...")
+        from src.models.wrapper import _get_torch_dtype  # reuse dtype helper
+
+        logger.info(
+            f"🔄 Loading base Qwen2.5-VL model from: {config.model_path} (no detection)"
+        )
+        # Use *padded* attention mask – therefore we switch to the safer
+        #       implementation="flash_attention_2" (no Flash-Attention patch required).
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            config.model_path,
+            torch_dtype=_get_torch_dtype(config.torch_dtype),
+            attn_implementation=config.attn_implementation,
+        )
+        # Flag for downstream checks
+        model.detection_enabled = False
+
+    # Verify patches
+    logger.info("🔍 Verifying Qwen2.5-VL patches...")
     if not verify_qwen25_patches():
         raise RuntimeError("Patch verification failed")
 
@@ -831,30 +1331,30 @@ def setup_model_and_tokenizer() -> Tuple[nn.Module, Any, Any]:
         logger.error(f"❌ Failed to import from data_conversion/vision_process.py: {e}")
         logger.warning("   Using default image processor pixel constraints")
 
-    # CRITICAL: Disable cache for training
-    model.base_model.config.use_cache = False
-
-    # Setup gradient checkpointing if enabled
+    # Disable caching and optionally enable gradient checkpointing on the base model
+    base_model = model.base_model if hasattr(model, "base_model") else model
+    base_model.config.use_cache = False
     if config.gradient_checkpointing:
-        if hasattr(model.base_model, "enable_input_require_grads"):
-            model.base_model.enable_input_require_grads()
+        if hasattr(base_model, "enable_input_require_grads"):
+            base_model.enable_input_require_grads()
         else:
 
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
 
-            model.base_model.get_input_embeddings().register_forward_hook(
+            base_model.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grad
             )
 
-    # Set training parameters for base model
+    # Apply training parameter settings
     set_model_training_params(model)
-
-    logger.info("✅ Model with unified loading mechanism setup completed")
+    logger.info("✅ Model setup complete")
     return model, tokenizer, image_processor
 
 
-def setup_data_module(tokenizer, image_processor) -> Dict[str, Any]:
+def setup_data_module(
+    tokenizer: PreTrainedTokenizerBase, image_processor: Qwen2VLImageProcessor
+) -> Dict[str, Any]:
     """
     Setup data module following the official approach.
     This matches the data setup in train_qwen.py.
@@ -894,7 +1394,7 @@ def setup_data_module(tokenizer, image_processor) -> Dict[str, Any]:
     }
 
 
-def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
+def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str) -> None:
     """
     Safe model saving following the official approach.
     This matches the saving logic in train_qwen.py.
@@ -911,7 +1411,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def create_trainer(
-    training_args: Optional[TrainingArguments] = None, **kwargs
+    training_args: Optional[TrainingArguments] = None, **kwargs: Any
 ) -> BBUTrainer:
     """Creates a unified BBU trainer with all necessary components."""
     from src.training.trainer import BBUTrainer, set_model_training_params
@@ -926,11 +1426,14 @@ def create_trainer(
     data_module = setup_data_module(tokenizer, image_processor)
 
     # Create trainer
+    from src.config import get_config
+
     trainer = BBUTrainer(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
         image_processor=image_processor,
+        cfg=get_config(),  # Explicitly pass DirectConfig instance
         **data_module,
     )
 
@@ -947,7 +1450,7 @@ def create_trainer(
     return trainer
 
 
-def test_enhanced_logging():
+def test_enhanced_logging() -> None:
     """
     Simple test to verify enhanced detection loss logging works.
     This can be called during development to test the logging mechanism.
