@@ -102,6 +102,30 @@ def main():
     )
     args = parser.parse_args()
 
+    # Load label hierarchy mapping for filtering properties
+    mapping_path = Path(__file__).parent / "label_hierarchy.json"
+    if mapping_path.exists():
+        with open(mapping_path, "r", encoding="utf-8") as f:
+            mapping_raw = json.load(f)
+        # Normalize mapping into object_type -> list of properties
+        if isinstance(mapping_raw, list):
+            label_hierarchy = {
+                entry["object_type"]: entry.get("property", []) for entry in mapping_raw
+            }
+        elif isinstance(mapping_raw, dict):
+            # Old dict-of-lists format
+            if all(isinstance(v, list) for v in mapping_raw.values()):
+                label_hierarchy = mapping_raw
+            else:
+                # dict-of-dicts with 'property'
+                label_hierarchy = {
+                    k: v.get("property", []) for k, v in mapping_raw.items()
+                }
+        else:
+            label_hierarchy = {}
+    else:
+        label_hierarchy = {}
+
     # Further processing
     input_folder_path = Path(args.input_folder)
     output_image_folder_path = Path(args.output_image_folder).resolve()
@@ -206,7 +230,8 @@ def main():
                     parts = [p.strip() for p in label_string.split("/")]
                     object_type = parts[0] if len(parts) >= 1 else ""
                     property_value = parts[1] if len(parts) >= 2 else ""
-                    extra_info = parts[2] if len(parts) >= 3 else ""
+                    # Combine all remaining segments as extra_info
+                    extra_info = "/".join(parts[2:]) if len(parts) >= 3 else ""
                     # Map tokens if mapper is available
                     content_dict = {
                         "object_type": token_mapper.map_token(object_type)
@@ -219,14 +244,34 @@ def main():
                         if token_mapper
                         else extra_info,
                     }
-                    # For Chinese mode, preserve grouping with slash
+                    # Group parts with explicit property mapping and extra_info fallback
                     group_parts = []
-                    if content_dict["object_type"]:
-                        group_parts.append(content_dict["object_type"])
-                    if content_dict["property"]:
-                        group_parts.append(content_dict["property"])
-                    if content_dict["extra_info"]:
-                        group_parts.append(content_dict["extra_info"])
+                    obj = content_dict.get("object_type", "")
+                    prop_cand = content_dict.get("property", "")
+                    extra_cand = content_dict.get("extra_info", "")
+                    allowed_props = label_hierarchy.get(obj, [])
+                    # object_type
+                    if "object_type" in response_types and obj:
+                        group_parts.append(obj)
+                    # property if allowed
+                    actual_prop = None
+                    if (
+                        "property" in response_types
+                        and prop_cand
+                        and prop_cand in allowed_props
+                    ):
+                        actual_prop = prop_cand
+                        group_parts.append(actual_prop)
+                    # extra_info: include all leftover segments
+                    if "extra_info" in response_types:
+                        if actual_prop and extra_cand:
+                            group_parts.append(extra_cand)
+                        elif not actual_prop and prop_cand:
+                            # treat the first candidate segment as extra_info when no property
+                            combined = prop_cand
+                            if extra_cand:
+                                combined = combined + "/" + extra_cand
+                            group_parts.append(combined)
                     # Normalize separators: replace commas with slashes
                     content_string = "/".join(group_parts)
                     content_string = content_string.replace(", ", "/").replace(",", "/")

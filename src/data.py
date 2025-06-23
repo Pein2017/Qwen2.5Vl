@@ -15,6 +15,7 @@ Key Features:
 """
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -80,6 +81,21 @@ class BBUDataset(Dataset):
         self._sequence_lengths = None
         # Note: calculate_lengths feature removed for simplicity
 
+        # ---------------- Dynamic teacher sampling ----------------
+        # Dynamic teacher sampling: require explicit configuration.
+        if not hasattr(config, "num_teacher_samples"):
+            raise AttributeError(
+                "'num_teacher_samples' must be specified in YAML configuration"
+            )
+
+        self._num_teachers = int(config.num_teacher_samples)
+        # Disable dynamic teacher injection for validation data (zero-shot eval)
+        if "val" in self.data_path.lower():
+            logger.info(
+                "Validation dataset detected, disabling teacher sampling for zero-shot evaluation."
+            )
+            self._num_teachers = 0
+
     @property
     def data_root(self) -> str:
         """Get data root from global config."""
@@ -108,7 +124,17 @@ class BBUDataset(Dataset):
 
         # Determine minimum image requirement based on data type
         is_training = "train" in self.data_path.lower()
-        min_images = 2 if is_training else 1
+
+        # Dynamic teacher sampling ensures that additional teacher images
+        # will be injected *after* this validation step. Therefore, for
+        # target-only samples during training we cannot enforce the same
+        # strict ≥2 images rule at this stage – those extra images are not
+        # present yet.  We relax the check to require only that each raw
+        # sample contains at least one target image.  The composite sample
+        # constructed in __getitem__ will always exceed the original 2-image
+        # threshold once the teachers have been added.
+
+        min_images = 1  # Always at least one image must be present
 
         logger.debug(
             f"🔍 Validating simplified JSONL samples with minimum {min_images} images ({'training' if is_training else 'validation'} mode)"
@@ -119,104 +145,98 @@ class BBUDataset(Dataset):
             if not isinstance(sample, dict):
                 raise ValueError(f"Sample {idx} is not a dictionary")
 
-            if "examples" not in sample:
-                raise ValueError(f"Sample {idx} missing 'examples' key")
+            # ------------------------------------------------------
+            # Two acceptable formats:
+            #   A) Few-shot  → keys [examples, target]
+            #   B) Target-only → keys [images, objects] (dynamic pairing)
+            # ------------------------------------------------------
 
-            if "target" not in sample:
-                raise ValueError(f"Sample {idx} missing 'target' key")
+            has_examples = "examples" in sample and "target" in sample
+            has_target_only = (
+                "images" in sample and "objects" in sample and "target" not in sample
+            )
 
-            examples = sample["examples"]
-            target = sample["target"]
+            if not (has_examples or has_target_only):
+                raise ValueError(
+                    f"Sample {idx} must contain either ('examples'+'target') or ('images'+'objects') keys"
+                )
 
-            # Validate examples structure
-            if not isinstance(examples, list) or len(examples) == 0:
-                raise ValueError(f"Sample {idx} has empty or invalid examples")
-
-            # Validate target structure
-            if not isinstance(target, dict):
-                raise ValueError(f"Sample {idx} has invalid target structure")
-
-            # Count total images
             total_images = 0
 
-            # Validate examples
-            for ex_idx, example in enumerate(examples):
-                if not isinstance(example, dict):
+            if has_examples:
+                examples = sample["examples"]
+                target = sample["target"]
+
+                # Validate examples structure
+                if not isinstance(examples, list) or len(examples) == 0:
+                    raise ValueError(f"Sample {idx} has empty or invalid examples")
+
+                # Validate target structure
+                if not isinstance(target, dict):
+                    raise ValueError(f"Sample {idx} has invalid target structure")
+
+                # --- count & validate images in examples ---
+                for ex_idx, example in enumerate(examples):
+                    if not isinstance(example, dict):
+                        raise ValueError(
+                            f"Sample {idx}, example {ex_idx} is not a dictionary"
+                        )
+                    if "images" not in example or "objects" not in example:
+                        raise ValueError(
+                            f"Sample {idx}, example {ex_idx} missing 'images' or 'objects' key"
+                        )
+
+                    example_images = example["images"]
+                    if not isinstance(example_images, list) or len(example_images) == 0:
+                        raise ValueError(
+                            f"Sample {idx}, example {ex_idx} has empty or invalid images"
+                        )
+                    total_images += len(example_images)
+
+                # --- validate target ---
+                if "images" not in target or "objects" not in target:
                     raise ValueError(
-                        f"Sample {idx}, example {ex_idx} is not a dictionary"
+                        f"Sample {idx} target missing 'images' or 'objects' key"
                     )
 
-                if "images" not in example:
+                target_images = target["images"]
+                if not isinstance(target_images, list) or len(target_images) == 0:
+                    raise ValueError(f"Sample {idx} target has empty or invalid images")
+
+                total_images += len(target_images)
+
+            else:  # target-only format
+                if "images" not in sample or "objects" not in sample:
                     raise ValueError(
-                        f"Sample {idx}, example {ex_idx} missing 'images' key"
+                        f"Sample {idx} must contain 'images' and 'objects'"
                     )
 
-                if "objects" not in example:
-                    raise ValueError(
-                        f"Sample {idx}, example {ex_idx} missing 'objects' key"
-                    )
+                images = sample["images"]
+                if not isinstance(images, list) or len(images) == 0:
+                    raise ValueError(f"Sample {idx} has empty or invalid images list")
 
-                example_images = example["images"]
-                if not isinstance(example_images, list) or len(example_images) == 0:
-                    raise ValueError(
-                        f"Sample {idx}, example {ex_idx} has empty or invalid images"
-                    )
+                total_images = len(images)
 
-                total_images += len(example_images)
-
-            # Validate target
-            if "images" not in target:
-                raise ValueError(f"Sample {idx} target missing 'images' key")
-
-            if "objects" not in target:
-                raise ValueError(f"Sample {idx} target missing 'objects' key")
-
-            target_images = target["images"]
-            if not isinstance(target_images, list) or len(target_images) == 0:
-                raise ValueError(f"Sample {idx} target has empty or invalid images")
-
-            total_images += len(target_images)
-
-            # STRICT REQUIREMENT: Minimum image count
+            # --- minimum image requirement ---
             if total_images < min_images:
                 raise ValueError(
                     f"Sample {idx} has only {total_images} total images, "
                     f"but minimum {min_images} required for {'training' if is_training else 'validation'}"
                 )
 
-            # Validate objects structure in examples
-            for ex_idx, example in enumerate(examples):
-                objects = example["objects"]
-                if not isinstance(objects, list):
+            # --- basic box/desc validation ---
+            objs_to_check = []
+            if has_examples:
+                for example in sample["examples"]:
+                    objs_to_check.extend(example["objects"])
+                objs_to_check.extend(sample["target"]["objects"])
+            else:
+                objs_to_check.extend(sample["objects"])
+
+            for obj in objs_to_check:
+                if not (isinstance(obj, dict) and "box" in obj and "desc" in obj):
                     raise ValueError(
-                        f"Sample {idx}, example {ex_idx} objects is not a list"
-                    )
-
-                for obj_idx, obj in enumerate(objects):
-                    if not isinstance(obj, dict):
-                        raise ValueError(
-                            f"Sample {idx}, example {ex_idx}, object {obj_idx} is not a dictionary"
-                        )
-
-                    if "box" not in obj or "desc" not in obj:
-                        raise ValueError(
-                            f"Sample {idx}, example {ex_idx}, object {obj_idx} missing required keys"
-                        )
-
-            # Validate objects structure in target
-            target_objects = target["objects"]
-            if not isinstance(target_objects, list):
-                raise ValueError(f"Sample {idx} target objects is not a list")
-
-            for obj_idx, obj in enumerate(target_objects):
-                if not isinstance(obj, dict):
-                    raise ValueError(
-                        f"Sample {idx}, target object {obj_idx} is not a dictionary"
-                    )
-
-                if "box" not in obj or "desc" not in obj:
-                    raise ValueError(
-                        f"Sample {idx}, target object {obj_idx} missing required keys"
+                        f"Sample {idx} contains malformed object entry {obj}"
                     )
 
             valid_samples.append(sample)
@@ -271,9 +291,45 @@ class BBUDataset(Dataset):
         """Internal getter to handle data processing and GT extraction."""
         raw_sample = self.data[idx]
 
-        # ChatProcessor now handles all data conversion, including GT extraction
-        # and normalization, providing a complete, model-ready sample.
-        processed_data = self.chat_processor.process_sample(raw_sample)
+        # ----------------------------------------------------------
+        # Dynamic teacher injection for *target-only* samples.
+        # If the sample already contains teachers → use as-is.
+        # Otherwise sample `self._num_teachers` other items uniformly
+        # at random **every call** (different epoch ⇒ new pairing).
+        # ----------------------------------------------------------
+
+        if "examples" not in raw_sample and self._num_teachers > 0:
+            # Build list of unique teacher indices (exclude self).
+            pool = list(range(len(self.data)))
+            pool.remove(idx)
+            if len(pool) < self._num_teachers:
+                raise ValueError(
+                    "Not enough distinct samples to draw dynamic teachers from."
+                )
+
+            teacher_indices = random.sample(pool, self._num_teachers)
+
+            examples = []
+            for t_idx in teacher_indices:
+                t_sample = self.data[t_idx]
+                # Support both formats when picking teacher
+                if "images" in t_sample and "objects" in t_sample:
+                    t_images = t_sample["images"]
+                    t_objects = t_sample["objects"]
+                else:
+                    # Few-shot style – take the *target* part
+                    t_images = t_sample["target"]["images"]
+                    t_objects = t_sample["target"]["objects"]
+
+                examples.append({"images": t_images, "objects": t_objects})
+
+            composite_sample = {"examples": examples, "target": raw_sample}
+            sample_for_processor = composite_sample
+        else:
+            # Already in multi-round style or teacher count == 0
+            sample_for_processor = raw_sample
+
+        processed_data = self.chat_processor.process_sample(sample_for_processor)
 
         return processed_data
 

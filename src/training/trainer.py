@@ -805,7 +805,7 @@ class BBUTrainer(Trainer):
             self.logger.info("📝 ===== Sample conversation ({}) =====".format(mode))
             self.logger.info(full_text)
             if target_text:
-                self.logger.info("📝 Target answer (labels≠IGNORE):")
+                self.logger.info("📝 Teacher and target answers (labels≠IGNORE):")
                 self.logger.info(target_text)
             self.logger.info("📝 ================================")
 
@@ -1445,6 +1445,21 @@ def create_trainer(
     if config.detection_enabled and hasattr(trainer.model, "set_detection_loss_fn"):
         trainer.model.set_detection_loss_fn(trainer.detection_loss)
         trainer.logger.info("🎯 Detection loss function set in model wrapper")
+
+    # ------------------------------------------------------------------
+    # Register BestCheckpointCallback to keep the best N checkpoints based
+    # on evaluation loss (metric: eval_loss).  The limit N comes from the
+    # YAML field `save_total_limit` so experimenters can control retention
+    # directly from the config file without touching code.
+    # ------------------------------------------------------------------
+    from src.training.callbacks import BestCheckpointCallback
+
+    best_ckpt_cb = BestCheckpointCallback(
+        save_total_limit=config.save_total_limit,
+        metric_name="eval_loss",
+        greater_is_better=False,
+    )
+    trainer.add_callback(best_ckpt_cb)
 
     trainer.logger.info("✅ BBU trainer created successfully")
     return trainer

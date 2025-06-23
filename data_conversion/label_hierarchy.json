@@ -1,0 +1,42 @@
+[
+    {
+        "object_type": "螺丝连接点",
+        "property": [
+            "BBU安装螺丝",
+            "CPRI光缆和BBU连接点",
+            "地排处螺丝",
+            "BBU尾纤和ODF连接点",
+            "BBU接地线机柜接地端"
+        ]
+    },
+    {
+        "object_type": "线缆",
+        "property": [
+            "光纤",
+            "非光纤"
+        ]
+    },
+    {
+        "object_type": "bbu基带处理单元",
+        "property": [
+            "华为",
+            "中兴",
+            "爱立信"
+        ]
+    },
+    {
+        "object_type": "挡风板",
+        "property": [
+            "安装",
+            "未安装"
+        ]
+    },
+    {
+        "object_type": "标签贴纸",
+        "property": []
+    },
+    {
+        "object_type": "机柜空间",
+        "property": []
+    }
+]

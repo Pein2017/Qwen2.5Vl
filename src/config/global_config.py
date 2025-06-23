@@ -65,8 +65,9 @@ class DirectConfig:
     max_total_length: int
     use_candidates: bool
     candidates_file: str
+    num_teacher_samples: int
     collator_type: str
-    multi_round: bool
+    teacher_type: str  # "random" or "predefined"
     max_examples: int
     language: str
 
@@ -317,6 +318,10 @@ def _validate_config(cfg: DirectConfig):
         raise ValueError(
             f"language must be 'english' or 'chinese' in YAML config, but got: '{cfg.language}'"
         )
+    if cfg.num_teacher_samples < 0:
+        raise ValueError("num_teacher_samples must be non-negative")
+    if cfg.teacher_type not in ["random", "predefined"]:
+        raise ValueError("teacher_type must be 'random' or 'predefined'")
     # Add more validation rules as needed...
 
 

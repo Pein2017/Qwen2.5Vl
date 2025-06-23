@@ -11,9 +11,6 @@
 
 set -e
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
 
 # Data paths
 INPUT_DIR="ds"                          # Raw data directory
@@ -27,21 +24,21 @@ MAP_FILE_EN="${DATA_CONVERSION_DIR}/token_map.json"   # English token map
 MAP_FILE_ZH="${DATA_CONVERSION_DIR}/token_map_zh.json" # Chinese token map
 
 # Final clean semantic data (only output we need)
-CLEAN_TRAIN="data/605_objecttype_property_train.jsonl"
-CLEAN_VAL="data/605_objecttype_property_val.jsonl"
+CLEAN_TRAIN="data/full_train.jsonl"
+CLEAN_VAL="data/full_val.jsonl"
 
 # Support files
 EXAMPLES_FILE="data_analysis/training_examples.json"
 CANDIDATES_FILE="data_conversion/candidate_phrases.json"
+TEACHER_TYPE="predefined"   # "random" or "predefined"
+
 
 # Parameters
 VAL_RATIO=0.1
 SEED=42
-MULTI_ROUND=true
-INCLUDE_EXAMPLES=true
-MAX_EXAMPLES=1
+MAX_EXAMPLES=2
 # Allow configuring multiple response types: object_type, property, extra_info
-RESPONSE_TYPES="object_type property"
+RESPONSE_TYPES="object_type property extra_info"
 USE_CANDIDATES=true
 LANGUAGE="chinese" # "english" or "chinese"
 RESIZE=true
@@ -50,18 +47,22 @@ RESIZE=true
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
 export MODELSCOPE_CACHE="/data4/swift/modelscope/hub"
 
+
+# Derive attach_examples flag for converter
+if [[ "$TEACHER_TYPE" == "predefined" ]]; then
+    ATTACH_FLAG="--teacher_type predefined"
+else
+    ATTACH_FLAG="--teacher_type random"
+fi
+
 echo "🚀 Starting Clean Data Conversion Pipeline"
 echo "=========================================="
 echo "Language: $LANGUAGE"
-echo "Mode: Multi-Image Few-Shot Learning with Clean Architecture"
-echo "Include Examples: $INCLUDE_EXAMPLES"
+echo "Teacher Type: $TEACHER_TYPE"
 echo "Max Examples per Sample: $MAX_EXAMPLES"
 echo "Response Types: $RESPONSE_TYPES"
 echo ""
 
-# =============================================================================
-# STEP 1: Raw JSON to Intermediate JSONL (Always regenerate)
-# =============================================================================
 
 echo "📁 Step 1: Preparing rescaled image directory: $RESCALED_DIR"
 rm -rf "$RESCALED_DIR"
@@ -109,9 +110,6 @@ eval $CMD
 
 echo "✅ Raw JSON conversion complete"
 
-# =============================================================================
-# STEP 3: Extract Support Files (Always regenerate)
-# =============================================================================
 
 # Extract candidate phrases
 if [[ "$USE_CANDIDATES" == "true" ]]; then
@@ -130,7 +128,7 @@ if [[ "$USE_CANDIDATES" == "true" ]]; then
 fi
 
 # Extract examples
-if [[ "$INCLUDE_EXAMPLES" == "true" ]]; then
+if [[ "$TEACHER_TYPE" == "predefined" ]]; then
     echo "📊 Step 4: Extracting representative examples (regenerating)..."
     # Remove existing examples file to force regeneration
     rm -f "$EXAMPLES_FILE"
@@ -139,19 +137,16 @@ if [[ "$INCLUDE_EXAMPLES" == "true" ]]; then
         python "data_analysis/extract_examples_from_conversations.py" \
             "$TEMP_JSONL" \
             --output "$EXAMPLES_FILE" \
-            --num_examples 5 \
+            --num_examples $MAX_EXAMPLES \
             --response_types $RESPONSE_TYPES \
             --seed $SEED
-        echo "✅ Example extraction complete"
+        echo "✅ Example extraction complete (num_examples=$MAX_EXAMPLES)"
     else
         echo "⚠️  Warning: extract_examples_from_conversations.py not found. Disabling examples."
-        INCLUDE_EXAMPLES="false"
+        TEACHER_TYPE="random"
     fi
 fi
 
-# =============================================================================
-# STEP 5: Convert to Clean Semantic Data (Always regenerate)
-# =============================================================================
 
 echo "🔧 Step 5: Converting to clean semantic format (regenerating)..."
 # Remove existing output files to force regeneration
@@ -164,8 +159,7 @@ python data_conversion/qwen_converter_unified.py \
     --output_val "$CLEAN_VAL" \
     --val_ratio $VAL_RATIO \
     --seed $SEED \
-    $([ "$MULTI_ROUND" = true ] && echo "--multi_round") \
-    $([ "$INCLUDE_EXAMPLES" = true ] && echo "--include_examples") \
+    $ATTACH_FLAG \
     --examples_file "$EXAMPLES_FILE" \
     --max_examples $MAX_EXAMPLES \
     --response_types "$RESPONSE_TYPES"

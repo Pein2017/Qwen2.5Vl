@@ -387,32 +387,51 @@ def main():
         categories, args.num_examples, response_types
     )
 
+    # If extracting multiple examples, output a simple list-of-examples
+    if args.num_examples > 1:
+        output_data = list(selected_examples.values())
+        logger.info(f"Outputting {len(output_data)} examples as a list")
+    else:
+        output_data = selected_examples
+
     # Save examples
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(selected_examples, f, indent=2, ensure_ascii=False)
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
 
     logger.info(f"Saved {len(selected_examples)} examples to {output_path}")
 
     # Print summary
     print("\n=== EXTRACTED EXAMPLES SUMMARY ===")
     print(f"Response types: {sorted(response_types)}")
-
     print()
-
-    for category, example in selected_examples.items():
-        print(f"{category.upper()}: {example['image']}")
-        print(f"  Objects: {len(example['objects'])}")
-        if example["objects"]:
-            sample_descriptions = [
-                obj.get("description", "") for obj in example["objects"][:3]
-            ]
-            print(f"  Sample objects: {sample_descriptions}")
-            if len(example["objects"]) > 3:
-                print(f"  ... and {len(example['objects']) - 3} more")
-        print()
+    if isinstance(output_data, list):
+        print(f"Total examples: {len(output_data)}\n")
+        for idx, example in enumerate(output_data, start=1):
+            print(f"Example {idx}: {example['image']}")
+            print(f"  Objects: {len(example['objects'])}")
+            if example["objects"]:
+                sample_descriptions = [
+                    obj.get("description", "") for obj in example["objects"][:3]
+                ]
+                print(f"  Sample objects: {sample_descriptions}")
+                if len(example["objects"]) > 3:
+                    print(f"  ... and {len(example['objects']) - 3} more")
+            print()
+    else:
+        for category, example in selected_examples.items():
+            print(f"{category.upper()}: {example['image']}")
+            print(f"  Objects: {len(example['objects'])}")
+            if example["objects"]:
+                sample_descriptions = [
+                    obj.get("description", "") for obj in example["objects"][:3]
+                ]
+                print(f"  Sample objects: {sample_descriptions}")
+                if len(example["objects"]) > 3:
+                    print(f"  ... and {len(example['objects']) - 3} more")
+            print()
 
 
 if __name__ == "__main__":

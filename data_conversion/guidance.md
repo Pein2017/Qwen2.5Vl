@@ -35,6 +35,26 @@ The script will orchestrate all steps. Customize parameters at the top of `conve
 <a name="pipeline-steps"></a>
 ## Pipeline Steps
 
+### 0. Class Hierarchy Configuration
+**Configuration File:** `data_conversion/label_hierarchy.json`
+**Purpose:** Explicitly define each `object_type` and its allowed `property` values.
+**Format:**
+```json
+[
+  {
+    "object_type": "螺丝连接点",
+    "property": ["BBU安装螺丝", "CPRI光缆和BBU连接点", "地排处螺丝", "BBU尾纤和ODF连接点", "BBU接地线机柜接地端"]
+  },
+  {
+    "object_type": "标签贴纸",
+    "property": []
+  }
+]
+```
+**Behavior:**
+- Any label segments beyond the declared `property` list are concatenated into `extra_info`.
+- Control which levels appear in outputs by passing `--response_types` flags (e.g., `"object_type property"`).
+
 ### 1. Fix EXIF Orientation (Optional)
 **Script:** `data_conversion/strip_exif_orientation.py`
 

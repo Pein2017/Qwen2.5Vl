@@ -23,25 +23,7 @@ ENGLISH_CANDIDATES_SECTION = """
 - Labels must match exactly or be skipped.
 - Copy–paste exactly (case, punctuation)."""
 
-ENGLISH_FEW_SHOT_SECTION = """
-=== EXAMPLES ===
-User: <image>
-Assistant:
-[
-  {"bbox_2d":[229,0,474,974],"label":"zte bbu"},
-  {"bbox_2d":[419,2,461,36],"label":"install screw correct"}
-]
-—
-User: <image>
-Assistant:
-[
-  {"bbox_2d":[0,0,475,621],"label":"huawei bbu"},
-  {"bbox_2d":[46,492,149,581],"label":"install screw incorrect/rust"}
-]
-—
-Now it's your turn:
-User: <image>
-Assistant:"""
+ENGLISH_FEW_SHOT_SECTION = ""  # no built-in examples
 
 
 # ==============================================================================
@@ -63,22 +45,4 @@ CHINESE_CANDIDATES_SECTION = """
 {formatted_phrases}
 - label 必须逐字匹配，否则忽略。"""
 
-CHINESE_FEW_SHOT_SECTION = """
-=== 示例 ===
-user：<image>
-assistant：
-[
-  {"bbox_2d":[202,0,419,891],"label":"BBU基带处理单元/中兴"},
-  {"bbox_2d":[370,2,406,33],"label":"螺丝连接点/BBU安装螺丝/连接正确"}
-]
-—
-user：<image>
-assistant：
-[
-  {"bbox_2d":[28,524,81,569],"label":"螺丝连接点/地排处螺丝/连接正确"},
-  {"bbox_2d":[78,605,191,658],"label":"标签贴纸/匹配"}
-]
-—
-现在轮到你：
-user: <image>
-assistant: """
+CHINESE_FEW_SHOT_SECTION = ""  # no built-in examples

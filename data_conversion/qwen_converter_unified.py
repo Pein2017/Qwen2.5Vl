@@ -56,6 +56,30 @@ class CleanSemanticConverter:
             "extra_info",
         }
         self.examples = {}
+        # Load label hierarchy mapping for filtering properties
+        mapping_path = Path(__file__).parent / "label_hierarchy.json"
+        if mapping_path.exists():
+            with open(mapping_path, "r", encoding="utf-8") as f:
+                mapping_raw = json.load(f)
+            # Normalize to dict mapping object_type -> list of allowed properties
+            if isinstance(mapping_raw, list):
+                self.label_hierarchy = {
+                    entry["object_type"]: entry.get("property", [])
+                    for entry in mapping_raw
+                }
+            elif isinstance(mapping_raw, dict):
+                # Old dict-of-lists format
+                if all(isinstance(v, list) for v in mapping_raw.values()):
+                    self.label_hierarchy = mapping_raw
+                else:
+                    # dict-of-dicts with 'property' key
+                    self.label_hierarchy = {
+                        k: v.get("property", []) for k, v in mapping_raw.items()
+                    }
+            else:
+                self.label_hierarchy = {}
+        else:
+            self.label_hierarchy = {}
 
     def _load_examples(self, examples_file: str) -> Dict:
         """Load examples from file."""
@@ -90,17 +114,25 @@ class CleanSemanticConverter:
             return {}
 
     def _filter_slash_description(self, description: str) -> str:
-        """Filters a slash-separated description based on response_types."""
+        """Filters a slash-separated description based on response_types and label hierarchy mapping."""
         # Unify separator: convert commas to slashes
         description = description.replace(", ", "/").replace(",", "/")
         parts = [p.strip() for p in description.split("/") if p.strip()]
         final_parts = []
-        if "object_type" in self.response_types and len(parts) > 0:
-            final_parts.append(parts[0])
+        obj = parts[0] if len(parts) > 0 else ""
+        # object_type
+        if "object_type" in self.response_types and obj:
+            final_parts.append(obj)
+        # property: include only if allowed in hierarchy
         if "property" in self.response_types and len(parts) > 1:
-            final_parts.append(parts[1])
+            prop = parts[1]
+            allowed_props = self.label_hierarchy.get(obj, [])
+            if prop in allowed_props:
+                final_parts.append(prop)
+        # extra_info: combine all segments beyond property
         if "extra_info" in self.response_types and len(parts) > 2:
-            final_parts.append(parts[2])
+            extra_info_segments = parts[2:]
+            final_parts.append("/".join(extra_info_segments))
         return "/".join(final_parts)
 
     def _convert_verbose_to_compact(self, verbose_desc: str) -> str:
@@ -226,21 +258,34 @@ class CleanSemanticConverter:
         if max_examples <= 0 or not self.examples:
             return target_sample
 
-        # Shuffle categories to pick diverse examples
-        cats = list(self.examples.keys())
-        random.shuffle(cats)
-        selected_cats = cats[:max_examples]
+        # Flatten all loaded examples into a unique pool
+        all_items = []
+        for val in self.examples.values():
+            if isinstance(val, list):
+                all_items.extend(val)
+            else:
+                all_items.append(val)
+        # Deduplicate by JSON content
+        unique_items = []
+        seen = set()
+        for item in all_items:
+            key = json.dumps(item, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                unique_items.append(item)
+        # Sample up to max_examples without replacement
+        num_to_sample = min(max_examples, len(unique_items))
+        sampled = random.sample(unique_items, num_to_sample)
 
         examples = []
-        for cat in selected_cats:
-            # Retrieve category examples (could be dict or list)
-            cat_items = self.examples.get(cat)
-            if not cat_items:
-                continue
-            items = cat_items if isinstance(cat_items, list) else [cat_items]
-            ex_data = random.choice(items)
-            # Build example entry
-            example_images = [ex_data.get("image", "")]
+        for ex_data in sampled:
+            # Build example entry; support both 'images' and 'image' keys
+            if "images" in ex_data:
+                ex_images = ex_data["images"]
+            elif "image" in ex_data:
+                ex_images = [ex_data["image"]]
+            else:
+                ex_images = []
             example_objects = []
             for obj in ex_data.get("objects", []):
                 desc = obj.get("description", obj.get("desc", ""))
@@ -248,20 +293,17 @@ class CleanSemanticConverter:
                     compact_desc = self._convert_verbose_to_compact(desc)
                 else:
                     compact_desc = self._filter_slash_description(desc)
-                # Fail-fast if multi-round example description is empty
                 if not compact_desc:
-                    raise ValueError(
-                        f"Empty multi-round example description for desc '{desc}'"
-                    )
+                    raise ValueError(f"Empty example description for desc '{desc}'")
                 example_objects.append(
-                    {"box": obj.get("bbox", obj.get("box", [])), "desc": compact_desc}
+                    {
+                        "box": obj.get("bbox", obj.get("box", [])),
+                        "desc": compact_desc,
+                    }
                 )
-            examples.append({"images": example_images, "objects": example_objects})
+            examples.append({"images": ex_images, "objects": example_objects})
 
-        if examples:
-            return {"examples": examples, "target": target_sample}
-        else:
-            return target_sample
+        return {"examples": examples, "target": target_sample}
 
     def convert_and_split(
         self,
@@ -270,15 +312,32 @@ class CleanSemanticConverter:
         output_val: str,
         val_ratio: float = 0.1,
         seed: int = 42,
-        multi_round: bool = False,
-        include_examples: bool = False,
+        teacher_type: str = "random",  # "random" or "predefined"
         examples_file: str = None,
         max_examples: int = 1,
     ):
         """Convert intermediate JSONL to clean semantic format and split into train/val."""
 
+        # ------------------------------------------------------------------
+        # Determine if we should attach pre-selected teacher examples and
+        # **fail fast** if the required examples file is missing.
+        # ------------------------------------------------------------------
+        attach_examples = teacher_type == "predefined"
+
+        if attach_examples:
+            if not examples_file:
+                raise ValueError(
+                    "teacher_type 'predefined' requires --examples_file to be set"
+                )
+            from pathlib import Path
+
+            if not Path(examples_file).exists():
+                raise FileNotFoundError(
+                    f"Examples file not found: {examples_file}. Cannot proceed with predefined teachers."
+                )
+
         # Load examples if needed
-        if include_examples and examples_file:
+        if attach_examples and examples_file:
             self.examples = self._load_examples(examples_file)
             if self.examples:
                 logger.info(
@@ -293,8 +352,8 @@ class CleanSemanticConverter:
                     sample = json.loads(line.strip())
                     converted = self._convert_sample(sample)
                     if converted:
-                        # Apply multi-round format if requested
-                        if multi_round and include_examples and max_examples > 0:
+                        # Attach pre-selected examples if requested
+                        if attach_examples and max_examples > 0:
                             converted = self._create_multi_round_sample(
                                 converted, max_examples
                             )
@@ -315,6 +374,15 @@ class CleanSemanticConverter:
         train_samples = samples[val_size:]
         val_samples = samples[:val_size]
 
+        # Strip teacher examples from validation set for zero-shot
+        stripped_val_samples = []
+        for s in val_samples:
+            if isinstance(s, dict) and "target" in s:
+                stripped_val_samples.append(s["target"])
+            else:
+                stripped_val_samples.append(s)
+        val_samples = stripped_val_samples
+
         # Write output files
         self._write_jsonl(train_samples, output_train)
         self._write_jsonl(val_samples, output_val)
@@ -324,8 +392,8 @@ class CleanSemanticConverter:
         )
 
         # Log format information
-        if multi_round and include_examples and max_examples > 0:
-            logger.info("✅ Generated multi-round format with examples and target")
+        if attach_examples and max_examples > 0:
+            logger.info("✅ Generated data with pre-selected teacher examples")
         else:
             logger.info("✅ Generated simple format (no examples)")
 
@@ -355,10 +423,10 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
-        "--multi_round", action="store_true", help="Enable multi-round conversations"
-    )
-    parser.add_argument(
-        "--include_examples", action="store_true", help="Include few-shot examples"
+        "--teacher_type",
+        choices=["random", "predefined"],
+        default="random",
+        help="Choose teacher sampling strategy: 'random' (dataset picks) or 'predefined' (converter attaches)",
     )
     parser.add_argument("--examples_file", help="Path to examples JSON file")
     parser.add_argument(
@@ -390,13 +458,12 @@ def main():
 
     # Convert and split
     converter.convert_and_split(
-        input_jsonl=args.input_jsonl,
-        output_train=args.output_train,
-        output_val=args.output_val,
+        args.input_jsonl,
+        args.output_train,
+        args.output_val,
         val_ratio=args.val_ratio,
         seed=args.seed,
-        multi_round=args.multi_round,
-        include_examples=args.include_examples,
+        teacher_type=args.teacher_type,
         examples_file=args.examples_file,
         max_examples=args.max_examples,
     )
