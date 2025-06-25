@@ -68,7 +68,6 @@ class DirectConfig:
     teacher_pool_file: str
     num_teacher_samples: int
     collator_type: str
-    teacher_type: str  # "random" or "predefined"
     teacher_ratio: float  # Ratio of samples that use teachers during training
     max_examples: int
     language: str
@@ -158,10 +157,36 @@ class DirectConfig:
     merge_size: int  # Merge size from vision encoder to LLM encoder (default: 2)
     temporal_patch_size: int  # Temporal patch size of vision encoder (default: 2)
 
+    # --- PEFT (Parameter-Efficient Fine-Tuning) Configuration ---
+    # LoRA settings for backbone model
+    lora_enabled: bool
+    lora_r: int
+    lora_alpha: int
+    lora_dropout: float
+    lora_target_modules: list[str]
+    lora_bias: str  # "none", "all", or "lora_only"
+    lora_task_type: str  # "CAUSAL_LM" for Qwen2.5-VL
+
+    # Soft prompting / prefix tuning settings
+    prompt_tuning_enabled: bool
+    num_virtual_tokens: int
+    prompt_tuning_init_method: str  # "random" or "vocab_sample"
+
+    # LoRA training schedule
+    lora_learning_rate: float
+    prompt_learning_rate: float
+
+    # Adapter merging settings
+    lora_merge_weights: bool  # Whether to merge LoRA weights after training
+    lora_save_merged: bool  # Whether to save merged model separately
+
     # --- Derived Paths (set automatically) ---
     run_output_dir: str = field(init=False)
     tensorboard_dir: str = field(init=False)
     log_file_dir: str = field(init=False)
+
+    # Baseline effective batch size for linear LR scaling (0 disables scaling)
+    lr_reference_batch_size: int = 0
 
     @property
     def tune_vision(self) -> bool:
@@ -290,6 +315,11 @@ def init_config(config_path: str) -> DirectConfig:
     # Validate the final configuration
     _validate_config(config)
 
+    # ------------------------------------------------------------------
+    # Automatic learning-rate scaling based on effective global batch size
+    # ------------------------------------------------------------------
+    _apply_auto_lr_scaling(config)
+
     return config
 
 
@@ -327,11 +357,72 @@ def _validate_config(cfg: DirectConfig):
         )
     if cfg.num_teacher_samples < 0:
         raise ValueError("num_teacher_samples must be non-negative")
-    if cfg.teacher_type not in ["random", "predefined"]:
-        raise ValueError("teacher_type must be 'random' or 'predefined'")
     # Add more validation rules as needed...
 
 
-def setup_logging(config: DirectConfig):
-    # Implementation of setup_logging function
-    pass
+def _apply_auto_lr_scaling(cfg: DirectConfig) -> None:
+    """Linearly scale all learning-rate fields according to effective
+    batch size.
+
+    The scale factor is computed as:
+        scale = (per_device_batch * grad_accum_steps * world_size) / reference_bs
+
+    * ``world_size`` is read from the *launcher-set* env var ``BBU_NUM_GPUS`` –
+      falling back to 1 when undefined.
+    * ``reference_bs`` comes from the YAML key ``lr_reference_batch_size`` or the
+      env var ``LR_REFERENCE_BATCH_SIZE``.  If neither is provided, scaling is
+      disabled (factor = 1).
+    """
+    import os
+
+    # ------------------------------------------------------------------
+    # Resolve reference (baseline) batch size
+    # ------------------------------------------------------------------
+    ref_bs_env = os.getenv("LR_REFERENCE_BATCH_SIZE")
+    reference_bs = (
+        int(ref_bs_env) if ref_bs_env is not None else cfg.lr_reference_batch_size
+    )
+
+    if reference_bs is None or reference_bs <= 0:
+        # No baseline → skip scaling entirely
+        return
+
+    # ------------------------------------------------------------------
+    # Compute current *effective* batch size
+    # ------------------------------------------------------------------
+    world_size_env = os.getenv("BBU_NUM_GPUS", "1")
+    try:
+        world_size = int(world_size_env)
+    except ValueError:
+        world_size = 1
+
+    effective_bs = (
+        cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps * world_size
+    )
+
+    scale = effective_bs / reference_bs
+    if abs(scale - 1.0) < 1e-6:
+        # No change needed
+        return
+
+    lr_fields = [
+        "learning_rate",
+        "adapter_lr",
+        "vision_lr",
+        "merger_lr",
+        "llm_lr",
+        "detection_lr",
+        "lora_learning_rate",
+        "prompt_learning_rate",
+    ]
+
+    for field_name in lr_fields:
+        current_lr = getattr(cfg, field_name, None)
+        if current_lr is not None and current_lr > 0:
+            setattr(cfg, field_name, current_lr * scale)
+
+    # Inform the user once – this runs on every process but is cheap
+    print(
+        f"🔄 Auto LR scaling: effective_bs={effective_bs}, reference_bs={reference_bs}, "
+        f"scale={scale:.2f}.  Learning rates updated accordingly."
+    )

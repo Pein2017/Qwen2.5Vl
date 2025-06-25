@@ -628,6 +628,17 @@ class StandardDataCollator:
             padded_labels[i, :seq_len] = label_seq
             attention_mask[i, :seq_len] = True
 
+        # ------------------------------------------------------------------
+        # Sanity-check attention_mask: each row must contain exactly `seq_len`
+        # True values corresponding to the non-padded tokens for that sample.
+        # ------------------------------------------------------------------
+        for i, seq_len in enumerate(sequence_lengths):
+            actual_len = attention_mask[i].sum().item()
+            if actual_len != seq_len:
+                raise AssertionError(
+                    f"StandardDataCollator: attention_mask row {i} has {actual_len} true values, expected {seq_len}"
+                )
+
         # 6. Build batch dict
         batch: Dict[str, torch.Tensor] = {
             "input_ids": padded_input_ids,
@@ -743,39 +754,76 @@ class PackedDataCollator:
         if instances and isinstance(instances[0], ChatProcessorOutput):
             instances = [asdict(ins) for ins in instances]  # type: ignore[assignment]
 
-        # 1. Gather required tensors
+        # ------------------------------------------------------------------
+        # 1. Gather required per-sample tensors
+        # ------------------------------------------------------------------
         input_ids_list = [ins["input_ids"] for ins in instances]
         labels_list = [ins["labels"] for ins in instances]
-        position_ids_list = [ins.get("position_ids") for ins in instances]
+        raw_position_ids_list = [ins.get("position_ids") for ins in instances]
 
-        # 2. Compute total length (no padding)
-        total_len = sum(ids.shape[1] for ids in input_ids_list)
+        # ------------------------------------------------------------------
+        # 2. Compute per-sample lengths and cumulative sequence lens vector
+        #    Flash-Attention var-len kernel expects **inclusive prefix-sum** of
+        #    sequence lengths with a leading zero (cu_seqlens).
+        # ------------------------------------------------------------------
+        seq_lens: list[int] = [ids.shape[1] for ids in input_ids_list]
+        cu_seqlens = torch.tensor([0] + seq_lens, dtype=torch.int32).cumsum(0)
 
-        # 3. Concatenate along sequence dimension (dim=1)
+        # ------------------------------------------------------------------
+        # 3. Concatenate along sequence dimension (dim=1) – no padding.
+        # ------------------------------------------------------------------
         input_ids = torch.cat(input_ids_list, dim=1)
         labels = torch.cat(labels_list, dim=1)
-        position_ids = None
-        if any(p is not None for p in position_ids_list):
-            cat_list = []
-            dtype = next(p for p in position_ids_list if p is not None).dtype
-            for pos_ids, ids_tensor in zip(position_ids_list, input_ids_list):
-                if pos_ids is not None:
-                    cat_list.append(pos_ids)
-                else:
-                    seq_len = ids_tensor.shape[1]
-                    cat_list.append(torch.zeros((3, 1, seq_len), dtype=dtype))
-            position_ids = torch.cat(cat_list, dim=2)
 
-        # 4. Assemble batch dict
+        # ------------------------------------------------------------------
+        # 4. Position-ids handling – always supply a fully-specified tensor so
+        #    that the model can recover `cu_seqlens` if needed via
+        #    `prepare_fa2_from_position_ids`.  Shape must be (3,1,T).
+        # ------------------------------------------------------------------
+        pos_chunks: list[torch.Tensor] = []
+        for seq_len, pos_ids in zip(seq_lens, raw_position_ids_list):
+            if pos_ids is not None:
+                # Ensure shape is (3,1,S)
+                if pos_ids.ndim == 2 and pos_ids.shape[0] == 3:
+                    pos_ids = pos_ids.unsqueeze(1)
+                elif pos_ids.ndim == 3:
+                    # already (3,1,S) – make contiguous just in case
+                    pos_ids = pos_ids.contiguous()
+                else:
+                    raise AssertionError(
+                        f"PackedDataCollator: unexpected position_ids shape {pos_ids.shape}"
+                    )
+                pos_chunks.append(pos_ids)
+            else:
+                # Synthesise monotonic position ids starting from 0 for this sample
+                tok_range = torch.arange(seq_len, dtype=torch.long)
+                pos_chunks.append(tok_range.view(1, 1, -1).expand(3, -1, -1))
+        position_ids = torch.cat(pos_chunks, dim=2)
+
+        # ------------------------------------------------------------------
+        # 5. Assemble batch dict – attention_mask holds `cu_seqlens` vector.
+        # ------------------------------------------------------------------
+        # FlashAttention2 in recent transformers (>=4.40) handles packed sequences via the **position_ids** path.
+        # Unfortunately the version bundled in our environment still *requires* a 2-D boolean mask to avoid the
+        # scalar-padding bug shown in `run.log` (see _get_unpad_data → F.pad).  We therefore:
+        #   • keep the prefix-sum vector under an auxiliary key so future upgrades can switch back easily, and
+        #   • provide a dummy (all-True) mask of shape (1, T) that satisfies the older code path.
+
+        total_len = input_ids.shape[1]
+        dummy_attn_mask = torch.ones((1, total_len), dtype=torch.bool)
+
         batch: Dict[str, Any] = {
             "input_ids": input_ids,
             "labels": labels,
-            "attention_mask": torch.ones((1, total_len), dtype=torch.bool),
+            "attention_mask": dummy_attn_mask,
+            "cu_seqlens": cu_seqlens,  # retained for potential future use
+            "position_ids": position_ids,
         }
-        if position_ids is not None:
-            batch["position_ids"] = position_ids
 
-        # 5. Handle vision tensors
+        # ------------------------------------------------------------------
+        # 6. Vision tensors (images / grids) – unchanged relative to the
+        #    previous implementation.
+        # ------------------------------------------------------------------
         if any(
             "pixel_values" in ins and ins["pixel_values"] is not None
             for ins in instances
@@ -784,7 +832,7 @@ class PackedDataCollator:
                 [
                     ins["pixel_values"]
                     for ins in instances
-                    if "pixel_values" in ins and ins["pixel_values"] is not None
+                    if ins.get("pixel_values") is not None
                 ],
                 dim=0,
             )
@@ -792,18 +840,26 @@ class PackedDataCollator:
                 [
                     ins["image_grid_thw"]
                     for ins in instances
-                    if "image_grid_thw" in ins and ins["image_grid_thw"] is not None
+                    if ins.get("image_grid_thw") is not None
                 ],
                 dim=0,
             )
         else:
-            batch.setdefault("pixel_values", None)
-            batch.setdefault("image_grid_thw", None)
+            batch["pixel_values"] = None
+            batch["image_grid_thw"] = None
 
-        # 6. Ground-truth objects (kept per-sample list, even though packed)
+        # ------------------------------------------------------------------
+        # 7. Keep ground-truth objects (list per sample).
+        # ------------------------------------------------------------------
         batch["ground_truth_objects"] = [
             ins.get("ground_truth_objects", []) for ins in instances
         ]
+
+        # Sanity check – the last entry in cu_seqlens must equal total length
+        if cu_seqlens[-1].item() != total_len:
+            raise AssertionError(
+                f"PackedDataCollator: cu_seqlens[-1] ({cu_seqlens[-1]}) != total_len ({total_len})"
+            )
 
         return batch
 

@@ -513,32 +513,73 @@ class ChatProcessor:
         token_offset: int = 0
 
         for msg in conversation:
-            # Tokenise the **full** message payload exactly as it appears in the
-            # template (no special_tokens because apply_chat_template already
-            # inserted them).
-            msg_tokens = self.tokenizer(
+            # ------------------------------------------------------------------
+            # Re-tokenise *prefix*, *content* and *suffix* **exactly** as they
+            # appear inside the global chat template so that `token_offset`
+            # remains perfectly aligned with the flattened conversation.
+            # ------------------------------------------------------------------
+
+            prefix_str = f"{self.tokens.IM_START}{msg.role}\n"
+            # The HF chat template appends a *newline* after <|im_end|> for every
+            # message.  We must replicate that byte-for-byte to keep token
+            # alignment in sync with the template; otherwise the running
+            # offset drifts by one token per message which manifests as
+            # leftover "assistant" prefixes in the label preview.
+            suffix_str = f"{self.tokens.IM_END}\n"
+
+            # Token counts ----------------------------------------------------
+            prefix_tokens = self.tokenizer(
+                prefix_str,
+                padding=False,
+                truncation=False,
+                add_special_tokens=False,
+            )["input_ids"]
+
+            content_tokens = self.tokenizer(
                 msg.content,
                 padding=False,
                 truncation=False,
                 add_special_tokens=False,
             )["input_ids"]
 
-            # Flatten to List[int]
-            if isinstance(msg_tokens[0], list):
-                msg_tokens = msg_tokens[0]
+            suffix_tokens = self.tokenizer(
+                suffix_str,
+                padding=False,
+                truncation=False,
+                add_special_tokens=False,
+            )["input_ids"]
 
-            if msg.role == "assistant":
-                start_idx = token_offset
-                end_idx = token_offset + len(msg_tokens)
+            # Flatten helper --------------------------------------------------
+            def _flatten(lst):
+                return lst[0] if lst and isinstance(lst[0], list) else lst
+
+            prefix_tokens = _flatten(prefix_tokens)
+            content_tokens = _flatten(content_tokens)
+            suffix_tokens = _flatten(suffix_tokens)
+
+            # Un-mask assistant *content* (+ optional suffix) -----------------
+            if msg.role == "assistant" and content_tokens:
+                start_idx = token_offset + len(prefix_tokens)
+                end_idx = start_idx + len(content_tokens)
+
                 labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
 
-                # Optionally un-mask the immediate `<|im_end|>` token
-                eos_id = getattr(self.tokenizer, "eos_token_id", None)
-                if eos_id is not None and end_idx < labels.size(0):
-                    if original_ids[end_idx] == eos_id:
-                        labels[end_idx] = eos_id
+                # Optionally unmask the immediate `<|im_end|>` token (first
+                # token of the suffix), preserving the rest as -100 so the
+                # model explicitly learns to emit the terminator but not the
+                # closing `<|im_start|>` of the next turn.
+                if suffix_tokens:
+                    im_end_token_id = suffix_tokens[0]
+                    if (
+                        end_idx < labels.size(0)
+                        and original_ids[end_idx] == im_end_token_id
+                    ):
+                        labels[end_idx] = im_end_token_id
 
-            token_offset += len(msg_tokens)
+            # Advance offset by *full* message length ------------------------
+            token_offset += (
+                len(prefix_tokens) + len(content_tokens) + len(suffix_tokens)
+            )
 
         return labels
 

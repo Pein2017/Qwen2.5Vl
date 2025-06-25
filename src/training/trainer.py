@@ -688,18 +688,18 @@ class BBUTrainer(Trainer):
         model_inputs = inputs.copy()
         model_inputs.pop("ground_truth_objects", None)
         model_inputs.pop("image_counts_per_sample", None)
+        model_inputs.pop("cu_seqlens", None)
 
         # Ensure we get hidden states for detection
         model_inputs["output_hidden_states"] = True
 
-        # Standard forward; mixed-precision contexts are managed by HuggingFace Trainer + DeepSpeed/accelerate
         outputs = model(**model_inputs)
 
         # Debug: catch NaN LM loss and log sample information
         lm_loss = outputs.loss
         if torch.isnan(lm_loss):
             # Count valid labels (not IGNORE_INDEX = -100)
-            labels = inputs.get("labels")
+            labels = inputs["labels"]
             valid_label_count = (
                 int((labels != -100).sum().item()) if labels is not None else 0
             )
@@ -845,6 +845,26 @@ class BBUTrainer(Trainer):
 
             full_text = re.sub(pad_pattern, _compress_pad, full_text)
 
+            # ------------------------------------------------------------------
+            # ALSO compress long runs of <|endoftext|> for readability ---------
+            # ------------------------------------------------------------------
+
+            eot_token = SpecialTokens.ENDOFTEXT
+            eot_pattern = rf"(?:\s*{re.escape(eot_token)}\s*)+"
+
+            def _compress_eot(match):
+                n = match.group(0).count(eot_token)
+                prefix_space = " " if match.group(0).startswith(" ") else ""
+                return f"{prefix_space}{eot_token}*{n}"
+
+            full_text = re.sub(eot_pattern, _compress_eot, full_text)
+
+            # Readability: newline before each assistant turn in the *full* text
+            full_text = full_text.replace(
+                "<|im_start|>assistant",
+                "\n<|im_start|>assistant",
+            )
+
             # Build target string (tokens where label != IGNORE_INDEX)
             target_text = ""
             if sample_labels is not None:
@@ -854,6 +874,19 @@ class BBUTrainer(Trainer):
                 if tgt_ids:
                     target_text = self.tokenizer.decode(
                         tgt_ids, skip_special_tokens=False
+                    )
+
+                    # Apply the same <|endoftext|> compression to target_text
+                    target_text = re.sub(eot_pattern, _compress_eot, target_text)
+
+                    # Insert a newline before every assistant turn for
+                    # readability.  We know the literal marker in the chat
+                    # template is "<|im_start|>assistant" so we can operate on
+                    # the decoded string directly without converting token
+                    # IDs back and forth.
+                    target_text = target_text.replace(
+                        "<|im_start|>assistant",
+                        "\n<|im_start|>assistant",
                     )
             self.logger.info("📝 ===== Sample conversation ({}) =====".format(mode))
             self.logger.info(full_text)
