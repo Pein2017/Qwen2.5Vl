@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Utilities for Qwen2.5-VL with Clean Architecture
+Utility functions for Qwen2.5-VL training pipeline.
 
-This module provides utilities that work with clean semantic data:
-- Data validation and loading
-- Legacy format conversion
-- Basic conversation formatting (for reference)
-
-The training pipeline handles all special token processing.
+Provides:
+- JSONL reading/writing with proper error handling
+- Tensor shape debugging and validation
+- Input preparation for forward/generation passes
+- Conversation formatting helpers
 """
 
 import json
@@ -15,26 +14,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
-from src.logger_utils import get_utils_logger
+from .logger_utils import get_utils_logger
 
 logger = get_utils_logger()
 
-# Default image token for clean semantic data
+# Constants
+IGNORE_INDEX = -100  # Standard ignore index for language modeling
+
+# Default vision token for legacy compatibility
 DEFAULT_IMAGE_TOKEN = "<image>"
 
 # Special tokens for reference (used by training pipeline)
 VISION_START_TOKEN = "<|vision_start|>"
 VISION_END_TOKEN = "<|vision_end|>"
 IMAGE_PAD_TOKEN = "<|image_pad|>"
-OBJECT_REF_START = "<object_ref_start>"
-OBJECT_REF_END = "<object_ref_end>"
 
 # Default model paths
 DEFAULT_BASE_MODEL_PATH = "/data4/swift/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
 DEFAULT_7B_MODEL_PATH = "/data4/swift/model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
-
-# Training constants
-IGNORE_INDEX = -100  # Standard ignore index for loss calculation
 
 
 # ============================================================================
@@ -43,12 +40,12 @@ IGNORE_INDEX = -100  # Standard ignore index for loss calculation
 
 
 def format_object_description(obj: Dict[str, Any]) -> str:
-    """Format object description with clean syntax."""
-    box = obj.get("box", [])
+    """Format object description as clean JSON."""
+    bbox_2d = obj.get("bbox_2d", [])
     desc = obj.get("desc", "")
 
-    # Use clean JSON-like format
-    return f'{OBJECT_REF_START}{{"box": {box}, "desc": "{desc}"}}{OBJECT_REF_END}'
+    # Use simple JSON format without special tokens
+    return json.dumps({"bbox_2d": bbox_2d, "desc": desc}, ensure_ascii=False)
 
 
 def format_single_round_conversation(data: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -70,21 +67,28 @@ def format_single_round_conversation(data: Dict[str, Any]) -> List[Dict[str, str
     ]
 
 
-def format_multi_round_conversation(data: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Format multi-round conversation with examples."""
+def format_multi_round_conversation(data: Dict[str, Any]) -> str:
+    """Format multi-round conversation with teachers."""
     conversation = []
 
-    # Add examples first
-    examples = data.get("examples", [])
-    for example in examples:
-        example_turns = format_single_round_conversation(example)
-        conversation.extend(example_turns)
+    # Add teachers first
+    teachers = data.get("teachers", data.get("examples", []))
+    for teacher in teachers:
+        conversation.append("User: [IMAGE]")
+        teacher_objects = teacher.get("objects", [])
+        if teacher_objects:
+            # Format as JSON array
+            objects_json = json.dumps(
+                teacher_objects, ensure_ascii=False, separators=(",", ":")
+            )
+            conversation.append(f"Assistant: {objects_json}")
+        else:
+            conversation.append("Assistant: []")
 
-    # Add main query
-    main_turns = format_single_round_conversation(data)
-    conversation.extend(main_turns)
+    # Add student query
+    conversation.append("User: [IMAGE]")
 
-    return conversation
+    return "\n".join(conversation)
 
 
 def format_conversation(

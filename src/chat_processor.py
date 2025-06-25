@@ -1,25 +1,14 @@
-#!/usr/bin/env python3
-"""
-Unified Chat Processor for Qwen2.5-VL BBU Dataset
-
-This module provides a clean, single-purpose processor for the simplified JSONL format:
-- Loads JSONL with 'examples' and 'target' structure
-- Creates proper few-shot chat templates
-- Uses pure JSON format for object detection (compatible with Qwen2.5-VL)
-- Manages vision token expansion
-- Prepares data for training with proper masking
-
-Pipeline: Simplified JSONL → ChatProcessor → Training-ready samples
-"""
-
 import json
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import torch
 from PIL import Image
-from transformers import PreTrainedTokenizerBase
-from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+from torchtyping import TensorType
+
+# Runtime & shape-checking ----------------------------------------------
+from typeguard import typechecked
 
 from src.config import config
 from src.logger_utils import get_chat_logger
@@ -31,11 +20,20 @@ from src.prompt import (
     ENGLISH_CANDIDATES_SECTION,
     ENGLISH_FEW_SHOT_SECTION,
 )
-from src.rope2d import get_rope_index_25  # NEW: explicit RoPE position ids
-from src.schema import assert_chat_processor_output
+from src.schema import ChatMessage, ChatProcessorOutput, GroundTruthObject
 from src.tokens import SpecialTokens
 
 logger = get_chat_logger()
+
+# Dimensional symbols for torchtyping ----------------------------------
+S = TypeVar("S")  # Sequence length
+B = TypeVar("B")  # Batch size
+C_TOK = TypeVar("C_TOK")  # Channels (avoid single ambiguous)
+PT = TypeVar("PT")  # Flattened patch tokens count (replaces ambiguous I)
+E = TypeVar("E")  # Embedding dimension for flattened vision tokens
+N_IMG = TypeVar("N_IMG")  # Number of images in the sample
+H = TypeVar("H")  # Height
+W = TypeVar("W")  # Width
 
 
 class ChatProcessor:
@@ -46,11 +44,7 @@ class ChatProcessor:
     Uses pure JSON format for object detection output (Qwen2.5-VL compatible).
     """
 
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        image_processor: Qwen2VLImageProcessor,
-    ) -> None:
+    def __init__(self, tokenizer, image_processor, **kwargs):
         """
         Initialize the chat processor using global configuration.
 
@@ -64,11 +58,17 @@ class ChatProcessor:
         # Store data root from global config
         self.data_root = Path(config.data_root)
 
-        # Initialize special tokens (only for vision tokens, not for object detection)
-        self.tokens = SpecialTokens()
+        # ---------------- Optional kwargs ----------------
+        # Many call-sites (trainer / inference) pass extra kwargs such as
+        # merge_size, max_length, use_training_prompts, language …
+        # We keep only what is actually needed to stay compatible.
+        self.use_training_prompts: bool = kwargs.get("use_training_prompts", False)
 
-        # Get language from global config
-        self.language = config.language
+        # Prefer explicit arg over global config
+        self.language: str = kwargs.get("language", config.language)
+
+        # Initialize special tokens (vision-only)
+        self.tokens = SpecialTokens()
 
         # Build system prompt using global config
         self.system_prompt = self._build_system_prompt()
@@ -86,6 +86,9 @@ class ChatProcessor:
         logger.info(f"   {repr(self.system_prompt[:500])}")
         logger.info(f"📄 System prompt sample (last 200 chars):")
         logger.info(f"   {repr(self.system_prompt[-200:])}")
+
+        # Default context
+        self._current_context: str = "training"
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
@@ -123,16 +126,20 @@ class ChatProcessor:
 
         return base_prompt + few_shot_section
 
-    def process_sample(self, raw_sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+    def process_sample(self, raw_sample: Dict[str, Any]) -> ChatProcessorOutput:
         """
-        Process a single sample from simplified JSONL format.
+        Process a single sample from teacher/student structured format.
 
         Args:
-            raw_sample: Sample with 'examples' and 'target' structure
+            raw_sample: Sample with 'teachers' (List[Sample]) and 'student' (Sample) structure
 
         Returns:
-            Dict containing input_ids, labels, attention_mask, pixel_values, image_grid_thw, and ground_truth_objects
+            ChatProcessorOutput containing input_ids, labels, attention_mask, pixel_values, image_grid_thw, and ground_truth_objects
         """
+        # Debug: Log the sample structure
+        teachers = raw_sample["teachers"]
+        logger.debug(f"📝 Processing sample: {len(teachers)} teachers + 1 student")
+
         # 1. Create conversation messages
         conversation_messages = self._create_conversation_messages(raw_sample)
 
@@ -151,84 +158,62 @@ class ChatProcessor:
         # 4. Process images for model input
         pixel_values, image_grid_thw = self._process_images_for_model(images)
 
-        # 5. Extract and normalize ground truth objects for the target image
+        # 5. Extract and normalize ground truth objects for the student
         ground_truth_objects = self._extract_and_normalize_ground_truth(
             raw_sample, image_dims
         )
 
-        # NEW 5.1 Compute explicit 3-D RoPE position_ids (batch dim=1)
-        attention_mask_single = torch.ones_like(input_ids).unsqueeze(0)  # (1, S)
-        # get_rope_index_* expects (batch, seq) for input_ids
-        position_ids, _ = get_rope_index_25(
-            spatial_merge_size=self.image_processor.merge_size,
-            input_ids=input_ids.unsqueeze(0),
+        return ChatProcessorOutput(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=torch.ones_like(input_ids),
+            pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
-            attention_mask=attention_mask_single,
+            ground_truth_objects=ground_truth_objects,
         )
-        # Keep returned shape (3, 1, S) – collator will pad/concat later
-
-        sample_dict = {
-            "input_ids": input_ids,
-            "labels": labels,
-            "attention_mask": torch.ones_like(input_ids),
-            "position_ids": position_ids,  # <-- added
-            "pixel_values": pixel_values,
-            "image_grid_thw": image_grid_thw,
-            "ground_truth_objects": ground_truth_objects,
-        }
-
-        # Fail-fast shape validation (raises AssertionError on mismatch)
-        assert_chat_processor_output(sample_dict)
-
-        return sample_dict
 
     def _create_conversation_messages(
         self, sample: Dict[str, Any]
-    ) -> List[Dict[str, str]]:
-        """Create conversation messages from sample data."""
-        messages = []
+    ) -> List[ChatMessage]:
+        """Return a validated list of :class:`ChatMessage` objects built from *sample*."""
 
-        # Add system message
-        messages.append({"role": "system", "content": self.system_prompt})
+        messages: list[ChatMessage] = []
 
-        # Process examples if present
-        if "examples" in sample:
-            for example in sample["examples"]:
-                # User message with image
-                user_content = "<image>"
-                messages.append({"role": "user", "content": user_content})
+        # 1) System prompt ----------------------------------------------------------------
+        messages.append(ChatMessage(role="system", content=self.system_prompt))
 
-                # Assistant response with JSON format
-                objects = example.get("objects", [])
-                sorted_objects = self._sort_objects_by_position(objects)
-                assistant_response = self._format_objects_response(sorted_objects)
-                messages.append({"role": "assistant", "content": assistant_response})
+        # 2) Teacher examples --------------------------------------------------------------
+        teachers: Sequence[Dict[str, Any]] = sample.get("teachers", [])
+        for teacher in teachers:
+            # User uploads an image ------------------------------------------------------
+            messages.append(ChatMessage(role="user", content="<image>"))
 
-        # Add target
-        target = sample.get("target", sample)  # Fallback to sample itself if no target
-        user_content = "<image>"
-        messages.append({"role": "user", "content": user_content})
+            # Assistant returns detection JSON -----------------------------------------
+            objects = teacher.get("objects", [])
+            sorted_objects = self._sort_objects_by_position(objects)
+            assistant_response = self._format_objects_response(sorted_objects)
+            messages.append(ChatMessage(role="assistant", content=assistant_response))
 
-        # Target response
-        target_objects = target.get("objects", [])
-        sorted_target_objects = self._sort_objects_by_position(target_objects)
-        target_response = self._format_objects_response(sorted_target_objects)
-        messages.append({"role": "assistant", "content": target_response})
+        # 3) Student target ---------------------------------------------------------------
+        student = sample.get("student", sample)
+        messages.append(ChatMessage(role="user", content="<image>"))
+
+        student_objects = student.get("objects", [])
+        sorted_student_objects = self._sort_objects_by_position(student_objects)
+        student_response = self._format_objects_response(sorted_student_objects)
+        messages.append(ChatMessage(role="assistant", content=student_response))
 
         return messages
 
     def _extract_all_image_paths(self, sample: Dict[str, Any]) -> List[str]:
-        """Extract all image paths from sample."""
-        image_paths = []
+        """Collect **all** image paths referenced in *sample* (teachers + student)."""
 
-        # Extract from examples
-        if "examples" in sample:
-            for example in sample["examples"]:
-                image_paths.extend(example.get("images", []))
+        image_paths: list[str] = []
 
-        # Extract from target
-        target = sample.get("target", sample)
-        image_paths.extend(target.get("images", []))
+        for teacher in sample.get("teachers", []):
+            image_paths.extend(teacher.get("images", []))
+
+        image_paths.extend(sample.get("student", sample).get("images", []))
 
         return image_paths
 
@@ -238,7 +223,7 @@ class ChatProcessor:
         """Sort objects by position (top-to-bottom, left-to-right)."""
 
         def sort_key(obj):
-            box = obj.get("box", [0, 0, 0, 0])
+            box = obj.get("bbox_2d", [0, 0, 0, 0])
             return (box[1], box[0])  # Sort by y first, then x
 
         return sorted(objects, key=sort_key)
@@ -250,7 +235,7 @@ class ChatProcessor:
 
         json_objects = []
         for obj in objects:
-            box = obj.get("box", [0, 0, 0, 0])
+            box = obj.get("bbox_2d", [0, 0, 0, 0])
             desc = obj.get("desc", "unknown")
 
             # Create JSON object
@@ -261,45 +246,46 @@ class ChatProcessor:
         return json.dumps(json_objects, ensure_ascii=False, separators=(",", ": "))
 
     def _process_images_and_tokens(
-        self, conversation: List[Dict[str, str]], image_paths: List[str]
-    ) -> Tuple[List[Dict[str, str]], List[Image.Image], List[Tuple[int, int]]]:
+        self, conversation: List[ChatMessage], image_paths: List[str]
+    ) -> Tuple[List[ChatMessage], List[Image.Image], List[Tuple[int, int]]]:
         """
         Process images and expand vision tokens in conversation.
 
         Replaces <image> placeholders with proper vision token sequences.
         """
-        processed_conversation = []
+        processed_conversation: list[ChatMessage] = []
         images = []
         image_dims = []
         image_index = 0
 
         for message in conversation:
-            content = message["content"]
+            content = message.content
 
             # Process image placeholders
             while "<image>" in content and image_index < len(image_paths):
                 # Load image
                 image_path = self.data_root / image_paths[image_index]
-                # Fail-fast image loading; errors will raise
+                # Fail-fast: raise explicit error if the image cannot be loaded.
                 image = Image.open(image_path).convert("RGB")
                 images.append(image)
                 image_dims.append(image.size)  # (width, height)
-                image_index += 1
 
                 # Calculate number of vision tokens required for this image
                 num_vision_tokens = self._calculate_image_tokens(image)
 
-                # Create vision token sequence
-                vision_token_sequence = (
-                    self.tokens.VISION_START
-                    + self.tokens.IMAGE_PAD * num_vision_tokens
-                    + self.tokens.VISION_END
+                # Create vision token sequence using helper that inserts spaces between <|image_pad|> tokens
+                # This prevents the tokenizer from returning `None` IDs for contiguous special tokens.
+                vision_token_sequence = self.tokens.format_vision_tokens(
+                    num_vision_tokens
                 )
 
                 # Replace placeholder with vision tokens
                 content = content.replace("<image>", vision_token_sequence, 1)
+                image_index += 1
 
-            processed_conversation.append({"role": message["role"], "content": content})
+            processed_conversation.append(
+                ChatMessage(role=message.role, content=content)
+            )
 
         # Final validation
         if image_index != len(image_paths):
@@ -311,98 +297,55 @@ class ChatProcessor:
         return processed_conversation, images, image_dims
 
     def _calculate_image_tokens(self, image: Image.Image) -> int:
-        """Return the number of <|image_pad|> tokens required for ``image``.
+        """Return the exact number of <|image_pad|> tokens the processor will emit for *image*.
 
-        This replicates the official Qwen2-VL preprocessing logic *exactly* but
-        in pure-python so we do **not** need to call ``self.image_processor`` or
-        allocate any dummy tensors.
-
-        Steps
-        -----
-        1.  Compute the *resized* image resolution using the same `smart_resize`
-            rule as the upstream `Qwen2VLImageProcessor` – this guarantees we
-            match the vision encoder.
-        2.  Convert the final resolution to a spatial patch grid
-            ``(grid_h, grid_w)`` where each patch covers ``patch_size`` pixels.
-        3.  Account for the vision->LLM spatial merge layer (``merge_size``).
-        4.  Return the **post-merge** token count that the text prompt must
-            reserve using ``<|image_pad|>`` placeholders.
+        Older logic estimated this figure from a dummy tensor shaped like the
+        image.  That breaks if the HF image-processor performs an internal
+        resize or uses a different patch/merge configuration.  We now let the
+        processor do its real preprocessing and read the `image_grid_thw`
+        metadata that the model itself will consume during the forward pass.
         """
-        # Explicit parameter extraction – all attributes must exist on the
-        # `image_processor`. Fail fast if the pipeline is mis-configured.
-        required_attrs = [
-            ("patch_size", int),
-            ("merge_size", int),
-            ("min_pixels", int),
-            ("max_pixels", int),
-        ]
+        # Run the *actual* preprocessing pipeline for a single image.  This is
+        # comparatively cheap (<1 ms for 896×1344) and guarantees the grid is
+        # consistent with training/inference.
+        processed = self.image_processor.preprocess([image], return_tensors="pt")
 
-        for attr_name, attr_type in required_attrs:
-            if not hasattr(self.image_processor, attr_name):
-                raise AttributeError(
-                    f"image_processor is missing required attribute '{attr_name}'. "
-                    "Ensure it is correctly initialised with all hyper-parameters."
-                )
+        grid_thw = processed["image_grid_thw"][0]  # (t, h, w)
 
-        patch_size: int = self.image_processor.patch_size  # type: ignore[attr-defined]
-        merge_size: int = self.image_processor.merge_size  # type: ignore[attr-defined]
-        min_pixels: int = self.image_processor.min_pixels  # type: ignore[attr-defined]
-        max_pixels: int = self.image_processor.max_pixels  # type: ignore[attr-defined]
+        merge_size = getattr(self.image_processor, "merge_size", 2)
+        tokens_per_merge = merge_size**2
 
-        # Import the *exact* smart_resize helper used by the official recipe.
-        # This is safe and avoids code duplication while keeping full parity.
-        from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
-
-        # 1)  Determine the post-resize resolution (guaranteed to be divisible
-        #     by `patch_size * merge_size`).
-        resized_h, resized_w = smart_resize(
-            image.height,
-            image.width,
-            factor=patch_size * merge_size,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
-
-        # 2)  Spatial patch grid (pre-merge)
-        grid_h = resized_h // patch_size
-        grid_w = resized_w // patch_size
-
-        # 3)  Account for the spatial merge that groups `merge_size²` patches
-        #     into **one** LLM token.
-        num_tokens = (grid_h * grid_w) // (merge_size**2)
-
-        # Sanity check – must be >0 for any valid image.
-        if num_tokens <= 0:
-            raise ValueError(
-                f"Calculated non-positive vision token count ({num_tokens}) for image size "
-                f"{image.size}. Check smart_resize / patch_size configuration."
-            )
+        # Number of flattened patch tokens after the spatial-merge step that
+        # the vision tower applies internally.
+        num_tokens: int = int(grid_thw.prod().item() // tokens_per_merge)
 
         return num_tokens
 
     def _extract_and_normalize_ground_truth(
         self, sample: Dict[str, Any], image_dims: List[Tuple[int, int]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Extracts GT objects from the target and normalizes their bounding boxes.
-        """
-        target = sample.get("target", sample)
-        target_objects = target.get("objects", [])
+    ) -> List[GroundTruthObject]:
+        """Return a list of :class:`src.schema.GroundTruthObject` instances.
 
-        # The last image in the list corresponds to the target.
-        if not image_dims or not target_objects:
+        The bounding boxes are converted from absolute pixel coordinates to the
+        *normalised* \[0,1] range expected by the detection loss.
+        """
+        student = sample.get("student", sample)
+        student_objects = student.get("objects", [])
+
+        # The last image in the list corresponds to the student.
+        if not image_dims or not student_objects:
             return []
 
-        target_image_dims = image_dims[-1]
-        width, height = target_image_dims
+        student_image_dims = image_dims[-1]
+        width, height = student_image_dims
 
-        normalized_objects = []
-        for obj in target_objects:
-            box = obj.get("box")
+        normalized_objects: list[GroundTruthObject] = []
+        for obj in student_objects:
+            box = obj.get("bbox_2d")
             desc = obj.get("desc")
 
             if box is None or desc is None:
-                continue
+                raise ValueError(f"Invalid object: {obj}")
 
             # Validate box format and coordinates
             if not (isinstance(box, list) and len(box) == 4) or not (
@@ -421,89 +364,191 @@ class ChatProcessor:
                 box[2] / width,
                 box[3] / height,
             ]
-            normalized_objects.append({"box": normalized_box, "desc": desc})
+
+            # Build structured GT object (automatically validated)
+            normalized_objects.append(
+                GroundTruthObject(bbox_2d=normalized_box, desc=desc)
+            )
 
         return normalized_objects
 
+    @typechecked
     def _tokenize_conversation(
-        self, conversation: List[Dict[str, str]]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Convert `conversation` to `input_ids` & `labels`.
-
-        *Implementation notes*
-        ---------------------------------
-        • We call ``apply_chat_template`` **once** on the *entire* message list
-          to avoid the tokenizer injecting its fallback system prompt
-          ("You are a helpful assistant.") before every user/assistant turn.
-
-        • To keep full control, we temporarily replace the tokenizer's
-          ``chat_template`` with a *minimal* variant lifted from the official
-          finetuning script.  No default system prompt, no auto generation
-          marker – just a linear dump of messages.
+        self, conversation: List[ChatMessage]
+    ) -> Tuple[TensorType["B", "S"], TensorType["B", "S"]]:
         """
-
-        IGNORE_INDEX = -100
-
-        # ------------------------------------------------------------------
-        # 1)  Temporarily swap the chat template
-        # ------------------------------------------------------------------
-        original_template = getattr(self.tokenizer, "chat_template", None)
-
-        minimal_template = (
-            "{% for message in messages %}"
-            "{{'<' + '|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}"
-            "{% endfor %}"
-            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
-        )
-
-        self.tokenizer.chat_template = minimal_template  # type: ignore[attr-defined]
-
-        # ------------------------------------------------------------------
-        # 2)  Encode full conversation once (no labels yet)
-        # ------------------------------------------------------------------
-        full_ids: List[int] = self.tokenizer.apply_chat_template(
-            conversation,
-            tokenize=True,
+        Tokenize conversation and create labels with proper masking.
+        """
+        # ``apply_chat_template`` expects a ``List[dict]`` – convert once here.
+        formatted_text = self.tokenizer.apply_chat_template(
+            [asdict(msg) for msg in conversation],
+            tokenize=False,
             add_generation_prompt=False,
         )
 
-        # ------------------------------------------------------------------
-        # 3)  Build label mask per-message – re-use the same minimal template
-        # ------------------------------------------------------------------
-        labels: List[int] = []
-        for msg in conversation:
-            # Tokenise single message *with the minimal template* so the
-            # length exactly matches its slice inside ``full_ids``.
-            msg_ids: List[int] = self.tokenizer.apply_chat_template(
-                [msg], tokenize=True, add_generation_prompt=False
-            )
-
-            if msg["role"] in {"user", "system"}:
-                labels.extend([IGNORE_INDEX] * len(msg_ids))
-            else:
-                msg_labels = msg_ids.copy()
-                if len(msg_labels) >= 3:
-                    msg_labels[:3] = [IGNORE_INDEX] * 3
-                labels.extend(msg_labels)
-
-        # ------------------------------------------------------------------
-        # 4)  Restore original template and convert to tensors
-        # ------------------------------------------------------------------
-        if original_template is not None:
-            self.tokenizer.chat_template = original_template  # type: ignore[attr-defined]
-
-        input_ids = torch.tensor(full_ids, dtype=torch.long)
-        label_ids = torch.tensor(labels, dtype=torch.long)
-
-        assert input_ids.shape == label_ids.shape, (
-            "Input/label length mismatch after tokenisation."  # noqa: E501
+        # Debug: Log the formatted text before adding endoftext
+        logger.debug(
+            f"📄 Formatted text before endoftext: {repr(formatted_text[-100:])}"
         )
 
-        return input_ids, label_ids
+        # Check if endoftext is already present
+        if not formatted_text.endswith(self.tokens.ENDOFTEXT):
+            # Add end of text token only if not already present
+            formatted_text += self.tokens.ENDOFTEXT
+            logger.debug(f"✅ Added ENDOFTEXT token")
+        else:
+            logger.debug(f"✅ ENDOFTEXT token already present")
 
+        # Debug: Log the formatted text after adding endoftext
+        logger.debug(
+            f"📄 Formatted text after endoftext: {repr(formatted_text[-100:])}"
+        )
+        logger.debug(f"🔍 ENDOFTEXT token: {repr(self.tokens.ENDOFTEXT)}")
+
+        # NOTE: Using `return_tensors="pt"` here leads to a hard failure when the tokenizer
+        # encounters any `None` values in the produced python lists (typically caused by
+        # special-token mis-alignment or exceedingly long inputs).  Instead we first obtain
+        # the raw python lists from the tokenizer *without* tensor conversion and only then
+        # convert to `torch.Tensor` once we are confident the data structure is correct.
+
+        tokenized = self.tokenizer(
+            formatted_text,
+            padding=False,
+            truncation=False,
+            add_special_tokens=False,  # we explicitly bake all special tokens into the prompt
+        )
+
+        input_ids_list = tokenized["input_ids"]
+
+        # `input_ids_list` is usually a list with a single sub-list when the input is a
+        # single string.  We nevertheless handle both `[List[int]]` and `List[int]` for
+        # maximum robustness.
+        if len(input_ids_list) == 0:
+            raise RuntimeError(
+                "Tokenizer returned empty input_ids list – cannot proceed."
+            )
+
+        if isinstance(input_ids_list[0], list):
+            # Typical case: [[int, int, …]]
+            flat_ids: List[int] = input_ids_list[0]
+        else:
+            # Edge case: already flat [int, int, …]
+            flat_ids = input_ids_list  # type: ignore[assignment]
+
+        # Fail-fast if any element is None (this triggers the earlier crash in torch.tensor)
+        if any(tok is None for tok in flat_ids):
+            raise ValueError(
+                "Tokenizer produced `None` token IDs – check that all special tokens are "
+                "present in the tokenizer vocabulary. Offending IDs: "
+                f"{[tok for tok in flat_ids if tok is None]}"
+            )
+
+        # Convert to tensor (1D)
+        input_ids_1d = torch.tensor(flat_ids, dtype=torch.long)
+
+        # Create labels (copy of input_ids)
+        labels_1d = input_ids_1d.clone()
+
+        # Mask non-assistant tokens → only assistant messages contribute to loss
+        labels_1d = self._mask_non_assistant_tokens(
+            labels_1d, conversation, formatted_text
+        )
+
+        # We **do not** unmask `<|endoftext|>` because in this project that token
+        # serves the dual role of *padding* as well as a legacy data delimiter.
+        # The actual generation stop token is `<|im_end|>` (tokenizer
+        # `eos_token`).  Leaving `<|endoftext|>` masked ensures the language
+        # model does not learn to emit padding tokens during generation.
+
+        # ------------------------------------------------------------------
+        # Collators (especially PackedDataCollator) expect an explicit batch
+        # dimension (B=1) so that concatenation along *dim=1* works without
+        # additional squeezing/unsqueezing steps.  We therefore add a leading
+        # dimension **after** all 1-D processing is complete.
+        # ------------------------------------------------------------------
+
+        input_ids = input_ids_1d.unsqueeze(0)  # (1, S)
+        labels = labels_1d.unsqueeze(0)  # (1, S)
+
+        return input_ids, labels
+
+    @typechecked
+    def _mask_non_assistant_tokens(
+        self,
+        labels: TensorType["S"],
+        conversation: List[ChatMessage],
+        formatted_text: str,
+    ) -> TensorType["S"]:
+        """Return a version of ``labels`` where only tokens belonging to **assistant**
+        messages remain; all others are replaced by ``-100`` so they do not
+        contribute to the LM loss.
+
+        This includes assistant messages coming from *teacher* examples **and** the
+        final student answer.  The algorithm:
+
+        1. Initialise a full mask (`-100`) the same shape as ``labels``.
+        2. Iterate over the conversation sequentially.  For every assistant
+           message, locate its byte-offset in ``formatted_text`` *after* the last
+           match to avoid duplicates.
+        3. Re-tokenise the prefix and the assistant content itself (with
+           ``add_special_tokens=False``) to compute the span boundaries in token
+           space.
+        4. Copy the original token IDs from the untouched ``labels`` tensor back
+           into the masked tensor for that assistant span.
+        5. Advance the search cursor and continue until all assistant messages
+           are processed.
+        """
+
+        # Preserve originals to restore assistant spans later
+        original_ids = labels.clone()
+
+        # Mask everything
+        labels[:] = -100
+
+        # We iteratively rebuild the template token-by-token, thereby knowing
+        # the *exact* start/end token indices of every assistant span without
+        # performing substring searches over ``formatted_text``.  This makes
+        # the complexity strictly O(#tokens) instead of O(#messages × len(text)).
+
+        token_offset: int = 0
+
+        for msg in conversation:
+            # Tokenise the **full** message payload exactly as it appears in the
+            # template (no special_tokens because apply_chat_template already
+            # inserted them).
+            msg_tokens = self.tokenizer(
+                msg.content,
+                padding=False,
+                truncation=False,
+                add_special_tokens=False,
+            )["input_ids"]
+
+            # Flatten to List[int]
+            if isinstance(msg_tokens[0], list):
+                msg_tokens = msg_tokens[0]
+
+            if msg.role == "assistant":
+                start_idx = token_offset
+                end_idx = token_offset + len(msg_tokens)
+                labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
+
+                # Optionally un-mask the immediate `<|im_end|>` token
+                eos_id = getattr(self.tokenizer, "eos_token_id", None)
+                if eos_id is not None and end_idx < labels.size(0):
+                    if original_ids[end_idx] == eos_id:
+                        labels[end_idx] = eos_id
+
+            token_offset += len(msg_tokens)
+
+        return labels
+
+    @typechecked
     def _process_images_for_model(
         self, images: List[Image.Image]
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[
+        Optional[TensorType["PT", "E"]],  # (tokens, embed_dim)
+        Optional[TensorType["N_IMG", 3]],  # (num_images, 3) grid spec
+    ]:
         """Process images for model input using official approach with data_conversion pixel settings."""
         if not images:
             return None, None
@@ -518,14 +563,7 @@ class ChatProcessor:
         processed = self.image_processor.preprocess(images, return_tensors="pt")
 
         pixel_values = processed["pixel_values"]
-        image_grid_thw_np = processed.get("image_grid_thw")
-
-        # Convert to torch.LongTensor immediately to avoid numpy propagation
-        image_grid_thw: Optional[torch.Tensor]
-        if image_grid_thw_np is not None:
-            image_grid_thw = torch.as_tensor(image_grid_thw_np, dtype=torch.long)
-        else:
-            image_grid_thw = None
+        image_grid_thw = processed.get("image_grid_thw")
 
         # CRITICAL: Log the vision token analysis
         logger.debug(f"🚨 VISION TOKEN ANALYSIS:")
@@ -540,11 +578,11 @@ class ChatProcessor:
 
             # Calculate both pre-merge and post-merge token counts for clarity
             # EXPLICIT: Get merge_size from image processor - no defaults
-            if not hasattr(self.image_processor, "merge_size"):
-                raise AttributeError(
-                    "image_processor missing required attribute 'merge_size'."
-                )
-            merge_size = self.image_processor.merge_size  # type: ignore[attr-defined]
+            if hasattr(self.image_processor, "merge_size"):
+                merge_size = self.image_processor.merge_size
+            else:
+                # Use Qwen2.5-VL default
+                merge_size = 2
             merge_length = merge_size**2
 
             total_pre_merge = 0
@@ -564,15 +602,17 @@ class ChatProcessor:
             logger.debug(
                 f"   TOTAL: {total_pre_merge} pre-merge → {total_post_merge} final tokens (merge_size={merge_size}²={merge_length})"
             )
-            logger.debug(
-                f"   Vision token efficiency: {total_post_merge}/{total_pre_merge} = {total_post_merge / total_pre_merge:.1%}"
-            )
         else:
             logger.debug(f"   No image_grid_thw available")
 
         # CRITICAL: Ensure bf16 precision for pixel_values
-        # Removed forced cast to bf16 – rely on model.config.torch_dtype instead
-        logger.debug(f"🔍 pixel_values dtype: {pixel_values.dtype} (no manual cast)")
+        if pixel_values.dtype != torch.bfloat16:
+            pixel_values = pixel_values.to(torch.bfloat16)
+            logger.debug(
+                f"🔧 Converted pixel_values from {processed['pixel_values'].dtype} to bf16: {pixel_values.dtype}"
+            )
+        else:
+            logger.debug(f"✅ pixel_values already in bf16: {pixel_values.dtype}")
 
         # Debug: Log the shapes to understand the processing
         logger.debug(f"🖼️ OFFICIAL IMAGE PROCESSING:")
@@ -582,21 +622,9 @@ class ChatProcessor:
             f"   image_grid_thw shape: {image_grid_thw.shape if image_grid_thw is not None else None}"
         )
 
-        # Fail-fast: ensure pixel_values patches match grid_thw pre-merge count
-        if image_grid_thw is not None:
-            # pre-merge patches per image = t*h*w
-            grid = image_grid_thw  # Tensor[N_images, 3]
-            if not torch.is_tensor(grid):
-                grid = torch.as_tensor(grid, dtype=torch.long)
-            pre_merge_counts = (grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item()
-            actual_patches = pixel_values.shape[0]
-            assert actual_patches == pre_merge_counts, (
-                f"Mismatch in image preprocessing: pixel_values has {actual_patches} patches, "
-                f"but grid_thw implies {pre_merge_counts} patches. Check merge_size and smart_resize logic."
-            )
-
         return pixel_values, image_grid_thw
 
+    @typechecked
     def prepare_inputs_for_inference(
         self, images: List[Image.Image], text: str, is_first_step: bool = True
     ) -> Dict[str, torch.Tensor]:
@@ -611,20 +639,22 @@ class ChatProcessor:
         Returns:
             Dict containing properly formatted inputs for model.generate()
         """
-        # Tokenize text
-        text_inputs = self.tokenizer(text, return_tensors="pt", padding=False)
+        # Tokenize text without immediate tensor conversion for robustness
+        raw_text_tokens = self.tokenizer(
+            text, padding=False, truncation=False, add_special_tokens=False
+        )
 
-        # Prepare base inputs
-        model_inputs = {
-            "input_ids": text_inputs["input_ids"],
-        }
+        # Convert to tensor manually (single sequence expected)
+        if isinstance(raw_text_tokens["input_ids"][0], list):
+            flat_text_ids = raw_text_tokens["input_ids"][0]
+        else:
+            flat_text_ids = raw_text_tokens["input_ids"]  # type: ignore[assignment]
 
-        # Add attention_mask only if it exists
-        if (
-            "attention_mask" in text_inputs
-            and text_inputs["attention_mask"] is not None
-        ):
-            model_inputs["attention_mask"] = text_inputs["attention_mask"]
+        text_input_ids = torch.tensor(flat_text_ids, dtype=torch.long).unsqueeze(0)
+
+        attention_mask = torch.ones_like(text_input_ids, dtype=torch.bool)
+
+        text_inputs = {"input_ids": text_input_ids, "attention_mask": attention_mask}
 
         # Handle vision inputs based on generation step
         if is_first_step and images:
@@ -632,25 +662,10 @@ class ChatProcessor:
             pixel_values, image_grid_thw = self._process_images_for_model(images)
 
             if pixel_values is not None:
-                model_inputs["pixel_values"] = pixel_values
+                text_inputs["pixel_values"] = pixel_values
 
             if image_grid_thw is not None:
-                model_inputs["image_grid_thw"] = image_grid_thw
-
-            # --- Compute 3-D position_ids for generation prefill ---------
-            ids_for_rope = model_inputs["input_ids"].clone()
-            attn_mask_for_rope = model_inputs.get("attention_mask")
-            if attn_mask_for_rope is None:
-                attn_mask_for_rope = torch.ones_like(ids_for_rope)
-
-            # get_rope_index_25 returns (3,B,S)
-            pos_ids, _ = get_rope_index_25(
-                spatial_merge_size=self.image_processor.merge_size,
-                input_ids=ids_for_rope,
-                image_grid_thw=image_grid_thw,
-                attention_mask=attn_mask_for_rope,
-            )
-            model_inputs["position_ids"] = pos_ids
+                text_inputs["image_grid_thw"] = image_grid_thw
 
             logger.debug(f"🔥 FIRST STEP: Added vision inputs")
             logger.debug(
@@ -681,71 +696,30 @@ class ChatProcessor:
 
         filtered_inputs = {
             key: value
-            for key, value in model_inputs.items()
+            for key, value in text_inputs.items()
             if key in valid_generation_params and value is not None
         }
 
         logger.debug(f"🔧 FILTERED INFERENCE INPUTS: {list(filtered_inputs.keys())}")
 
-        # ------------------------------------------------------------------
-        # FAIL-FAST CHECK ‑ ensure prompt & vision tensors stay in perfect sync
-        # ------------------------------------------------------------------
-        if "pixel_values" in filtered_inputs:
-            from src.tokens.special_tokens import SpecialTokens
-
-            # --------------------------------------------------------------
-            # Reconstruct the *post-merge* vision token count from the
-            # supplied `image_grid_thw` so we compare like-for-like.
-            # --------------------------------------------------------------
-            if "image_grid_thw" not in filtered_inputs:
-                raise ValueError(
-                    "prepare_inputs_for_inference received `pixel_values` but "
-                    "no corresponding `image_grid_thw`. Cannot validate vision/text alignment."
-                )
-
-            image_grid_thw = filtered_inputs["image_grid_thw"]  # (N, 3)
-
-            if not torch.is_tensor(image_grid_thw):
-                image_grid_thw = torch.as_tensor(image_grid_thw)
-
-            if not hasattr(self.image_processor, "merge_size"):
-                raise AttributeError(
-                    "image_processor missing required attribute 'merge_size'."
-                )
-            merge_size = self.image_processor.merge_size  # type: ignore[attr-defined]
-            merge_length = merge_size**2
-
-            num_vision_tokens = int(
-                (image_grid_thw.prod(dim=1) // merge_length).sum().item()
-            )
-            num_prompt_tokens = text.count(SpecialTokens.IMAGE_PAD)
-
-            assert num_vision_tokens == num_prompt_tokens, (
-                "Mismatch between vision tensors and <|image_pad|> tokens. "
-                f"Vision tokens (post-merge): {num_vision_tokens} ≠ image_pad tokens: {num_prompt_tokens}. "
-                "Check _calculate_image_tokens & image preprocessing pipeline."
-            )
-            # Additional safety: ensure pixel_values tensor length matches pre-merge patch count
-            pv_len = filtered_inputs["pixel_values"].shape[0]
-            expected_pre_merge = num_vision_tokens * merge_length
-            assert pv_len == expected_pre_merge, (
-                "pixel_values tensor length does not match expected pre-merge patch count. "
-                f"pixel_values patches: {pv_len} ≠ num_vision_tokens ({num_vision_tokens}) × merge_size² ({merge_length}) = {expected_pre_merge}. "
-                "Verify image_processor.merge_size and preprocessing alignment."
-            )
-            logger.debug(
-                f"✅ pixel_values length check passed: {pv_len} patches ↔ {expected_pre_merge} expected pre-merge patches"
-            )
-            logger.debug(
-                f"✅ Vision/Text sync check passed: {num_vision_tokens} vision tokens ↔ {num_prompt_tokens} IMAGE_PAD tokens"
-            )
-
         return filtered_inputs
+
+    # ------------------------------------------------------------------
+    # Backwards-compat helpers expected by Dataset / Inference / Trainer
+    # ------------------------------------------------------------------
+
+    def set_context(self, context: str = "training") -> None:
+        """No-op context setter kept for external compatibility."""
+        self._current_context = context
+
+    def get_current_system_prompt(self) -> str:
+        """Return the system prompt currently in use (helper for logging)."""
+        return self.system_prompt
 
 
 def create_chat_processor(
-    tokenizer: PreTrainedTokenizerBase,
-    image_processor: Qwen2VLImageProcessor,
+    tokenizer,
+    image_processor,
     data_root: str = "./",
     model_max_length: int = 8192,
     use_candidates: bool = False,

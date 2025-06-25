@@ -5,7 +5,6 @@ Provides a single logger instance with module-specific prefixes for clean, consi
 
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -76,10 +75,11 @@ class UnifiedLogger:
         )
 
         simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
+        from src.config import config as _global_config
 
-        # File handler (always enabled)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_path / f"qwen_training_{timestamp}.log"
+        run_name = _global_config.run_name
+
+        log_file = log_path / f"{run_name}.log"
         file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
         file_handler.setLevel(self._get_logging_level(log_level))
         file_handler.setFormatter(detailed_formatter)

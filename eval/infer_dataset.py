@@ -33,7 +33,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 # Import training components to ensure exact alignment
 from src.config.base import Config
 from src.models.wrapper import ModelWrapper
-from src.rope2d import get_rope_index_25
 from src.utils import (
     DEFAULT_BASE_MODEL_PATH,
     UnifiedLogger,
@@ -422,7 +421,6 @@ class FastInferenceEngine:
             # Create conversation EXACTLY like training (with double system message)
             # Training uses: 1) "You are a helpful assistant." 2) actual system prompt
             conversation = [
-                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt_processed},
             ]
@@ -437,20 +435,12 @@ class FastInferenceEngine:
             # Create attention mask EXACTLY like training
             attention_mask = torch.ones_like(input_ids)
 
-            # Calculate position IDs EXACTLY like training
-            position_ids, _ = get_rope_index_25(
-                spatial_merge_size=self.image_processor.merge_size,
-                input_ids=input_ids,
-                image_grid_thw=image_grid_thw,
-            )
-
             # Prepare model inputs EXACTLY like training
             inputs = {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
                 "pixel_values": pixel_values,
                 "image_grid_thw": image_grid_thw,
-                "position_ids": position_ids,
             }
 
             # Move to device

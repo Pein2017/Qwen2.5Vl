@@ -121,18 +121,18 @@ def plot_bounding_boxes(im, bounding_boxes, input_width, input_height):
 
     # Iterate over the bounding boxes with comprehensive validation
     for i, bounding_box in enumerate(json_output):
-        print(f"\nProcessing bounding box {i}: {bounding_box}")
+        print(f"\nProcessing bounding bbox_2d {i}: {bounding_box}")
         print(f"Type of bounding_box: {type(bounding_box)}")
 
-        # Validate bounding box structure
+        # Validate bounding bbox_2d structure
         if not isinstance(bounding_box, dict):
             print(
-                f"ERROR: Expected dict, got {type(bounding_box)} for bounding box {i}"
+                f"ERROR: Expected dict, got {type(bounding_box)} for bounding bbox_2d {i}"
             )
             continue
 
         if "bbox_2d" not in bounding_box:
-            print(f"ERROR: 'bbox_2d' key not found in bounding box {i}")
+            print(f"ERROR: 'bbox_2d' key not found in bounding bbox_2d {i}")
             print(f"Available keys: {list(bounding_box.keys())}")
             continue
 
@@ -183,7 +183,7 @@ def plot_bounding_boxes(im, bounding_boxes, input_width, input_height):
                     f"WARNING: Coordinates outside image bounds. Image: {width}x{height}"
                 )
 
-            # Draw the bounding box
+            # Draw the bounding bbox_2d
             draw.rectangle(((abs_x1, abs_y1), (abs_x2, abs_y2)), outline=color, width=4)
 
             # Draw the text - handle string format labels
@@ -200,10 +200,10 @@ def plot_bounding_boxes(im, bounding_boxes, input_width, input_height):
                 draw.text((abs_x1 + 8, abs_y1 + 6), label, fill=color, font=font)
                 print(f"Drew label: {label}")
             else:
-                print("No label found in bounding box")
+                print("No label found in bounding bbox_2d")
 
         except Exception as e:
-            print(f"ERROR drawing bounding box {i}: {e}")
+            print(f"ERROR drawing bounding bbox_2d {i}: {e}")
             continue
 
     print("=== PLOTTING COMPLETE ===")

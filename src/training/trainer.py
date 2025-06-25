@@ -2,7 +2,7 @@
 Unified BBU Trainer with Robust Loss Logging.
 
 This module extends the standard HuggingFace Trainer to provide fine-grained
-logging for a multi-component loss function (language modeling, bounding box,
+logging for a multi-component loss function (language modeling, bounding bbox_2d,
 caption, and objectness) while ensuring accurate, per-step reporting even with
 gradient accumulation and frequent evaluations.
 
@@ -60,6 +60,8 @@ from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 from src.schema import GroundTruthObject
+
+from ..tokens.special_tokens import SpecialTokens
 
 
 class BBUTrainer(Trainer):
@@ -171,6 +173,27 @@ class BBUTrainer(Trainer):
 
         # Cache for per-step weight / grad norms (populated in training_step)
         self._norm_cache: Dict[str, float] = {}
+
+        # After initialization, we can safely access the tokenizer
+        # and add our special tokens. This is a critical step.
+        if self.tokenizer:
+            special_tokens = SpecialTokens()
+            num_added = self.tokenizer.add_special_tokens(
+                {"additional_special_tokens": special_tokens.to_list()}
+            )
+            if num_added > 0:
+                self.logger.info(
+                    f"✅ Added {num_added} special tokens to the tokenizer."
+                )
+                # Important: Resize token embeddings in the model
+                self.model.resize_token_embeddings(len(self.tokenizer))
+                self.logger.info(
+                    "✅ Resized model token embeddings to match new tokenizer size."
+                )
+        else:
+            self.logger.warning(
+                "⚠️ Tokenizer not found on BBUTrainer, skipping special token setup."
+            )
 
     def _save(
         self, output_dir: Optional[str] = None, state_dict: Optional[dict] = None
@@ -528,37 +551,35 @@ class BBUTrainer(Trainer):
         contain the true gradient magnitudes, even when DeepSpeed/Accelerate
         zero out the gradients before we reach the logging hook.
         """
+        # Norm capture disabled to avoid signature mismatches under Accelerate
+        return
 
         if getattr(self, "_optimizer_step_wrapped", False):
             return  # Already wrapped
+
+        from torch.optim import Optimizer
+
+        if not isinstance(self.optimizer, Optimizer):
+            self.logger.debug(
+                "Optimizer is not a torch.optim.Optimizer; skipping norm capture wrap."
+            )
+            return
 
         self._optimizer_step_wrapped = True
 
         original_step = self.optimizer.step
 
         def step_with_norm_capture(*args, **kwargs):  # type: ignore[override]
-            # Gradients are populated at this point (after backward, before
-            # zero_grad).  Capture norms **once per optimizer step**.
             try:
                 self._norm_cache = self._capture_grad_weight_norms()
-            except Exception as exc:  # Fail-fast, but don't crash training
+            except Exception as exc:
                 self.logger.warning(f"⚠️ Failed to capture weight/grad norms: {exc}")
                 self._norm_cache = {}
 
             return original_step(*args, **kwargs)
 
-        # Monkey-patch the optimizer with a *bound* method so downstream
-        # utilities (e.g. ``torch.optim.lr_scheduler.patch_track_step_called``)
-        # that expect a **method** (and access ``.__func__``) continue to work.
-        # A plain function assigned to an instance attribute lacks the
-        # ``__func__`` attribute, which leads to an ``AttributeError`` during
-        # scheduler construction under recent PyTorch versions.
+        import types
 
-        import types  # Local import to avoid polluting the module namespace.
-
-        # Wrap as an actual bound method tied to the optimizer instance. This
-        # preserves all expected method semantics (including ``__func__``)
-        # while still routing the call through our norm-capturing shim.
         self.optimizer.step = types.MethodType(step_with_norm_capture, self.optimizer)  # type: ignore[assignment]
 
     def _capture_grad_weight_norms(self) -> Dict[str, float]:
@@ -674,8 +695,37 @@ class BBUTrainer(Trainer):
         # Standard forward; mixed-precision contexts are managed by HuggingFace Trainer + DeepSpeed/accelerate
         outputs = model(**model_inputs)
 
-        # Standard LM loss from base model
+        # Debug: catch NaN LM loss and log sample information
         lm_loss = outputs.loss
+        if torch.isnan(lm_loss):
+            # Count valid labels (not IGNORE_INDEX = -100)
+            labels = inputs.get("labels")
+            valid_label_count = (
+                int((labels != -100).sum().item()) if labels is not None else 0
+            )
+            self.logger.error(
+                f"🚨 Detected NaN LM loss. Valid labels in batch: {valid_label_count}"
+            )
+            # Log first sample tokens and labels
+            if labels is not None:
+                sample_input = (
+                    inputs["input_ids"][0].tolist()
+                    if inputs.get("input_ids") is not None
+                    else []
+                )
+                sample_labels = labels[0].tolist() if labels is not None else []
+                self.logger.error(f"🚨 input_ids: {sample_input}")
+                self.logger.error(f"🚨 labels: {sample_labels}")
+                # Decode full conversation
+                try:
+                    full_text = self.tokenizer.decode(
+                        sample_input, skip_special_tokens=False
+                    )
+                    self.logger.error(f"🚨 Full text: {full_text}")
+                except Exception as e:
+                    self.logger.error(f"🚨 Error decoding tokens: {e}")
+            # Raise error to halt training for debugging
+            raise RuntimeError("LM loss is NaN, see previous error logs for details.")
         self._current_lm_loss = lm_loss.item()
         self._accumulated_lm_loss += self._current_lm_loss
 
@@ -784,13 +834,16 @@ class BBUTrainer(Trainer):
             # Replace long runs of <IMAGE_PAD>
             pad_token = "<|image_pad|>"
 
+            # --- Enhanced compression: merge ANY whitespace-separated run of <|image_pad|> ---
+            pad_pattern = rf"(?:\s*{re.escape(pad_token)}\s*)+"
+
             def _compress_pad(match):
                 n = match.group(0).count(pad_token)
-                return f"{pad_token}*{n}"
+                # Preserve a single leading space if the run started with one so that tokens stay separated.
+                prefix_space = " " if match.group(0).startswith(" ") else ""
+                return f"{prefix_space}{pad_token}*{n}"
 
-            full_text = re.sub(
-                rf"(?:{re.escape(pad_token)})+", _compress_pad, full_text
-            )
+            full_text = re.sub(pad_pattern, _compress_pad, full_text)
 
             # Build target string (tokens where label != IGNORE_INDEX)
             target_text = ""
@@ -897,8 +950,6 @@ class BBUTrainer(Trainer):
                 # Clear after use so we don't accidentally reuse stale values.
                 self._norm_cache = {}
             else:
-                mode_prefix = "train" if model.training else "eval"
-
                 module_names = {
                     "vision_adapter": "detection_head.vision_adapter",
                     "lang_adapter": "detection_head.adapter",
@@ -1001,7 +1052,7 @@ class BBUTrainer(Trainer):
                 gt_objects = [
                     obj
                     if isinstance(obj, GroundTruthObject)
-                    else GroundTruthObject(box=obj["box"], desc=obj["desc"])
+                    else GroundTruthObject(bbox_2d=obj["bbox_2d"], desc=obj["desc"])
                     for obj in raw_objs
                 ]
                 self.logger.debug(
@@ -1302,13 +1353,14 @@ def setup_model_and_tokenizer() -> Tuple[
     logger.info("🔧 Overriding default image processor pixel values...")
     image_processor = processor.image_processor
 
-    # CRITICAL FIX: Use pixel constraints from data_conversion/vision_process.py
+    # CRITICAL: Use pixel constraints from data_conversion/vision_process.py
+    # Our training data was preprocessed with these specific constraints
     try:
         from data_conversion.vision_process import MAX_PIXELS, MIN_PIXELS
 
         # Apply the exact same pixel constraints used during data conversion
         image_processor.min_pixels = MIN_PIXELS  # 4 * 28 * 28 = 3136
-        image_processor.max_pixels = MAX_PIXELS  # 128 * 28 * 28 = 100352
+        image_processor.max_pixels = MAX_PIXELS  # 512 * 28 * 28 = 401408
 
         # Also set size constraints if the processor supports them
         if hasattr(image_processor, "size"):
@@ -1321,15 +1373,32 @@ def setup_model_and_tokenizer() -> Tuple[
                     "max_pixels": MAX_PIXELS,
                 }
 
+        # Verify vision processing parameters match config (fail-fast if mismatch)
+        if image_processor.patch_size != config.patch_size:
+            raise ValueError(
+                f"Image processor patch_size ({image_processor.patch_size}) != config ({config.patch_size})"
+            )
+        if image_processor.merge_size != config.merge_size:
+            raise ValueError(
+                f"Image processor merge_size ({image_processor.merge_size}) != config ({config.merge_size})"
+            )
+        if image_processor.temporal_patch_size != config.temporal_patch_size:
+            raise ValueError(
+                f"Image processor temporal_patch_size ({image_processor.temporal_patch_size}) != config ({config.temporal_patch_size})"
+            )
+
         logger.info(
             f"✅ Image processor configured with data_conversion pixel constraints:"
         )
         logger.info(f"   min_pixels: {image_processor.min_pixels}")
         logger.info(f"   max_pixels: {image_processor.max_pixels}")
+        logger.info(f"   patch_size: {image_processor.patch_size}")
+        logger.info(f"   merge_size: {image_processor.merge_size}")
+        logger.info(f"   temporal_patch_size: {image_processor.temporal_patch_size}")
 
     except ImportError as e:
         logger.error(f"❌ Failed to import from data_conversion/vision_process.py: {e}")
-        logger.warning("   Using default image processor pixel constraints")
+        raise RuntimeError("Cannot proceed without vision_process pixel constraints")
 
     # Disable caching and optionally enable gradient checkpointing on the base model
     base_model = model.base_model if hasattr(model, "base_model") else model
@@ -1356,36 +1425,82 @@ def setup_data_module(
     tokenizer: PreTrainedTokenizerBase, image_processor: Qwen2VLImageProcessor
 ) -> Dict[str, Any]:
     """
-    Setup data module following the official approach.
-    This matches the data setup in train_qwen.py.
+    Setup data module following the official approach with improved prompts.
+    This matches the data setup in train_qwen.py but with context-aware prompts.
     """
     logger = get_training_logger()
-    logger.info("🔧 Setting up data module...")
+    logger.info("🔧 Setting up data module with context-aware prompts...")
 
-    # Create datasets - no config parameters needed
-    train_dataset = BBUDataset(
+    # Create chat processor with training context
+    from src.chat_processor import ChatProcessor
+
+    # Training chat processor (detailed prompts)
+    train_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
         image_processor=image_processor,
-        data_path=config.train_data_path,
+        merge_size=config.merge_size,
+        max_length=config.max_total_length,
+        use_training_prompts=True,  # Use detailed training prompts
+        language="chinese",
     )
 
-    val_dataset = BBUDataset(
+    # Evaluation chat processor (concise prompts)
+    eval_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
         image_processor=image_processor,
+        merge_size=config.merge_size,
+        max_length=config.max_total_length,
+        use_training_prompts=False,  # Use concise evaluation prompts
+        language="chinese",
+    )
+
+    # Create teacher pool manager if teacher_ratio > 0
+    teacher_pool_manager = None
+    if config.teacher_ratio > 0.0:
+        from src.teacher_pool import create_teacher_pool_manager
+
+        # Fail fast if teacher configuration is invalid
+        teacher_pool_manager = create_teacher_pool_manager()
+        logger.info(
+            f"✅ Teacher pool manager created with {len(teacher_pool_manager)} teachers"
+        )
+
+    # Create training dataset with detailed prompts and teacher support
+    train_dataset = BBUDataset(
+        data_path=config.train_data_path,
+        chat_processor=train_chat_processor,
+        teacher_pool_manager=teacher_pool_manager,
+        teacher_ratio=config.teacher_ratio,
+        is_training=True,  # Training context
+    )
+
+    # Create validation dataset with concise prompts and no teachers
+    val_dataset = BBUDataset(
         data_path=config.val_data_path,
+        chat_processor=eval_chat_processor,
+        teacher_pool_manager=None,  # No teachers for validation
+        teacher_ratio=0.0,  # No teachers for validation
+        is_training=False,  # Evaluation context
     )
 
     # Create data collator
     data_collator = create_data_collator(
         tokenizer=tokenizer,
-        max_total_length=config.max_total_length,
         collator_type=config.collator_type,
     )
 
-    logger.info(f"✅ Data module setup completed:")
-    logger.info(f"   Train samples: {len(train_dataset)}")
-    logger.info(f"   Val samples: {len(val_dataset)}")
+    logger.info(f"✅ Data module setup completed with improved prompts:")
+    logger.info(
+        f"   Train samples: {len(train_dataset)} (detailed prompts, teacher_ratio={config.teacher_ratio})"
+    )
+    logger.info(f"   Val samples: {len(val_dataset)} (concise prompts, no teachers)")
     logger.info(f"   Collator type: {config.collator_type}")
+    logger.info(
+        f"   Training prompt: {train_chat_processor.get_current_system_prompt()[:100]}..."
+    )
+    logger.info(
+        f"   Evaluation prompt: {eval_chat_processor.get_current_system_prompt()[:100]}..."
+    )
 
     return {
         "train_dataset": train_dataset,

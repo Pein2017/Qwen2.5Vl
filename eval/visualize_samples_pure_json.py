@@ -82,7 +82,7 @@ def visualize_sample(
         logger.error("Invalid 'objects' field; expecting lists for 'ref' and 'bbox'")
         return None
 
-    # Draw each bounding box with label, using distinct colors per unique content
+    # Draw each bounding bbox_2d with label, using distinct colors per unique content
     for idx, (ref_str, bbox) in enumerate(zip(ref_list, bbox_list)):
         try:
             content = json.loads(ref_str)
@@ -154,8 +154,8 @@ def visualize_sample(
         ]
         labels = list(label_color_map.keys())
         # Shrink image axes to make room for legend on the right
-        box = ax.get_position()
-        ax.set_position([box.x0, box.y0, box.width * 0.75, box.height])
+        bbox_2d = ax.get_position()
+        ax.set_position([bbox_2d.x0, bbox_2d.y0, bbox_2d.width * 0.75, bbox_2d.height])
         # Place legend outside the image area on the figure
         fig.legend(
             handles=handles,

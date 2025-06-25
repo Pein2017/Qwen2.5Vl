@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import shutil
+import sys
 from pathlib import Path
 
 from core_modules import (
@@ -24,13 +25,18 @@ from PIL import Image
 
 from vision_process import smart_resize
 
-# Configure logging to file
+# Set UTF-8 encoding for stdout/stderr
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# Configure logging to file with UTF-8 encoding
 LOG_FILE = Path(__file__).parent / "convert.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     filename=str(LOG_FILE),
-    filemode="a",
+    filemode="w",  # overwrite log on each run
+    encoding="utf-8",  # Ensure UTF-8 encoding for log file
 )
 
 logger = logging.getLogger(__name__)
@@ -79,7 +85,7 @@ def main():
         "--resize",
         type=str2bool,
         required=True,
-        help="Enable image resizing and bounding box scaling (True/False)",
+        help="Enable image resizing and bounding bbox_2d scaling (True/False)",
     )
     parser.add_argument(
         "--language",
@@ -158,11 +164,13 @@ def main():
     if not file_list:
         raise FileNotFoundError(f"No JSON files found in {input_folder_path}")
 
-    processed_samples = []
+    processed_samples: list[dict] = []
+    invalid_files: list[str] = []  # keep track of files with invalid annotations
 
     for input_json_file_abs_path in file_list:
         try:
-            data = json.load(input_json_file_abs_path.open("r", encoding="utf-8"))
+            with input_json_file_abs_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
 
             # Extract original annotation dimensions
             height = data.get("info", {}).get("height")
@@ -226,12 +234,24 @@ def main():
                         return ""
                     # Use the first label entry
                     label_string = label_values[0]
-                    # Split into object_type/property/extra_info
+                    # Split into object_type/property and existing extra segments
                     parts = [p.strip() for p in label_string.split("/")]
                     object_type = parts[0] if len(parts) >= 1 else ""
                     property_value = parts[1] if len(parts) >= 2 else ""
-                    # Combine all remaining segments as extra_info
-                    extra_info = "/".join(parts[2:]) if len(parts) >= 3 else ""
+                    existing_extras = parts[2:] if len(parts) >= 3 else []
+                    # Collect additional extra_info from other contentZh entries (e.g., question, question_ex)
+                    additional_extras: list[str] = []
+                    for key, v in content_zh.items():
+                        if "标签" not in key:
+                            if isinstance(v, list):
+                                additional_extras.extend(
+                                    str(item) for item in v if item
+                                )
+                            elif v:
+                                additional_extras.append(str(v))
+                    # Combine all segments as extra_info
+                    extra_info_parts = existing_extras + additional_extras
+                    extra_info = "/".join(extra_info_parts)
                     # Map tokens if mapper is available
                     content_dict = {
                         "object_type": token_mapper.map_token(object_type)
@@ -317,24 +337,10 @@ def main():
 
                     props = item_data.get("properties", {}) or {}
                     content_string = extract_and_process_fields(props)
-
-                    allowed_props_keys = {
-                        "object_type",
-                        "property",
-                        "extra_info",
-                        "label",
-                        "question",
-                        "question_ex",
-                    }
-                    # Allow 'contentZh' and 'content' in properties
-                    props_keys_to_check = {
-                        k for k in props.keys() if k not in ["contentZh", "content"]
-                    }
-                    for key in props_keys_to_check:
-                        if key not in allowed_props_keys:
-                            raise ValueError(
-                                f"Unexpected key '{key}' in properties for dataList item {item_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_props_keys}"
-                            )
+                    if not content_string.strip():
+                        raise ValueError(
+                            f"Empty description extracted for dataList item {item_idx} in file {input_json_file_abs_path}. This indicates an upstream parsing issue."
+                        )
                     objects_ref.append(content_string)
 
             # Process markResult format
@@ -369,7 +375,7 @@ def main():
                     ):
                         points = points[0]
 
-                    # Extract min/max to form the bounding box
+                    # Extract min/max to form the bounding bbox_2d
                     if not points or any(len(p) != 2 for p in points):
                         raise ValueError(
                             f"Invalid points list in markResult feature {feature_idx} for {input_json_file_abs_path}"
@@ -384,21 +390,10 @@ def main():
 
                     properties = feature_data.get("properties", {})
                     content_string = extract_and_process_fields(properties)
-
-                    content_from_feature = properties.get("content", {})
-                    allowed_content_keys = {
-                        "object_type",
-                        "property",
-                        "extra_info",
-                        "label",
-                        "question",
-                        "question_ex",
-                    }
-                    for key in content_from_feature.keys():
-                        if key not in allowed_content_keys:
-                            raise ValueError(
-                                f"Unexpected key '{key}' in content for markResult feature {feature_idx} in file {input_json_file_abs_path}. Allowed keys: {allowed_content_keys}"
-                            )
+                    if not content_string.strip():
+                        raise ValueError(
+                            f"Empty description extracted for markResult feature {feature_idx} in file {input_json_file_abs_path}. This indicates an upstream parsing issue."
+                        )
                     objects_ref.append(content_string)
             else:
                 logger.warning(
@@ -406,7 +401,7 @@ def main():
                 )
                 continue
 
-            # Sort objects by bounding box coordinates (no extra orientation
+            # Sort objects by bounding bbox_2d coordinates (no extra orientation
             # transform needed because we already applied EXIF transpose to the
             # image; the annotation coordinates are defined in that oriented
             # space).
@@ -461,7 +456,7 @@ def main():
                             scaled_objects_bbox.append(scaled_bbox)
                         except ValueError as e:
                             logger.error(
-                                f"Error scaling bounding box for file: {original_image_abs_path.name}"
+                                f"Error scaling bounding bbox_2d for file: {original_image_abs_path.name}"
                             )
                             logger.error(f"  Problematic BBox: {bbox}")
                             logger.error(f"  JSON dimensions: {width}x{height}")
@@ -480,8 +475,12 @@ def main():
                     width, height = new_width, new_height
 
                 except Exception as e:
-                    print(f"Error processing file: {input_json_file_abs_path}")
-                    raise e
+                    # Record the problematic file and continue
+                    logger.error(
+                        f"Error processing file {input_json_file_abs_path}: {e}"
+                    )
+                    invalid_files.append(str(input_json_file_abs_path))
+                    continue
             else:
                 # Keep the directory structure when simply copying the image
                 # (no resize).  This guarantees path consistency regardless of
@@ -499,23 +498,29 @@ def main():
             except ValueError:
                 final_image_path_for_jsonl = str(output_image_abs_path)
 
+            # Build clean objects list immediately (unified format)
+            objects_field = [
+                {"bbox_2d": b, "desc": r} for r, b in zip(objects_ref, objects_bbox)
+            ]
+
             sample = {
                 "images": [final_image_path_for_jsonl],
-                "objects": {"ref": objects_ref, "bbox": objects_bbox},
+                "objects": objects_field,
                 "height": height,
                 "width": width,
             }
             processed_samples.append(sample)
         except Exception as e:
-            print(f"Error processing file: {input_json_file_abs_path}")
-            raise e
+            # Record the problematic file and continue
+            logger.error(f"Error processing file {input_json_file_abs_path}: {e}")
+            invalid_files.append(str(input_json_file_abs_path))
+            continue
 
     with output_jsonl_path.open("w", encoding="utf-8") as f:
         for sample in processed_samples:
             f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 
-    logger.info(f"✅ Successfully converted {len(processed_samples)} files.")
-    logger.info(f"Intermediate JSONL file saved to: {output_jsonl_path}")
+    logger.info(f"Converted JSONL file saved to: {output_jsonl_path}")
 
     # Report missing tokens if applicable
     if args.language == "english" and token_mapper:
@@ -528,6 +533,21 @@ def main():
                 logger.warning(f"  - '{token}'")
         else:
             logger.info("All tokens found in the token map.")
+
+    # Report invalid files if any
+    if invalid_files:
+        logger.warning(
+            "The following files were skipped due to errors (see log for details):"
+        )
+        for p in invalid_files:
+            logger.warning(f"  - {p}")
+        logger.warning(
+            "⚠️  Skipped",
+            len(invalid_files),
+            "files with invalid annotations. See convert.log for paths.",
+        )
+    else:
+        logger.info("✅ No invalid files encountered.")
 
 
 if __name__ == "__main__":

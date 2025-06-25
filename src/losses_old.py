@@ -710,7 +710,7 @@ class ObjectDetectionLoss(nn.Module):
         # Calculate IoU
         iou = inter_area / (union_area + 1e-7)
 
-        # Calculate enclosing box
+        # Calculate enclosing bbox_2d
         x1_enclosing = torch.min(pred_boxes[..., 0], gt_boxes[..., 0])
         y1_enclosing = torch.min(pred_boxes[..., 1], gt_boxes[..., 1])
         x2_enclosing = torch.max(pred_boxes[..., 2], gt_boxes[..., 2])

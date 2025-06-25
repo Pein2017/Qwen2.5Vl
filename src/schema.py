@@ -80,7 +80,79 @@ HiddenStatesTupleType = Tuple[LLMTokenType, ...]
 # Dictionary mapping loss component names → scalar tensors
 LossDictType = Dict[str, torch.Tensor]
 
+# ---------------------------------------------------------------------------
+# 🆕 Common low-level Tensor aliases
+# ---------------------------------------------------------------------------
+# 2-D bounding box \[x1, y1, x2, y2] in **absolute pixel** coordinates
+BBox2DType = TensorType[4]
+
+# ---------------------------------------------------------------------------
+# 📜 Conversation & sample-level structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ChatMessage:  # noqa: D401 – basic conversation unit
+    """Single message inside a multi-turn conversation.
+
+    Attributes
+    ----------
+    role
+        Must be one of {"system", "user", "assistant"}.
+    content
+        Raw text **after** special-token replacement (e.g. vision tokens).
+    """
+
+    role: str
+    content: str
+
+    def __post_init__(self) -> None:  # noqa: D401
+        if self.role not in {"system", "user", "assistant"}:
+            raise ValueError(
+                f"ChatMessage.role must be system|user|assistant, got {self.role}"
+            )
+        if not isinstance(self.content, str):
+            raise TypeError("ChatMessage.content must be str")
+
+
+@dataclass
+class ImageSample:  # noqa: D401 – one image + objects pair (teacher OR student)
+    """Atomic sample consisting of **at least one image** and its object list."""
+
+    images: list[str]
+    objects: list["GroundTruthObject"]
+
+    def __post_init__(self) -> None:  # noqa: D401
+        if len(self.images) == 0:
+            raise AssertionError("ImageSample must contain ≥1 image path")
+        for obj in self.objects:
+            if not isinstance(obj, GroundTruthObject):
+                raise TypeError(
+                    "ImageSample.objects items must be GroundTruthObject instances"
+                )
+
+
+@dataclass
+class MultiChatSample:  # noqa: D401 – full teacher/student bundle
+    """Input structure expected by :py:meth:`ChatProcessor.process_sample`.
+
+    It mirrors the *teacher / student* JSON layout produced by our data-
+    preparation pipeline and consumed throughout the code-base.
+    """
+
+    teachers: list[ImageSample]
+    student: ImageSample
+
+    def __post_init__(self) -> None:  # noqa: D401
+        if any(not isinstance(t, ImageSample) for t in self.teachers):
+            raise TypeError("All teachers must be ImageSample instances")
+        if not isinstance(self.student, ImageSample):
+            raise TypeError("student must be an ImageSample instance")
+
+
+# ---------------------------------------------------------------------------
 # Helper to assert tensor shapes via typeguard
+# ---------------------------------------------------------------------------
 
 
 def assert_tensor_shape(fn):
@@ -102,7 +174,7 @@ class ChatProcessorOutput:
     attention_mask: torch.Tensor
     pixel_values: Optional[torch.Tensor]
     image_grid_thw: Optional[torch.Tensor]
-    ground_truth_objects: list
+    ground_truth_objects: list["GroundTruthObject"]
     position_ids: Optional[torch.Tensor] = None  # (3,1,S) optional from ChatProcessor
 
     def __post_init__(self):
@@ -178,8 +250,8 @@ class CollatedBatch:
     attention_mask: torch.Tensor
     pixel_values: Optional[torch.Tensor]
     image_grid_thw: Optional[torch.Tensor]
-    image_counts_per_sample: list
-    ground_truth_objects: list
+    image_counts_per_sample: list[int]
+    ground_truth_objects: list[list["GroundTruthObject"]]
     position_ids: Optional[torch.Tensor] = None
 
     def __post_init__(self):
@@ -494,31 +566,31 @@ class GroundTruthObject:  # noqa: D401 – simple container
 
     Attributes
     ----------
-    box
+    bbox_2d
         Tensor containing \[x1, y1, x2, y2] in **absolute pixel** coordinates.
     desc
         Natural-language description / caption of the object.
     """
 
-    box: torch.Tensor  # TensorType[4]
+    bbox_2d: torch.Tensor  # TensorType[4]
     desc: str
 
     def __post_init__(self) -> None:  # noqa: D401
-        if isinstance(self.box, (list, tuple)):
-            self.box = torch.tensor(self.box, dtype=torch.float32)
-        if self.box.shape[-1] != 4:
+        if isinstance(self.bbox_2d, (list, tuple)):
+            self.bbox_2d = torch.tensor(self.bbox_2d, dtype=torch.float32)
+        if self.bbox_2d.shape[-1] != 4:
             raise AssertionError(
-                f"GroundTruthObject.box must have 4 elements, got {self.box.shape}"
+                f"GroundTruthObject.bbox_2d must have 4 elements, got {self.bbox_2d.shape}"
             )
 
     # ------------------------------------------------------------------
     # Compatibility shim – allow legacy dict-style access so that existing
-    # code using obj["box"] or obj["desc"] keeps working until fully
+    # code using obj["bbox_2d"] or obj["desc"] keeps working until fully
     # migrated to attribute access.
     # ------------------------------------------------------------------
     def __getitem__(self, key: str):
-        if key == "box":
-            return self.box
+        if key == "bbox_2d":
+            return self.bbox_2d
         if key == "desc":
             return self.desc
         raise KeyError(key)

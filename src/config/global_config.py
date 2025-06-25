@@ -65,9 +65,11 @@ class DirectConfig:
     max_total_length: int
     use_candidates: bool
     candidates_file: str
+    teacher_pool_file: str
     num_teacher_samples: int
     collator_type: str
     teacher_type: str  # "random" or "predefined"
+    teacher_ratio: float  # Ratio of samples that use teachers during training
     max_examples: int
     language: str
 
@@ -150,6 +152,11 @@ class DirectConfig:
 
     # Training schedule tweaks
     detection_freeze_epochs: int
+
+    # Vision processing parameters (Qwen2.5-VL image processor)
+    patch_size: int  # Spatial patch size of vision encoder (default: 14)
+    merge_size: int  # Merge size from vision encoder to LLM encoder (default: 2)
+    temporal_patch_size: int  # Temporal patch size of vision encoder (default: 2)
 
     # --- Derived Paths (set automatically) ---
     run_output_dir: str = field(init=False)

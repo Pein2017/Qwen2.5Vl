@@ -13,7 +13,6 @@ Features:
 - Uses core modules for consistent processing
 """
 
-import argparse
 import json
 import logging
 import statistics
@@ -22,8 +21,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Add parent directory to path for core_modules import
-sys.path.append(str(Path(__file__).parent.parent / "data_conversion"))
+# Ensure project root (containing data_conversion) is on module search path
+project_root = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(project_root))
 
 from data_conversion.core_modules import ResponseFormatter
 
@@ -62,6 +62,29 @@ class UnifiedDatasetAnalyzer:
 
         logger.info(f"Loaded {len(self.samples)} samples")
 
+    def _parse_ref(self, ref: Any) -> Dict[str, str]:
+        """Parse a reference descriptor, handling both verbose and slash formats."""
+        # Dict entries already structured
+        if isinstance(ref, dict):
+            return {
+                "object_type": ref.get("object_type", ""),
+                "property": ref.get("property", ""),
+                "extra_info": ref.get("extra_info", ""),
+            }
+        # String entries: semicolon-separated or slash-separated
+        if isinstance(ref, str):
+            if ";" in ref:
+                return ResponseFormatter.parse_description_string(ref)
+            # Slash-separated format (e.g., Chinese)
+            parts = [p.strip() for p in ref.split("/") if p.strip()]
+            return {
+                "object_type": parts[0] if len(parts) > 0 else "",
+                "property": parts[1] if len(parts) > 1 else "",
+                "extra_info": "/".join(parts[2:]) if len(parts) > 2 else "",
+            }
+        # Fallback for other types
+        return {"object_type": str(ref), "property": "", "extra_info": ""}
+
     def analyze_dataset(self) -> Dict[str, Any]:
         """Perform comprehensive dataset analysis."""
         logger.info("Analyzing dataset...")
@@ -82,18 +105,12 @@ class UnifiedDatasetAnalyzer:
             objects_per_sample.append(len(ref_items))
             all_objects.extend(ref_items)
 
-            # Parse object descriptions using ResponseFormatter
+            # Parse object descriptions using unified parser
             for ref in ref_items:
-                if isinstance(ref, str):
-                    components = ResponseFormatter.parse_description_string(ref)
-                    object_types.append(components.get("object_type", ""))
-                    properties.append(components.get("property", ""))
-                    extra_infos.append(components.get("extra_info", ""))
-                elif isinstance(ref, dict):
-                    # Handle dict format with standardized field names
-                    object_types.append(ref.get("object_type", ""))
-                    properties.append(ref.get("property", ""))
-                    extra_infos.append(ref.get("extra_info", ""))
+                components = self._parse_ref(ref)
+                object_types.append(components["object_type"])
+                properties.append(components["property"])
+                extra_infos.append(components["extra_info"])
 
         # Calculate statistics
         self.analysis_results = {
@@ -162,11 +179,8 @@ class UnifiedDatasetAnalyzer:
             # Rarity score based on unique object types
             object_types = []
             for ref in ref_items:
-                if isinstance(ref, str):
-                    components = ResponseFormatter.parse_description_string(ref)
-                    object_types.append(components.get("object_type", ""))
-                elif isinstance(ref, dict):
-                    object_types.append(ref.get("object_type", ""))
+                components = self._parse_ref(ref)
+                object_types.append(components["object_type"])
 
             # Calculate rarity based on frequency in dataset
             rarity_score = 0
@@ -254,21 +268,12 @@ class UnifiedDatasetAnalyzer:
         ref_items = objects.get("ref", [])
         bbox_items = objects.get("bbox", [])
 
-        # Parse object details using ResponseFormatter
+        # Parse object details using unified parser
         object_details = []
         for i, ref in enumerate(ref_items):
             bbox = bbox_items[i] if i < len(bbox_items) else None
 
-            if isinstance(ref, str):
-                components = ResponseFormatter.parse_description_string(ref)
-            elif isinstance(ref, dict):
-                components = {
-                    "object_type": ref.get("object_type", ""),
-                    "property": ref.get("property", ""),
-                    "extra_info": ref.get("extra_info", ""),
-                }
-            else:
-                components = {"object_type": str(ref), "property": "", "extra_info": ""}
+            components = self._parse_ref(ref)
 
             object_details.append(
                 {
@@ -349,81 +354,18 @@ class UnifiedDatasetAnalyzer:
             print(f"Dense samples (>10 objects): {complexity.get('dense_samples', 0)}")
 
 
+# Predefined configuration (no CLI)
+DATA_PATH = "data_conversion/qwen_combined.jsonl"
+ANALYSIS_OUTPUT_PATH = "analysis_results.json"
+
+
 def main():
-    """Main function with command line interface."""
-    parser = argparse.ArgumentParser(
-        description="Unified Data Analysis Tool for Qwen2.5-VL Dataset"
-    )
-    parser.add_argument("data_path", help="Path to the JSONL dataset file")
-    parser.add_argument(
-        "--analyze", action="store_true", help="Perform dataset analysis"
-    )
-    parser.add_argument(
-        "--extract-samples",
-        type=int,
-        default=5,
-        help="Extract N representative samples (default: 5)",
-    )
-    parser.add_argument("--inspect", type=int, help="Inspect specific sample by index")
-    parser.add_argument(
-        "--export-analysis", help="Export analysis results to JSON file"
-    )
-    parser.add_argument(
-        "--export-samples", help="Export representative samples to JSON file"
-    )
-    parser.add_argument("--summary", action="store_true", help="Print dataset summary")
-
-    args = parser.parse_args()
-
-    # Initialize analyzer
-    analyzer = UnifiedDatasetAnalyzer(args.data_path)
+    """Run full dataset analysis and export the results."""
+    analyzer = UnifiedDatasetAnalyzer(str(DATA_PATH))
     analyzer.load_data()
-
-    # Perform analysis if requested
-    if args.analyze or args.summary or args.export_analysis:
-        analyzer.analyze_dataset()
-
-    # Print summary
-    if args.summary:
-        analyzer.print_summary()
-
-    # Extract representative samples
-    if args.extract_samples > 0:
-        samples = analyzer.extract_representative_samples(args.extract_samples)
-        print("\n=== REPRESENTATIVE SAMPLES ===")
-        for i, sample in enumerate(samples, 1):
-            print(
-                f"{i}. {sample.get('_category', 'unknown').upper()}: {sample.get('images', [''])[0]}"
-            )
-            print(
-                f"   Objects: {sample.get('_num_objects', 0)}, Complexity: {sample.get('_complexity_score', 0):.1f}"
-            )
-
-        if args.export_samples:
-            analyzer.export_samples(samples, args.export_samples)
-
-    # Inspect specific sample
-    if args.inspect is not None:
-        try:
-            inspection = analyzer.inspect_sample(args.inspect)
-            print(f"\n=== SAMPLE INSPECTION (Index {args.inspect}) ===")
-            print(f"Image: {inspection['image_path']}")
-            print(f"Objects: {inspection['num_objects']}")
-            print(
-                f"Dimensions: {inspection['image_dimensions']['width']}x{inspection['image_dimensions']['height']}"
-            )
-            print("\nObject Details:")
-            for obj in inspection["objects"]:
-                print(f"  {obj['index']}: {obj['object_type']}")
-                print(f"    Property: {obj['property']}")
-                print(f"    Extra Info: {obj['extra_info']}")
-                print(f"    BBox: {obj['bbox']}")
-        except ValueError as e:
-            logger.error(f"Inspection error: {e}")
-
-    # Export analysis
-    if args.export_analysis:
-        analyzer.export_analysis(args.export_analysis)
+    analyzer.analyze_dataset()
+    analyzer.export_analysis(str(ANALYSIS_OUTPUT_PATH))
+    print(f"Full analysis exported to {ANALYSIS_OUTPUT_PATH}")
 
 
 if __name__ == "__main__":

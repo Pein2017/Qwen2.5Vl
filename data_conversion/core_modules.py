@@ -17,14 +17,19 @@ Standardized field names:
 import json
 import logging
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set, Union
+
+# Set UTF-8 encoding for stdout/stderr
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Regex to detect Chinese characters
-CHINESE_CHAR_REGEX = re.compile(r"[\u4e00-\u9fff]")
+# Regex to detect Chinese characters - improved pattern
+CHINESE_CHAR_REGEX = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 # Standardized field mapping - ONLY use new field names
 FIELD_MAPPING = {
@@ -229,7 +234,7 @@ class ObjectProcessor:
     def sort_objects_by_position(
         objects_ref: List[Any], objects_bbox: List[List[float]]
     ) -> tuple:
-        """Sort objects by bounding box coordinates (top-left to bottom-right)."""
+        """Sort objects by bounding bbox_2d coordinates (top-left to bottom-right)."""
         if not objects_ref or not objects_bbox or len(objects_ref) != len(objects_bbox):
             return objects_ref, objects_bbox
 
@@ -251,7 +256,7 @@ class ObjectProcessor:
         bbox: List[float], image_width: int = None, image_height: int = None
     ) -> bool:
         """
-        Validate a single bounding box with enhanced checks.
+        Validate a single bounding bbox_2d with enhanced checks.
 
         Args:
             bbox: A list of 4 numbers [x_min, y_min, x_max, y_max].
@@ -259,7 +264,7 @@ class ObjectProcessor:
             image_height: Optional height of the image to check bounds.
 
         Raises:
-            ValueError: If the bounding box is invalid.
+            ValueError: If the bounding bbox_2d is invalid.
         """
         if not isinstance(bbox, list) or len(bbox) != 4:
             raise ValueError(f"Bbox must be a list of 4 elements, but got: {bbox}")
@@ -300,17 +305,17 @@ class ObjectProcessor:
         new_height: int,
     ) -> List[int]:
         """
-        Scale a bounding box from the original image dimensions to the resized
+        Scale a bounding bbox_2d from the original image dimensions to the resized
         dimensions.
 
         Fail-fast philosophy:
-        1. The original bounding box must be fully inside the original image. If
+        1. The original bounding bbox_2d must be fully inside the original image. If
            not, a ValueError is raised.
-        2. The scaled bounding box must be fully inside the resized image. If
+        2. The scaled bounding bbox_2d must be fully inside the resized image. If
            not, a ValueError is raised.
         3. No automatic clamping, expansion, or silent correction is applied.
         """
-        # Validate the original bounding box first
+        # Validate the original bounding bbox_2d first
         ObjectProcessor.validate_bbox(
             bbox, image_width=original_width, image_height=original_height
         )
@@ -334,7 +339,7 @@ class ObjectProcessor:
 
         final_bbox = [new_x_min, new_y_min, new_x_max, new_y_max]
 
-        # Validate the scaled bounding box against the new image dimensions
+        # Validate the scaled bounding bbox_2d against the new image dimensions
         ObjectProcessor.validate_bbox(
             final_bbox, image_width=new_width, image_height=new_height
         )
@@ -400,117 +405,6 @@ class DataValidator:
             return False
 
         return True
-
-
-class CompactResponseFormatter:
-    """Handles compact response formatting for cleaner LLM training."""
-
-    @staticmethod
-    def format_to_compact_string(
-        content_dict: Dict[str, Any], response_types: Set[str] = None
-    ) -> str:
-        """Convert content dictionary to a structured, slash-separated format."""
-        if response_types is None:
-            response_types = {"object_type", "property", "extra_info"}
-
-        parts = []
-
-        # Add object_type if requested
-        if "object_type" in response_types:
-            object_type = content_dict.get("object_type", "").strip()
-            if object_type and object_type != "none":
-                parts.append(object_type)
-
-        # Add property if requested
-        if "property" in response_types:
-            property_value = content_dict.get("property", "")
-            if property_value and property_value != "none":
-                if isinstance(property_value, list):
-                    parts.extend(
-                        [
-                            str(p).strip()
-                            for p in property_value
-                            if str(p).strip() and str(p).strip() != "none"
-                        ]
-                    )
-                else:
-                    parts.append(str(property_value).strip())
-
-        # Add extra_info if requested
-        if "extra_info" in response_types:
-            extra_info = content_dict.get("extra_info", "")
-            if extra_info and extra_info != "none":
-                if isinstance(extra_info, list):
-                    parts.extend(
-                        [
-                            str(e).strip()
-                            for e in extra_info
-                            if str(e).strip() and str(e).strip() != "none"
-                        ]
-                    )
-                else:
-                    parts.append(str(extra_info).strip())
-
-        # Filter out empty parts and deduplicate
-        clean_parts = []
-        seen = set()
-        for part in parts:
-            part = part.strip()
-            if part and part not in seen and part != "none":
-                clean_parts.append(part)
-                seen.add(part)
-
-        # Join with slash separator for a structured format
-        return "/".join(clean_parts) if clean_parts else "unknown"
-
-    @staticmethod
-    def parse_compact_string(description: str) -> Dict[str, str]:
-        """Parse compact description back into components (best effort)."""
-        components = {"object_type": "", "property": "", "extra_info": ""}
-
-        if not description or description == "unknown":
-            return components
-
-        # For the compact format, we assume the first part is object_type
-        parts = [p.strip() for p in description.split("/") if p.strip()]
-        if parts:
-            components["object_type"] = parts[0]
-            if len(parts) > 1:
-                # The rest are considered properties/extra_info
-                components["property"] = "/".join(parts[1:])
-        return components
-
-    @staticmethod
-    def convert_from_verbose_format(
-        description: str, response_types: Set[str] = None
-    ) -> str:
-        """Convert from verbose schema format to simplified comma-separated format."""
-        if not description:
-            return "unknown"
-
-        # Parse the verbose format: "object_type:X;property:Y;extra_info:Z"
-        components = {"object_type": "", "property": "", "extra_info": ""}
-
-        # Split by semicolon and parse each part
-        parts = description.split(";")
-        for part in parts:
-            part = part.strip()
-            if ":" in part:
-                key, value = part.split(":", 1)
-                key = key.strip()
-                value = value.strip()
-
-                if key == "object_type":
-                    components["object_type"] = value
-                elif key == "property":
-                    components["property"] = value
-                elif key == "extra_info":
-                    components["extra_info"] = value
-
-        # Then convert to compact format
-        return CompactResponseFormatter.format_to_compact_string(
-            components, response_types
-        )
 
 
 # Utility functions for backward compatibility and convenience

@@ -5,6 +5,8 @@ This module provides a wrapper around the official Qwen2.5-VL model
 that adds object detection capabilities while preserving all original functionality.
 """
 
+import json
+from dataclasses import dataclass
 from typing import Any, Tuple, Union
 
 import torch
@@ -225,7 +227,6 @@ class Qwen25VLWithDetection(nn.Module):
         """
         Save detection head weights and configuration to `output_dir`.
         """
-        import json
         import os
 
         import torch
@@ -305,7 +306,6 @@ class Qwen25VLWithDetection(nn.Module):
     @classmethod
     def _analyze_checkpoint(cls, model_path: str) -> dict:
         """Analyze checkpoint to determine its type and available components."""
-        import json
         import os
 
         # Check for unified checkpoint markers
@@ -343,13 +343,42 @@ class Qwen25VLWithDetection(nn.Module):
     ):
         """Load from unified checkpoint created by our trainer."""
         checkpoint_info = cls._analyze_checkpoint(model_path)
-        detection_config = checkpoint_info["detection_config"]
 
-        # Use config values if not explicitly provided
+        # ------------------------------------------------------------------
+        # 🔒 Strict validation – missing keys raise immediately
+        # ------------------------------------------------------------------
+
+        @dataclass
+        class DetectionHeadConfig:
+            num_queries: int
+            max_caption_length: int
+
+            def __post_init__(self):
+                if self.num_queries <= 0:
+                    raise ValueError("num_queries must be > 0")
+                if self.max_caption_length <= 0:
+                    raise ValueError("max_caption_length must be > 0")
+
+        raw_cfg: dict = checkpoint_info["detection_config"]
+
+        # Fail-fast if required keys are absent → KeyError surfaces naturally.
+        cfg = DetectionHeadConfig(
+            num_queries=raw_cfg["num_queries"],
+            max_caption_length=raw_cfg["max_caption_length"],
+        )
+
+        # Command-line / caller overrides still take precedence ----------------
         if num_queries is None:
-            num_queries = detection_config.get("num_queries", 100)
+            num_queries = cfg.num_queries
         if max_caption_length is None:
-            max_caption_length = detection_config.get("max_caption_length", 32)
+            max_caption_length = cfg.max_caption_length
+
+        # Final sanity check – values must now be concrete integers.
+        if num_queries is None or max_caption_length is None:
+            raise ValueError(
+                "num_queries and max_caption_length must be provided either via "
+                "function arguments or checkpoint detection_config.json"
+            )
 
         print(f"🔄 Loading unified checkpoint from: {model_path}")
         print(f"   Detection queries: {num_queries}")
@@ -379,11 +408,17 @@ class Qwen25VLWithDetection(nn.Module):
         **kwargs,
     ):
         """Load base model without detection head (randomly initialized)."""
-        # Use defaults if not provided
-        if num_queries is None:
-            num_queries = 100
-        if max_caption_length is None:
-            max_caption_length = 32
+        # ------------------------------------------------------------------
+        # No silent defaults – the caller *must* specify the detection head
+        # dimensions when loading a *base* model.
+        # ------------------------------------------------------------------
+
+        if num_queries is None or max_caption_length is None:
+            raise ValueError(
+                "Loading a base model requires explicit num_queries and "
+                "max_caption_length parameters. No implicit defaults are "
+                "provided."
+            )
 
         print(f"🔄 Loading base model from: {model_path}")
         print(f"   Detection head will be randomly initialized")

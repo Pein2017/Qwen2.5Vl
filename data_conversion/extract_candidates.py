@@ -6,25 +6,31 @@ This script extracts all unique description phrases from the intermediate JSONL 
 to create candidate lists for reference-based grounding tasks.
 
 Usage:
-    python extract_unique_phrases.py --input_jsonl data_conversion/qwen_combined.jsonl --output_phrases candidates_phrases.json
+    python extract_candidates.py --input_jsonl data_conversion/qwen_combined.jsonl --output_phrases candidates_phrases.json
 """
 
 import argparse
 import json
 import logging
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Set, Union
 
 from core_modules import ResponseFormatter
 
-# Configure logging to file
+# Set UTF-8 encoding for stdout/stderr
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# Configure logging to file with UTF-8 encoding
 LOG_FILE = Path(__file__).parent / "convert.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     filename=str(LOG_FILE),
     filemode="a",
+    encoding="utf-8",  # Ensure UTF-8 encoding for log file
 )
 
 logger = logging.getLogger(__name__)
@@ -77,9 +83,7 @@ def extract_phrases_from_description(
         return segments
 
 
-def extract_unique_phrases(
-    input_jsonl: str, response_types: Set[str]
-) -> Dict[str, int]:
+def extract_candidates(input_jsonl: str, response_types: Set[str]) -> Dict[str, int]:
     """Extract all unique phrases from the JSONL file with frequency counts, using selected response types."""
     phrase_counter = Counter()
     total_samples = 0
@@ -96,12 +100,22 @@ def extract_unique_phrases(
                 data = json.loads(line)
                 total_samples += 1
 
-                # Extract objects
-                objects = data.get("objects", {})
-                ref_items = objects.get("ref", [])
+                # Extract objects (supports both old and new formats)
+                objects_field = data.get("objects", {})
+
+                if isinstance(objects_field, dict):
+                    # Old intermediate format
+                    ref_items = objects_field.get("ref", [])
+                elif isinstance(objects_field, list):
+                    # Clean format: list of {bbox_2d, desc}
+                    ref_items = [obj.get("desc", "") for obj in objects_field]
+                else:
+                    ref_items = []
 
                 # Process each reference description
                 for ref_desc in ref_items:
+                    if not ref_desc:
+                        continue
                     phrases = extract_phrases_from_description(ref_desc, response_types)
                     for phrase in phrases:
                         phrase_counter[phrase] += 1
@@ -218,7 +232,7 @@ def main():
 
     # Extract phrases
     response_types = set(args.response_types.split())
-    phrases_dict = extract_unique_phrases(args.input_jsonl, response_types)
+    phrases_dict = extract_candidates(args.input_jsonl, response_types)
 
     # Save results
     save_phrases(phrases_dict, args.output_phrases, args.min_frequency)

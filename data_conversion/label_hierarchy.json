@@ -26,10 +26,7 @@
     },
     {
         "object_type": "挡风板",
-        "property": [
-            "安装",
-            "未安装"
-        ]
+        "property": []
     },
     {
         "object_type": "标签贴纸",

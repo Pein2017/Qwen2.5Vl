@@ -12,55 +12,54 @@ from src.logger_utils import get_tokens_logger
 
 logger = get_tokens_logger()
 
+IGNORE_INDEX = -100
+
 
 class SpecialTokens:
     """Centralized special tokens management for Qwen2.5-VL vision processing."""
 
-    # Chat tokens
     IM_START = "<|im_start|>"
     IM_END = "<|im_end|>"
-
-    # Vision tokens (still needed for image processing)
     VISION_START = "<|vision_start|>"
     VISION_END = "<|vision_end|>"
-    VISION_PAD = "<|vision_pad|>"
     IMAGE_PAD = "<|image_pad|>"
+
+    # Deprecated / not currently used but kept for vocabulary completeness
+    VISION_PAD = "<|vision_pad|>"
     VIDEO_PAD = "<|video_pad|>"
-
-    # Standard tokens
     ENDOFTEXT = "<|endoftext|>"
-
-    # Placeholder tokens (replaced during processing)
     IMAGE_PLACEHOLDER = "<image>"
     VIDEO_PLACEHOLDER = "<video>"
 
-    # Object detection tokens (deprecated - now using JSON format)
-    # These are kept for reference but not used in processing
-    OBJECT_REF_START = "<|object_ref_start|>"  # DEPRECATED
-    OBJECT_REF_END = "<|object_ref_end|>"  # DEPRECATED
-    BOX_START = "<|box_start|>"  # DEPRECATED
-    BOX_END = "<|box_end|>"  # DEPRECATED
-    QUAD_START = "<|quad_start|>"  # DEPRECATED
-    QUAD_END = "<|quad_end|>"  # DEPRECATED
+    # For label masking
+    IGNORE_INDEX = IGNORE_INDEX
 
-    # Token ID mapping (from tokenizer_config.json)
     TOKEN_IDS = {
-        IM_START: 151644,
-        IM_END: 151645,
-        VISION_START: 151652,
-        VISION_END: 151653,
-        VISION_PAD: 151654,
-        IMAGE_PAD: 151655,
-        VIDEO_PAD: 151656,
-        ENDOFTEXT: 151643,
-        # Deprecated object detection tokens (kept for reference)
-        OBJECT_REF_START: 151646,
-        OBJECT_REF_END: 151647,
-        BOX_START: 151648,
-        BOX_END: 151649,
-        QUAD_START: 151650,
-        QUAD_END: 151651,
+        "<|im_start|>": 151644,
+        "<|im_end|>": 151645,
+        "<|vision_start|>": 151652,
+        "<|vision_end|>": 151653,
+        "<|image_pad|>": 151655,
+        # Deprecated / unused
+        "<|vision_pad|>": 151654,
+        "<|video_pad|>": 151656,
+        "<|endoftext|>": 151643,
     }
+
+    def to_list(self) -> List[str]:
+        """Return a list of all special token strings."""
+        return [
+            self.IM_START,
+            self.IM_END,
+            self.VISION_START,
+            self.VISION_END,
+            self.IMAGE_PAD,
+            self.VISION_PAD,
+            self.VIDEO_PAD,
+            self.ENDOFTEXT,
+            self.IMAGE_PLACEHOLDER,
+            self.VIDEO_PLACEHOLDER,
+        ]
 
     @classmethod
     def get_token_id(cls, token: str) -> Optional[int]:
@@ -69,8 +68,22 @@ class SpecialTokens:
 
     @classmethod
     def format_vision_tokens(cls, num_image_tokens: int) -> str:
-        """Format vision token sequence for an image."""
-        image_pads = cls.IMAGE_PAD * num_image_tokens
+        """Format vision token sequence for an image.
+
+        The tokenizer sometimes fails to recognise *contiguously* concatenated
+        special tokens (e.g. ``"<|image_pad|><|image_pad|>"``) and returns
+        ``None`` IDs.  We insert a single whitespace delimiter between each
+        `<|image_pad|>` marker so that every occurrence is isolated and can be
+        mapped to a valid token id.  Whitespace is an ordinary token which is
+        ignored by the vision encoder, so this change is loss-less for the
+        model while guaranteeing robust tokenisation.
+        """
+
+        if num_image_tokens <= 0:
+            raise ValueError(f"num_image_tokens must be > 0, got {num_image_tokens}")
+
+        # Insert spaces between successive <|image_pad|> tokens
+        image_pads = " ".join([cls.IMAGE_PAD] * num_image_tokens)
         return f"{cls.VISION_START}{image_pads}{cls.VISION_END}"
 
     @classmethod
@@ -147,7 +160,7 @@ class TokenFormatter:
         Format objects as JSON array (new Qwen2.5-VL compatible format).
 
         Args:
-            objects: List of objects with 'box' and 'desc' keys
+            objects: List of objects with 'bbox_2d' and 'desc' keys
 
         Returns:
             JSON string representation of the objects
@@ -157,10 +170,10 @@ class TokenFormatter:
 
         json_objects = []
         for obj in objects:
-            box = obj.get("box", [0, 0, 0, 0])
+            bbox_2d = obj.get("bbox_2d", [0, 0, 0, 0])
             desc = obj.get("desc", "unknown")
 
-            json_obj = {"bbox": box, "description": desc}
+            json_obj = {"bbox_2d": bbox_2d, "desc": desc}
             json_objects.append(json_obj)
 
         return json.dumps(json_objects, ensure_ascii=False, separators=(",", ": "))

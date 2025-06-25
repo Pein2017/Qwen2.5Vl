@@ -24,7 +24,6 @@ from transformers import (
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from src.rope2d import get_rope_index_25
 from src.utils import (
     CHAT_TEMPLATE,
     DEFAULT_BASE_MODEL_PATH,
@@ -260,13 +259,7 @@ class SimpleDataPreprocessor:
 
         attention_mask = torch.ones_like(input_ids)
 
-        # Calculate position IDs
-        merge_size = getattr(self.processor.image_processor, "merge_size", 2)
-        position_ids, _ = get_rope_index_25(
-            spatial_merge_size=merge_size,
-            input_ids=input_ids,
-            image_grid_thw=grid_thw.unsqueeze(0),
-        )
+        # Let the model compute RoPE internally – simply omit position_ids.
 
         # Create model inputs
         inputs = {
@@ -274,7 +267,6 @@ class SimpleDataPreprocessor:
             "attention_mask": attention_mask,
             "pixel_values": image_tensor.unsqueeze(0),
             "image_grid_thw": grid_thw.unsqueeze(0),
-            "position_ids": position_ids,
         }
 
         # Calculate input dimensions for coordinate scaling

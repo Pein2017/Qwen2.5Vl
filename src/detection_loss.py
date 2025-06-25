@@ -16,6 +16,7 @@ from transformers import PreTrainedTokenizerBase
 from src.logger_utils import get_detection_logger
 from src.schema import (
     DetectionPredictions,
+    GroundTruthObject,
     LossDictType,
 )  # typing
 from src.utils import IGNORE_INDEX
@@ -28,7 +29,7 @@ class DetectionLoss(nn.Module):
     Detection loss for open vocabulary dense object captioning.
 
     Implements Hungarian matching with multi-task loss combining:
-    - Bounding box regression (L1 + GIoU)
+    - Bounding bbox_2d regression (L1 + GIoU)
     - Object presence classification
     - Caption generation (language modeling)
     """
@@ -60,7 +61,7 @@ class DetectionLoss(nn.Module):
     def forward(
         self,
         pred_outputs: Union[DetectionPredictions, Dict[str, torch.Tensor]],
-        ground_truth_objects: List[List[Dict[str, Any]]],
+        ground_truth_objects: List[List[Union[GroundTruthObject, Dict[str, Any]]]],
     ) -> LossDictType:
         """
         Compute detection loss using Hungarian matching.
@@ -71,7 +72,7 @@ class DetectionLoss(nn.Module):
                 "pred_objectness": (B, N),          # Object confidence scores (pre-sigmoid)
                 "caption_logits": (B, N, max_len, vocab_size)  # Caption token logits
             }
-            ground_truth_objects: List[List[Dict]] - per batch, per object
+            ground_truth_objects: List[List[Union[GroundTruthObject, Dict]]] - per batch, per object
 
         Returns:
             dict: Detailed detection loss components
@@ -134,7 +135,7 @@ class DetectionLoss(nn.Module):
             matched_pred_idx, matched_gt_idx = self._hungarian_match(
                 pred_boxes[b],  # (N, 4)
                 pred_objectness[b],  # (N,)
-                gt_objects_sample,  # List[Dict]
+                gt_objects_sample,  # List[GroundTruthObject | Dict]
             )
 
             # --- Caption Loss (for all queries) ---
@@ -266,13 +267,13 @@ class DetectionLoss(nn.Module):
             # Add debugging for predictions vs ground truth
             if len(ground_truth_objects) > 0 and len(ground_truth_objects[0]) > 0:
                 # Show first batch, first GT object
-                gt_box = ground_truth_objects[0][0]["box"]
+                gt_box = ground_truth_objects[0][0]["bbox_2d"]
                 pred_box = pred_boxes[0, 0].detach().cpu().tolist()
                 pred_obj = torch.sigmoid(pred_objectness[0, 0]).item()
 
-                logger.debug(f"   Sample GT box: {gt_box}")
+                logger.debug(f"   Sample GT bbox_2d: {gt_box}")
                 logger.debug(
-                    f"   Sample pred box: {pred_box}"
+                    f"   Sample pred bbox_2d: {pred_box}"
                 )  # Show actual float values
                 logger.debug(f"   Sample pred objectness: {pred_obj:.3f}")
                 logger.debug(
@@ -285,20 +286,22 @@ class DetectionLoss(nn.Module):
         self,
         pred_boxes: torch.Tensor,
         pred_objectness: torch.Tensor,
-        gt_objects: List[Dict[str, Any]],
+        gt_objects: List[Union[GroundTruthObject, Dict[str, Any]]],
     ) -> Tuple[List[int], List[int]]:
         """Hungarian matching using bbox + objectness costs"""
         if len(gt_objects) == 0:
             return [], []
 
-        # Convert GT to tensors - use "box" key from your data format
+        # Convert GT to tensors - use "bbox_2d" key from your data format
         gt_boxes = torch.stack(
-            [self._box_to_tensor(obj["box"], pred_boxes.device) for obj in gt_objects]
+            [
+                self._box_to_tensor(obj["bbox_2d"], pred_boxes.device)
+                for obj in gt_objects
+            ]
         )  # (M, 4)
 
         # GT boxes are in pixel coordinates, need to normalize them
         # Note: Your ground truth extraction should handle this normalization
-        # For now, assume they're already normalized by extract_ground_truth_from_sample
 
         # Cost matrix computation
         N, M = pred_boxes.shape[0], gt_boxes.shape[0]
@@ -341,13 +344,13 @@ class DetectionLoss(nn.Module):
     def _bbox_loss(
         self,
         pred_boxes: torch.Tensor,
-        gt_objects: List[Dict[str, Any]],
+        gt_objects: List[Union[GroundTruthObject, Dict[str, Any]]],
         gt_indices: List[int],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return separate L1 and GIoU losses"""
         gt_boxes = torch.stack(
             [
-                self._box_to_tensor(gt_objects[i]["box"], pred_boxes.device)
+                self._box_to_tensor(gt_objects[i]["bbox_2d"], pred_boxes.device)
                 for i in gt_indices
             ]
         )
@@ -444,7 +447,7 @@ class DetectionLoss(nn.Module):
         # IoU with numerical stability
         iou = inter_area / torch.clamp(union_area, min=1e-7)
 
-        # Enclosing box for GIoU
+        # Enclosing bbox_2d for GIoU
         x1_enc = torch.min(boxes1[:, 0], boxes2[:, 0])
         y1_enc = torch.min(boxes1[:, 1], boxes2[:, 1])
         x2_enc = torch.max(boxes1[:, 2], boxes2[:, 2])
@@ -460,15 +463,15 @@ class DetectionLoss(nn.Module):
 
         return giou
 
-    def _box_to_tensor(self, box: Any, device: torch.device) -> torch.Tensor:
-        """Convert a box (list/tuple/Tensor) to a float32 Tensor on *device*.
+    def _box_to_tensor(self, bbox_2d: Any, device: torch.device) -> torch.Tensor:
+        """Convert a bbox_2d (list/tuple/Tensor) to a float32 Tensor on *device*.
 
         This utility prevents the common ``torch.tensor(existing_tensor)`` anti-pattern
         that triggers the *copy construct* warning from PyTorch by forwarding
         Tensors via ``.to`` instead of re-wrapping them.
         """
-        if isinstance(box, torch.Tensor):
+        if isinstance(bbox_2d, torch.Tensor):
             # Only device / dtype cast – no new allocation if already correct.
-            return box.to(device=device, dtype=torch.float32)
+            return bbox_2d.to(device=device, dtype=torch.float32)
         # Assume sequence of 4 coordinates; let any error surfacing here be explicit.
-        return torch.tensor(box, dtype=torch.float32, device=device)
+        return torch.tensor(bbox_2d, dtype=torch.float32, device=device)

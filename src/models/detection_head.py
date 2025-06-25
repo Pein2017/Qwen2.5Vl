@@ -1,9 +1,12 @@
+from typing import TypeVar
+
 import torch
 import torch.nn as nn
+from typeguard import typechecked
 
 from src.config import config as global_config
 from src.models.detection_adapter import DetectionAdapter
-from src.schema import (  # Shape validation helper
+from src.schema import (  
     AttentionMaskType,
     CaptionLogitsType,
     DetectionPredictions,
@@ -14,6 +17,12 @@ from src.schema import (  # Shape validation helper
     assert_tensor_shape,
     assert_vision_features,
 )
+
+# Dim symbols shared across the codebase
+S = TypeVar("S")  # Sequence length
+B = TypeVar("B")  # Batch size
+N = TypeVar("N")  # Num queries
+D = TypeVar("D")  # Hidden dimension
 
 
 class DetectionHead(nn.Module):
@@ -26,7 +35,7 @@ class DetectionHead(nn.Module):
     Key Features:
     - Object queries for DETR-style detection
     - Cross-attention decoder to process LLM hidden states
-    - Bounding box regression with normalized coordinates
+    - Bounding bbox_2d regression with normalized coordinates
     - Object presence/confidence prediction
     - Caption generation using same vocabulary as base LLM
     """
@@ -97,7 +106,7 @@ class DetectionHead(nn.Module):
             decoder_layer, num_layers=detection_decoder_num_layers
         )
 
-        # Bounding box prediction head
+        # Bounding bbox_2d prediction head
         self.bbox_head = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size // 4),
             nn.SiLU(),
@@ -203,6 +212,7 @@ class DetectionHead(nn.Module):
         print("✅ Bbox head weights reinitialized successfully")
 
     @assert_tensor_shape
+    @typechecked
     def forward(
         self,
         hidden_states: LLMTokenType | list[LLMTokenType],
@@ -230,7 +240,7 @@ class DetectionHead(nn.Module):
         # ground_truth_objects: List[List[Dict]] - GT objects for training
         # training: bool - whether in training mode
 
-        # If a list of per-layer hidden states is passed, pick the configured layer for box supervision
+        # If a list of per-layer hidden states is passed, pick the configured layer for bbox_2d supervision
         if isinstance(hidden_states, (list, tuple)):
             layer_idx = getattr(global_config, "detection_feature_layer", -1)
             box_memory = hidden_states[layer_idx]

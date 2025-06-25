@@ -9,7 +9,7 @@ This document compares the evaluation approaches for your multimodal telecommuni
 ### **What it does:**
 - **Single IoU threshold** evaluation (default 0.5)
 - **Binary matching**: Each prediction matches at most one ground truth
-- **Spatial-only**: Only considers bounding box overlap (IoU)
+- **Spatial-only**: Only considers bounding bbox_2d overlap (IoU)
 - **No semantic understanding**: Ignores description content
 
 ### **Limitations for Open-Vocabulary:**

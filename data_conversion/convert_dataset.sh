@@ -11,6 +11,10 @@
 
 set -e
 
+# Set proper locale for UTF-8 handling
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
+export PYTHONIOENCODING=utf-8
 
 # Data paths
 INPUT_DIR="ds"                          # Raw data directory
@@ -23,43 +27,34 @@ TEMP_JSONL="${DATA_CONVERSION_DIR}/qwen_combined.jsonl"
 MAP_FILE_EN="${DATA_CONVERSION_DIR}/token_map.json"   # English token map
 MAP_FILE_ZH="${DATA_CONVERSION_DIR}/token_map_zh.json" # Chinese token map
 
-# Final clean semantic data (only output we need)
-CLEAN_TRAIN="data/full_train.jsonl"
-CLEAN_VAL="data/full_val.jsonl"
+
 
 # Support files
-EXAMPLES_FILE="data_analysis/training_examples.json"
 CANDIDATES_FILE="data_conversion/candidate_phrases.json"
-TEACHER_TYPE="predefined"   # "random" or "predefined"
-
+TEACHER_POOL_FILE="data/teacher_pool.jsonl"
 
 # Parameters
 VAL_RATIO=0.1
 SEED=42
-MAX_EXAMPLES=2
 # Allow configuring multiple response types: object_type, property, extra_info
-RESPONSE_TYPES="object_type property extra_info"
+RESPONSE_TYPES="object_type property"
 USE_CANDIDATES=true
 LANGUAGE="chinese" # "english" or "chinese"
 RESIZE=true
+MAX_TEACHERS=10
+
+# Final outputs (dash-separated for clarity)
+TRAIN_FILE="data/${LANGUAGE}-train.jsonl"
+VAL_FILE="data/${LANGUAGE}-val.jsonl"
 
 # Environment setup
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
 export MODELSCOPE_CACHE="/data4/swift/modelscope/hub"
 
 
-# Derive attach_examples flag for converter
-if [[ "$TEACHER_TYPE" == "predefined" ]]; then
-    ATTACH_FLAG="--teacher_type predefined"
-else
-    ATTACH_FLAG="--teacher_type random"
-fi
-
 echo "🚀 Starting Clean Data Conversion Pipeline"
 echo "=========================================="
 echo "Language: $LANGUAGE"
-echo "Teacher Type: $TEACHER_TYPE"
-echo "Max Examples per Sample: $MAX_EXAMPLES"
 echo "Response Types: $RESPONSE_TYPES"
 echo ""
 
@@ -119,7 +114,7 @@ if [[ "$USE_CANDIDATES" == "true" ]]; then
     rm -f "${DATA_CONVERSION_DIR}/candidate_phrases.metadata.json"
     rm -f "${DATA_CONVERSION_DIR}/candidate_phrases.metadata.metadata.json"
     
-    python "${DATA_CONVERSION_DIR}/extract_unique_phrases.py" \
+    python "${DATA_CONVERSION_DIR}/extract_candidates.py" \
         --input_jsonl "$TEMP_JSONL" \
         --output_phrases "$CANDIDATES_FILE" \
         --min_frequency 1 \
@@ -127,131 +122,78 @@ if [[ "$USE_CANDIDATES" == "true" ]]; then
     echo "✅ Phrase extraction complete"
 fi
 
-# Extract examples
-if [[ "$TEACHER_TYPE" == "predefined" ]]; then
-    echo "📊 Step 4: Extracting representative examples (regenerating)..."
-    # Remove existing examples file to force regeneration
-    rm -f "$EXAMPLES_FILE"
-    
-    if [[ -f "data_analysis/extract_examples_from_conversations.py" ]]; then
-        python "data_analysis/extract_examples_from_conversations.py" \
-            "$TEMP_JSONL" \
-            --output "$EXAMPLES_FILE" \
-            --num_examples $MAX_EXAMPLES \
-            --response_types $RESPONSE_TYPES \
-            --seed $SEED
-        echo "✅ Example extraction complete (num_examples=$MAX_EXAMPLES)"
-    else
-        echo "⚠️  Warning: extract_examples_from_conversations.py not found. Disabling examples."
-        TEACHER_TYPE="random"
-    fi
-fi
+# Extract teacher pool and filter student pool
+echo "📊 Step 4: Extracting teacher pool (preparing teacher-student split)"
+python data_conversion/create_teacher_pool.py \
+  --data_path "$TEMP_JSONL" \
+  --hierarchy "${DATA_CONVERSION_DIR}/label_hierarchy.json" \
+  --max_teachers $MAX_TEACHERS \
+  --output "$TEACHER_POOL_FILE"
+echo "✅ Teacher pool generated: $TEACHER_POOL_FILE"
 
-
-echo "🔧 Step 5: Converting to clean semantic format (regenerating)..."
-# Remove existing output files to force regeneration
-rm -f "$CLEAN_TRAIN"
-rm -f "$CLEAN_VAL"
-
-python data_conversion/qwen_converter_unified.py \
-    --input_jsonl "$TEMP_JSONL" \
-    --output_train "$CLEAN_TRAIN" \
-    --output_val "$CLEAN_VAL" \
-    --val_ratio $VAL_RATIO \
-    --seed $SEED \
-    $ATTACH_FLAG \
-    --examples_file "$EXAMPLES_FILE" \
-    --max_examples $MAX_EXAMPLES \
-    --response_types "$RESPONSE_TYPES"
-
-echo "✅ Clean semantic data created:"
-echo "   Training: $CLEAN_TRAIN"
-echo "   Validation: $CLEAN_VAL"
-
-# =============================================================================
-# STEP 6: Validation
-# =============================================================================
-
-echo "🔍 Step 6: Validating pipeline..."
-python -c "
+echo "📊 Step 5: Filtering student pool from intermediate JSONL"
+STUDENT_JSONL="${DATA_CONVERSION_DIR}/student_combined.jsonl"
+# Remove old student pool to avoid stale files
+rm -f "$STUDENT_JSONL"
+python - <<EOF
 import json
+import sys
+# Set UTF-8 encoding for stdout/stderr
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+# Load teacher image paths from teacher_pool.jsonl
+teacher_paths = set()
+with open("$TEACHER_POOL_FILE", "r", encoding="utf-8") as tf:
+    for line in tf:
+        if not line.strip():
+            continue
+        sample = json.loads(line)
+        imgs = sample.get("images", [])
+        if imgs:
+            teacher_paths.add(imgs[0])
+# Filter out teacher samples from intermediate JSONL
+with open("$TEMP_JSONL", 'r', encoding="utf-8") as fin, open("$STUDENT_JSONL", 'w', encoding="utf-8") as fout:
+    for line in fin:
+        line = line.strip()
+        if not line:
+            continue
+        sample = json.loads(line)
+        img = sample.get("images", [None])[0]
+        if img not in teacher_paths:
+            fout.write(line + '\n')
+EOF
+echo "✅ Student pool ready: $STUDENT_JSONL"
 
-def validate_sample(sample):
-    \"\"\"Validate a single sample (handles both simple and multi-round formats).\"\"\"
-    if 'target' in sample and 'examples' in sample:
-        # Multi-round format
-        target = sample['target']
-        examples = sample['examples']
-        
-        # Validate target
-        if not isinstance(target.get('images'), list) or not target['images']:
-            return False
-        if not isinstance(target.get('objects'), list):
-            return False
-            
-        # Validate examples
-        if not isinstance(examples, list):
-            return False
-        for example in examples:
-            if not isinstance(example.get('images'), list) or not example['images']:
-                return False
-            if not isinstance(example.get('objects'), list):
-                return False
-        return True
-    else:
-        # Simple format
-        if not isinstance(sample.get('images'), list) or not sample['images']:
-            return False
-        if not isinstance(sample.get('objects'), list):
-            return False
-        return True
+echo "🔧 Step 6: Splitting student pool into train/val JSONL (clean format)..."
+# Remove existing output files to force regeneration
+rm -f "$TRAIN_FILE" "$VAL_FILE"
 
-def load_jsonl(file_path):
-    \"\"\"Load samples from JSONL file.\"\"\"
-    samples = []
-    with open(file_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                samples.append(json.loads(line))
-    return samples
+python data_conversion/split_train_val.py \
+    --input_jsonl "$STUDENT_JSONL" \
+    --output_train "$TRAIN_FILE" \
+    --output_val "$VAL_FILE" \
+    --val_ratio $VAL_RATIO \
+    --seed $SEED
 
-# Validate clean data
-print('Validating clean semantic data...')
-clean_samples = load_jsonl('$CLEAN_TRAIN')
-valid_count = sum(1 for sample in clean_samples if validate_sample(sample))
-print(f'✅ Clean data: {valid_count}/{len(clean_samples)} samples valid')
+echo "✅ Clean semantic data created:" \
+    && echo "   Training: $TRAIN_FILE" \
+    && echo "   Validation: $VAL_FILE"
+echo "   Teacher pool: $TEACHER_POOL_FILE"
 
-# Show sample format
-if clean_samples:
-    print('\\n📋 Sample clean semantic data:')
-    sample = clean_samples[0]
-    
-    if 'target' in sample and 'examples' in sample:
-        print('Format: Multi-round with examples')
-        print(f'Examples: {len(sample[\"examples\"])} examples')
-        print(f'Target Images: {sample[\"target\"].get(\"images\", [])}')
-        print(f'Target Objects: {len(sample[\"target\"].get(\"objects\", []))} objects')
-        if sample['target'].get('objects'):
-            obj = sample['target']['objects'][0]
-            print(f'Sample target object: {obj}')
-            print(f'Description format: \"{obj.get(\"desc\", \"\")}\"')
-    else:
-        print('Format: Simple')
-        print(f'Images: {sample.get(\"images\", [])}')
-        print(f'Objects: {len(sample.get(\"objects\", []))} objects')
-        if sample.get('objects'):
-            obj = sample['objects'][0]
-            print(f'Sample object: {obj}')
-            print(f'Description format: \"{obj.get(\"desc\", \"\")}\"')
-"
+# =============================================================================
+# STEP 7: Validation
+# =============================================================================
+
+echo "🔍 Validating converted train/val data..."
+python data_conversion/simple_validate.py "$TRAIN_FILE" "$VAL_FILE"
 
 echo ""
 echo "🎉 Pipeline completed successfully!"
 echo "=========================================="
 echo "📊 Final Output:"
-echo "   Clean semantic data: $CLEAN_TRAIN, $CLEAN_VAL"
+echo "   Clean semantic data: $TRAIN_FILE, $VAL_FILE"
 echo "   Candidate phrases: $CANDIDATES_FILE"
+echo "   Teacher pool: $TEACHER_POOL_FILE"
 echo ""
 echo "🔧 Architecture:"
 echo "   Raw JSON → Intermediate JSONL → Clean Semantic Data"
@@ -260,4 +202,4 @@ echo "   ✅ Compact descriptions: 'object_type, property, extra_info'"
 echo "   ✅ Training pipeline will handle special token conversion"
 echo "   ✅ Always regenerates all files"
 echo ""
-echo "🚀 Ready for training! Use $CLEAN_TRAIN and $CLEAN_VAL with your training pipeline." 
+echo "🚀 Ready for training! Use $TRAIN_FILE and $VAL_FILE with your training pipeline." 
