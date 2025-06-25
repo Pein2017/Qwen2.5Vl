@@ -157,29 +157,6 @@ class DirectConfig:
     merge_size: int  # Merge size from vision encoder to LLM encoder (default: 2)
     temporal_patch_size: int  # Temporal patch size of vision encoder (default: 2)
 
-    # --- PEFT (Parameter-Efficient Fine-Tuning) Configuration ---
-    # LoRA settings for backbone model
-    lora_enabled: bool
-    lora_r: int
-    lora_alpha: int
-    lora_dropout: float
-    lora_target_modules: list[str]
-    lora_bias: str  # "none", "all", or "lora_only"
-    lora_task_type: str  # "CAUSAL_LM" for Qwen2.5-VL
-
-    # Soft prompting / prefix tuning settings
-    prompt_tuning_enabled: bool
-    num_virtual_tokens: int
-    prompt_tuning_init_method: str  # "random" or "vocab_sample"
-
-    # LoRA training schedule
-    lora_learning_rate: float
-    prompt_learning_rate: float
-
-    # Adapter merging settings
-    lora_merge_weights: bool  # Whether to merge LoRA weights after training
-    lora_save_merged: bool  # Whether to save merged model separately
-
     # --- Derived Paths (set automatically) ---
     run_output_dir: str = field(init=False)
     tensorboard_dir: str = field(init=False)
@@ -412,8 +389,6 @@ def _apply_auto_lr_scaling(cfg: DirectConfig) -> None:
         "merger_lr",
         "llm_lr",
         "detection_lr",
-        "lora_learning_rate",
-        "prompt_learning_rate",
     ]
 
     for field_name in lr_fields:
