@@ -147,6 +147,8 @@ class BBUTrainer(Trainer):
 
         # Simple attributes to store the latest loss components from a single forward pass
         self._current_lm_loss: float = 0.0
+        self._current_teacher_lm_loss: float = 0.0
+        self._current_student_lm_loss: float = 0.0
         self._current_bbox_loss: float = 0.0
         self._current_caption_loss: float = 0.0
         self._current_objectness_loss: float = 0.0
@@ -155,6 +157,8 @@ class BBUTrainer(Trainer):
 
         # ACCUMULATORS for per-step average logging with gradient accumulation
         self._accumulated_lm_loss: float = 0.0
+        self._accumulated_teacher_lm_loss: float = 0.0
+        self._accumulated_student_lm_loss: float = 0.0
         self._accumulated_bbox_l1_loss: float = 0.0
         self._accumulated_bbox_giou_loss: float = 0.0
         self._accumulated_caption_loss: float = 0.0
@@ -217,27 +221,85 @@ class BBUTrainer(Trainer):
             output_dir = self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-        # --- 1. Save base model (sharded) ----------------------------------
-        base_model = getattr(self.model, "base_model", self.model)
-        self.logger.info("💾 Saving base Qwen2.5-VL model (sharded)…")
-        base_model.save_pretrained(
+        # --- 1. Save complete model (sharded) including visual components ---
+        # CRITICAL FIX: Save the full model, not just base_model
+        # For Qwen2.5-VL, visual tower is part of the main model, not base_model
+        if (
+            hasattr(self.model, "detection_enabled")
+            and not self.model.detection_enabled
+        ):
+            # For detection_enabled=False, save the full Qwen2.5-VL model
+            self.logger.info(
+                "💾 Saving complete Qwen2.5-VL model with visual tower (sharded)…"
+            )
+            model_to_save = self.model
+        else:
+            # For detection wrapper, save base model + detection head separately
+            self.logger.info("💾 Saving base Qwen2.5-VL model (sharded)…")
+            model_to_save = getattr(self.model, "base_model", self.model)
+
+        model_to_save.save_pretrained(
             output_dir, max_shard_size="2GB", safe_serialization=True
         )
 
         # --- 2. Save tokenizer & processor ---------------------------------
         if self.tokenizer is not None:
+            self.logger.info("💾 Saving tokenizer...")
             self.tokenizer.save_pretrained(output_dir)
 
-        if self.image_processor is not None and hasattr(
-            self.image_processor, "to_dict"
-        ):
-            ip_cfg = self.image_processor.to_dict()
-            with open(
-                os.path.join(output_dir, "preprocessor_config.json"),
-                "w",
-                encoding="utf-8",
-            ) as f:
-                json.dump(ip_cfg, f, indent=2, ensure_ascii=False)
+        if self.image_processor is None:
+            raise RuntimeError(
+                "Image processor is None - cannot save preprocessor config!"
+            )
+
+        self.logger.info("💾 Saving image processor...")
+
+        # Load base config from pretrained model and only override specific values
+        # This prevents corruption of other config values
+        from src.config import config as global_config
+
+        base_model_path = global_config.model_path
+        base_preproc_path = os.path.join(base_model_path, "preprocessor_config.json")
+
+        if os.path.exists(base_preproc_path):
+            with open(base_preproc_path, "r", encoding="utf-8") as f:
+                ip_cfg = json.load(f)
+        else:
+            raise RuntimeError(
+                f"Base preprocessor config not found: {base_preproc_path}"
+            )
+
+        # ONLY override the values that might have changed during training
+        # (min_pixels and max_pixels from vision_process.py)
+        if hasattr(self.image_processor, "min_pixels"):
+            ip_cfg["min_pixels"] = self.image_processor.min_pixels
+        if hasattr(self.image_processor, "max_pixels"):
+            ip_cfg["max_pixels"] = self.image_processor.max_pixels
+
+        # Verify all other critical attributes exist
+        critical_attrs = [
+            "patch_size",
+            "temporal_patch_size",
+            "merge_size",
+            "image_mean",
+            "image_std",
+        ]
+        for attr_name in critical_attrs:
+            if attr_name not in ip_cfg:
+                raise RuntimeError(
+                    f"Critical attribute missing from preprocessor config: {attr_name}"
+                )
+
+        with open(
+            os.path.join(output_dir, "preprocessor_config.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(ip_cfg, f, indent=2, ensure_ascii=False)
+
+        self.logger.info(
+            f"   ✅ Image processor config saved with {len(ip_cfg)} parameters (preserving base config)"
+        )
 
         # --- 3. Save detection head (if any) -------------------------------
         if getattr(self.model, "detection_enabled", False) and hasattr(
@@ -245,10 +307,146 @@ class BBUTrainer(Trainer):
         ):
             self._save_detection_components(output_dir)
 
-        # --- 4. Save training args ----------------------------------------
+        # --- 4. Copy essential files from base model -------------------
+        self._copy_essential_files_from_base_model(output_dir)
+
+        # --- 5. Save training args ----------------------------------------
         torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
 
+        # --- 6. Verify visual components were saved -------------------
+        self._verify_saved_checkpoint(output_dir)
+
         self.logger.info(f"✅ Checkpoint saved successfully → {output_dir}")
+
+    def _copy_essential_files_from_base_model(self, output_dir: str) -> None:
+        """Copy essential files from base model to match pretrained model structure."""
+        import os
+        import shutil
+
+        from src.config import config as global_config
+
+        self.logger.info("💾 Copying essential files from base model...")
+
+        base_model_path = global_config.model_path
+        if not os.path.exists(base_model_path):
+            raise RuntimeError(f"Base model path not found: {base_model_path}")
+
+            # Files to copy from pretrained model directory structure
+        essential_files = [
+            "generation_config.json",
+        ]
+
+        # Optional files for full compatibility (not required for functionality)
+        optional_files = [
+            "chat_template.json",  # Not used - we have custom system prompts
+            "LICENSE",
+            "README.md",
+        ]
+
+        # Copy essential files
+        missing_source_files = []
+        for file_name in essential_files:
+            src_path = os.path.join(base_model_path, file_name)
+            dst_path = os.path.join(output_dir, file_name)
+
+            if os.path.exists(src_path) and not os.path.exists(dst_path):
+                shutil.copy2(src_path, dst_path)
+                self.logger.info(f"   ✅ Copied {file_name}")
+            elif os.path.exists(dst_path):
+                self.logger.info(f"   ✅ {file_name} already exists")
+            else:
+                self.logger.error(f"   ❌ {file_name} not found in base model")
+                missing_source_files.append(file_name)
+
+        if missing_source_files:
+            raise RuntimeError(
+                f"Essential files missing from base model {base_model_path}: {missing_source_files}"
+            )
+
+        # Copy optional files (best effort, don't fail if missing)
+        for file_name in optional_files:
+            src_path = os.path.join(base_model_path, file_name)
+            dst_path = os.path.join(output_dir, file_name)
+
+            if os.path.exists(src_path) and not os.path.exists(dst_path):
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    self.logger.info(f"   ✅ Copied {file_name} (optional)")
+                except Exception as e:
+                    self.logger.info(
+                        f"   ℹ️ Failed to copy optional file {file_name}: {e}"
+                    )
+            elif os.path.exists(dst_path):
+                self.logger.info(f"   ✅ {file_name} already exists (optional)")
+            else:
+                self.logger.info(
+                    f"   ℹ️ Optional file {file_name} not found in base model"
+                )
+
+    def _verify_saved_checkpoint(self, output_dir: str) -> None:
+        """Verify that all necessary components were saved in the checkpoint."""
+        import os
+
+        from safetensors import safe_open
+
+        self.logger.info("🔍 Verifying saved checkpoint components...")
+
+        # Check essential files exist
+        essential_files = [
+            "config.json",
+            "tokenizer_config.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+        ]
+
+        missing_files = []
+        for file_name in essential_files:
+            file_path = os.path.join(output_dir, file_name)
+            if os.path.exists(file_path):
+                self.logger.info(f"   ✅ {file_name} exists")
+            else:
+                self.logger.error(f"   ❌ {file_name} MISSING")
+                missing_files.append(file_name)
+
+        if missing_files:
+            raise RuntimeError(f"Essential checkpoint files missing: {missing_files}")
+
+        # Check model weights and verify visual components
+        safetensor_files = [
+            f for f in os.listdir(output_dir) if f.endswith(".safetensors")
+        ]
+        if not safetensor_files:
+            raise RuntimeError("No safetensor model files found in checkpoint!")
+
+        self.logger.info(f"   ✅ Found {len(safetensor_files)} safetensor files")
+
+        # Check for visual tower weights in the first safetensor file
+        first_file = os.path.join(output_dir, safetensor_files[0])
+        visual_keys = []
+        total_keys = 0
+
+        with safe_open(first_file, framework="pt", device="cpu") as f:
+            all_keys = f.keys()
+            total_keys = len(list(all_keys))
+
+            # Re-open to iterate (safe_open keys() is a generator)
+            with safe_open(first_file, framework="pt", device="cpu") as f2:
+                for key in f2.keys():
+                    if "visual" in key:
+                        visual_keys.append(key)
+
+        self.logger.info(message=f"   ✅ Total parameters saved: {total_keys}")
+
+        # FAIL FAST: Vision tower must be present for vision-language model
+        if not visual_keys:
+            raise RuntimeError(
+                "No visual tower parameters found in checkpoint! "
+                "This indicates the model saving failed to include vision components. "
+                "Vision-language models require visual tower weights for proper inference."
+            )
+
+        self.logger.info(f"   ✅ Visual tower parameters found: {len(visual_keys)}")
+        self.logger.info(f"      Examples: {visual_keys[:3]}...")
 
     def _save_detection_components(self, output_dir: str) -> None:
         """Save detection head weights and configuration."""
@@ -651,6 +849,116 @@ class BBUTrainer(Trainer):
 
         return norms
 
+    def _compute_teacher_student_losses(
+        self,
+        logits: torch.Tensor,
+        labels: Optional[torch.Tensor],
+        inputs: Dict[str, Any],
+    ) -> tuple[float, float]:
+        """
+        Compute separate losses for teacher and student spans.
+
+        Uses the same shifting logic as the total LM loss computation,
+        so the returned losses are directly comparable to the total LM loss.
+
+        Args:
+            logits: Model output logits [batch_size, sequence_length, vocab_size]
+            labels: Ground truth labels [batch_size, sequence_length]
+            inputs: Batch inputs containing span information
+
+        Returns:
+            Tuple of (teacher_loss, student_loss) as float values
+        """
+        if labels is None:
+            return 0.0, 0.0
+
+        # Get spans from inputs (may be None for backward compatibility)
+        teacher_spans = inputs.get("teacher_assistant_spans")
+        student_spans = inputs.get("student_assistant_spans")
+
+        if teacher_spans is None or student_spans is None:
+            # No spans available, split not possible
+            return 0.0, 0.0
+
+        # CRITICAL: Apply the same shifting as the total LM loss computation
+        # The model predicts next tokens, so we shift logits[:-1] vs labels[1:]
+        batch_size, seq_len, vocab_size = logits.shape
+        shift_logits = logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
+        shift_labels = labels[..., 1:].contiguous()  # [batch, seq_len-1]
+
+        # Flatten shifted logits and labels for easier indexing
+        flat_logits = shift_logits.view(
+            -1, vocab_size
+        )  # [batch_size * (seq_len-1), vocab_size]
+        flat_labels = shift_labels.view(-1)  # [batch_size * (seq_len-1)]
+
+        # Adjust sequence length for shifted data
+        shifted_seq_len = seq_len - 1
+
+        # Create loss function - use MEAN reduction to match the total LM loss
+        loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")
+
+        # Collect indices for teacher and student tokens
+        # NOTE: Spans are in original coordinates, but we need to adjust for shifting
+        teacher_indices = []
+        student_indices = []
+
+        for batch_idx in range(batch_size):
+            # Teacher spans for this sample
+            for start, end in teacher_spans[batch_idx]:
+                for pos in range(start, end):
+                    # Shift adjustment: original pos becomes pos-1 in shifted sequence
+                    # We predict token at pos using logits[pos-1], so spans shift left by 1
+                    shifted_pos = pos - 1
+                    if (
+                        0 <= shifted_pos < shifted_seq_len
+                    ):  # Safety check for shifted bounds
+                        flat_idx = batch_idx * shifted_seq_len + shifted_pos
+                        teacher_indices.append(flat_idx)
+
+            # Student spans for this sample
+            for start, end in student_spans[batch_idx]:
+                for pos in range(start, end):
+                    # Shift adjustment: original pos becomes pos-1 in shifted sequence
+                    shifted_pos = pos - 1
+                    if (
+                        0 <= shifted_pos < shifted_seq_len
+                    ):  # Safety check for shifted bounds
+                        flat_idx = batch_idx * shifted_seq_len + shifted_pos
+                        student_indices.append(flat_idx)
+
+        # Compute teacher loss
+        teacher_loss = 0.0
+        if teacher_indices:
+            teacher_indices_tensor = torch.tensor(teacher_indices, device=logits.device)
+            teacher_logits = flat_logits[teacher_indices_tensor]
+            teacher_labels = flat_labels[teacher_indices_tensor]
+
+            # Only compute loss on tokens that are not ignored
+            valid_mask = teacher_labels != -100
+            if valid_mask.any():
+                # Use mean reduction directly - no manual averaging needed
+                teacher_loss = loss_fn(
+                    teacher_logits[valid_mask], teacher_labels[valid_mask]
+                ).item()
+
+        # Compute student loss
+        student_loss = 0.0
+        if student_indices:
+            student_indices_tensor = torch.tensor(student_indices, device=logits.device)
+            student_logits = flat_logits[student_indices_tensor]
+            student_labels = flat_labels[student_indices_tensor]
+
+            # Only compute loss on tokens that are not ignored
+            valid_mask = student_labels != -100
+            if valid_mask.any():
+                # Use mean reduction directly - no manual averaging needed
+                student_loss = loss_fn(
+                    student_logits[valid_mask], student_labels[valid_mask]
+                ).item()
+
+        return teacher_loss, student_loss
+
     def compute_loss(
         self,
         model: nn.Module,
@@ -672,6 +980,9 @@ class BBUTrainer(Trainer):
         if model.training:
             self._micro_batch_count += 1
 
+        # Unpack 1×T packed batches (if any) back to B×S for correct masking
+        inputs = self._maybe_unpack_packed(inputs)
+
         # Extract and store GT objects separately
         ground_truth_objects = self._extract_ground_truth_objects(inputs)
 
@@ -689,6 +1000,9 @@ class BBUTrainer(Trainer):
         model_inputs.pop("ground_truth_objects", None)
         model_inputs.pop("image_counts_per_sample", None)
         model_inputs.pop("cu_seqlens", None)
+        # Remove teacher-student span fields - these are for trainer use only, not model input
+        model_inputs.pop("teacher_assistant_spans", None)
+        model_inputs.pop("student_assistant_spans", None)
 
         # Ensure we get hidden states for detection
         model_inputs["output_hidden_states"] = True
@@ -728,6 +1042,18 @@ class BBUTrainer(Trainer):
             raise RuntimeError("LM loss is NaN, see previous error logs for details.")
         self._current_lm_loss = lm_loss.item()
         self._accumulated_lm_loss += self._current_lm_loss
+
+        # ------------------------------------------------------------------
+        # Teacher-Student Loss Splitting
+        # ------------------------------------------------------------------
+        (
+            self._current_teacher_lm_loss,
+            self._current_student_lm_loss,
+        ) = self._compute_teacher_student_losses(
+            outputs.logits, inputs.get("labels"), inputs
+        )
+        self._accumulated_teacher_lm_loss += self._current_teacher_lm_loss
+        self._accumulated_student_lm_loss += self._current_student_lm_loss
 
         # Detection loss computation
         total_detection_loss = 0.0
@@ -925,9 +1251,15 @@ class BBUTrainer(Trainer):
             # seen since the last log, independent of the gradient-accumulation
             # configuration.
             avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
+            avg_teacher_lm_loss = self._accumulated_teacher_lm_loss / num_micro_batches
+            avg_student_lm_loss = self._accumulated_student_lm_loss / num_micro_batches
             total_avg_loss = avg_lm_loss
 
-            component_logs: Dict[str, float] = {"lm_loss": avg_lm_loss}
+            component_logs: Dict[str, float] = {
+                "lm_loss": avg_lm_loss,
+                "teacher_lm_loss": avg_teacher_lm_loss,
+                "student_lm_loss": avg_student_lm_loss,
+            }
 
             if self.config.detection_enabled:
                 avg_bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
@@ -1040,6 +1372,8 @@ class BBUTrainer(Trainer):
 
             # Reset accumulators after logging
             self._accumulated_lm_loss = 0.0
+            self._accumulated_teacher_lm_loss = 0.0
+            self._accumulated_student_lm_loss = 0.0
             self._accumulated_caption_loss = 0.0
             self._accumulated_objectness_loss = 0.0
             self._accumulated_bbox_l1_loss = 0.0
@@ -1208,6 +1542,8 @@ class BBUTrainer(Trainer):
         # Save training accumulators to prevent interference from evaluation
         saved_accumulators = {
             "lm": self._accumulated_lm_loss,
+            "teacher_lm": self._accumulated_teacher_lm_loss,
+            "student_lm": self._accumulated_student_lm_loss,
             "bbox_l1": self._accumulated_bbox_l1_loss,
             "bbox_giou": self._accumulated_bbox_giou_loss,
             "caption": self._accumulated_caption_loss,
@@ -1216,6 +1552,8 @@ class BBUTrainer(Trainer):
 
         # Reset accumulators before evaluation
         self._accumulated_lm_loss = 0.0
+        self._accumulated_teacher_lm_loss = 0.0
+        self._accumulated_student_lm_loss = 0.0
         self._accumulated_caption_loss = 0.0
         self._accumulated_objectness_loss = 0.0
 
@@ -1234,6 +1572,12 @@ class BBUTrainer(Trainer):
             metrics[f"{metric_key_prefix}_lm_loss"] = round(
                 self._accumulated_lm_loss / num_batches, 4
             )
+            metrics[f"{metric_key_prefix}_lm_teacher_loss"] = round(
+                self._accumulated_teacher_lm_loss / num_batches, 4
+            )
+            metrics[f"{metric_key_prefix}_lm_student_loss"] = round(
+                self._accumulated_student_lm_loss / num_batches, 4
+            )
             if self.config.detection_enabled:
                 metrics[f"{metric_key_prefix}_bbox_l1_loss"] = round(
                     self._accumulated_bbox_l1_loss / num_batches, 4
@@ -1250,12 +1594,127 @@ class BBUTrainer(Trainer):
 
         # Restore training accumulators
         self._accumulated_lm_loss = saved_accumulators["lm"]
+        self._accumulated_teacher_lm_loss = saved_accumulators["teacher_lm"]
+        self._accumulated_student_lm_loss = saved_accumulators["student_lm"]
         self._accumulated_caption_loss = saved_accumulators["caption"]
         self._accumulated_objectness_loss = saved_accumulators["objectness"]
 
         # Log extended metrics
         self.log(metrics)
         return metrics
+
+    # ------------------------------------------------------------------
+    # 🆕  Helper – unpack 1×T *packed* batches back to regular B×S tensors
+    # ------------------------------------------------------------------
+    def _maybe_unpack_packed(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        """If **PackedDataCollator** was used, the batch comes with
+        • input_ids/labels -> shape (1, total_len)
+        • cu_seqlens       -> inclusive prefix-sum vector [0,L₁,L₁+L₂,…]
+
+        Transformers attention implementation still expects each sample to
+        occupy its own batch row.  We therefore reconstruct a padded
+        B×S representation on-the-fly *inside* the trainer so the rest of
+        the pipeline (loss split, causal mask, etc.) remains unchanged.
+        The operation is cheap (≤1 µs) compared to the forward pass.
+        """
+
+        if "cu_seqlens" not in batch:
+            # Standard collator → nothing to do
+            return batch
+
+        cu = batch["cu_seqlens"].to(torch.long)  # (B+1, ) inclusive
+        if cu.ndim != 1 or cu[0].item() != 0:
+            raise RuntimeError(
+                "cu_seqlens must be 1-D inclusive prefix-sum starting with 0"
+            )
+
+        lengths = (cu[1:] - cu[:-1]).tolist()  # per-sample lengths
+        batch_size = len(lengths)
+        max_len = max(lengths)
+
+        device = batch["input_ids"].device
+        ids_dtype = batch["input_ids"].dtype
+        lbl_dtype = batch["labels"].dtype
+
+        pad_id = self.tokenizer.pad_token_id if self.tokenizer is not None else 0
+        IGNORE_INDEX = -100  # keep consistent with src.utils
+
+        new_input_ids = torch.full(
+            (batch_size, max_len), pad_id, dtype=ids_dtype, device=device
+        )
+        new_labels = torch.full(
+            (batch_size, max_len), IGNORE_INDEX, dtype=lbl_dtype, device=device
+        )
+        new_attn = torch.zeros((batch_size, max_len), dtype=torch.bool, device=device)
+
+        # Optional: carry over 3-channel position_ids when available
+        pos_ids_src = batch.get(
+            "position_ids"
+        )  # may be None or (1, total_len) or (3,1,total_len)
+        if pos_ids_src is not None:
+            pos_dtype = pos_ids_src.dtype
+            if pos_ids_src.ndim == 2:  # (1, T)
+                pos_ids_src = pos_ids_src.unsqueeze(
+                    0
+                )  # → (1,1,T) for uniform indexing below
+            # (3,1,T) is already fine
+            new_pos = torch.zeros(
+                (3, batch_size, max_len), dtype=pos_dtype, device=device
+            )
+        else:
+            new_pos = None
+
+        # Adjust teacher / student spans while iterating
+        teacher_batch = batch.get("teacher_assistant_spans", [])
+        student_batch = batch.get("student_assistant_spans", [])
+        new_teacher, new_student = [], []
+
+        cursor = 0
+        for i, L in enumerate(lengths):
+            slice_ids = slice(cursor, cursor + L)
+
+            # Copy token tensors -------------------------------------------------
+            new_input_ids[i, :L] = batch["input_ids"][0, slice_ids]
+            new_labels[i, :L] = batch["labels"][0, slice_ids]
+            new_attn[i, :L] = True
+
+            # Position-ids -------------------------------------------------------
+            if new_pos is not None:
+                new_pos[:, i : i + 1, :L] = pos_ids_src[:, :, slice_ids]
+
+            # Span adjustment ----------------------------------------------------
+            if teacher_batch:
+                adj_teacher = [(s - cursor, e - cursor) for (s, e) in teacher_batch[i]]
+                new_teacher.append(adj_teacher)
+            if student_batch:
+                adj_student = [(s - cursor, e - cursor) for (s, e) in student_batch[i]]
+                new_student.append(adj_student)
+
+            cursor += L
+
+        # Build new dict --------------------------------------------------------
+        packed_keys = {
+            "input_ids": new_input_ids,
+            "labels": new_labels,
+            "attention_mask": new_attn,
+        }
+        if new_pos is not None:
+            packed_keys["position_ids"] = new_pos
+
+        # Replace tensors
+        new_batch = batch.copy()
+        new_batch.update(packed_keys)
+
+        # Replace spans
+        if teacher_batch:
+            new_batch["teacher_assistant_spans"] = new_teacher
+        if student_batch:
+            new_batch["student_assistant_spans"] = new_student
+
+        # Remove cu_seqlens so downstream code isn't confused
+        new_batch.pop("cu_seqlens", None)
+
+        return new_batch
 
 
 def set_model_training_params(model):
@@ -1545,17 +2004,15 @@ def setup_data_module(
 def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str) -> None:
     """
     Safe model saving following the official approach.
-    This matches the saving logic in train_qwen.py.
+    Uses the improved _save method that includes visual components.
     """
     logger = get_training_logger()
     logger.info(f"💾 Safely saving model to: {output_dir}")
 
-    # Save model state dict
-    state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
-        cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
-        del state_dict
-        trainer._save(output_dir, state_dict=cpu_state_dict)
+        # Use the trainer's improved _save method which handles visual components properly
+        trainer._save(output_dir)
+        logger.info("✅ Model saved using improved _save method with visual components")
 
 
 def create_trainer(

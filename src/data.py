@@ -520,6 +520,20 @@ class StandardDataCollator:
         if instances and isinstance(instances[0], ChatProcessorOutput):
             instances = [asdict(ins) for ins in instances]  # type: ignore[assignment]
 
+        # ------------------------------------------------------------------
+        # Extract teacher-student spans from instances before dict conversion
+        # ------------------------------------------------------------------
+        teacher_spans_batch: list[list[tuple[int, int]]] = []
+        student_spans_batch: list[list[tuple[int, int]]] = []
+
+        for instance in instances:
+            # Extract spans from each instance
+            teacher_spans = instance.get("teacher_assistant_spans", [])
+            student_spans = instance.get("student_assistant_spans", [])
+
+            teacher_spans_batch.append(teacher_spans)
+            student_spans_batch.append(student_spans)
+
         # FAIL-FAST: Process all instances without filtering or fallbacks
         for i, instance in enumerate(instances):
             if "pixel_values" in instance and instance["pixel_values"] is not None:
@@ -732,6 +746,10 @@ class StandardDataCollator:
         batch.setdefault("pixel_values", None)
         batch.setdefault("image_grid_thw", None)
 
+        # Add teacher-student spans to batch
+        batch["teacher_assistant_spans"] = teacher_spans_batch
+        batch["student_assistant_spans"] = student_spans_batch
+
         # Fail-fast shape validation (raises AssertionError on mismatch)
         assert_collated_batch(batch)
 
@@ -755,11 +773,29 @@ class PackedDataCollator:
             instances = [asdict(ins) for ins in instances]  # type: ignore[assignment]
 
         # ------------------------------------------------------------------
+        # Extract teacher-student spans and adjust for packed sequences
+        # ------------------------------------------------------------------
+        teacher_spans_batch: list[list[tuple[int, int]]] = []
+        student_spans_batch: list[list[tuple[int, int]]] = []
+
+        for instance in instances:
+            # Extract spans from each instance
+            teacher_spans = instance.get("teacher_assistant_spans", [])
+            student_spans = instance.get("student_assistant_spans", [])
+
+            teacher_spans_batch.append(teacher_spans)
+            student_spans_batch.append(student_spans)
+
+        # ------------------------------------------------------------------
         # 1. Gather required per-sample tensors
         # ------------------------------------------------------------------
         input_ids_list = [ins["input_ids"] for ins in instances]
         labels_list = [ins["labels"] for ins in instances]
-        raw_position_ids_list = [ins.get("position_ids") for ins in instances]
+        # Note: we deliberately ignore any caller-provided `position_ids` when
+        #       packing because they are likely already **shifted** for
+        #       individual sequences and therefore incompatible once all
+        #       samples are concatenated.  We regenerate a fresh, flat
+        #       1-D vector that restarts from 0 at every sample boundary.
 
         # ------------------------------------------------------------------
         # 2. Compute per-sample lengths and cumulative sequence lens vector
@@ -770,35 +806,57 @@ class PackedDataCollator:
         cu_seqlens = torch.tensor([0] + seq_lens, dtype=torch.int32).cumsum(0)
 
         # ------------------------------------------------------------------
+        # Adjust teacher-student spans for packed sequences
+        # After packing, spans need to be offset by sample start positions
+        # ------------------------------------------------------------------
+        adjusted_teacher_spans: list[list[tuple[int, int]]] = []
+        adjusted_student_spans: list[list[tuple[int, int]]] = []
+
+        for i, (teacher_spans, student_spans) in enumerate(
+            zip(teacher_spans_batch, student_spans_batch)
+        ):
+            offset = cu_seqlens[
+                i
+            ].item()  # Start position of this sample in packed sequence
+
+            # Adjust teacher spans
+            adjusted_teacher = [
+                (start + offset, end + offset) for start, end in teacher_spans
+            ]
+            adjusted_teacher_spans.append(adjusted_teacher)
+
+            # Adjust student spans
+            adjusted_student = [
+                (start + offset, end + offset) for start, end in student_spans
+            ]
+            adjusted_student_spans.append(adjusted_student)
+
+        # ------------------------------------------------------------------
         # 3. Concatenate along sequence dimension (dim=1) – no padding.
         # ------------------------------------------------------------------
         input_ids = torch.cat(input_ids_list, dim=1)
         labels = torch.cat(labels_list, dim=1)
 
+        # NEW: Mask cross-sample prediction targets --------------------------------------------------
+        # After packing, the first token of each *subsequent* sample would otherwise be trained with
+        # context from the *previous* sample.  To avoid this erroneous supervision we set the label
+        # of every sample-boundary token to IGNORE_INDEX so it is excluded from the LM loss.
+        if cu_seqlens.numel() > 2:  # more than one sample in the packed batch
+            boundary_indices = cu_seqlens[1:-1].to(
+                torch.long
+            )  # start positions of samples 2, 3, ...
+            labels[..., boundary_indices] = IGNORE_INDEX
+        # -------------------------------------------------------------------------------------------
+
         # ------------------------------------------------------------------
-        # 4. Position-ids handling – always supply a fully-specified tensor so
-        #    that the model can recover `cu_seqlens` if needed via
-        #    `prepare_fa2_from_position_ids`.  Shape must be (3,1,T).
+        # 4. Position-ids handling – **single** row (temporal axis only).
+        #    Shape expected by `prepare_fa2_from_position_ids` is (B, T).  We
+        #    treat the packed batch as B = 1.
         # ------------------------------------------------------------------
-        pos_chunks: list[torch.Tensor] = []
-        for seq_len, pos_ids in zip(seq_lens, raw_position_ids_list):
-            if pos_ids is not None:
-                # Ensure shape is (3,1,S)
-                if pos_ids.ndim == 2 and pos_ids.shape[0] == 3:
-                    pos_ids = pos_ids.unsqueeze(1)
-                elif pos_ids.ndim == 3:
-                    # already (3,1,S) – make contiguous just in case
-                    pos_ids = pos_ids.contiguous()
-                else:
-                    raise AssertionError(
-                        f"PackedDataCollator: unexpected position_ids shape {pos_ids.shape}"
-                    )
-                pos_chunks.append(pos_ids)
-            else:
-                # Synthesise monotonic position ids starting from 0 for this sample
-                tok_range = torch.arange(seq_len, dtype=torch.long)
-                pos_chunks.append(tok_range.view(1, 1, -1).expand(3, -1, -1))
-        position_ids = torch.cat(pos_chunks, dim=2)
+        pos_vectors: list[torch.Tensor] = [
+            torch.arange(l, dtype=torch.long) for l in seq_lens
+        ]
+        position_ids = torch.cat(pos_vectors, dim=0).unsqueeze(0)  # (1, total_len)
 
         # ------------------------------------------------------------------
         # 5. Assemble batch dict – attention_mask holds `cu_seqlens` vector.
@@ -810,14 +868,15 @@ class PackedDataCollator:
         #   • provide a dummy (all-True) mask of shape (1, T) that satisfies the older code path.
 
         total_len = input_ids.shape[1]
-        dummy_attn_mask = torch.ones((1, total_len), dtype=torch.bool)
 
         batch: Dict[str, Any] = {
             "input_ids": input_ids,
             "labels": labels,
-            "attention_mask": dummy_attn_mask,
-            "cu_seqlens": cu_seqlens,  # retained for potential future use
+            # Intentionally omit / set None so flash-attn var-len path is used
+            "attention_mask": None,
             "position_ids": position_ids,
+            # Debug/optional: provide cu_seqlens to downstream code (trainer will strip before model)
+            "cu_seqlens": cu_seqlens,
         }
 
         # ------------------------------------------------------------------
@@ -844,9 +903,18 @@ class PackedDataCollator:
                 ],
                 dim=0,
             )
+
+            # Track image counts per sample for compatibility with utilities
+            batch["image_counts_per_sample"] = [
+                ins["pixel_values"].shape[0]
+                if ins.get("pixel_values") is not None
+                else 0
+                for ins in instances
+            ]
         else:
             batch["pixel_values"] = None
             batch["image_grid_thw"] = None
+            batch["image_counts_per_sample"] = [0] * len(instances)
 
         # ------------------------------------------------------------------
         # 7. Keep ground-truth objects (list per sample).
@@ -855,10 +923,15 @@ class PackedDataCollator:
             ins.get("ground_truth_objects", []) for ins in instances
         ]
 
-        # Sanity check – the last entry in cu_seqlens must equal total length
-        if cu_seqlens[-1].item() != total_len:
+        # Add adjusted teacher-student spans to batch
+        batch["teacher_assistant_spans"] = adjusted_teacher_spans
+        batch["student_assistant_spans"] = adjusted_student_spans
+
+        # Extra safety: every new sequence must start with 0 in position_ids
+        start_indices = cu_seqlens[:-1]
+        if not torch.all(position_ids[0, start_indices] == 0):
             raise AssertionError(
-                f"PackedDataCollator: cu_seqlens[-1] ({cu_seqlens[-1]}) != total_len ({total_len})"
+                "PackedDataCollator: position_ids do not reset to 0 at sequence starts"
             )
 
         return batch
@@ -880,7 +953,15 @@ def create_data_collator(
     """
     if collator_type == "standard":
         return StandardDataCollator(tokenizer=tokenizer)
-    elif collator_type == "packed":
+    elif collator_type in {"packed", "flattened"}:
         return PackedDataCollator(tokenizer=tokenizer)
     else:
         raise ValueError(f"Unknown collator_type: {collator_type}")
+
+
+# ---------------------------------------------------------------------------
+# Alias for clarity – official docs often call this strategy *flattened*.
+# Keeping both names avoids breaking existing configs.
+# ---------------------------------------------------------------------------
+
+FlattenedDataCollator = PackedDataCollator  # backward-compatible alias

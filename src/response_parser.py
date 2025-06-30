@@ -233,9 +233,11 @@ class ResponseParser:
                         skipped_items.append(f"Item {i}: Not a dict, got {type(item)}")
                         continue
 
-                    # Check for required keys (support both 'desc' and 'description')
-                    bbox = item.get("bbox")
-                    description = item.get("description") or item.get("desc")
+                    # Check for required keys (support 'bbox', 'bbox_2d' and description variants)
+                    bbox = item.get("bbox_2d") or item.get("bbox")
+                    description = (
+                        item.get("description") or item.get("desc") or item.get("label")
+                    )
 
                     if bbox is None:
                         skipped_items.append(f"Item {i}: Missing bbox key")
@@ -266,9 +268,13 @@ class ResponseParser:
                         )
                         continue
 
-                    # Add valid object
+                    # Add valid object – standardise with bbox_2d
                     objects.append(
-                        {"bbox": coords, "description": str(description).strip()}
+                        {
+                            "bbox_2d": coords,
+                            "bbox": coords,  # backward-compatibility
+                            "description": str(description).strip(),
+                        }
                     )
 
                 except Exception as e:
@@ -379,8 +385,8 @@ class ResponseParser:
         if not isinstance(obj, dict):
             return False
 
-        bbox = obj.get("bbox")
-        description = obj.get("description") or obj.get("desc")
+        bbox = obj.get("bbox_2d") or obj.get("bbox")
+        description = obj.get("description") or obj.get("desc") or obj.get("label")
 
         return (
             bbox is not None
@@ -552,7 +558,7 @@ class ResponseParser:
                 # Log the raw object being validated for debugging
                 self.parser_logger.debug(f"🔍 Validating object {i}: {obj}")
 
-                bbox = obj.get("bbox", [])
+                bbox = obj.get("bbox_2d") or obj.get("bbox") or []
                 if not isinstance(bbox, list) or len(bbox) != 4:
                     skipped_reasons.append(
                         f"Object {i}: Invalid bbox format - got {type(bbox)} with value {bbox}"
@@ -582,14 +588,23 @@ class ResponseParser:
                     )
                     continue
 
-                desc = obj.get("description", "").strip()
+                desc = (
+                    obj.get("description") or obj.get("desc") or obj.get("label") or ""
+                )
+                desc = str(desc).strip()
                 if not desc:
                     skipped_reasons.append(
                         f"Object {i}: Empty description - got '{obj.get('description', 'MISSING_KEY')}'"
                     )
                     continue
 
-                validated.append({"bbox": [x1, y1, x2, y2], "description": desc})
+                validated.append(
+                    {
+                        "bbox_2d": [x1, y1, x2, y2],
+                        "bbox": [x1, y1, x2, y2],  # legacy key
+                        "description": desc,
+                    }
+                )
                 self.parser_logger.debug(
                     f"✅ Object {i}: Valid - bbox=[{x1}, {y1}, {x2}, {y2}], desc='{desc}'"
                 )

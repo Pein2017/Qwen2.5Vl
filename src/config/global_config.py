@@ -165,6 +165,9 @@ class DirectConfig:
     # Baseline effective batch size for linear LR scaling (0 disables scaling)
     lr_reference_batch_size: int = 0
 
+    # Auto-scale learning rates based on collator type (enabled by default)
+    auto_scale_lr: bool = True
+
     @property
     def tune_vision(self) -> bool:
         """Auto-determine if vision encoder should be trained based on learning rate."""
@@ -294,8 +297,10 @@ def init_config(config_path: str) -> DirectConfig:
 
     # ------------------------------------------------------------------
     # Automatic learning-rate scaling based on effective global batch size
+    # and collator type
     # ------------------------------------------------------------------
     _apply_auto_lr_scaling(config)
+    _apply_collator_lr_scaling(config)
 
     return config
 
@@ -401,3 +406,61 @@ def _apply_auto_lr_scaling(cfg: DirectConfig) -> None:
         f"🔄 Auto LR scaling: effective_bs={effective_bs}, reference_bs={reference_bs}, "
         f"scale={scale:.2f}.  Learning rates updated accordingly."
     )
+
+
+def _apply_collator_lr_scaling(cfg: DirectConfig) -> None:
+    """
+    Apply token-length-aware learning rate scaling to ensure equivalent training
+    dynamics between different collator types.
+
+    This function automatically adjusts learning rates based on the collator type
+    to compensate for token length inconsistency between standard (padded) and
+    packed collators.
+    """
+    import os
+
+    # Check if collator-aware scaling is disabled
+    disable_collator_scaling = (
+        os.getenv("DISABLE_COLLATOR_LR_SCALING", "false").lower() == "true"
+    )
+    if disable_collator_scaling:
+        return
+
+    # Create token-length-aware learning rate scaler (import here to avoid circular imports)
+    from src.lr_scaling import create_token_length_scaler
+
+    scaler = create_token_length_scaler(
+        auto_scale_lr=cfg.auto_scale_lr,
+        base_collator_type="standard",  # Treat standard as reference
+    )
+
+    # Convert config to dictionary for processing
+    config_dict = {
+        "collator_type": cfg.collator_type,
+        "learning_rate": cfg.learning_rate,
+        "llm_lr": cfg.llm_lr,
+        "adapter_lr": cfg.adapter_lr,
+        "vision_lr": cfg.vision_lr,
+        "merger_lr": cfg.merger_lr,
+        "detection_lr": cfg.detection_lr,
+    }
+
+    # Apply token-length-aware scaling
+    scaled_config = scaler.scale_learning_rates(
+        config=config_dict,
+        collator_type=cfg.collator_type,
+    )
+
+    # Update the original config with scaled values
+    if "learning_rate" in scaled_config:
+        cfg.learning_rate = scaled_config["learning_rate"]
+    if "llm_lr" in scaled_config:
+        cfg.llm_lr = scaled_config["llm_lr"]
+    if "adapter_lr" in scaled_config:
+        cfg.adapter_lr = scaled_config["adapter_lr"]
+    if "vision_lr" in scaled_config:
+        cfg.vision_lr = scaled_config["vision_lr"]
+    if "merger_lr" in scaled_config:
+        cfg.merger_lr = scaled_config["merger_lr"]
+    if "detection_lr" in scaled_config:
+        cfg.detection_lr = scaled_config["detection_lr"]

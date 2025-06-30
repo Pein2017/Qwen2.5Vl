@@ -25,7 +25,7 @@ Notation (used in docstrings):
     H,W – spatial resolution of pre-scaled JPEG (pixels)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, Optional, Tuple, TypeVar
 
 import torch
@@ -177,6 +177,14 @@ class ChatProcessorOutput:
     ground_truth_objects: list["GroundTruthObject"]
     position_ids: Optional[torch.Tensor] = None  # (3,1,S) optional from ChatProcessor
 
+    # Token spans for teacher-student loss splitting
+    teacher_assistant_spans: list[tuple[int, int]] = field(
+        default_factory=list
+    )  # [(start, end), ...]
+    student_assistant_spans: list[tuple[int, int]] = field(
+        default_factory=list
+    )  # [(start, end), ...]
+
     def __post_init__(self):
         if (
             self.input_ids.shape != self.labels.shape
@@ -253,6 +261,14 @@ class CollatedBatch:
     image_counts_per_sample: list[int]
     ground_truth_objects: list[list["GroundTruthObject"]]
     position_ids: Optional[torch.Tensor] = None
+
+    # Token spans for teacher-student loss splitting (batch-level)
+    teacher_assistant_spans: list[list[tuple[int, int]]] = field(
+        default_factory=list
+    )  # [[(start, end), ...], ...]
+    student_assistant_spans: list[list[tuple[int, int]]] = field(
+        default_factory=list
+    )  # [[(start, end), ...], ...]
 
     def __post_init__(self):
         B, S = self.input_ids.shape

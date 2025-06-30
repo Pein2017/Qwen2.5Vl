@@ -137,7 +137,7 @@ class ChatProcessor:
             ChatProcessorOutput containing input_ids, labels, attention_mask, pixel_values, image_grid_thw, and ground_truth_objects
         """
         # Debug: Log the sample structure
-        teachers = raw_sample["teachers"]
+        teachers = raw_sample.get("teachers", [])
         logger.debug(f"📝 Processing sample: {len(teachers)} teachers + 1 student")
 
         # 1. Create conversation messages
@@ -153,7 +153,9 @@ class ChatProcessor:
         )
 
         # 3. Apply chat template and tokenize
-        input_ids, labels = self._tokenize_conversation(processed_conversation)
+        input_ids, labels, teacher_spans, student_spans = self._tokenize_conversation(
+            processed_conversation
+        )
 
         # 4. Process images for model input
         pixel_values, image_grid_thw = self._process_images_for_model(images)
@@ -170,6 +172,8 @@ class ChatProcessor:
             pixel_values=pixel_values,
             image_grid_thw=image_grid_thw,
             ground_truth_objects=ground_truth_objects,
+            teacher_assistant_spans=teacher_spans,
+            student_assistant_spans=student_spans,
         )
 
     def _create_conversation_messages(
@@ -375,7 +379,12 @@ class ChatProcessor:
     @typechecked
     def _tokenize_conversation(
         self, conversation: List[ChatMessage]
-    ) -> Tuple[TensorType["B", "S"], TensorType["B", "S"]]:
+    ) -> Tuple[
+        TensorType["B", "S"],
+        TensorType["B", "S"],
+        List[Tuple[int, int]],
+        List[Tuple[int, int]],
+    ]:
         """
         Tokenize conversation and create labels with proper masking.
         """
@@ -450,7 +459,8 @@ class ChatProcessor:
         labels_1d = input_ids_1d.clone()
 
         # Mask non-assistant tokens → only assistant messages contribute to loss
-        labels_1d = self._mask_non_assistant_tokens(
+        # Also extract teacher/student spans for loss splitting
+        labels_1d, teacher_spans, student_spans = self._mask_non_assistant_tokens(
             labels_1d, conversation, formatted_text
         )
 
@@ -470,7 +480,7 @@ class ChatProcessor:
         input_ids = input_ids_1d.unsqueeze(0)  # (1, S)
         labels = labels_1d.unsqueeze(0)  # (1, S)
 
-        return input_ids, labels
+        return input_ids, labels, teacher_spans, student_spans
 
     @typechecked
     def _mask_non_assistant_tokens(
@@ -478,7 +488,7 @@ class ChatProcessor:
         labels: TensorType["S"],
         conversation: List[ChatMessage],
         formatted_text: str,
-    ) -> TensorType["S"]:
+    ) -> Tuple[TensorType["S"], List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Return a version of ``labels`` where only tokens belonging to **assistant**
         messages remain; all others are replaced by ``-100`` so they do not
         contribute to the LM loss.
@@ -497,6 +507,11 @@ class ChatProcessor:
            into the masked tensor for that assistant span.
         5. Advance the search cursor and continue until all assistant messages
            are processed.
+
+        Returns:
+            labels: Masked labels tensor
+            teacher_spans: List of (start_idx, end_idx) for teacher assistant messages
+            student_spans: List of (start_idx, end_idx) for student assistant message
         """
 
         # Preserve originals to restore assistant spans later
@@ -511,6 +526,15 @@ class ChatProcessor:
         # the complexity strictly O(#tokens) instead of O(#messages × len(text)).
 
         token_offset: int = 0
+
+        # Track teacher vs student spans for loss splitting
+        teacher_spans: List[Tuple[int, int]] = []
+        student_spans: List[Tuple[int, int]] = []
+
+        # Count total assistant messages to identify teachers vs student
+        assistant_messages = [msg for msg in conversation if msg.role == "assistant"]
+        num_assistants = len(assistant_messages)
+        current_assistant_idx = 0
 
         for msg in conversation:
             # ------------------------------------------------------------------
@@ -559,10 +583,20 @@ class ChatProcessor:
 
             # Un-mask assistant *content* (+ optional suffix) -----------------
             if msg.role == "assistant" and content_tokens:
+                current_assistant_idx += 1
+
                 start_idx = token_offset + len(prefix_tokens)
                 end_idx = start_idx + len(content_tokens)
 
                 labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
+
+                # Track spans for teacher-student loss splitting
+                if current_assistant_idx < num_assistants:
+                    # This is a teacher (all except the last)
+                    teacher_spans.append((start_idx, end_idx))
+                else:
+                    # This is the student (the last assistant)
+                    student_spans.append((start_idx, end_idx))
 
                 # Optionally unmask the immediate `<|im_end|>` token (first
                 # token of the suffix), preserving the rest as -100 so the
@@ -581,7 +615,7 @@ class ChatProcessor:
                 len(prefix_tokens) + len(content_tokens) + len(suffix_tokens)
             )
 
-        return labels
+        return labels, teacher_spans, student_spans
 
     @typechecked
     def _process_images_for_model(

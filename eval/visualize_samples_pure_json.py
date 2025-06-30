@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from itertools import cycle
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import cv2
 import matplotlib.pyplot as plt
@@ -21,6 +21,44 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Internal unified parser
+from src.response_parser import ResponseParser
+
+
+def _extract_objects(sample: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return list of objects in unified format with bbox_2d + description."""
+
+    # Case A – modern list directly present
+    if isinstance(sample.get("objects"), list):
+        return sample["objects"]
+
+    # Case B – inference result style (`result` / `ground_truth` JSON string)
+    for key in ("result", "ground_truth", "prediction"):
+        raw = sample.get(key)
+        if raw is None:
+            continue
+        parser = ResponseParser()
+        try:
+            return parser.parse_response(raw)
+        except Exception:  # fallthrough
+            continue
+
+    # Case C – legacy parallel lists (objects.ref / objects.bbox)
+    obj_dict = sample.get("objects", {})
+    if isinstance(obj_dict, dict):
+        refs = obj_dict.get("ref", [])
+        bboxes = obj_dict.get("bbox", [])
+        objects = []
+        for ref, bbox in zip(refs, bboxes):
+            try:
+                desc = json.loads(ref).get("label", str(ref))
+            except Exception:
+                desc = str(ref)
+            objects.append({"bbox_2d": bbox, "description": desc})
+        return objects
+
+    return []
 
 
 def visualize_sample(
@@ -74,69 +112,26 @@ def visualize_sample(
     label_color_map = {}
     ax.imshow(image_rgb)
 
-    # Extract objects
-    objects = sample.get("objects", {})
-    ref_list = objects.get("ref", [])
-    bbox_list = objects.get("bbox", [])
-    if not (isinstance(ref_list, list) and isinstance(bbox_list, list)):
-        logger.error("Invalid 'objects' field; expecting lists for 'ref' and 'bbox'")
+    # Extract objects in unified format
+    objects = _extract_objects(sample)
+    if not objects:
+        logger.warning("No objects found for visualization – skipping sample")
         return None
 
-    # Draw each bounding bbox_2d with label, using distinct colors per unique content
-    for idx, (ref_str, bbox) in enumerate(zip(ref_list, bbox_list)):
-        try:
-            content = json.loads(ref_str)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse object ref JSON: {e}")
-            continue
-        # Build label text
-        pure_label = content.get("label", "")
+    # Draw each bbox with label, using distinct colors per unique description
+    for idx, obj in enumerate(objects):
+        label_text = str(obj.get("description", idx))
 
-        # --- Start of new logic for label_text_for_display and category_for_color_and_legend ---
-        parts: List[str] = []
-        if pure_label:
-            parts.append(pure_label)
+        # assign a unique colour per label
+        if label_text not in label_color_map:
+            label_color_map[label_text] = next(color_cycle_iter)
+        color = label_color_map[label_text]
 
-        raw_q = content.get("question")
-        question_str = ""
-        if raw_q:
-            if isinstance(raw_q, list):
-                question_str = " ".join(map(str, raw_q))
-            else:
-                question_str = str(raw_q)
-            if question_str:  # Add non-empty question string to parts
-                parts.append(question_str)
-
-        question_ex = content.get("question_ex")
-        if question_ex:  # Add non-empty question_ex to parts
-            parts.append(str(question_ex))
-
-        # label_text_for_display will be what's shown on the image
-        if parts:
-            label_text_for_display = " | ".join(parts)
-        else:
-            label_text_for_display = str(
-                idx
-            )  # Fallback to index if no label, q, or q_ex
-
-        # category_for_color_and_legend will determine the color and legend entry
-        # If there are question details, the category is the full string including them.
-        # Otherwise, it's just the pure_label (or index if pure_label is also empty).
-        if question_str or question_ex:  # If any question details exist
-            category_for_color_and_legend = label_text_for_display
-        else:  # Only pure_label (or index)
-            category_for_color_and_legend = pure_label if pure_label else str(idx)
-        # --- End of new logic ---
-
-        # Choose color for this category_for_color_and_legend
-        if category_for_color_and_legend not in label_color_map:
-            label_color_map[category_for_color_and_legend] = next(color_cycle_iter)
-        color = label_color_map[category_for_color_and_legend]
-
-        # Validate and unpack bbox coordinates
+        bbox: Union[List[float], List[int]] = obj.get("bbox_2d") or obj.get("bbox")
         if not (isinstance(bbox, list) and len(bbox) == 4):
             logger.error(f"Invalid bbox at index {idx}: {bbox}")
             continue
+
         x1, y1, x2, y2 = bbox
         width, height = x2 - x1, y2 - y1
         rect = Rectangle(

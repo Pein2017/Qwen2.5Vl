@@ -1,33 +1,15 @@
 """
-Evaluation utilities for Qwen2.5-VL models.
+Evaluation utilities for Qwen2.5-VL dense captioning/grounding tasks.
 
-This module contains utilities specifically for evaluation and inference,
-extracted from the training framework to maintain clean separation of concerns.
+This module contains utilities for evaluation, specifically focused on
+logging and basic file operations for the evaluation pipeline.
 """
 
 import json
 import logging
 import os
-
-# Import training constants and utilities
-import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
-
-import torch
-from PIL import Image
-from transformers import (
-    AutoProcessor,
-    AutoTokenizer,
-    Qwen2_5_VLForConditionalGeneration,
-)
-
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-
-from src.utils import (
-    CHAT_TEMPLATE,
-    DEFAULT_BASE_MODEL_PATH,
-)
+from typing import Any, Dict, List
 
 
 class EvaluationLogger:
@@ -47,262 +29,204 @@ class EvaluationLogger:
         # Generate log filename if not provided
         if log_name is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_name = f"eval_{timestamp}.log"
+            log_name = f"evaluation_{timestamp}.log"
 
         self.log_file = os.path.join(log_dir, log_name)
 
-        # Create logger
+        # Setup logger
         self.logger = logging.getLogger(f"eval_{id(self)}")
-        self.logger.setLevel(logging.INFO)
-
-        # Clear any existing handlers
-        self.logger.handlers.clear()
-
-        # Create formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
+        self.logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
         # File handler
         file_handler = logging.FileHandler(self.log_file, encoding="utf-8")
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
+        file_handler.setLevel(logging.DEBUG)
 
         # Console handler
-        if verbose:
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
 
-    def info(self, msg: str):
-        self.logger.info(msg)
-
-    def debug(self, msg: str):
-        self.logger.debug(msg)
-
-    def warning(self, msg: str):
-        self.logger.warning(msg)
-
-    def error(self, msg: str):
-        self.logger.error(msg)
-
-    def get_log_file(self) -> str:
-        return self.log_file
-
-
-class SimpleModelLoader:
-    """Simple model loader for evaluation tasks."""
-
-    def __init__(
-        self,
-        model_path: str,
-        base_model_path: str = DEFAULT_BASE_MODEL_PATH,
-        device: str = "auto",
-        torch_dtype: torch.dtype = torch.bfloat16,
-        logger: Optional[EvaluationLogger] = None,
-    ):
-        self.model_path = model_path
-        self.base_model_path = base_model_path
-        self.device = device
-        self.torch_dtype = torch_dtype
-        self.logger = logger or EvaluationLogger()
-
-        self.model = None
-        self.processor = None
-        self.tokenizer = None
-
-    def load_model(self) -> Qwen2_5_VLForConditionalGeneration:
-        """Load the model with eager attention for inference stability."""
-        self.logger.info(f"Loading model from {self.model_path}")
-
-        # Use eager attention for inference stability
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            pretrained_model_name_or_path=self.model_path,
-            torch_dtype=self.torch_dtype,
-            attn_implementation="flash_attention_2",  # Use eager for inference stability
-            device_map=None,  # Don't use device_map for inference
+        # Formatter
+        formatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
 
-        # Manually move to specified device
-        if self.device != "auto":
-            self.model = self.model.to(self.device)
-        elif torch.cuda.is_available():
-            self.model = self.model.to("cuda:0")
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+
+    def log(self, message: str, level: str = "info"):
+        """Log a message at the specified level."""
+        if level.lower() == "debug":
+            self.logger.debug(message)
+        elif level.lower() == "warning":
+            self.logger.warning(message)
+        elif level.lower() == "error":
+            self.logger.error(message)
         else:
-            self.model = self.model.to("cpu")
+            self.logger.info(message)
 
-        self.logger.info("Model loaded successfully")
-        return self.model
+    def debug(self, message: str):
+        """Log debug message."""
+        self.logger.debug(message)
 
-    def load_processor_and_tokenizer(self) -> Tuple[AutoProcessor, AutoTokenizer]:
-        """Load processor and tokenizer from base model path."""
-        self.logger.info("Loading processor and tokenizer")
+    def info(self, message: str):
+        """Log info message."""
+        self.logger.info(message)
 
-        # Load processor from base model
-        self.processor = AutoProcessor.from_pretrained(self.base_model_path)
+    def warning(self, message: str):
+        """Log warning message."""
+        self.logger.warning(message)
 
-        # Load tokenizer from base model and set chat template
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.base_model_path,
-            model_max_length=2048,
-            padding_side="right",
-            use_fast=False,
-        )
-
-        # Set the chat template to match training setup
-        self.tokenizer.chat_template = CHAT_TEMPLATE
-        self.processor.chat_template = CHAT_TEMPLATE
-
-        # Configure image processor with same settings as training
-        self.processor.image_processor.max_pixels = 1003520
-        self.processor.image_processor.min_pixels = 784
-
-        self.logger.info("Processor and tokenizer loaded successfully")
-        return self.processor, self.tokenizer
-
-    def load_all(
-        self,
-    ) -> Tuple[Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer]:
-        """Load model, processor, and tokenizer."""
-        model = self.load_model()
-        processor, tokenizer = self.load_processor_and_tokenizer()
-        return model, processor, tokenizer
+    def error(self, message: str):
+        """Log error message."""
+        self.logger.error(message)
 
 
-class SimpleDataPreprocessor:
-    """Simple data preprocessor for evaluation tasks."""
+def load_responses_file(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Load and validate responses file for evaluation.
 
-    def __init__(
-        self,
-        processor: AutoProcessor,
-        tokenizer: AutoTokenizer,
-        logger: Optional[EvaluationLogger] = None,
-    ):
-        self.processor = processor
-        self.tokenizer = tokenizer
-        self.logger = logger or EvaluationLogger()
+    Args:
+        file_path: Path to responses JSON file
 
-    def preprocess_image(
-        self, image: Image.Image
-    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
-        """
-        Preprocess image for inference.
+    Returns:
+        List of response dictionaries
 
-        Args:
-            image: PIL Image
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        json.JSONDecodeError: If file is not valid JSON
+        ValueError: If file format is invalid
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Responses file not found: {file_path}")
 
-        Returns:
-            Tuple of (image_tensor, grid_thw, grid_thw_merged)
-        """
-        # Process image
-        visual_processed = self.processor.image_processor.preprocess(
-            image, return_tensors="pt"
-        )
-        image_tensor = visual_processed["pixel_values"]
-        if isinstance(image_tensor, list):
-            image_tensor = image_tensor[0]
-
-        grid_thw = visual_processed["image_grid_thw"][0]
-
-        # Calculate vision tokens
-        merge_size = getattr(self.processor.image_processor, "merge_size", 2)
-        grid_thw_merged = grid_thw.prod() // (merge_size**2)
-
-        return image_tensor, grid_thw, grid_thw_merged.item()
-
-    def preprocess_for_inference(
-        self,
-        image: Image.Image,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> Tuple[Dict[str, torch.Tensor], int, int]:
-        """
-        Complete preprocessing pipeline for inference.
-
-        Args:
-            image: PIL Image
-            system_prompt: System prompt
-            user_prompt: User prompt (may contain <image>)
-
-        Returns:
-            Tuple of (model_inputs, input_height, input_width)
-        """
-        # Preprocess image
-        image_tensor, grid_thw, grid_thw_merged = self.preprocess_image(image)
-
-        # Replace <image> with vision tokens in user prompt
-        if "<image>" in user_prompt:
-            vision_tokens = (
-                "<|vision_start|>"
-                + "<|image_pad|>" * grid_thw_merged
-                + "<|vision_end|>"
+    with open(file_path, "r", encoding="utf-8") as f:
+        try:
+            responses = json.load(f)
+        except json.JSONDecodeError as e:
+            raise json.JSONDecodeError(
+                f"Failed to decode {file_path}: {e.msg}", e.doc, e.pos
             )
-            user_prompt_processed = user_prompt.replace("<image>", vision_tokens)
-        else:
-            user_prompt_processed = user_prompt
 
-        # Create conversation
-        conversation = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt_processed},
-        ]
+    if not isinstance(responses, list):
+        raise ValueError(f"Expected list of responses, got {type(responses)}")
 
-        # Apply chat template
-        input_ids = self.tokenizer.apply_chat_template(
-            conversation,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
+    if not responses:
+        logging.warning("Responses file is empty, returning empty list.")
+        return []
 
-        attention_mask = torch.ones_like(input_ids)
+    processed_responses = []
+    for i, item in enumerate(responses):
+        if not isinstance(item, dict):
+            logging.warning(f"Skipping non-dict item at index {i}")
+            continue
 
-        # Let the model compute RoPE internally – simply omit position_ids.
+        required_fields = ["ground_truth", "result"]
+        if not all(field in item for field in required_fields):
+            logging.warning(f"Skipping item at index {i} due to missing fields")
+            continue
 
-        # Create model inputs
-        inputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "pixel_values": image_tensor.unsqueeze(0),
-            "image_grid_thw": grid_thw.unsqueeze(0),
-        }
+        try:
+            # Parse nested JSON strings
+            item["ground_truth"] = json.loads(item["ground_truth"])
+            item["result"] = json.loads(item["result"])
+            processed_responses.append(item)
+        except (json.JSONDecodeError, TypeError) as e:
+            logging.warning(
+                f"Skipping item at index {i} due to parsing error in 'ground_truth' or 'result': {e}"
+            )
+            continue
 
-        # Calculate input dimensions for coordinate scaling
-        input_height = grid_thw[1] * 14
-        input_width = grid_thw[2] * 14
+    if not processed_responses:
+        raise ValueError("No valid responses found after parsing.")
 
-        return inputs, input_height.item(), input_width.item()
+    return processed_responses
 
 
-class SimpleOutputManager:
-    """Simple output manager for evaluation results."""
+def validate_object_format(obj: Dict[str, Any]) -> None:
+    """
+    Validate object format for dense captioning/grounding.
 
-    def __init__(self, output_dir: str, run_name: str = None):
-        self.output_dir = output_dir
-        self.run_name = run_name or datetime.now().strftime("%Y%m%d_%H%M%S")
+    Args:
+        obj: Object dictionary to validate
 
-        # Create directory structure
+    Raises:
+        ValueError: If object format is invalid
+    """
+    if not isinstance(obj, dict):
+        raise ValueError(f"Expected object to be dict, got {type(obj)}")
+
+    required_fields = ["bbox_2d", "label"]
+    for field in required_fields:
+        if field not in obj:
+            raise ValueError(f"Object missing required field: {field}")
+
+    bbox = obj["bbox_2d"]
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        raise ValueError(f"bbox_2d must be list/tuple of 4 numbers, got {bbox}")
+
+    label = obj["label"]
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(f"label must be non-empty string, got {label}")
+
+
+def save_evaluation_results(results: Dict[str, Any], output_file: str) -> None:
+    """
+    Save evaluation results to JSON file.
+
+    Args:
+        results: Evaluation results dictionary
+        output_file: Path to save results
+    """
+    # Create output directory if needed
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-        # File paths
-        self.log_file = os.path.join(output_dir, "eval.log")
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
 
-    def save_responses(self, responses: List[Dict[str, Any]], filename: str) -> str:
-        """Save responses to JSON file."""
-        filepath = os.path.join(self.output_dir, filename)
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(responses, f, indent=2, ensure_ascii=False, default=str)
-        return filepath
 
-    def save_metrics(self, metrics: Dict[str, Any], filename: str) -> str:
-        """Save evaluation metrics."""
-        filepath = os.path.join(self.output_dir, filename)
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2, ensure_ascii=False)
-        return filepath
+def format_evaluation_summary(results: Dict[str, Any]) -> str:
+    """
+    Format evaluation results into a readable summary.
 
-    def get_log_file(self) -> str:
-        """Get log file path."""
-        return self.log_file
+    Args:
+        results: Evaluation results dictionary
+
+    Returns:
+        Formatted summary string
+    """
+    overall = results.get("overall_metrics", {})
+    info = results.get("evaluation_info", {})
+    category_metrics = results.get("category_metrics", {})
+
+    summary_lines = [
+        "=" * 60,
+        "EVALUATION SUMMARY",
+        "=" * 60,
+        f"Samples: {info.get('total_samples', 0)}",
+        f"Total Predictions: {info.get('total_predictions', 0)}",
+        f"Total Ground Truth: {info.get('total_ground_truth', 0)}",
+        f"Evaluation Time: {info.get('evaluation_time_seconds', 0):.2f}s",
+        "-" * 40,
+        f"mAP: {overall.get('mAP', 0):.4f}",
+        f"mAR: {overall.get('mAR', 0):.4f}",
+        f"AP@0.50: {overall.get('AP@0.50', 0):.4f}",
+        f"AP@0.75: {overall.get('AP@0.75', 0):.4f}",
+        "-" * 40,
+    ]
+
+    # Add category breakdown
+    if category_metrics:
+        summary_lines.append("Category Breakdown:")
+        for category, metrics in category_metrics.items():
+            summary_lines.append(
+                f"  {category}: mAP={metrics.get('mAP', 0):.3f}, mAR={metrics.get('mAR', 0):.3f}"
+            )
+
+    summary_lines.append("=" * 60)
+
+    return "\n".join(summary_lines)
