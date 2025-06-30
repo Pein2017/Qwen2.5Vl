@@ -17,7 +17,7 @@ export HF_HUB_OFFLINE=1
 
 # Configurable list of result files to evaluate
 RESULT_FILES=(
-    "infer_result/chinese-train.json:chinese-train"
+    "infer_result/train-1024-teacher-1.json:train-1024-teacher-1"
     # "infer_result/chinese-val.json:chinese-val"
 )
 
@@ -36,6 +36,9 @@ ENHANCED_MODE=true    # master switch
 ENABLE_SOFT_MATCHING=true
 ENABLE_HIERARCHICAL=true
 ENABLE_NOVEL_DETECTION=true
+
+# Whether to save only representative metrics (compact JSON)
+MINIMAL_METRICS=true
 
 # Thresholds
 SEMANTIC_THRESHOLD=0.7
@@ -123,6 +126,11 @@ run_single_evaluation() {
         --iou_threshold $IOU_THRESHOLD \
         --semantic_threshold $SEMANTIC_THRESHOLD \
         --log_level \"$LOG_LEVEL\""
+    
+    # Compact metrics flag
+    if [ "$MINIMAL_METRICS" = true ]; then
+        eval_cmd="$eval_cmd --minimal"
+    fi
     
     # Add feature flags
     if [ "$ENABLE_SOFT_MATCHING" = true ]; then

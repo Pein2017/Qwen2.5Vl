@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 SIMPLE_TEST_DATA = [
     {
         "id": "sample_001",
-        "ground_truth": '[{"bbox_2d": [10, 20, 100, 120], "label": "螺丝连接点/BBU安装螺丝"}, {"bbox_2d": [200, 300, 250, 350], "label": "机柜空间"}]',
-        "result": '[{"bbox_2d": [12, 22, 98, 118], "label": "螺丝连接点/BBU安装螺丝"}, {"bbox_2d": [205, 305, 245, 345], "label": "机柜空间"}]',
+        "ground_truth": '[{"bbox_2d": [10, 20, 100, 120], "label": "螺丝或连接点/BBU安装螺丝"}, {"bbox_2d": [200, 300, 250, 350], "label": "机柜空间"}]',
+        "result": '[{"bbox_2d": [12, 22, 98, 118], "label": "螺丝或连接点/BBU安装螺丝"}, {"bbox_2d": [205, 305, 245, 345], "label": "机柜空间"}]',
     },
     {
         "id": "sample_002",
@@ -57,13 +57,16 @@ def _create_enhanced_test_data():
             "id": "sample_001",
             "ground_truth": json.dumps(
                 [
-                    {"bbox_2d": [10, 20, 100, 120], "label": "螺丝连接点/BBU安装螺丝"},
+                    {
+                        "bbox_2d": [10, 20, 100, 120],
+                        "label": "螺丝或连接点/BBU安装螺丝",
+                    },
                     {"bbox_2d": [200, 300, 400, 500], "label": "线缆/光纤"},
                 ]
             ),
             "result": json.dumps(
                 [
-                    {"bbox_2d": [12, 22, 98, 118], "label": "螺丝连接点/BBU安装螺丝"},
+                    {"bbox_2d": [12, 22, 98, 118], "label": "螺丝或连接点/BBU安装螺丝"},
                     {"bbox_2d": [202, 302, 398, 498], "label": "线缆/光纤"},
                 ]
             ),
@@ -75,14 +78,14 @@ def _create_enhanced_test_data():
                 [
                     {
                         "bbox_2d": [50, 60, 150, 160],
-                        "label": "螺丝连接点/BBU安装螺丝/连接正确",
+                        "label": "螺丝或连接点/BBU安装螺丝/连接正确",
                     },
                     {"bbox_2d": [300, 400, 500, 600], "label": "BBU基带处理单元/华为"},
                 ]
             ),
             "result": json.dumps(
                 [
-                    {"bbox_2d": [52, 62, 148, 158], "label": "螺丝连接点"},
+                    {"bbox_2d": [52, 62, 148, 158], "label": "螺丝或连接点"},
                     {"bbox_2d": [302, 402, 498, 598], "label": "BBU/Huawei"},
                 ]
             ),
@@ -111,7 +114,7 @@ def _create_enhanced_test_data():
                 [
                     {
                         "bbox_2d": [50, 50, 200, 200],
-                        "label": "螺丝连接点/BBU接地线机柜接地端",
+                        "label": "螺丝或连接点/BBU接地线机柜接地端",
                     },
                     {"bbox_2d": [300, 300, 450, 450], "label": "线缆/非光纤"},
                 ]
@@ -120,7 +123,7 @@ def _create_enhanced_test_data():
                 [
                     {
                         "bbox_2d": [150, 150, 300, 300],
-                        "label": "螺丝连接点/BBU接地线机柜接地端",
+                        "label": "螺丝或连接点/BBU接地线机柜接地端",
                     },
                     {"bbox_2d": [302, 302, 448, 448], "label": "挡风板"},
                 ]
@@ -177,9 +180,7 @@ def test_simplified_evaluation_script():
             "--output_file",
             output_file,
         ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=".", check=True
-        )
+        _ = subprocess.run(cmd, capture_output=True, text=True, cwd=".", check=True)
         if os.path.exists(output_file):
             logger.info("   Script execution successful.")
             return True

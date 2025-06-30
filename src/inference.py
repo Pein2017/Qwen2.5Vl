@@ -34,7 +34,10 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor
 
-import src.logger_utils as _logger_utils
+from src.logger_utils import (
+    configure_global_logging,
+    get_logger,
+)
 
 # Runtime type-checking ---------------------------------------------------
 
@@ -47,83 +50,14 @@ H = TypeVar("H")
 W = TypeVar("W")
 
 
-# -------------------- Setup proper logging --------------------
-def setup_logging(log_level: str = "info") -> logging.Logger:
-    """Configure a single persistent *infer* logger.
-
-    The logger always writes to *logs/infer.log* (overwriting on every run) and
-    simultaneously streams logs to the console.  No timestamp-based filenames
-    are used – this keeps the number of generated files minimal.
-    """
-
-    level_map = {
-        "debug": logging.DEBUG,
-        "info": logging.INFO,
-        "warning": logging.WARNING,
-        "error": logging.ERROR,
-    }
-
-    level = level_map.get(log_level.lower(), logging.INFO)
-
-    # Clean previous handlers to avoid duplicate logs when `setup_logging` is
-    # invoked multiple times (e.g. during interactive usage).
-    root_logger = logging.getLogger()
-    for handler in list(root_logger.handlers):
-        root_logger.removeHandler(handler)
-
-    # Ensure log directory exists
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
-
-    log_path = os.path.join(log_dir, "infer.log")  # Overwrite each run
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
-    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    file_handler.setLevel(level)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(level)
-
-    root_logger.setLevel(level)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-
-    # Expose a dedicated "infer" child logger for downstream modules
-    logger = logging.getLogger("infer")
-    logger.setLevel(level)
-    return logger
-
+# Global logger (configured later in main)
+logger = get_logger("inference")
 
 # Initialize logger (will be reconfigured in main)
 logger = logging.getLogger(__name__)
 
 # -------------------- Monkey-patch logger utils for compatibility --------------------
 # Some modules still expect the old logger interface, so we provide minimal compatibility
-
-
-class _CompatLogger:
-    def __init__(self, logger):
-        self._logger = logger
-
-    def debug(self, msg, *args, **kwargs):
-        self._logger.debug(msg, *args, **kwargs)
-
-    def info(self, msg, *args, **kwargs):
-        self._logger.info(msg, *args, **kwargs)
-
-    def warning(self, msg, *args, **kwargs):
-        self._logger.warning(msg, *args, **kwargs)
-
-    def error(self, msg, *args, **kwargs):
-        self._logger.error(msg, *args, **kwargs)
-
-    def critical(self, msg, *args, **kwargs):
-        self._logger.critical(msg, *args, **kwargs)
 
 
 # Initialize config with default settings
@@ -327,18 +261,22 @@ class InferenceEngine:
                 )
                 self.batch_size = 1
 
-        # Create chat processor if using teacher guidance
-        self.chat_processor = None
-        if self.teacher_samples:
-            from src.chat_processor import ChatProcessor
+        # ALWAYS create ChatProcessor to ensure consistent prompt formatting
+        from src.chat_processor import ChatProcessor
 
-            self.chat_processor = ChatProcessor(
-                tokenizer=self.processor.tokenizer,
-                image_processor=self.processor.image_processor,
-                use_training_prompts=True,  # Always use training prompts for teacher guidance
-                language=self.language,
-            )
+        self.chat_processor = ChatProcessor(
+            tokenizer=self.processor.tokenizer,
+            image_processor=self.processor.image_processor,
+            use_training_prompts=True,  # Use training prompts to match training pipeline
+            language=self.language,
+        )
+
+        if self.teacher_samples:
             logger.info("✅ Initialized ChatProcessor for teacher-guided inference")
+        else:
+            logger.info(
+                "✅ Initialized ChatProcessor for standard inference (matching training pipeline)"
+            )
 
     def _load_model_and_processor(self):
         """Load model and processor exactly like demo script."""
@@ -651,87 +589,40 @@ class InferenceEngine:
     def _prepare_standard_inputs(
         self, sample: Dict[str, Any]
     ) -> Tuple[str, List[Image.Image]]:
-        """Prepare inputs for standard inference (original implementation)."""
-        # Get the target data (handles both direct format and nested format)
-        target = sample.get("target", sample.get("student", sample))
-
-        # Load images
-        image_paths = target.get("images", [])
-        images = []
-
-        for img_path in image_paths:
-            full_path = (
-                Path(self.data_root) / img_path
-                if hasattr(self, "data_root")
-                else Path(img_path)
-            )
-            if full_path.exists():
-                image = Image.open(full_path).convert("RGB")
-                images.append(image)
-            else:
-                logger.warning(f"Image not found: {full_path}")
-
-        # Create the Chinese prompt exactly like demo
-        question_cn = """
-你是专业的通信机房BBU设备检测AI助手，负责精确识别和定位图像中的所有相关设备和部件。
-
-**检测任务**:识别图像中所有目标对象的位置和类型。
-
-**目标对象分类**:
-
-1. **BBU设备**
-   - bbu基带处理单元/华为
-   - bbu基带处理单元/中兴  
-   - bbu基带处理单元/爱立信
-
-2. **螺丝连接点**
-   - 螺丝连接点/BBU安装螺丝
-   - 螺丝连接点/CPRI光缆和BBU连接点
-   - 螺丝连接点/地排处螺丝
-   - 螺丝连接点/BBU接地线机柜接地端
-   - 螺丝连接点/BBU尾纤和ODF连接点
-
-3. **线缆**
-   - 线缆/光纤
-   - 线缆/非光纤
-
-4. **机柜部件**
-   - 机柜空间
-   - 挡风板
-   - 标签贴纸
-
-**检测要求**:
-1. 仔细观察图像中的每个区域，识别所有目标对象
-2. 准确标注边界框，确保完全包含目标对象
-3. 使用上述标准分类标签，保持格式一致性
-4. 忽略图像中的水印、时间戳等叠加信息
-5. 对于部分遮挡的对象，标注可见部分的边界
-
-**输出格式**:严格按照JSON数组格式输出:
-```json
-[
-  {"bbox_2d": [x1, y1, x2, y2], "label": "标准分类标签"}
-]
-```
-
-坐标说明:(x1,y1)为左上角，(x2,y2)为右下角，使用绝对像素坐标。
-"""
-
-        # Create messages exactly like demo
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": question_cn},
-                ],
-            }
-        ]
-
-        # Apply chat template exactly like demo
-        prompt_str = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+        """Prepare inputs for standard inference using ChatProcessor for consistency."""
+        logger.debug(
+            "Using ChatProcessor for standard inference to match training pipeline"
         )
+
+        # Build a sample structure for single student (no teachers)
+        sample_struct: Dict[str, Any] = {
+            "teachers": [],  # No teachers for standard inference
+            "student": sample,
+        }
+
+        # Build conversation messages using ChatProcessor (same as training)
+        messages = self.chat_processor._create_conversation_messages(sample_struct)
+
+        # Remove the last assistant message (student answer) for inference
+        if messages and messages[-1].role == "assistant":
+            messages = messages[:-1]
+
+        # Process images and expand vision tokens
+        image_paths = self.chat_processor._extract_all_image_paths(sample_struct)
+        processed_messages, images, _ = self.chat_processor._process_images_and_tokens(
+            messages, image_paths
+        )
+
+        # Convert ChatMessage dataclasses to dicts
+        messages_dicts = [asdict(msg) for msg in processed_messages]
+
+        # Apply chat template with generation prompt
+        prompt_str: str = self.chat_processor.tokenizer.apply_chat_template(
+            messages_dicts, tokenize=False, add_generation_prompt=True
+        )
+
+        logger.debug(f"Built standard inference prompt using ChatProcessor")
+        logger.debug(f"Prompt preview (first 500 chars): {prompt_str[:500]}...")
 
         return prompt_str, images
 
@@ -770,15 +661,15 @@ class InferenceEngine:
         repetition_penalty: float = 1.1,
     ) -> str:
         """Generate response exactly like demo script."""
-        # Use ChatProcessor for teacher-guided inference (images are already processed)
-        if self.chat_processor and self.teacher_samples:
+        # Always use ChatProcessor for consistent inference
+        if self.chat_processor:
             inputs = self.chat_processor.prepare_inputs_for_inference(
                 images=images,
                 text=text,
                 is_first_step=True,
             )
         else:
-            # Standard inference: prepare inputs exactly like demo
+            # Fallback (should not happen as we always create ChatProcessor)
             inputs = self.processor(text=[text], images=images, return_tensors="pt")
 
         inputs = {
@@ -851,11 +742,27 @@ class InferenceEngine:
             output_ids, skip_special_tokens=True
         )[0]
 
-        # Extract assistant part exactly like demo
-        try:
-            assistant_part = response_text.split("assistant\n", 1)[1].strip()
-        except IndexError:
-            assistant_part = response_text
+        # Extract assistant part - need to handle multi-turn conversations
+        # For teacher-guided inference, we need the LAST assistant response
+        if self.teacher_samples and "assistant\n" in response_text:
+            # Split by assistant markers and get the last one
+            assistant_parts = response_text.split("assistant\n")
+            if len(assistant_parts) > 1:
+                # Get the last assistant response
+                assistant_part = assistant_parts[-1].strip()
+                # Remove any trailing user/system markers
+                if "\nuser" in assistant_part:
+                    assistant_part = assistant_part.split("\nuser")[0].strip()
+                if "\nsystem" in assistant_part:
+                    assistant_part = assistant_part.split("\nsystem")[0].strip()
+            else:
+                assistant_part = response_text
+        else:
+            # Standard single-turn extraction
+            try:
+                assistant_part = response_text.split("assistant\n", 1)[1].strip()
+            except IndexError:
+                assistant_part = response_text
 
         # Clean up special tokens that might remain
         # Remove <|im_end|> and other special tokens
@@ -887,10 +794,10 @@ class InferenceEngine:
         do_sample: bool = False,
         repetition_penalty: float = 1.1,
     ) -> List[str]:
-        """Generate responses for a batch of inputs using native transformers batch support.
+        """Generate responses for a batch of inputs.
 
-        Transformers' model.generate() already supports batch processing natively.
-        We just need to prepare the inputs correctly.
+        Due to issues with the Qwen2.5-VL processor's batch handling,
+        we process each sample individually and collect the responses.
 
         Args:
             images_list: List of image lists (one list per sample)
@@ -903,120 +810,26 @@ class InferenceEngine:
         Returns:
             List of generated responses
         """
-        # Handle single-image case (most common for this task)
-        # Flatten images for batch processing
-        all_images = []
-        for images in images_list:
-            if images:
-                all_images.append(images[0])  # Assuming one image per sample
-            else:
-                # Create a dummy image if none provided
-                all_images.append(Image.new("RGB", (224, 224), color="white"))
+        logger.debug(f"Processing batch of {len(texts)} samples individually")
 
-        # Prepare batch inputs - transformers handles batching natively
-        inputs = self.processor(
-            text=texts,
-            images=all_images,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        )
-
-        # Move to device with non-blocking transfer
-        inputs = {
-            k: v.to(self.model.device, non_blocking=True) if torch.is_tensor(v) else v
-            for k, v in inputs.items()
-        }
-
-        # Log batch information
-        logger.debug(f"BATCH SIZE: {len(texts)}")
-        logger.debug(f"INPUT IDS shape: {inputs['input_ids'].shape}")
-        if "pixel_values" in inputs:
-            logger.debug(f"PIXEL VALUES shape: {inputs['pixel_values'].shape}")
-
-        # Generate with timing
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        import time
-
-        start_time = time.perf_counter()
-
-        with (
-            torch.no_grad(),
-            torch.autocast(
-                device_type="cuda",
-                dtype=torch.bfloat16,
-                enabled=torch.cuda.is_available(),
-            ),
-        ):
-            # Verify KV cache is still enabled before generation
-            if not self.model.config.use_cache:
-                raise RuntimeError(
-                    "KV cache was disabled before generation. "
-                    "This should never happen and indicates a configuration error."
-                )
-
-            # Native batch generation - transformers handles batching automatically
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=do_sample,
-                temperature=temperature if do_sample else 1.0,
-                repetition_penalty=repetition_penalty,
-                pad_token_id=self.processor.tokenizer.pad_token_id,
-                eos_token_id=self.processor.tokenizer.eos_token_id,
-                use_cache=True,  # Explicitly enable KV cache for generation
-            )
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        elapsed = time.perf_counter() - start_time
-
-        # Log timing info
-        batch_size = len(texts)
-        # Calculate tokens generated per sample
-        prompt_tokens = inputs["input_ids"].shape[1]
-        total_output_tokens = output_ids.shape[1]
-        generated_tokens = max(total_output_tokens - prompt_tokens, 1)
-        total_generated = generated_tokens * batch_size
-        tokens_per_second = total_generated / elapsed if elapsed > 0 else float("inf")
-
-        logger.debug(
-            f"Batch generation took {elapsed:.2f}s for {total_generated} tokens "
-            f"({batch_size} samples × {generated_tokens} tokens/sample) → {tokens_per_second:.2f} tokens/s"
-        )
-
-        # Decode responses - batch_decode handles batches natively
-        response_texts = self.processor.batch_decode(
-            output_ids, skip_special_tokens=True
-        )
-
-        # Clean responses
-        cleaned_responses = []
-        for response_text in response_texts:
+        responses = []
+        for i, (text, images) in enumerate(zip(texts, images_list)):
+            logger.debug(f"Processing sample {i + 1}/{len(texts)}")
             try:
-                assistant_part = response_text.split("assistant\n", 1)[1].strip()
-            except IndexError:
-                assistant_part = response_text
+                response = self.generate_response(
+                    images=images,
+                    text=text,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    repetition_penalty=repetition_penalty,
+                )
+                responses.append(response)
+            except Exception as e:
+                logger.error(f"Failed to generate response for sample {i}: {e}")
+                responses.append("")  # Empty response for failed samples
 
-            # Clean up special tokens
-            special_tokens_to_remove = [
-                "<|im_end|>",
-                "<|endoftext|>",
-                "<|im_start|>",
-                "<|vision_start|>",
-                "<|vision_end|>",
-            ]
-
-            cleaned_response = assistant_part
-            for token in special_tokens_to_remove:
-                cleaned_response = cleaned_response.replace(token, "")
-
-            cleaned_responses.append(cleaned_response.strip())
-
-        return cleaned_responses
+        return responses
 
     def run_inference_on_jsonl(
         self,
@@ -1167,7 +980,10 @@ class InferenceEngine:
                         )
 
                     except Exception as e:
+                        import traceback
+
                         logger.error(f"❌ Batch failed: {e}")
+                        logger.error(f"Full traceback:\n{traceback.format_exc()}")
                         # Handle failed batch - process each sample individually
                         for sample, sample_idx in zip(batch_samples, batch_indices):
                             target = sample
@@ -1274,20 +1090,20 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup logging with specified level
-    global logger
-    logger = setup_logging(args.log_level)
+    # Configure global logging once for the whole run
+    configure_global_logging(
+        log_dir="logs",
+        log_file="run.log",
+        log_level=args.log_level.upper(),
+        verbose=False,
+    )
 
-    # Verify Flash Attention 2 availability *after* logging is configured so
-    # that any raised errors are captured in the log file.  Also make sure the
-    # compatibility loggers point to the freshly configured *infer* logger.
+    # Verify Flash Attention availability after logging is ready
     verify_flash_attention_available()
 
-    # Ensure legacy utility functions use the updated *infer* logger
-    _logger_utils.get_logger = lambda *_, **__: _CompatLogger(logger)
-    _logger_utils.get_chat_logger = lambda *_, **__: _CompatLogger(logger)
-    _logger_utils.get_model_logger = lambda *_, **__: _CompatLogger(logger)
-    _logger_utils.get_patches_logger = lambda *_, **__: _CompatLogger(logger)
+    # Re-acquire logger so it inherits the freshly installed handlers
+    global logger
+    logger = get_logger("inference")
 
     logger.info(f"Starting inference with log level: {args.log_level}")
     logger.info(f"Model path: {args.model_path}")

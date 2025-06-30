@@ -129,7 +129,7 @@ class SemanticMatcher:
         """
         Compute hierarchical similarity for structured labels.
 
-        Handles labels like "螺丝连接点/BBU安装螺丝/连接正确" by comparing
+        Handles labels like "螺丝或连接点/BBU安装螺丝/连接正确" by comparing
         at different levels of the hierarchy.
 
         Returns:
@@ -986,6 +986,7 @@ class COCOStyleMetrics:
         responses_file: str,
         output_file: str,
         use_semantic: bool | None = None,
+        minimal_output: bool = True,
     ) -> Dict[str, Any]:
         """
         Evaluate entire dataset with enhanced COCO-style metrics for open-vocabulary.
@@ -994,6 +995,7 @@ class COCOStyleMetrics:
             responses_file: Path to raw responses JSON with 'ground_truth' and 'result' fields
             output_file: Path to save evaluation results
             use_semantic: Optional flag to temporarily override soft semantic matching
+            minimal_output: If True, filter the saved metrics to a compact representative subset
 
         Returns:
             Comprehensive evaluation results with enhanced metrics
@@ -1194,6 +1196,40 @@ class COCOStyleMetrics:
 
         # Save results
         logger.info(f"Saving evaluation results to {output_file}")
+        if minimal_output:
+            # Filter to representative metrics only to reduce file size/noise
+            allowed_overall_keys = {
+                "mAP",
+                "mAR",
+                "mF1",
+                "P@0.50",
+                "R@0.50",
+                "F1@0.50",
+                "P@0.75",
+                "R@0.75",
+                "F1@0.75",
+                "avg_IoU@0.50",
+                "avg_semantic@0.50",
+                "semantic_AUC",
+                "known_mAP",
+                "known_mAR",
+                "novel_detection_rate",
+                "novel_vocabulary_size",
+            }
+            evaluation_results["overall_metrics"] = {
+                k: v
+                for k, v in evaluation_results["overall_metrics"].items()
+                if k in allowed_overall_keys
+            }
+
+            # Keep only aggregated metrics for each category
+            trimmed_cat_metrics: Dict[str, Dict[str, float]] = {}
+            for cat, metrics in evaluation_results["category_metrics"].items():
+                trimmed_cat_metrics[cat] = {
+                    k: v for k, v in metrics.items() if k in {"mAP", "mAR", "mF1"}
+                }
+            evaluation_results["category_metrics"] = trimmed_cat_metrics
+
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(evaluation_results, f, indent=2, ensure_ascii=False)
 

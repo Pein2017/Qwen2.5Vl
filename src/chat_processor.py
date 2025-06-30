@@ -719,11 +719,33 @@ class ChatProcessor:
             text, padding=False, truncation=False, add_special_tokens=False
         )
 
+        # Debug: Log the tokenizer output structure
+        logger.debug(f"📝 Tokenizer output structure:")
+        logger.debug(f"   Type of raw_text_tokens: {type(raw_text_tokens)}")
+        logger.debug(
+            f"   Keys: {raw_text_tokens.keys() if hasattr(raw_text_tokens, 'keys') else 'N/A'}"
+        )
+
+        if "input_ids" in raw_text_tokens:
+            logger.debug(f"   Type of input_ids: {type(raw_text_tokens['input_ids'])}")
+            logger.debug(f"   Length of input_ids: {len(raw_text_tokens['input_ids'])}")
+            if len(raw_text_tokens["input_ids"]) > 0:
+                logger.debug(
+                    f"   First element type: {type(raw_text_tokens['input_ids'][0])}"
+                )
+                logger.debug(
+                    f"   First element sample: {raw_text_tokens['input_ids'][0][:10] if hasattr(raw_text_tokens['input_ids'][0], '__getitem__') else raw_text_tokens['input_ids'][0]}"
+                )
+
         # Convert to tensor manually (single sequence expected)
-        if isinstance(raw_text_tokens["input_ids"][0], list):
-            flat_text_ids = raw_text_tokens["input_ids"][0]
+        # Handle both nested and flat list cases
+        input_ids = raw_text_tokens["input_ids"]
+        if input_ids and isinstance(input_ids[0], list):
+            # Nested list case: [[tokens]]
+            flat_text_ids = input_ids[0]
         else:
-            flat_text_ids = raw_text_tokens["input_ids"]  # type: ignore[assignment]
+            # Flat list case: [tokens]
+            flat_text_ids = input_ids  # type: ignore[assignment]
 
         text_input_ids = torch.tensor(flat_text_ids, dtype=torch.long).unsqueeze(0)
 

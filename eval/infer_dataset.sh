@@ -22,8 +22,8 @@ MAX_NEW_TOKENS=1024
 
 # Configurable list of datasets to process
 DATASETS=(
-    "data/chinese-train.jsonl:train-$MAX_NEW_TOKENS"
-    "data/chinese-val.jsonl:val-$MAX_NEW_TOKENS"
+    "data/chinese-train.jsonl:train-$MAX_NEW_TOKENS-teacher-1"
+    # "data/chinese-val.jsonl:val-$MAX_NEW_TOKENS"
 )
 
 # Allow single-dataset mode for compatibility with run_inference.sh
@@ -54,7 +54,7 @@ ENABLE_TORCH_COMPILE=false
 # Teacher guidance configuration (defaults)
 DEFAULT_TEACHER_POOL_FILE="data/teacher_pool.jsonl"  # Default teacher pool location
 TEACHER_POOL_FILE=""  # Path to teacher pool JSONL file (empty = no teacher guidance)
-NUM_TEACHERS=0        # Number of teachers per sample (0 = no teacher guidance)
+NUM_TEACHERS=1        # Number of teachers per sample (0 = no teacher guidance)
 
 # Override with environment variables for easy mode switching
 # Examples:

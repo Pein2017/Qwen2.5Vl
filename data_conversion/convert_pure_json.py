@@ -269,17 +269,33 @@ def main():
                     obj = content_dict.get("object_type", "")
                     prop_cand = content_dict.get("property", "")
                     extra_cand = content_dict.get("extra_info", "")
+                    # Filter by allow-list ------------------------------------------------
+                    # Skip object entirely if its object_type is not in hierarchy
+                    if obj not in label_hierarchy:
+                        return ""
+
                     allowed_props = label_hierarchy.get(obj, [])
+
+                    def _property_allowed(prop: str) -> bool:
+                        """Return True if prop is permitted under current object_type."""
+                        if (
+                            not allowed_props
+                        ):  # property list empty ⇒ only allow NO property
+                            return prop == "" or prop is None
+                        if prop in allowed_props:
+                            return True
+                        # Allow variant "obj/prop" stored in hierarchy
+                        combo = f"{obj}/{prop}" if prop else obj
+                        return combo in allowed_props
+
                     # object_type
                     if "object_type" in response_types and obj:
                         group_parts.append(obj)
                     # property if allowed
                     actual_prop = None
-                    if (
-                        "property" in response_types
-                        and prop_cand
-                        and prop_cand in allowed_props
-                    ):
+                    if "property" in response_types and prop_cand:
+                        if not _property_allowed(prop_cand):
+                            return ""
                         actual_prop = prop_cand
                         group_parts.append(actual_prop)
                     # extra_info: include all leftover segments
@@ -295,6 +311,11 @@ def main():
                     # Normalize separators: replace commas with slashes
                     content_string = "/".join(group_parts)
                     content_string = content_string.replace(", ", "/").replace(",", "/")
+
+                    # Final guard: empty content means this object was filtered
+                    if not content_string:
+                        return ""
+
                     return content_string
                 else:  # English
                     # Extract fields directly with unified naming (fallback to old names)
@@ -314,11 +335,31 @@ def main():
                         else v
                         for k, v in content_dict_raw.items()
                     }
+                    # Allow-list filtering for English -----------------------------------
+                    obj = content_dict.get("object_type", "")
+                    prop = content_dict.get("property", "")
+                    if obj not in label_hierarchy:
+                        return ""
+                    allowed_props_en = label_hierarchy.get(obj, [])
+
+                    def _prop_allowed_en(p: str) -> bool:
+                        if not allowed_props_en:
+                            return p == "" or p is None
+                        if p in allowed_props_en:
+                            return True
+                        combo = f"{obj}/{p}" if p else obj
+                        return combo in allowed_props_en
+
+                    if prop and not _prop_allowed_en(prop):
+                        return ""
+
                     # Convert to string format using ResponseFormatter and normalize separators
                     content_string = ResponseFormatter.format_to_string(
                         content_dict, response_types
                     )
                     content_string = content_string.replace(", ", "/").replace(",", "/")
+                    if not content_string:
+                        return ""
                     return content_string
 
             # Process dataList format
@@ -337,10 +378,9 @@ def main():
 
                     props = item_data.get("properties", {}) or {}
                     content_string = extract_and_process_fields(props)
-                    if not content_string.strip():
-                        raise ValueError(
-                            f"Empty description extracted for dataList item {item_idx} in file {input_json_file_abs_path}. This indicates an upstream parsing issue."
-                        )
+                    if not content_string:
+                        # Skip this object entirely as it was filtered out
+                        continue
                     objects_ref.append(content_string)
 
             # Process markResult format
@@ -390,10 +430,9 @@ def main():
 
                     properties = feature_data.get("properties", {})
                     content_string = extract_and_process_fields(properties)
-                    if not content_string.strip():
-                        raise ValueError(
-                            f"Empty description extracted for markResult feature {feature_idx} in file {input_json_file_abs_path}. This indicates an upstream parsing issue."
-                        )
+                    if not content_string:
+                        continue  # skip filtered object
+
                     objects_ref.append(content_string)
             else:
                 logger.warning(
@@ -474,13 +513,12 @@ def main():
                     objects_bbox = scaled_objects_bbox
                     width, height = new_width, new_height
 
-                except Exception as e:
-                    # Record the problematic file and continue
-                    logger.error(
-                        f"Error processing file {input_json_file_abs_path}: {e}"
+                except Exception:
+                    # Surface error and halt as per fail-fast guideline
+                    logger.exception(
+                        f"Error during resize/bbox scaling for file {input_json_file_abs_path}"
                     )
-                    invalid_files.append(str(input_json_file_abs_path))
-                    continue
+                    raise
             else:
                 # Keep the directory structure when simply copying the image
                 # (no resize).  This guarantees path consistency regardless of
@@ -489,6 +527,10 @@ def main():
                 output_image_abs_path.parent.mkdir(parents=True, exist_ok=True)
                 if not output_image_abs_path.exists():
                     shutil.copy(original_image_abs_path, output_image_abs_path)
+
+            # Skip sample if filtering removed all objects
+            if not objects_ref:
+                continue
 
             # Build image path for JSONL relative to the script's execution location
             try:
@@ -510,11 +552,10 @@ def main():
                 "width": width,
             }
             processed_samples.append(sample)
-        except Exception as e:
-            # Record the problematic file and continue
-            logger.error(f"Error processing file {input_json_file_abs_path}: {e}")
-            invalid_files.append(str(input_json_file_abs_path))
-            continue
+        except Exception:
+            # Fail-fast: surface the exception with full traceback
+            logger.exception(f"Error processing file {input_json_file_abs_path}")
+            raise
 
     with output_jsonl_path.open("w", encoding="utf-8") as f:
         for sample in processed_samples:
@@ -534,20 +575,11 @@ def main():
         else:
             logger.info("All tokens found in the token map.")
 
-    # Report invalid files if any
+    # Fail-fast mode: invalid_files list should be empty; if not, raise
     if invalid_files:
-        logger.warning(
-            "The following files were skipped due to errors (see log for details):"
+        raise RuntimeError(
+            f"Encountered {len(invalid_files)} files with invalid annotations; aborting conversion."
         )
-        for p in invalid_files:
-            logger.warning(f"  - {p}")
-        logger.warning(
-            "⚠️  Skipped",
-            len(invalid_files),
-            "files with invalid annotations. See convert.log for paths.",
-        )
-    else:
-        logger.info("✅ No invalid files encountered.")
 
 
 if __name__ == "__main__":
