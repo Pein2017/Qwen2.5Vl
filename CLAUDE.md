@@ -275,3 +275,18 @@ python data_conversion/simple_validate.py data/chinese-train.jsonl
 8. **Component-wise learning rates** enable fine-grained training control
 9. **Runtime shape validation** with torchtyping provides fail-fast error detection
 10. **HuggingFace compatibility** preserved through model wrapper pattern
+
+## Detailed Technical Analysis
+
+For comprehensive understanding of tensor flow, architecture integration, and implementation details, see:
+- **`CLAUDE_TENSOR_ANALYSIS.md`** - Complete tensor flow analysis from raw inputs to model outputs
+  - Stage-by-stage tensor transformations with exact shapes
+  - Collation strategy comparisons (StandardDataCollator vs PackedDataCollator)
+  - DETR-style detection head architecture with dual-stream processing
+  - Flash Attention 2 integration and mRoPE patches
+  - Multi-task training pipeline with Hungarian matching
+  - Teacher-student learning implementation
+  - Comparison with official Qwen2.5-VL transformers code
+  - Performance characteristics and memory optimization strategies
+
+This analysis provides the technical foundation for understanding and extending the implementation.
