@@ -16,14 +16,14 @@ export HF_HUB_OFFLINE=1
 export CUDA_VISIBLE_DEVICES=1
 
 # Model configuration
-MODEL_PATH="output-626/626-random_teacher-packed-04mini/checkpoint-180"
+MODEL_PATH="output-630/630-filtered_sample-updated_prompt/checkpoint-150"
 DATA_ROOT="./"
 MAX_NEW_TOKENS=1024
 
 # Configurable list of datasets to process
 DATASETS=(
-    "data/chinese-train.jsonl:train-$MAX_NEW_TOKENS-teacher-1"
-    # "data/chinese-val.jsonl:val-$MAX_NEW_TOKENS"
+    "data/chinese-train.jsonl:train-$MAX_NEW_TOKENS-teacher-1-updated_prompt"
+    # "data/chinese-val.jsonl:val-$MAX_NEW_TOKENS-updated_prompt"
 )
 
 # Allow single-dataset mode for compatibility with run_inference.sh

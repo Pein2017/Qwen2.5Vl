@@ -19,6 +19,7 @@ from src.prompt import (
     ENGLISH_BASE_PROMPT,
     ENGLISH_CANDIDATES_SECTION,
     ENGLISH_FEW_SHOT_SECTION,
+    get_system_prompt,
 )
 from src.schema import ChatMessage, ChatProcessorOutput, GroundTruthObject
 from src.tokens import SpecialTokens
@@ -93,12 +94,16 @@ class ChatProcessor:
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
 
+        # Use the proper prompt selection function
+        base_prompt = get_system_prompt(
+            use_training_prompt=self.use_training_prompts, language=self.language
+        )
+
+        # Get candidates template
         if self.language == "chinese":
-            base_prompt = CHINESE_BASE_PROMPT
             candidates_template = CHINESE_CANDIDATES_SECTION
             few_shot_section = CHINESE_FEW_SHOT_SECTION
         else:  # English
-            base_prompt = ENGLISH_BASE_PROMPT
             candidates_template = ENGLISH_CANDIDATES_SECTION
             few_shot_section = ENGLISH_FEW_SHOT_SECTION
 

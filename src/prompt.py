@@ -38,19 +38,6 @@ ENGLISH_FEW_SHOT_SECTION = ""  # no built-in examples
 # HIERARCHICAL OBJECT CLASSIFICATION
 # ============================
 
-# Based on actual data analysis from candidate_phrases.json
-OBJECT_HIERARCHY = {
-    "BBU设备": ["华为", "中兴", "爱立信"],
-    "螺丝或连接点": [
-        "BBU安装螺丝",
-        "CPRI光缆和BBU连接点",
-        "地排处螺丝",
-        "BBU接地线机柜接地端",
-        "BBU尾纤和ODF连接点",
-    ],
-    "线缆": ["光纤", "非光纤"],
-    "机柜部件": ["机柜空间", "挡风板", "标签贴纸"],
-}
 
 # ============================
 # CHINESE PROMPTS (PRIMARY)
@@ -75,7 +62,7 @@ CHINESE_TRAINING_PROMPT = """你是专业的通信机房BBU工艺质量检测AI�
      • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
      • CPRI连接点 → 位于BBU光口侧并连接光纤跳线
      • 地排螺丝 → 仅出现在地排铜排上
-     • BBU接地线端子 → 出现在机柜接地排附近并连接黄绿接地线
+     • BBU接地线机柜接地端 → 出现在机柜接地排附近并连接黄绿接地线
      • 尾纤-ODF连接点 → 位于ODF光纤配线架或其尾纤附近
 
 3. **挡风板**

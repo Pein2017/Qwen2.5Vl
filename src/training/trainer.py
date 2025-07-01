@@ -435,7 +435,7 @@ class BBUTrainer(Trainer):
                     if "visual" in key:
                         visual_keys.append(key)
 
-        self.logger.info(message=f"   ✅ Total parameters saved: {total_keys}")
+        self.logger.info(f"   ✅ Total parameters saved: {total_keys}")
 
         # FAIL FAST: Vision tower must be present for vision-language model
         if not visual_keys:
