@@ -9,12 +9,20 @@
 !data_conversion/
 !data_analysis/
 !eval/
+!scripts/
+!ongoing_task/
+!configs/
+!important_demo/
 
 # Un-ignore everything inside those folders
 !src/**
-!data_conversion/**
+!data_conversion/*
 !data_analysis/**
 !eval/**
+
+
+
+!CLAUDE.md
 
 
 **/__pycache__
