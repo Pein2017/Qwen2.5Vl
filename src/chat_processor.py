@@ -12,7 +12,7 @@ from typeguard import typechecked
 
 from src.config import config
 from src.logger_utils import get_chat_logger
-from src.prompt import (
+from src.utils.prompt import (
     CHINESE_BASE_PROMPT,
     CHINESE_CANDIDATES_SECTION,
     CHINESE_FEW_SHOT_SECTION,
@@ -21,8 +21,8 @@ from src.prompt import (
     ENGLISH_FEW_SHOT_SECTION,
     get_system_prompt,
 )
-from src.schema import ChatMessage, ChatProcessorOutput, GroundTruthObject
-from src.tokens import SpecialTokens
+from src.utils.schema import ChatMessage, ChatProcessorOutput, GroundTruthObject
+from src.utils.tokens import SpecialTokens
 
 logger = get_chat_logger()
 

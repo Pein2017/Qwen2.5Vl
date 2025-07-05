@@ -108,6 +108,11 @@ def to_rgb(pil_image: Image.Image) -> Image.Image:
     introducing transparency artefacts that can confuse downstream vision
     models.
     """
+    from PIL import ImageOps
+
+    # CRITICAL FIX: Apply EXIF orientation transformation
+    # This ensures the image is displayed as intended by the camera/annotation tool
+    pil_image = ImageOps.exif_transpose(pil_image)
 
     if pil_image.mode == "RGBA":
         white_background = Image.new("RGB", pil_image.size, (255, 255, 255))

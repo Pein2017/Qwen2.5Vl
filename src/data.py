@@ -29,10 +29,10 @@ from src.config import config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
-from src.schema import ChatProcessorOutput, assert_collated_batch
+from src.utils.schema import ChatProcessorOutput, assert_collated_batch
 from src.teacher_pool import TeacherPoolManager, create_teacher_pool_manager
-from src.tokens import SpecialTokens
-from src.utils import IGNORE_INDEX
+from src.utils.tokens import SpecialTokens
+from src.utils.utils import IGNORE_INDEX
 
 logger = get_data_logger()
 
@@ -105,6 +105,13 @@ class BBUDataset(Dataset):
         # Calculate sequence lengths for optimization
         self._sequence_lengths = None
         # Note: calculate_lengths feature removed for simplicity
+        
+        # Initialize teacher assignment tracking
+        self._teacher_assignment_stats = {
+            'total_samples': 0,
+            'samples_with_teacher': 0,
+            'samples_without_teacher': 0
+        }
 
         # ---------------- Dynamic teacher sampling ----------------
         # Dynamic teacher sampling: require explicit configuration.
@@ -419,6 +426,25 @@ class BBUDataset(Dataset):
 
         # Decide whether to use teachers based on teacher ratio
         use_teachers = random.random() < self.teacher_ratio
+        
+        # Track teacher assignment statistics
+        self._teacher_assignment_stats['total_samples'] += 1
+        if use_teachers:
+            self._teacher_assignment_stats['samples_with_teacher'] += 1
+        else:
+            self._teacher_assignment_stats['samples_without_teacher'] += 1
+        
+        # Log statistics periodically (every 100 samples)
+        if self._teacher_assignment_stats['total_samples'] % 100 == 0:
+            total = self._teacher_assignment_stats['total_samples']
+            with_teacher = self._teacher_assignment_stats['samples_with_teacher']
+            actual_ratio = with_teacher / total if total > 0 else 0.0
+            logger.info(
+                f"📊 Teacher Assignment Stats (sample {idx}): "
+                f"{with_teacher}/{total} samples with teacher "
+                f"(actual ratio: {actual_ratio:.3f}, configured: {self.teacher_ratio:.3f})"
+            )
+        
         if not use_teachers:
             return []
 
@@ -444,6 +470,22 @@ class BBUDataset(Dataset):
             f"Sample {idx}: Sampled {len(teachers)} teachers (seed={epoch_seed})"
         )
         return teachers
+    
+    def get_teacher_assignment_summary(self) -> Dict[str, Any]:
+        """Get summary of teacher assignment statistics."""
+        stats = self._teacher_assignment_stats
+        total = stats['total_samples']
+        with_teacher = stats['samples_with_teacher']
+        without_teacher = stats['samples_without_teacher']
+        
+        return {
+            'total_samples_processed': total,
+            'samples_with_teacher': with_teacher,
+            'samples_without_teacher': without_teacher,
+            'actual_teacher_ratio': with_teacher / total if total > 0 else 0.0,
+            'configured_teacher_ratio': self.teacher_ratio,
+            'ratio_accuracy': abs((with_teacher / total) - self.teacher_ratio) if total > 0 else 0.0
+        }
 
     def _load_data(self) -> List[Dict]:
         """Load data from JSONL file."""
@@ -500,10 +542,13 @@ def extract_ground_truth_from_sample(
 @dataclass
 class StandardDataCollator:
     """
-    Standard data collator optimized for flash attention and memory efficiency.
+    Standard data collator optimized for Flash Attention and memory efficiency.
 
-    Uses padding to batch max length but with optimized memory management
-    and flash attention compatibility.
+    Uses LEFT padding to batch max length for full Flash Attention compatibility.
+    
+    CRITICAL: This collator now uses LEFT padding (padding_side='left') which is
+    required for Qwen2.5-VL Flash Attention. Make sure tokenizer.padding_side='left'
+    is set when creating the tokenizer.
     """
 
     tokenizer: PreTrainedTokenizerBase
@@ -635,12 +680,14 @@ class StandardDataCollator:
             dtype=torch.bool,
         )
 
-        # 5. Fill padded tensors
+        # 5. Fill padded tensors (LEFT padding for Flash Attention compatibility)
         for i, (input_seq, label_seq) in enumerate(zip(input_ids_list, labels_list)):
             seq_len = input_seq.shape[-1]
-            padded_input_ids[i, :seq_len] = input_seq
-            padded_labels[i, :seq_len] = label_seq
-            attention_mask[i, :seq_len] = True
+            # LEFT padding: place actual data at the END of the padded sequence
+            start_idx = batch_max_length - seq_len
+            padded_input_ids[i, start_idx:] = input_seq
+            padded_labels[i, start_idx:] = label_seq
+            attention_mask[i, start_idx:] = True
 
         # ------------------------------------------------------------------
         # Sanity-check attention_mask: each row must contain exactly `seq_len`
@@ -668,16 +715,18 @@ class StandardDataCollator:
         logger.debug(f"   Attention mask lengths: {mask_lengths}")
         logger.debug(f"   Uniform attention masks: {len(set(mask_lengths)) == 1}")
 
-        # 7. Handle position_ids if provided (pad to batch_max_length)
+        # 7. Handle position_ids if provided (LEFT padding for Flash Attention)
         if any(pos_ids is not None for pos_ids in position_ids_list):
             padded_position_ids_list: List[torch.Tensor] = []
-            for pos_ids in position_ids_list:
+            for i, pos_ids in enumerate(position_ids_list):
                 if pos_ids is not None:
                     seq_len = pos_ids.shape[-1]
                     padded_pos = torch.zeros(
                         (3, 1, batch_max_length), dtype=pos_ids.dtype
                     )
-                    padded_pos[:, :, :seq_len] = pos_ids
+                    # LEFT padding: place actual data at the END
+                    start_idx = batch_max_length - seq_len
+                    padded_pos[:, :, start_idx:] = pos_ids
                 else:
                     padded_pos = torch.zeros((3, 1, batch_max_length), dtype=torch.long)
                 padded_position_ids_list.append(padded_pos)
@@ -866,8 +915,6 @@ class PackedDataCollator:
         # scalar-padding bug shown in `run.log` (see _get_unpad_data → F.pad).  We therefore:
         #   • keep the prefix-sum vector under an auxiliary key so future upgrades can switch back easily, and
         #   • provide a dummy (all-True) mask of shape (1, T) that satisfies the older code path.
-
-        total_len = input_ids.shape[1]
 
         batch: Dict[str, Any] = {
             "input_ids": input_ids,

@@ -59,7 +59,7 @@ class SemanticMatcher:
 
     def __init__(
         self,
-        model_name: str = "/data4/swift/model_cache/sentence-transformers/all-MiniLM-L6-v2",
+        model_name: str = "/data4/Qwen2.5-VL-main/model_cache/sentence-transformers/all-MiniLM-L6-v2",
     ):
         """Initialize semantic matcher with SentenceTransformer model."""
         self.model_name = model_name

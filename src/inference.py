@@ -279,7 +279,7 @@ class InferenceEngine:
             )
 
     def _load_model_and_processor(self):
-        """Load model and processor exactly like demo script."""
+        """Load model and processor using UNIFIED loader for consistency."""
         # Enforce offline mode
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -288,212 +288,35 @@ class InferenceEngine:
         if not model_dir.exists():
             raise FileNotFoundError(f"Model path does not exist: {self.model_path}")
 
-        # Load processor first (slow tokenizer, vision preproc) - exactly like demo
-        processor = AutoProcessor.from_pretrained(
-            str(model_dir), trust_remote_code=True, use_fast=False
-        )
-
-        # Configure tokenizer for proper batch generation with Flash Attention
-        processor.tokenizer.padding_side = "left"
-
-        # Ensure pad token is set for left padding
-        if processor.tokenizer.pad_token is None:
-            processor.tokenizer.pad_token = processor.tokenizer.eos_token
-            logger.info("✅ Pad token set to EOS token for proper padding")
-
-        logger.info(
-            "✅ Tokenizer padding side set to 'left' for Flash Attention compatibility"
-        )
-
-        # Override chat_template with training template via collator - exactly like demo
+        logger.info("🔧 Loading model via UNIFIED loader (same as training)")
+        
         try:
-            from src.reference.qwen2_5vl_collator import Qwen2_5VLCollator
-
-            _ = Qwen2_5VLCollator(
-                processor
-            )  # mutates processor.tokenizer.chat_template
-            logger.info("✅ Chat template overridden with training collator template.")
-        except Exception as exc:
-            logger.warning(
-                "⚠️  Could not import training collator – proceeding with checkpoint template."
+            from src.models.model_loader import load_model_and_processor_unified
+            
+            # Use IDENTICAL loading process as training (only difference: for_inference=True)
+            model, tokenizer, image_processor = load_model_and_processor_unified(
+                model_path=str(model_dir),
+                for_inference=True,  # ONLY difference from training
             )
-            logger.warning(f"   Reason: {exc}")
+            
+            # Create processor-like object for compatibility
+            processor = type('UnifiedProcessor', (), {
+                'tokenizer': tokenizer,
+                'image_processor': image_processor,
+                'batch_decode': tokenizer.batch_decode,
+            })()
+            
+            model.eval()
+            
+            logger.info("✅ UNIFIED model loading completed for inference")
+            logger.debug(f"Model loaded on device: {next(model.parameters()).device}")
+            logger.debug(f"Model dtype: {next(model.parameters()).dtype}")
 
-        # Load model exactly like demo - try adapter first, then fallback
-        model = self._load_model_like_demo(model_dir)
-        model.eval()
-
-        logger.debug(f"Model loaded on device: {next(model.parameters()).device}")
-        logger.debug(f"Model dtype: {next(model.parameters()).dtype}")
-
-        return processor, model
-
-    def _load_model_like_demo(self, model_path: Path):
-        """Load model exactly like demo script - adapter-aware."""
-        # 1) If checkpoint already contains full fused weights -> normal load
-        adapter_config_file = model_path / "adapter_config.json"
-
-        # ALWAYS use Flash Attention 2 - no fallback
-        attn_implementation = "flash_attention_2"
-        logger.info(f"🔧 Using attention implementation: {attn_implementation}")
-
-        # Prefer adapter path if adapter_config.json exists
-        if adapter_config_file.exists():
-            try:
-                from peft import PeftConfig, PeftModel
-            except ImportError:
-                raise ImportError(
-                    "PEFT is required for loading adapter models. "
-                    "Please install it with: pip install peft"
-                )
-
-            peft_cfg = PeftConfig.from_pretrained(model_path)
-            base_model_path = Path(peft_cfg.base_model_name_or_path or "")
-
-            if not base_model_path.exists():
-                # Assume base model was saved inside the same dir
-                base_model_path = model_path
-
-            from transformers import Qwen2_5_VLForConditionalGeneration
-
-            logger.info(f"🔧 Loading base model from {base_model_path}")
-
-            try:
-                base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    str(base_model_path),
-                    torch_dtype=torch.bfloat16
-                    if torch.cuda.is_available()
-                    else torch.float32,
-                    device_map=None,  # Single GPU only - no multi-GPU device mapping
-                    trust_remote_code=True,
-                    attn_implementation=attn_implementation,
-                    use_cache=True,  # Enable KV cache by default
-                )
-                # Move to single GPU if available
-                if torch.cuda.is_available():
-                    base_model = base_model.to("cuda:0")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to load base model with Flash Attention 2: {e}. "
-                    "Ensure your environment supports Flash Attention 2."
-                )
-
-            logger.info(f"🔧 Loading PEFT adapter weights from {model_path}")
-            model = PeftModel.from_pretrained(base_model, str(model_path))
-
-            # Optionally merge LoRA weights for inference efficiency
-            try:
-                model = model.merge_and_unload()
-                logger.info("✅ LoRA adapter merged into base model for inference.")
-            except Exception as exc:
-                logger.warning(
-                    f"⚠️  Could not merge adapter (continuing with PEFT model): {exc}"
-                )
-
-            # Verify Flash Attention is enabled
-            if (
-                not hasattr(model.config, "_attn_implementation")
-                or model.config._attn_implementation != "flash_attention_2"
-            ):
-                raise RuntimeError(
-                    "Flash Attention 2 was not properly enabled on the model. "
-                    "This is required for optimal performance."
-                )
-
-            # Verify KV cache is enabled
-            if not model.config.use_cache:
-                raise RuntimeError(
-                    "KV cache is not enabled. This is required for efficient generation."
-                )
-
-            return model
-
-        # 2) If no adapter config, attempt AutoPeftModelForCausalLM
-        try:
-            from peft import AutoPeftModelForCausalLM
-
-            model = AutoPeftModelForCausalLM.from_pretrained(
-                str(model_path),
-                torch_dtype=torch.bfloat16
-                if torch.cuda.is_available()
-                else torch.float32,
-                device_map=None,  # Single GPU only - no multi-GPU device mapping
-                trust_remote_code=True,
-                attn_implementation=attn_implementation,
-                use_cache=True,  # Enable KV cache by default
-            )
-            # Move to single GPU if available
-            if torch.cuda.is_available():
-                model = model.to("cuda:0")
-
-            # Verify Flash Attention is enabled
-            if (
-                not hasattr(model.config, "_attn_implementation")
-                or model.config._attn_implementation != "flash_attention_2"
-            ):
-                raise RuntimeError(
-                    "Flash Attention 2 was not properly enabled on the model. "
-                    "This is required for optimal performance."
-                )
-
-            # Verify KV cache is enabled
-            if not model.config.use_cache:
-                raise RuntimeError(
-                    "KV cache is not enabled. This is required for efficient generation."
-                )
-
-            logger.info(
-                "✅ Loaded model via AutoPeftModelForCausalLM (adapter already fused)."
-            )
-            return model
-        except ImportError:
-            pass  # PEFT not installed, try plain model
-        except (ValueError, OSError):
-            pass  # Fall back to plain model
-
-        # 3) Plain full-weights load
-        from transformers import Qwen2_5_VLForConditionalGeneration
-
-        try:
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                str(model_path),
-                torch_dtype=torch.bfloat16
-                if torch.cuda.is_available()
-                else torch.float32,
-                device_map=None,  # Single GPU only - no multi-GPU device mapping
-                trust_remote_code=True,
-                attn_implementation=attn_implementation,
-                use_cache=True,  # Enable KV cache by default
-            )
-            # Move to single GPU if available
-            if torch.cuda.is_available():
-                model = model.to("cuda:0")
+            return processor, model
+            
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to load model with Flash Attention 2: {e}. "
-                "Ensure your environment supports Flash Attention 2."
-            )
-
-        # Verify Flash Attention is enabled
-        if (
-            not hasattr(model.config, "_attn_implementation")
-            or model.config._attn_implementation != "flash_attention_2"
-        ):
-            raise RuntimeError(
-                "Flash Attention 2 was not properly enabled on the model. "
-                "This is required for optimal performance."
-            )
-
-        # Verify KV cache is enabled
-        if not model.config.use_cache:
-            raise RuntimeError(
-                "KV cache is not enabled. This is required for efficient generation."
-            )
-
-        logger.info("✅ Loaded full Qwen2.5-VL model (no adapter detected).")
-        logger.info(f"   Attention implementation: {attn_implementation}")
-        logger.info(f"   KV cache enabled: {model.config.use_cache}")
-        return model
+            logger.error(f"❌ UNIFIED model loading failed: {e}")
+            raise RuntimeError(f"Failed to load model via unified loader: {e}")
 
     def _load_teacher_pool(self) -> List[Dict[str, Any]]:
         """Load teacher samples from teacher pool JSONL file."""
@@ -794,10 +617,10 @@ class InferenceEngine:
         do_sample: bool = False,
         repetition_penalty: float = 1.1,
     ) -> List[str]:
-        """Generate responses for a batch of inputs.
+        """Generate responses for a batch of inputs using true batch processing.
 
-        Due to issues with the Qwen2.5-VL processor's batch handling,
-        we process each sample individually and collect the responses.
+        This method now implements real batch processing by combining all inputs
+        into a single batch and processing them together for better GPU utilization.
 
         Args:
             images_list: List of image lists (one list per sample)
@@ -810,26 +633,228 @@ class InferenceEngine:
         Returns:
             List of generated responses
         """
-        logger.debug(f"Processing batch of {len(texts)} samples individually")
+        batch_size = len(texts)
+        logger.debug(f"Processing true batch of {batch_size} samples together")
 
-        responses = []
-        for i, (text, images) in enumerate(zip(texts, images_list)):
-            logger.debug(f"Processing sample {i + 1}/{len(texts)}")
-            try:
-                response = self.generate_response(
-                    images=images,
-                    text=text,
+        try:
+            # Prepare batch inputs using the processor
+            all_images = []
+            all_texts = []
+            
+            for text, images in zip(texts, images_list):
+                all_texts.append(text)
+                all_images.extend(images)  # Flatten all images into one list
+            
+            # Use processor to handle batch processing
+            if self.chat_processor:
+                # For chat processor, we need to process each sample individually
+                # but then combine the inputs for batch generation
+                batch_inputs = []
+                for text, images in zip(texts, images_list):
+                    inputs = self.chat_processor.prepare_inputs_for_inference(
+                        images=images,
+                        text=text,
+                        is_first_step=True,
+                    )
+                    batch_inputs.append(inputs)
+                
+                # Combine batch inputs
+                combined_inputs = {}
+                for key in batch_inputs[0].keys():
+                    if key == 'input_ids':
+                        # Pad and stack input_ids
+                        input_ids_list = [inp[key] for inp in batch_inputs]
+                        max_len = max(ids.shape[1] for ids in input_ids_list)
+                        padded_ids = []
+                        for ids in input_ids_list:
+                            pad_len = max_len - ids.shape[1]
+                            if pad_len > 0:
+                                # Left padding for generation
+                                padded = torch.cat([
+                                    torch.full((ids.shape[0], pad_len), self.processor.tokenizer.pad_token_id, dtype=ids.dtype, device=ids.device),
+                                    ids
+                                ], dim=1)
+                            else:
+                                padded = ids
+                            padded_ids.append(padded)
+                        combined_inputs[key] = torch.cat(padded_ids, dim=0)
+                    
+                    elif key == 'attention_mask':
+                        # Pad and stack attention masks
+                        mask_list = [inp[key] for inp in batch_inputs]
+                        max_len = max(mask.shape[1] for mask in mask_list)
+                        padded_masks = []
+                        for mask in mask_list:
+                            pad_len = max_len - mask.shape[1]
+                            if pad_len > 0:
+                                # Left padding with zeros for attention mask
+                                padded = torch.cat([
+                                    torch.zeros((mask.shape[0], pad_len), dtype=mask.dtype, device=mask.device),
+                                    mask
+                                ], dim=1)
+                            else:
+                                padded = mask
+                            padded_masks.append(padded)
+                        combined_inputs[key] = torch.cat(padded_masks, dim=0)
+                    
+                    elif key == 'pixel_values':
+                        # Stack pixel values
+                        pixel_values_list = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        if pixel_values_list:
+                            combined_inputs[key] = torch.cat(pixel_values_list, dim=0)
+                        else:
+                            combined_inputs[key] = None
+                    
+                    elif key == 'image_grid_thw':
+                        # Stack image grid info
+                        grid_list = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        if grid_list:
+                            combined_inputs[key] = torch.cat(grid_list, dim=0)
+                        else:
+                            combined_inputs[key] = None
+                    
+                    else:
+                        # For other keys, take the first non-None value or stack if possible
+                        values = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        if values:
+                            if torch.is_tensor(values[0]):
+                                combined_inputs[key] = torch.cat(values, dim=0)
+                            else:
+                                combined_inputs[key] = values[0]
+                        else:
+                            combined_inputs[key] = None
+                
+                inputs = combined_inputs
+            else:
+                # Fallback to processor batch handling (less reliable)
+                inputs = self.processor(text=all_texts, images=all_images, return_tensors="pt", padding=True)
+
+            # Move inputs to device
+            inputs = {
+                k: v.to(self.model.device) if torch.is_tensor(v) else v
+                for k, v in inputs.items()
+            }
+
+            # Log batch information
+            logger.debug(f"BATCH INPUT IDS shape: {inputs['input_ids'].shape}")
+            if "pixel_values" in inputs and inputs["pixel_values"] is not None:
+                logger.debug(f"BATCH PIXEL VALUES shape: {inputs['pixel_values'].shape}")
+
+            # Generate responses for the entire batch
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            import time
+            start_time = time.perf_counter()
+
+            with (
+                torch.no_grad(),
+                torch.autocast(
+                    device_type="cuda",
+                    dtype=torch.bfloat16,
+                    enabled=torch.cuda.is_available(),
+                ),
+            ):
+                # Verify KV cache is enabled
+                if not self.model.config.use_cache:
+                    raise RuntimeError("KV cache was disabled before batch generation")
+
+                output_ids = self.model.generate(
+                    **inputs,
                     max_new_tokens=max_new_tokens,
-                    temperature=temperature,
                     do_sample=do_sample,
+                    temperature=temperature if do_sample else 1.0,
                     repetition_penalty=repetition_penalty,
+                    pad_token_id=self.processor.tokenizer.pad_token_id,
+                    eos_token_id=self.processor.tokenizer.eos_token_id,
+                    use_cache=True,
                 )
-                responses.append(response)
-            except Exception as e:
-                logger.error(f"Failed to generate response for sample {i}: {e}")
-                responses.append("")  # Empty response for failed samples
 
-        return responses
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            elapsed = time.perf_counter() - start_time
+
+            # Log timing info
+            prompt_tokens = inputs["input_ids"].shape[1]
+            total_tokens = output_ids.shape[1]
+            generated_tokens = max(total_tokens - prompt_tokens, 1)
+            tokens_per_second = generated_tokens * batch_size / elapsed if elapsed > 0 else float("inf")
+
+            logger.debug(
+                f"Batch generation took {elapsed:.2f}s for {generated_tokens} tokens × {batch_size} samples → {tokens_per_second:.2f} tokens/s"
+            )
+
+            # Decode all responses
+            response_texts = self.processor.batch_decode(
+                output_ids, skip_special_tokens=True
+            )
+
+            # Extract assistant responses from each sample
+            responses = []
+            for i, response_text in enumerate(response_texts):
+                # Extract assistant part - handle multi-turn conversations
+                if self.teacher_samples and "assistant\n" in response_text:
+                    # Split by assistant markers and get the last one
+                    assistant_parts = response_text.split("assistant\n")
+                    if len(assistant_parts) > 1:
+                        assistant_part = assistant_parts[-1].strip()
+                        # Remove any trailing user/system markers
+                        if "\nuser" in assistant_part:
+                            assistant_part = assistant_part.split("\nuser")[0].strip()
+                        if "\nsystem" in assistant_part:
+                            assistant_part = assistant_part.split("\nsystem")[0].strip()
+                    else:
+                        assistant_part = response_text
+                else:
+                    # Standard single-turn extraction
+                    try:
+                        assistant_part = response_text.split("assistant\n", 1)[1].strip()
+                    except IndexError:
+                        assistant_part = response_text
+
+                # Clean up special tokens
+                special_tokens_to_remove = [
+                    "<|im_end|>",
+                    "<|endoftext|>",
+                    "<|im_start|>",
+                    "<|vision_start|>",
+                    "<|vision_end|>",
+                ]
+
+                cleaned_response = assistant_part
+                for token in special_tokens_to_remove:
+                    cleaned_response = cleaned_response.replace(token, "")
+
+                cleaned_response = cleaned_response.strip()
+                responses.append(cleaned_response)
+                
+                logger.debug(f"Sample {i} OUTPUT (first 200 chars): {cleaned_response[:200]}...")
+
+            return responses
+
+        except Exception as e:
+            logger.error(f"Batch generation failed: {e}")
+            logger.debug(f"Falling back to individual processing")
+            
+            # Fallback to individual processing if batch fails
+            responses = []
+            for i, (text, images) in enumerate(zip(texts, images_list)):
+                try:
+                    response = self.generate_response(
+                        images=images,
+                        text=text,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        repetition_penalty=repetition_penalty,
+                    )
+                    responses.append(response)
+                except Exception as e2:
+                    logger.error(f"Failed to generate response for sample {i}: {e2}")
+                    responses.append("")
+
+            return responses
 
     def run_inference_on_jsonl(
         self,

@@ -64,7 +64,6 @@ class DirectConfig:
     data_root: str
     max_total_length: int
     use_candidates: bool
-    candidates_file: str
     teacher_pool_file: str
     num_teacher_samples: int
     collator_type: str
@@ -81,7 +80,7 @@ class DirectConfig:
 
     # Logging settings
     logging_steps: int
-    logging_dir: Optional[str]
+    logging_dir: str
     log_level: str
     report_to: str
     verbose: bool
@@ -157,16 +156,17 @@ class DirectConfig:
     merge_size: int  # Merge size from vision encoder to LLM encoder (default: 2)
     temporal_patch_size: int  # Temporal patch size of vision encoder (default: 2)
 
-    # --- Derived Paths (set automatically) ---
+    # Teacher-Student Loss Weights
+    teacher_loss_weight: float  # Weight for teacher loss in backpropagation
+    student_loss_weight: float  # Weight for student loss in backpropagation
+
+    # --- Fields with defaults (must be last in dataclass) ---
+    candidates_file: Optional[str] = None
+    lr_reference_batch_size: int = 0
+    auto_scale_lr: bool = True
     run_output_dir: str = field(init=False)
     tensorboard_dir: str = field(init=False)
     log_file_dir: str = field(init=False)
-
-    # Baseline effective batch size for linear LR scaling (0 disables scaling)
-    lr_reference_batch_size: int = 0
-
-    # Auto-scale learning rates based on collator type (enabled by default)
-    auto_scale_lr: bool = True
 
     @property
     def tune_vision(self) -> bool:
@@ -300,7 +300,8 @@ def init_config(config_path: str) -> DirectConfig:
     # and collator type
     # ------------------------------------------------------------------
     _apply_auto_lr_scaling(config)
-    _apply_collator_lr_scaling(config)
+    if config.auto_scale_lr:
+        _apply_collator_lr_scaling(config)
 
     return config
 
@@ -427,7 +428,10 @@ def _apply_collator_lr_scaling(cfg: DirectConfig) -> None:
         return
 
     # Create token-length-aware learning rate scaler (import here to avoid circular imports)
-    from src.lr_scaling import create_token_length_scaler
+    try:
+        from src.lr_scaling import create_token_length_scaler
+    except ImportError:
+        raise RuntimeError("lr_scaling module required for auto_scale_lr=True but not available")
 
     scaler = create_token_length_scaler(
         auto_scale_lr=cfg.auto_scale_lr,

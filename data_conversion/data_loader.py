@@ -78,7 +78,12 @@ class SampleLoader:
     def validate_image_dimensions(self, image_path: Path, expected_width: int, expected_height: int) -> Tuple[int, int]:
         """Validate image dimensions match JSON metadata."""
         try:
+            from PIL import ImageOps
+            
             with Image.open(image_path) as img:
+                # CRITICAL FIX: Apply EXIF orientation transformation
+                # This ensures we get dimensions that match the annotation space
+                img = ImageOps.exif_transpose(img)
                 actual_width, actual_height = img.size
             
             if expected_width != actual_width or expected_height != actual_height:

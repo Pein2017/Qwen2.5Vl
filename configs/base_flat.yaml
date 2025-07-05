@@ -1,0 +1,130 @@
+# --- Run settings (high-frequency) ---
+run_name: "630-filtered_sample-updated_prompt"
+output_dir: "output-630"
+bf16: true
+fp16: false
+learning_rate: 0
+adapter_lr: 5e-3
+vision_lr: 5e-7
+merger_lr: 1e-5
+llm_lr: 5e-6
+detection_lr: 1e-5
+num_train_epochs: 30
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 2
+detection_enabled: false
+detection_freeze_epochs: 0
+
+# --- Model settings ---
+model_path: "/data4/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+model_size: "3B"
+model_max_length: 120000
+model_hidden_size: 3584
+model_num_layers: 28
+model_num_attention_heads: 28
+model_vocab_size: 152064
+attn_implementation: "flash_attention_2"
+use_flash_attention: true
+torch_dtype: "bfloat16"
+mixed_precision: "bf16"
+gradient_checkpointing: true
+use_cache: false
+
+# --- Vision processing parameters ---
+patch_size: 14 # Spatial patch size of vision encoder
+merge_size: 2 # Merge size from vision encoder to LLM encoder
+temporal_patch_size: 2 # Temporal patch size of vision encoder
+
+# --- Optimization settings ---
+warmup_ratio: 0.1
+weight_decay: 0.001
+max_grad_norm: 0.5
+lr_scheduler_type: "cosine"
+gradient_clip_reduction_factor: 0.5
+learning_rate_reduction_factor: 0.5
+
+# --- Data settings ---
+train_data_path: "data/train.jsonl"
+val_data_path: "data/val.jsonl"
+candidates_file: null # Disabled
+teacher_pool_file: "data/teacher.jsonl"
+data_root: "./"
+max_total_length: 12000
+use_candidates: false
+collator_type: "packed"
+max_examples: 1
+language: "chinese"
+teacher_ratio: 0.7 # Ratio of samples that use teachers during training (0.0-1.0)
+num_teacher_samples: 1
+
+# time standard: 1804s ， 1809
+# time packed: 1751.7069 1779.2363 1756.0005
+
+# --- Detection head architecture ---
+detection_num_queries: 100
+detection_max_caption_length: 32
+detection_decoder_dim_feedforward_factor: 2.0
+detection_decoder_num_layers: 2
+detection_caption_decoder_dim_feedforward_factor: 2.0
+detection_caption_decoder_num_layers: 4
+detection_head_dropout: 0.1
+detection_adapter_bottleneck_ratio: 8
+detection_adapter_num_layers: 1
+
+# --- Loss component weights ---
+detection_bbox_weight: 10.0
+detection_giou_weight: 20.0
+detection_objectness_weight: 10.0
+detection_caption_weight: 0.02
+detection_focal_loss_gamma: 2.0
+detection_focal_loss_alpha: 0.25
+
+# --- Evaluation settings ---
+eval_strategy: "steps"
+eval_steps: 10
+save_strategy: "steps"
+save_steps: 50
+save_total_limit: 2
+
+# --- Logging settings ---
+logging_steps: 1
+logging_dir: "logs"
+log_level: "INFO"
+report_to: "tensorboard"
+tb_dir: "tb"
+verbose: true
+disable_tqdm: true
+
+# --- Monitoring settings ---
+enable_monitoring: false
+save_predictions: true
+save_token_analysis: true
+save_raw_text: true
+
+# --- Performance settings ---
+dataloader_num_workers: 8
+pin_memory: true
+prefetch_factor: 2
+batching_strategy: "standard"
+remove_unused_columns: false
+
+# --- Stability settings ---
+max_consecutive_nan: 5
+max_consecutive_zero: 5
+max_nan_ratio: 0.3
+nan_monitoring_window: 100
+allow_occasional_nan: true
+nan_recovery_enabled: true
+
+# --- Debug settings ---
+test_samples: 1
+test_forward_pass: false
+
+# --- Teacher-Student Loss Weights ---
+teacher_loss_weight: 0.3  # Weight for teacher loss in backpropagation
+student_loss_weight: 1.0  # Weight for student loss in backpropagation
+
+# --- Learning Rate Auto-Scaling ---
+auto_scale_lr: false # Automatically adjust LRs based on collator type
+lr_reference_batch_size: 0 # Disable reference batch size scaling

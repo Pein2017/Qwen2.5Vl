@@ -1,11 +1,7 @@
 #!/bin/bash
-# Inference pipeline for multiple datasets
-# Usage: ./eval/infer_dataset.sh [log_level] [batch_size] [num_workers] [use_torch_compile]
-# Examples:
-#   ./eval/infer_dataset.sh                    # Default: info log, batch_size=4
-#   ./eval/infer_dataset.sh info 8             # Batch size 8
-#   ./eval/infer_dataset.sh info 8 4           # Batch size 8 with 4 workers
-#   ./eval/infer_dataset.sh info 8 4 compile   # With torch.compile optimization
+# Inference pipeline for multiple datasets with teacher guidance support
+# Usage: ./eval/infer_dataset.sh
+# Configure NUM_TEACHERS directly in the script to tune teacher guidance
 
 set -e  # Exit on any error
 
@@ -13,79 +9,64 @@ set -e  # Exit on any error
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=4
 
-# Model configuration
-MODEL_PATH="output-630/630-filtered_sample-updated_prompt/checkpoint-150"
+
+# Model and data configuration
+MODEL_PATH="output-74/7-4-teacher_student_loss_weight_roundFloats/checkpoint-280"
 DATA_ROOT="./"
 MAX_NEW_TOKENS=1024
 
-# Configurable list of datasets to process
-DATASETS=(
-    "data/chinese-train.jsonl:train-$MAX_NEW_TOKENS-teacher-1-updated_prompt"
-    # "data/chinese-val.jsonl:val-$MAX_NEW_TOKENS-updated_prompt"
-)
+# Teacher guidance configuration (MAIN TUNING PARAMETER)
+NUM_TEACHERS=0                                                      # Number of teachers per sample (0 = no teacher guidance)
+TEACHER_POOL_FILE="data/teacher.jsonl"                             # Teacher pool file location
 
-# Allow single-dataset mode for compatibility with run_inference.sh
-if [ -n "$INPUT_JSONL" ]; then
-    # If INPUT_JSONL is set, override DATASETS to only use this file
-    if [ "$NUM_TEACHERS" -gt 0 ]; then
-        DATASETS=("$INPUT_JSONL:chinese-val-teacher-guided-${NUM_TEACHERS}teachers")
-    else
-        DATASETS=("$INPUT_JSONL:chinese-val-standard")
-    fi
-fi
+# Performance configuration
+BATCH_SIZE=64                                                   
+NUM_WORKERS=8                                                   
 
-###############################################################################
-# USER-CONFIGURABLE PARAMETERS (edit here, then simply run the script)         #
-###############################################################################
-
-# Verbosity for Python logger (debug | info | warning | error)
-LOG_LEVEL="info"
-
-# Inference batch size
-BATCH_SIZE=64
-# Data-loader workers
-NUM_WORKERS=8
-
-# Enable torch.compile (true/false)
-ENABLE_TORCH_COMPILE=false
-
-# Teacher guidance configuration (defaults)
-DEFAULT_TEACHER_POOL_FILE="data/teacher_pool.jsonl"  # Default teacher pool location
-TEACHER_POOL_FILE=""  # Path to teacher pool JSONL file (empty = no teacher guidance)
-NUM_TEACHERS=1        # Number of teachers per sample (0 = no teacher guidance)
-
-# Override with environment variables for easy mode switching
-# Examples:
-#   NUM_TEACHERS=2 ./eval/infer_dataset.sh     # Enable teacher guidance
-#   MAX_SAMPLES=5 ./eval/infer_dataset.sh      # Test on limited samples
-NUM_TEACHERS=${NUM_TEACHERS:-0}                                    # Default: standard inference
-
-# Auto-set teacher pool file if teacher guidance is requested but no pool file specified
-if [ "$NUM_TEACHERS" -gt 0 ] && [ -z "$TEACHER_POOL_FILE" ]; then
-    TEACHER_POOL_FILE="$DEFAULT_TEACHER_POOL_FILE"
-fi
-BATCH_SIZE=${BATCH_SIZE:-32}                                       # Allow override (default: 32)
-MAX_SAMPLES=${MAX_SAMPLES:--1}                                     # -1 = all samples
-
-# Internal flag passed to Python when enabled
-USE_TORCH_COMPILE=""
-if [ "$ENABLE_TORCH_COMPILE" = true ]; then
-    USE_TORCH_COMPILE="--use_torch_compile"
-fi
+LOG_LEVEL="info"                                                    
+ENABLE_TORCH_COMPILE=false                                         # Enable torch.compile optimization
 
 # Output directory
 RESULTS_DIR="infer_result"
 mkdir -p "$RESULTS_DIR"
 
+
+# Generate output suffix based on teacher configuration
+if [ "$NUM_TEACHERS" -gt 0 ]; then
+    TEACHER_SUFFIX="teacher_${NUM_TEACHERS}"
+else
+    TEACHER_SUFFIX="no_teacher"
+fi
+
+# Configurable list of datasets to process (output names include teacher info)
+DATASETS=(
+    "data/train.jsonl:train-${MAX_NEW_TOKENS}-74-${TEACHER_SUFFIX}"
+    # "data/chinese-val.jsonl:val-${MAX_NEW_TOKENS}-${TEACHER_SUFFIX}"
+)
+
+# Allow single-dataset mode for compatibility with run_inference.sh
+if [ -n "$INPUT_JSONL" ]; then
+    # If INPUT_JSONL is set, override DATASETS to only use this file
+    DATASETS=("$INPUT_JSONL:chinese-val-${TEACHER_SUFFIX}")
+fi
+
+
+# Internal flag for torch compile
+USE_TORCH_COMPILE=""
+if [ "$ENABLE_TORCH_COMPILE" = true ]; then
+    USE_TORCH_COMPILE="--use_torch_compile"
+fi
+
 # Determine inference mode for display
-if [ -n "$TEACHER_POOL_FILE" ] && [ "$NUM_TEACHERS" -gt 0 ]; then
+if [ "$NUM_TEACHERS" -gt 0 ]; then
     INFERENCE_MODE="Teacher-Guided Inference (${NUM_TEACHERS} teachers per sample)"
 else
     INFERENCE_MODE="Standard Inference (no teacher guidance)"
 fi
 
+# Display configuration
 echo "🚀 Unified Dataset Inference Runner"
 echo "=================================================="
 echo "📁 Model: $MODEL_PATH"
@@ -102,7 +83,7 @@ echo "🔧 Performance Settings:"
 echo "   Batch size: $BATCH_SIZE $([ "$NUM_TEACHERS" -gt 0 ] && echo "(will be forced to 1 for teacher guidance)" || echo "")"
 echo "   Num workers: $NUM_WORKERS"
 echo "   Torch compile: $([ "$ENABLE_TORCH_COMPILE" = true ] && echo "ENABLED" || echo "DISABLED")"
-if [ -n "$TEACHER_POOL_FILE" ] && [ "$NUM_TEACHERS" -gt 0 ]; then
+if [ "$NUM_TEACHERS" -gt 0 ]; then
     echo "   Teacher pool: $TEACHER_POOL_FILE"
 fi
 echo ""
@@ -111,17 +92,10 @@ echo ""
 echo "💡 Performance Features:"
 echo "   ⚡ Flash Attention 2: MANDATORY (always enabled)"
 echo "   💾 KV Cache: MANDATORY (always enabled)"
-echo "   🚀 Batch Processing: Configurable (default: 4)"
+echo "   🚀 Batch Processing: Configurable (default: 32)"
 echo "   🎯 Single GPU: Optimized for single GPU inference"
-echo "   🔥 Torch Compile: Optional (use 'compile' flag)"
-echo "   👥 Teacher Guidance: Optional (matches training pipeline)"
-echo ""
-echo "📋 Optimization Tips:"
-echo "   - Batch size 4: ~3.75x speedup (16GB GPU memory)"
-echo "   - Batch size 8: ~6.8x speedup (28GB GPU memory)"
-echo "   - Single GPU: Optimized for single GPU inference"
-echo "   - Torch compile: Additional 10-20% speedup on newer GPUs"
-echo "   - Teacher guidance: May improve accuracy by providing context"
+echo "   🔥 Torch Compile: Optional (set ENABLE_TORCH_COMPILE=true)"
+echo "   👥 Teacher Guidance: Configurable (NUM_TEACHERS parameter)"
 echo ""
 
 # Validate model path
@@ -131,8 +105,8 @@ if [ ! -d "$MODEL_PATH" ]; then
     exit 1
 fi
 
-# Validate teacher pool if specified
-if [ -n "$TEACHER_POOL_FILE" ] && [ "$NUM_TEACHERS" -gt 0 ]; then
+# Validate teacher pool if teacher guidance is enabled
+if [ "$NUM_TEACHERS" -gt 0 ]; then
     if [ ! -f "$TEACHER_POOL_FILE" ]; then
         echo "❌ Teacher pool file not found: $TEACHER_POOL_FILE"
         echo "Please ensure the teacher pool file exists before running inference."
@@ -164,6 +138,10 @@ for dataset_entry in "${DATASETS[@]}"; do
 done
 echo ""
 
+###############################################################################
+# INFERENCE EXECUTION                                                          #
+###############################################################################
+
 # Function to run inference on a dataset
 run_inference() {
     local input_jsonl=$1
@@ -173,7 +151,7 @@ run_inference() {
     echo "🚀 Running inference on $dataset_name..."
     echo "   Input: $input_jsonl"
     echo "   Output: $output_file"
-    if [ -n "$TEACHER_POOL_FILE" ] && [ "$NUM_TEACHERS" -gt 0 ]; then
+    if [ "$NUM_TEACHERS" -gt 0 ]; then
         echo "   Using teacher guidance: $NUM_TEACHERS teachers per sample"
     fi
     
@@ -205,7 +183,7 @@ run_inference() {
     fi
     
     # Add teacher guidance parameters if enabled
-    if [ -n "$TEACHER_POOL_FILE" ] && [ "$NUM_TEACHERS" -gt 0 ]; then
+    if [ "$NUM_TEACHERS" -gt 0 ]; then
         CMD="$CMD --teacher_pool_file \"$TEACHER_POOL_FILE\" --num_teachers $NUM_TEACHERS"
     fi
     
@@ -214,8 +192,7 @@ run_inference() {
         CMD="$CMD $USE_TORCH_COMPILE"
     fi
     
-    # Run inference with timeout protection
-    timeout 3600 bash -c "$CMD" < /dev/null 2>&1 | tee "$RESULTS_DIR/${dataset_name}_inference.log"
+    bash -c "$CMD" < /dev/null 2>&1 | tee "$RESULTS_DIR/${dataset_name}_inference.log"
     
     local exit_code=${PIPESTATUS[0]}
     
@@ -260,7 +237,10 @@ for dataset_entry in "${DATASETS[@]}"; do
     echo ""
 done
 
-# Final summary
+###############################################################################
+# FINAL SUMMARY                                                               #
+###############################################################################
+
 echo "🏁 All inference completed!"
 echo "📊 Summary:"
 echo "   ✅ Successful: $successful_count datasets"
@@ -272,8 +252,12 @@ fi
 
 echo "📁 Results directory: $RESULTS_DIR"
 
+# Show detailed results for single dataset runs
 if [ $failed_count -eq 0 ] && [ ${#DATASETS[@]} -eq 1 ]; then
+    dataset_entry="${DATASETS[0]}"
+    IFS=':' read -r input_jsonl dataset_name <<< "$dataset_entry"
     output_file="$RESULTS_DIR/${dataset_name}.json"
+    
     if [ -f "$output_file" ]; then
         result_count=$(python -c "
 import json
@@ -313,9 +297,9 @@ with open('$output_file') as f:
     fi
 fi
 
-echo "🎯 Quick Mode Switching:"
-echo "   Standard inference:      NUM_TEACHERS=0 ./eval/infer_dataset.sh"
-echo "   Teacher-guided (2):      NUM_TEACHERS=2 ./eval/infer_dataset.sh"
-echo "   Quick test (5 samples):  MAX_SAMPLES=5 ./eval/infer_dataset.sh"
-echo "   Both modes for comparison:"
-echo "     NUM_TEACHERS=0 ./eval/infer_dataset.sh && NUM_TEACHERS=2 ./eval/infer_dataset.sh"
+echo ""
+echo "🎯 Usage:"
+echo "   Edit NUM_TEACHERS in the script to tune teacher guidance"
+echo "   Standard inference:     NUM_TEACHERS=0"
+echo "   Teacher-guided:         NUM_TEACHERS=1, 2, 3, etc."
+echo "   Then run: ./eval/infer_dataset.sh"

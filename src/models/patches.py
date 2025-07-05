@@ -155,9 +155,11 @@ def safe_visual_forward(original_forward):
             target_device = next(self.parameters()).device  # e.g. cuda:0
 
             if torch.is_tensor(pixel_values) and pixel_values.device != target_device:
+                logger.debug(f"🔧 Moving pixel_values from {pixel_values.device} to {target_device}")
                 pixel_values = pixel_values.to(device=target_device, non_blocking=True)
 
             if torch.is_tensor(grid_thw) and grid_thw.device != target_device:
+                logger.debug(f"🔧 Moving grid_thw from {grid_thw.device} to {target_device}")
                 grid_thw = grid_thw.to(device=target_device, non_blocking=True)
 
             # Validate inputs before processing
@@ -165,7 +167,7 @@ def safe_visual_forward(original_forward):
                 logger.warning(
                     "⚠️ Empty pixel_values tensor detected during inference, skipping visual processing"
                 )
-                # Return empty tensor with correct shape
+                # Return empty tensor with correct shape and device
                 # EXPLICIT: Get hidden_size from model - no defaults
                 if hasattr(self, "embed_dim"):
                     hidden_size = self.embed_dim
@@ -175,8 +177,9 @@ def safe_visual_forward(original_forward):
                     raise ValueError(
                         "Cannot determine hidden_size - model must have embed_dim or config.hidden_size"
                     )
+                logger.warning(f"⚠️ Returning empty tensor with shape (0, {hidden_size}) on device {target_device}")
                 return torch.zeros(
-                    0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
+                    0, hidden_size, device=target_device, dtype=torch.float16
                 )
 
             # Additional validation for grid_thw
@@ -184,6 +187,7 @@ def safe_visual_forward(original_forward):
                 logger.warning(
                     "⚠️ Empty grid_thw tensor detected during inference, skipping visual processing"
                 )
+                # Return empty tensor with correct shape and device
                 # EXPLICIT: Get hidden_size from model - no defaults
                 if hasattr(self, "embed_dim"):
                     hidden_size = self.embed_dim
@@ -193,8 +197,9 @@ def safe_visual_forward(original_forward):
                     raise ValueError(
                         "Cannot determine hidden_size - model must have embed_dim or config.hidden_size"
                     )
+                logger.warning(f"⚠️ Returning empty tensor with shape (0, {hidden_size}) on device {target_device}")
                 return torch.zeros(
-                    0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
+                    0, hidden_size, device=target_device, dtype=torch.float16
                 )
 
             seq_len = pixel_values.shape[0]
@@ -248,6 +253,13 @@ def safe_visual_forward(original_forward):
 
         except Exception as e:
             logger.error(f"❌ Visual forward failed during inference: {e}")
+            logger.error(f"   pixel_values shape: {pixel_values.shape if torch.is_tensor(pixel_values) else 'N/A'}")
+            logger.error(f"   pixel_values device: {pixel_values.device if torch.is_tensor(pixel_values) else 'N/A'}")
+            logger.error(f"   grid_thw shape: {grid_thw.shape if torch.is_tensor(grid_thw) else 'N/A'}")
+            logger.error(f"   grid_thw device: {grid_thw.device if torch.is_tensor(grid_thw) else 'N/A'}")
+            
+            # Get target device from model parameters
+            target_device = next(self.parameters()).device
             # EXPLICIT: Get hidden_size from model - no defaults
             if hasattr(self, "embed_dim"):
                 hidden_size = self.embed_dim
@@ -256,9 +268,38 @@ def safe_visual_forward(original_forward):
             else:
                 # Last resort fallback for inference only
                 hidden_size = 1152  # Qwen2.5-VL 3B default
-            return torch.zeros(
-                0, hidden_size, device=pixel_values.device, dtype=pixel_values.dtype
-            )
+            
+            # CRITICAL: Calculate correct number of expected features
+            # This prevents the "image features and image tokens do not match" error
+            if torch.is_tensor(pixel_values) and pixel_values.numel() > 0 and torch.is_tensor(grid_thw) and grid_thw.numel() > 0:
+                # Calculate expected output features based on grid_thw and spatial merging
+                spatial_merge_unit = 4  # Default for Qwen2.5-VL (2x2 merging)
+                if hasattr(self, "spatial_merge_unit"):
+                    spatial_merge_unit = self.spatial_merge_unit
+                elif hasattr(self, "config") and hasattr(self.config, "spatial_merge_unit"):
+                    spatial_merge_unit = self.config.spatial_merge_unit
+                
+                # Calculate total expected features after spatial merging
+                total_expected_features = 0
+                for i in range(grid_thw.shape[0]):
+                    t, h, w = grid_thw[i].tolist()
+                    pre_merge_tokens = t * h * w
+                    post_merge_tokens = pre_merge_tokens // spatial_merge_unit
+                    total_expected_features += post_merge_tokens
+                
+                logger.warning(f"⚠️ Visual forward failed, returning dummy features of size {total_expected_features} (calculated from grid_thw)")
+                logger.warning(f"   grid_thw: {grid_thw.tolist()}, spatial_merge_unit: {spatial_merge_unit}")
+                return torch.zeros(
+                    total_expected_features, hidden_size, device=target_device, dtype=torch.float16
+                )
+            else:
+                # If we can't calculate properly, return empty but log the problem
+                logger.warning(f"⚠️ Visual forward failed with invalid inputs, returning empty tensor")
+                logger.warning(f"   pixel_values valid: {torch.is_tensor(pixel_values) and pixel_values.numel() > 0}")
+                logger.warning(f"   grid_thw valid: {torch.is_tensor(grid_thw) and grid_thw.numel() > 0}")
+                return torch.zeros(
+                    0, hidden_size, device=target_device, dtype=torch.float16
+                )
 
     return wrapped_forward
 

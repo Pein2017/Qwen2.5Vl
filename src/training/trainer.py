@@ -59,9 +59,9 @@ from src.config.global_config import DirectConfig
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
-from src.schema import GroundTruthObject
+from src.utils.schema import GroundTruthObject
 
-from ..tokens.special_tokens import SpecialTokens
+from src.utils.tokens.special_tokens import SpecialTokens
 
 
 class BBUTrainer(Trainer):
@@ -88,6 +88,7 @@ class BBUTrainer(Trainer):
         *args: Any,
         cfg: Optional[DirectConfig] = None,
         image_processor: Optional[Qwen2VLImageProcessor] = None,
+        training_coordinator: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         # --------------------------------------------------------------
@@ -103,7 +104,7 @@ class BBUTrainer(Trainer):
         if cfg is None and "config" in kwargs:
             cfg = kwargs.pop("config")
 
-        tokenizer_ref = kwargs.get("tokenizer")
+        self.tokenizer_ref = kwargs.get("tokenizer")
 
         # ------------------------------------------------------------------
         # Resolve configuration
@@ -114,11 +115,11 @@ class BBUTrainer(Trainer):
         # ------------------------------------------------------------------
         from src.config import get_config
 
-        # Attempt to fetch already-initialised global configuration, if any.
-        try:
-            _global_cfg: Optional[DirectConfig] = get_config()
-        except RuntimeError:
-            _global_cfg = None
+        # Check if global configuration is initialized
+        _global_cfg: Optional[DirectConfig] = None
+        from src.config.global_config import config as global_config_instance
+        if global_config_instance is not None:
+            _global_cfg = global_config_instance
 
         if cfg is not None:
             self.config = cfg
@@ -133,56 +134,94 @@ class BBUTrainer(Trainer):
 
         super().__init__(*args, **kwargs)
 
+        # Initialize logger first since tokenizer setter needs it
+        self.logger = get_training_logger()
+
         # Overwrite the (deprecated) property with a direct attribute so
         # future accesses skip the warning-emitting property defined in the
         # parent class. We bypass the descriptor protocol via
         # `object.__setattr__` to avoid invoking the original setter.
-        if tokenizer_ref is None and hasattr(self, "tokenizer"):
-            tokenizer_ref = object.__getattribute__(self, "tokenizer")
+        if self.tokenizer_ref is None and hasattr(self, "tokenizer"):
+            self.tokenizer_ref = object.__getattribute__(self, "tokenizer")
 
-        object.__setattr__(self, "tokenizer", tokenizer_ref)
-
-        self.logger = get_training_logger()
+        object.__setattr__(self, "tokenizer", self.tokenizer_ref)
         self.image_processor = image_processor
+        
+        # Integration with new training coordinator system
+        self.training_coordinator = training_coordinator
+        self._use_coordinator = training_coordinator is not None
+        
+        if self._use_coordinator:
+            self.logger.info("🎯 Using new training coordinator system")
+            # When using coordinator, loss management is delegated
+            self._current_lm_loss: float = 0.0
+            self._current_teacher_lm_loss: float = 0.0
+            self._current_student_lm_loss: float = 0.0
+            self._current_bbox_loss: float = 0.0
+            self._current_caption_loss: float = 0.0
+            self._current_objectness_loss: float = 0.0
+            self._current_bbox_l1_loss: float = 0.0
+            self._current_bbox_giou_loss: float = 0.0
+            
+            # Coordinator handles accumulators, but keep for compatibility
+            self._accumulated_lm_loss: float = 0.0
+            self._accumulated_teacher_lm_loss: float = 0.0
+            self._accumulated_student_lm_loss: float = 0.0
+            self._accumulated_bbox_l1_loss: float = 0.0
+            self._accumulated_bbox_giou_loss: float = 0.0
+            self._accumulated_caption_loss: float = 0.0
+            self._accumulated_objectness_loss: float = 0.0
+            self._micro_batch_count: int = 0
+            
+            # Detection loss is handled by coordinator
+            self.detection_loss = training_coordinator.loss_manager.detection_loss
+        else:
+            self.logger.info("📄 Using legacy training system")
+            # Legacy system: manual loss tracking
+            self._current_lm_loss: float = 0.0
+            self._current_teacher_lm_loss: float = 0.0
+            self._current_student_lm_loss: float = 0.0
+            self._current_bbox_loss: float = 0.0
+            self._current_caption_loss: float = 0.0
+            self._current_objectness_loss: float = 0.0
+            self._current_bbox_l1_loss: float = 0.0
+            self._current_bbox_giou_loss: float = 0.0
 
-        # Simple attributes to store the latest loss components from a single forward pass
-        self._current_lm_loss: float = 0.0
-        self._current_teacher_lm_loss: float = 0.0
-        self._current_student_lm_loss: float = 0.0
-        self._current_bbox_loss: float = 0.0
-        self._current_caption_loss: float = 0.0
-        self._current_objectness_loss: float = 0.0
-        self._current_bbox_l1_loss: float = 0.0
-        self._current_bbox_giou_loss: float = 0.0
+            # ACCUMULATORS for per-step average logging with gradient accumulation
+            self._accumulated_lm_loss: float = 0.0
+            self._accumulated_teacher_lm_loss: float = 0.0
+            self._accumulated_student_lm_loss: float = 0.0
+            self._accumulated_bbox_l1_loss: float = 0.0
+            self._accumulated_bbox_giou_loss: float = 0.0
+            self._accumulated_caption_loss: float = 0.0
+            self._accumulated_objectness_loss: float = 0.0
 
-        # ACCUMULATORS for per-step average logging with gradient accumulation
-        self._accumulated_lm_loss: float = 0.0
-        self._accumulated_teacher_lm_loss: float = 0.0
-        self._accumulated_student_lm_loss: float = 0.0
-        self._accumulated_bbox_l1_loss: float = 0.0
-        self._accumulated_bbox_giou_loss: float = 0.0
-        self._accumulated_caption_loss: float = 0.0
-        self._accumulated_objectness_loss: float = 0.0
+            # Counter for the number of *micro-batches* processed since the last log.
+            self._micro_batch_count: int = 0
 
-        # Counter for the number of *micro-batches* processed since the last log.
-        # This allows us to report true per-batch averages even when `logging_steps`
-        # spans multiple optimizer steps (and thus multiple gradient-accumulation
-        # cycles).
-        self._micro_batch_count: int = 0
-
-        # Initialize object detection loss if configured
-        self.detection_loss = None
-        if self.config.detection_enabled:
-            self._init_detection_loss()
+            # Initialize object detection loss if configured
+            self.detection_loss = None
+            if self.config.detection_enabled:
+                self._init_detection_loss()
 
         # Cache for per-step weight / grad norms (populated in training_step)
         self._norm_cache: Dict[str, float] = {}
 
+    @property
+    def tokenizer(self):
+        """Backward compatibility property - returns cached tokenizer without deprecation warning."""
+        return self.tokenizer_ref
+
+    @tokenizer.setter
+    def tokenizer(self, value):
+        """Backward compatibility setter for tokenizer."""
+        self.tokenizer_ref = value
+
         # After initialization, we can safely access the tokenizer
         # and add our special tokens. This is a critical step.
-        if self.tokenizer:
+        if self.tokenizer_ref:
             special_tokens = SpecialTokens()
-            num_added = self.tokenizer.add_special_tokens(
+            num_added = self.tokenizer_ref.add_special_tokens(
                 {"additional_special_tokens": special_tokens.to_list()}
             )
             if num_added > 0:
@@ -190,7 +229,7 @@ class BBUTrainer(Trainer):
                     f"✅ Added {num_added} special tokens to the tokenizer."
                 )
                 # Important: Resize token embeddings in the model
-                self.model.resize_token_embeddings(len(self.tokenizer))
+                self.model.resize_token_embeddings(len(self.tokenizer_ref))
                 self.logger.info(
                     "✅ Resized model token embeddings to match new tokenizer size."
                 )
@@ -243,9 +282,9 @@ class BBUTrainer(Trainer):
         )
 
         # --- 2. Save tokenizer & processor ---------------------------------
-        if self.tokenizer is not None:
+        if self.tokenizer_ref is not None:
             self.logger.info("💾 Saving tokenizer...")
-            self.tokenizer.save_pretrained(output_dir)
+            self.tokenizer_ref.save_pretrained(output_dir)
 
         if self.image_processor is None:
             raise RuntimeError(
@@ -368,16 +407,11 @@ class BBUTrainer(Trainer):
             src_path = os.path.join(base_model_path, file_name)
             dst_path = os.path.join(output_dir, file_name)
 
-            if os.path.exists(src_path) and not os.path.exists(dst_path):
-                try:
-                    shutil.copy2(src_path, dst_path)
-                    self.logger.info(f"   ✅ Copied {file_name} (optional)")
-                except Exception as e:
-                    self.logger.info(
-                        f"   ℹ️ Failed to copy optional file {file_name}: {e}"
-                    )
-            elif os.path.exists(dst_path):
+            if os.path.exists(dst_path):
                 self.logger.info(f"   ✅ {file_name} already exists (optional)")
+            elif os.path.exists(src_path):
+                shutil.copy2(src_path, dst_path)
+                self.logger.info(f"   ✅ Copied {file_name} (optional)")
             else:
                 self.logger.info(
                     f"   ℹ️ Optional file {file_name} not found in base model"
@@ -543,16 +577,15 @@ class BBUTrainer(Trainer):
             for fname in ["config.json", "generation_config.json"]:
                 src = os.path.join(base_model_dir, fname)
                 dst = os.path.join(output_dir, fname)
-                if os.path.exists(src) and not os.path.exists(dst):
-                    try:
+                if not os.path.exists(dst):
+                    if os.path.exists(src):
                         import shutil
-
                         shutil.copy(src, dst)
                         self.logger.info(
                             f"💾 Copied missing {fname} from base model directory."
                         )
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to copy {fname}: {e}")
+                    else:
+                        raise FileNotFoundError(f"Required file {fname} not found at {src}")
 
         # Fail-fast: verify that essential HF files are present post-save. This
         # guards against broken checkpoints that would later crash
@@ -570,7 +603,7 @@ class BBUTrainer(Trainer):
 
     def _init_detection_loss(self) -> None:
         """Initialize object detection loss with config parameters."""
-        from src.detection_loss import DetectionLoss
+        from src.detection.detection_loss import DetectionLoss
 
         # Initialize with tokenizer for caption loss computation
         self.detection_loss = DetectionLoss(
@@ -578,7 +611,7 @@ class BBUTrainer(Trainer):
             giou_weight=self.config.detection_giou_weight,
             objectness_weight=self.config.detection_objectness_weight,
             caption_weight=self.config.detection_caption_weight,
-            tokenizer=self.tokenizer,
+            tokenizer=self.tokenizer_ref,
             focal_loss_gamma=self.config.detection_focal_loss_gamma,
             focal_loss_alpha=self.config.detection_focal_loss_alpha,
         )
@@ -703,7 +736,7 @@ class BBUTrainer(Trainer):
             "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
             "detection": self.config.detection_lr,
-            "adapter": getattr(self.config, "adapter_lr", self.config.detection_lr),
+            "adapter": self.config.adapter_lr,
         }
 
         optimizer_grouped_parameters = []
@@ -873,8 +906,8 @@ class BBUTrainer(Trainer):
             return 0.0, 0.0
 
         # Get spans from inputs (may be None for backward compatibility)
-        teacher_spans = inputs.get("teacher_assistant_spans")
-        student_spans = inputs.get("student_assistant_spans")
+        teacher_spans = inputs["teacher_assistant_spans"]
+        student_spans = inputs["student_assistant_spans"]
 
         if teacher_spans is None or student_spans is None:
             # No spans available, split not possible
@@ -927,8 +960,9 @@ class BBUTrainer(Trainer):
                         flat_idx = batch_idx * shifted_seq_len + shifted_pos
                         student_indices.append(flat_idx)
 
-        # Compute teacher loss
-        teacher_loss = 0.0
+        # Compute teacher loss (with gradients for potential reweighting)
+        teacher_loss_tensor = torch.tensor(0.0, device=logits.device, requires_grad=True)
+        teacher_loss_float = 0.0
         if teacher_indices:
             teacher_indices_tensor = torch.tensor(teacher_indices, device=logits.device)
             teacher_logits = flat_logits[teacher_indices_tensor]
@@ -937,13 +971,15 @@ class BBUTrainer(Trainer):
             # Only compute loss on tokens that are not ignored
             valid_mask = teacher_labels != -100
             if valid_mask.any():
-                # Use mean reduction directly - no manual averaging needed
-                teacher_loss = loss_fn(
+                # Keep tensor with gradients for potential reweighting
+                teacher_loss_tensor = loss_fn(
                     teacher_logits[valid_mask], teacher_labels[valid_mask]
-                ).item()
+                )
+                teacher_loss_float = teacher_loss_tensor.detach().item()
 
-        # Compute student loss
-        student_loss = 0.0
+        # Compute student loss (with gradients for potential reweighting)
+        student_loss_tensor = torch.tensor(0.0, device=logits.device, requires_grad=True)
+        student_loss_float = 0.0
         if student_indices:
             student_indices_tensor = torch.tensor(student_indices, device=logits.device)
             student_logits = flat_logits[student_indices_tensor]
@@ -952,12 +988,65 @@ class BBUTrainer(Trainer):
             # Only compute loss on tokens that are not ignored
             valid_mask = student_labels != -100
             if valid_mask.any():
-                # Use mean reduction directly - no manual averaging needed
-                student_loss = loss_fn(
+                # Keep tensor with gradients for potential reweighting
+                student_loss_tensor = loss_fn(
                     student_logits[valid_mask], student_labels[valid_mask]
-                ).item()
+                )
+                student_loss_float = student_loss_tensor.detach().item()
 
-        return teacher_loss, student_loss
+        # Store tensors for potential gradient reweighting (future enhancement)
+        self._teacher_loss_tensor = teacher_loss_tensor
+        self._student_loss_tensor = student_loss_tensor
+
+        return teacher_loss_float, student_loss_float
+
+    def _compute_loss_with_coordinator(
+        self,
+        model: nn.Module,
+        inputs: Dict[str, Any],
+        return_outputs: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
+        """
+        Compute loss using the training coordinator system.
+        
+        This method delegates complex loss computation to the coordinator
+        while maintaining the same interface as the legacy compute_loss.
+        """
+        # Ensure we get hidden states for detection
+        model_inputs = inputs.copy()
+        model_inputs["output_hidden_states"] = True
+        
+        # Run model forward pass
+        outputs = model(**model_inputs)
+        
+        # Use coordinator for loss computation
+        total_loss, loss_components = self.training_coordinator.compute_loss(
+            model_outputs=outputs,
+            inputs=inputs,
+            is_training=model.training
+        )
+        
+        # Update current loss attributes for compatibility with legacy logging
+        self._current_lm_loss = loss_components["lm_loss"]
+        self._current_teacher_lm_loss = loss_components["teacher_lm_loss"]
+        self._current_student_lm_loss = loss_components["student_lm_loss"]
+        self._current_bbox_l1_loss = loss_components["bbox_l1_loss"]
+        self._current_bbox_giou_loss = loss_components["bbox_giou_loss"]
+        self._current_caption_loss = loss_components["caption_loss"]
+        self._current_objectness_loss = loss_components["objectness_loss"]
+        self._current_bbox_loss = self._current_bbox_l1_loss + self._current_bbox_giou_loss
+        
+        # Update coordinator state
+        self.training_coordinator.step_update(
+            step=self.state.global_step if hasattr(self, 'state') else 0,
+            epoch=int(self.state.epoch) if hasattr(self, 'state') and self.state.epoch else 0
+        )
+        
+        # Return in same format as legacy method
+        if return_outputs:
+            return total_loss, outputs
+        else:
+            return total_loss
 
     def compute_loss(
         self,
@@ -973,10 +1062,18 @@ class BBUTrainer(Trainer):
         as attributes for logging.
         """
         # ------------------------------------------------------------------
+        # NEW: Delegate to training coordinator if available
+        # ------------------------------------------------------------------
+        if self._use_coordinator:
+            return self._compute_loss_with_coordinator(model, inputs, return_outputs)
+        
+        # ------------------------------------------------------------------
+        # LEGACY: Original loss computation logic
+        # ------------------------------------------------------------------
+        
         # Increment *micro-batch* counter **before** any early returns so that
         # every forward pass is accounted for. We only count batches during
         # training to avoid contaminating the counter with evaluation steps.
-        # ------------------------------------------------------------------
         if model.training:
             self._micro_batch_count += 1
 
@@ -1032,7 +1129,7 @@ class BBUTrainer(Trainer):
                 self.logger.error(f"🚨 labels: {sample_labels}")
                 # Decode full conversation
                 try:
-                    full_text = self.tokenizer.decode(
+                    full_text = self.tokenizer_ref.decode(
                         sample_input, skip_special_tokens=False
                     )
                     self.logger.error(f"🚨 Full text: {full_text}")
@@ -1135,8 +1232,39 @@ class BBUTrainer(Trainer):
             self._current_caption_loss = 0.0
             self._current_objectness_loss = 0.0
 
-        # Total loss for backpropagation
-        total_loss = lm_loss + total_detection_loss
+        # ------------------------------------------------------------------
+        # ENHANCED: Use reweighted teacher-student losses for backpropagation
+        # This ensures both teacher and student components get proper gradients
+        # ------------------------------------------------------------------
+        
+        # Check if we have teacher-student tensors available
+        if hasattr(self, '_teacher_loss_tensor') and hasattr(self, '_student_loss_tensor'):
+            # ------------------------------------------------------------------
+            # STUDENT-FOCUSED WEIGHTING: Since final goal is student inference,
+            # prioritize student loss while using teacher as auxiliary guidance
+            # ------------------------------------------------------------------
+            
+            # Get weights from config (following coding rules - no defaults)
+            teacher_weight = self.config.teacher_loss_weight
+            student_weight = self.config.student_loss_weight
+            
+            # Compute weighted language modeling loss
+            weighted_lm_loss = (
+                teacher_weight * self._teacher_loss_tensor + 
+                student_weight * self._student_loss_tensor
+            )
+            
+            # Use weighted loss for backpropagation instead of original lm_loss
+            total_loss = weighted_lm_loss + total_detection_loss
+            
+            # Log weighting info for debugging
+            if self.state.global_step % 50 == 0:  # Log every 50 steps
+                self.logger.info(
+                    f"🎯 Loss weights: teacher={teacher_weight:.2f}, student={student_weight:.2f}"
+                )
+        else:
+            # Fallback to original combined loss if spans not available
+            total_loss = lm_loss + total_detection_loss
 
         # ------------------------------------------------------------------
         # One-off debug: show the raw chat template for the FIRST train and
@@ -1155,7 +1283,7 @@ class BBUTrainer(Trainer):
             sample_labels = inputs["labels"][0].tolist() if "labels" in inputs else None
 
             # Decode full sequence with special tokens
-            full_text = self.tokenizer.decode(sample_ids, skip_special_tokens=False)
+            full_text = self.tokenizer_ref.decode(sample_ids, skip_special_tokens=False)
 
             # Replace long runs of <IMAGE_PAD>
             pad_token = "<|image_pad|>"
@@ -1198,7 +1326,7 @@ class BBUTrainer(Trainer):
                     tid for tid, lab in zip(sample_ids, sample_labels) if lab != -100
                 ]
                 if tgt_ids:
-                    target_text = self.tokenizer.decode(
+                    target_text = self.tokenizer_ref.decode(
                         tgt_ids, skip_special_tokens=False
                     )
 
@@ -1241,27 +1369,34 @@ class BBUTrainer(Trainer):
         Log metrics with averaging for gradient accumulation.
         """
         if self.control.should_log:
-            # The `tr_loss` from the Trainer is an accumulated value.
-            # We re-compute the loss from our own averaged components to ensure
-            # correct, per-step reporting consistent with the docstring.
-            # Average the accumulated component losses
-            num_micro_batches = max(1, self._micro_batch_count)
+            # NEW: Use training coordinator for loss averaging if available
+            if self._use_coordinator:
+                component_logs = self.training_coordinator.get_averaged_losses_and_reset()
+                total_avg_loss = component_logs.get("total_loss", 0.0)
+            else:
+                # LEGACY: Original loss averaging logic
+                # The `tr_loss` from the Trainer is an accumulated value.
+                # We re-compute the loss from our own averaged components to ensure
+                # correct, per-step reporting consistent with the docstring.
+                # Average the accumulated component losses
+                num_micro_batches = max(1, self._micro_batch_count)
 
-            # Average the accumulated component losses across *all* micro-batches
-            # seen since the last log, independent of the gradient-accumulation
-            # configuration.
-            avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
-            avg_teacher_lm_loss = self._accumulated_teacher_lm_loss / num_micro_batches
-            avg_student_lm_loss = self._accumulated_student_lm_loss / num_micro_batches
-            total_avg_loss = avg_lm_loss
+                # Average the accumulated component losses across *all* micro-batches
+                # seen since the last log, independent of the gradient-accumulation
+                # configuration.
+                avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
+                avg_teacher_lm_loss = self._accumulated_teacher_lm_loss / num_micro_batches
+                avg_student_lm_loss = self._accumulated_student_lm_loss / num_micro_batches
+                total_avg_loss = avg_lm_loss
 
-            component_logs: Dict[str, float] = {
-                "lm_loss": avg_lm_loss,
-                "teacher_lm_loss": avg_teacher_lm_loss,
-                "student_lm_loss": avg_student_lm_loss,
-            }
+                component_logs: Dict[str, float] = {
+                    "lm_loss": avg_lm_loss,
+                    "teacher_lm_loss": avg_teacher_lm_loss,
+                    "student_lm_loss": avg_student_lm_loss,
+                }
 
-            if self.config.detection_enabled:
+            if self.config.detection_enabled and not self._use_coordinator:
+                # LEGACY: Only compute detection averages if not using coordinator
                 avg_bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
                 avg_bbox_giou_loss = (
                     self._accumulated_bbox_giou_loss / num_micro_batches
@@ -1370,18 +1505,20 @@ class BBUTrainer(Trainer):
 
             self.log(logs)
 
-            # Reset accumulators after logging
-            self._accumulated_lm_loss = 0.0
-            self._accumulated_teacher_lm_loss = 0.0
-            self._accumulated_student_lm_loss = 0.0
-            self._accumulated_caption_loss = 0.0
-            self._accumulated_objectness_loss = 0.0
-            self._accumulated_bbox_l1_loss = 0.0
-            self._accumulated_bbox_giou_loss = 0.0
+            # Reset accumulators after logging (only when not using coordinator)
+            # The coordinator handles its own accumulator management
+            if not self._use_coordinator:
+                self._accumulated_lm_loss = 0.0
+                self._accumulated_teacher_lm_loss = 0.0
+                self._accumulated_student_lm_loss = 0.0
+                self._accumulated_caption_loss = 0.0
+                self._accumulated_objectness_loss = 0.0
+                self._accumulated_bbox_l1_loss = 0.0
+                self._accumulated_bbox_giou_loss = 0.0
 
-            # Also reset the micro-batch counter so the next logging window
-            # starts fresh.
-            self._micro_batch_count = 0
+                # Also reset the micro-batch counter so the next logging window
+                # starts fresh.
+                self._micro_batch_count = 0
 
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
@@ -1636,7 +1773,7 @@ class BBUTrainer(Trainer):
         ids_dtype = batch["input_ids"].dtype
         lbl_dtype = batch["labels"].dtype
 
-        pad_id = self.tokenizer.pad_token_id if self.tokenizer is not None else 0
+        pad_id = self.tokenizer_ref.pad_token_id if self.tokenizer_ref is not None else 0
         IGNORE_INDEX = -100  # keep consistent with src.utils
 
         new_input_ids = torch.full(
@@ -1767,63 +1904,29 @@ def setup_model_and_tokenizer() -> Tuple[
     nn.Module, PreTrainedTokenizerBase, Qwen2VLImageProcessor
 ]:
     """
-    Centralized setup for model, tokenizer, and image processor.
-    - Applies necessary patches for Qwen2.5VL.
-    - Initializes tokenizer with custom chat template and special tokens.
-    - Initializes the model with appropriate quantization and settings.
+    Centralized setup for model, tokenizer, and image processor using UNIFIED loader.
+    
+    This function now delegates to the unified loader to ensure strict consistency
+    between training and inference. NO SILENT FALLBACKS.
     """
     logger = get_training_logger()
-    logger.info("🔧 Setting up model with unified loading mechanism...")
+    logger.info("🔧 Setting up model with UNIFIED loading mechanism...")
 
-    # Apply comprehensive Qwen2.5-VL fixes FIRST
-    logger.info("🔧 Applying comprehensive Qwen2.5-VL fixes...")
-    if not apply_comprehensive_qwen25_fixes():
-        raise RuntimeError("Failed to apply Qwen2.5-VL fixes")
-
-    # Load tokenizer first (needed for detection head)
-    tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path=config.model_path,
-        model_max_length=config.model_max_length,
-        padding_side="right",
-        use_fast=False,
-    )
-
-    # Load the model: either full detection wrapper or pure Qwen2.5-VL
-    if config.detection_enabled:
-        from src.models.wrapper import Qwen25VLWithDetection
-
-        logger.info(
-            f"🔄 Loading Qwen2.5-VL with detection head from: {config.model_path}"
-        )
-        model = Qwen25VLWithDetection.from_pretrained(
+    try:
+        from src.models.model_loader import load_model_and_processor_unified
+        
+        # Use unified loader with training mode
+        model, tokenizer, image_processor = load_model_and_processor_unified(
             model_path=config.model_path,
-            num_queries=config.detection_num_queries,
-            max_caption_length=config.detection_max_caption_length,
-            tokenizer=tokenizer,
+            for_inference=False,  # Training mode
         )
-    else:
-        # Load base Qwen2.5-VL model without detection head
-        from transformers import Qwen2_5_VLForConditionalGeneration
-
-        from src.models.wrapper import _get_torch_dtype  # reuse dtype helper
-
-        logger.info(
-            f"🔄 Loading base Qwen2.5-VL model from: {config.model_path} (no detection)"
-        )
-        # Use *padded* attention mask – therefore we switch to the safer
-        #       implementation="flash_attention_2" (no Flash-Attention patch required).
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            config.model_path,
-            torch_dtype=_get_torch_dtype(config.torch_dtype),
-            attn_implementation=config.attn_implementation,
-        )
-        # Flag for downstream checks
-        model.detection_enabled = False
-
-    # Verify patches
-    logger.info("🔍 Verifying Qwen2.5-VL patches...")
-    if not verify_qwen25_patches():
-        raise RuntimeError("Patch verification failed")
+        
+        logger.info("✅ Training model setup completed via unified loader")
+        return model, tokenizer, image_processor
+        
+    except Exception as e:
+        logger.error(f"❌ Training model setup failed: {e}")
+        raise RuntimeError(f"Failed to setup model for training: {e}")
 
     # 2. TOKENIZER & PROCESSOR SETUP
     from data_conversion.vision_process import MAX_PIXELS

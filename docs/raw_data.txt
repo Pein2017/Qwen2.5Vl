@@ -1,0 +1,49 @@
+{
+    "geometry": {
+        "coordinates": [
+            [
+                325.5,
+                369.22
+            ],
+            [
+                418,
+                369.22
+            ],
+            [
+                418,
+                457.97
+            ],
+            [
+                325.5,
+                457.97
+            ],
+            [
+                325.5,
+                369.22
+            ]
+        ],
+        "type": "ExtentPolygon"
+    },
+    "properties": {
+        "content": {
+            "label": "connection_point/install_screw/install_screw_true"
+        },
+        "contentZh": {
+            "标签": "连接点（螺丝）/BBU安装螺丝/连接正确"
+        }
+    }
+},
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { ... },
+      "properties": {
+        "contentZh": { ... },   // 可选，按 --lang 决定
+        "content":   { ... }    // 可选，按 --lang 决定
+      }
+    },
+    ...
+  ]
+}

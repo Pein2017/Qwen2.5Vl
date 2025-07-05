@@ -7,12 +7,37 @@ import argparse
 import json
 import logging
 import os
+import sys
 from itertools import cycle
 from typing import Any, Dict, List, Optional, Union
 
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
+from matplotlib.font_manager import FontProperties, fontManager
 from matplotlib.patches import Patch, Rectangle
+
+# Configure UTF-8 encoding
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+# Configure Chinese font for matplotlib
+try:
+    font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+    if os.path.exists(font_path):
+        font_prop = FontProperties(fname=font_path)
+        fontManager.addfont(font_path)
+        rcParams["font.sans-serif"] = [font_prop.get_name()]
+        rcParams["axes.unicode_minus"] = False
+        # Additional font configuration
+        rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = [font_prop.get_name()]
+        plt.rcParams["axes.unicode_minus"] = False
+        print("Chinese font configured successfully")
+    else:
+        print("Warning: Chinese font not found, falling back to default")
+except Exception as e:
+    print(f"Warning: Failed to configure Chinese font: {e}")
 
 # Configure logging
 typeLogger = logging.getLogger(__name__)
@@ -152,12 +177,22 @@ def visualize_sample(
         bbox_2d = ax.get_position()
         ax.set_position([bbox_2d.x0, bbox_2d.y0, bbox_2d.width * 0.75, bbox_2d.height])
         # Place legend outside the image area on the figure
+        # Create font properties for the legend
+        try:
+            font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+            if os.path.exists(font_path):
+                legend_font = FontProperties(fname=font_path, size='small')
+            else:
+                legend_font = FontProperties(size='small')
+        except Exception:
+            legend_font = FontProperties(size='small')
+        
         fig.legend(
             handles=handles,
             labels=labels,
             loc="upper right",
             bbox_to_anchor=(0.98, 0.98),
-            fontsize="small",
+            prop=legend_font,
             framealpha=0.7,
         )
         # Adjust layout to accommodate legend

@@ -59,8 +59,15 @@ class Qwen25VLWithDetection(nn.Module):
                 base_model_path,
                 torch_dtype=_get_torch_dtype(config.torch_dtype),
                 attn_implementation=config.attn_implementation,
+                device_map=None,  # Single GPU only - no multi-GPU device mapping
+                trust_remote_code=True,
+                use_cache=True,  # Enable KV cache for generation
             )
         )
+        
+        # CRITICAL: Move base model to GPU if available
+        if torch.cuda.is_available():
+            self.base_model = self.base_model.to("cuda:0")
 
         # CRITICAL: Apply fixes for mRoPE and visual processing
         apply_comprehensive_qwen25_fixes()
@@ -72,6 +79,7 @@ class Qwen25VLWithDetection(nn.Module):
             self._init_detection_head()
         else:
             self.detection_enabled = False
+            self.detection_head = None
 
         # Share token embedding from base model
         if self.detection_head is not None:
@@ -92,7 +100,7 @@ class Qwen25VLWithDetection(nn.Module):
     def _init_detection_head(self):
         """Initialize the detection head with proper configuration."""
         from src.config import config
-        from src.models.detection_head import DetectionHead
+        from src.detection.detection_head import DetectionHead
 
         # Get configuration - use the correct attribute names from base_flat.yaml
         num_queries = config.detection_num_queries

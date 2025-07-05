@@ -235,8 +235,16 @@ class TeacherSelector:
             Tuple of (selected_teacher_samples, selected_indices)
         """
         if len(samples) <= self.max_teachers:
-            logger.info(f"Total samples ({len(samples)}) <= max_teachers ({self.max_teachers}), selecting all")
-            return samples, list(range(len(samples)))
+            # If we have very few samples, select a subset to ensure training data remains
+            if len(samples) <= 2:
+                # With 1-2 samples, select 0 teachers to keep all for training
+                logger.info(f"Very few samples ({len(samples)}), selecting 0 teachers to preserve training data")
+                return [], []
+            else:
+                # Select all but one to ensure at least one training sample
+                selected_count = len(samples) - 1
+                logger.info(f"Few samples ({len(samples)}), selecting {selected_count} teachers, keeping 1 for training")
+                return samples[:selected_count], list(range(selected_count))
         
         logger.info(f"Selecting {self.max_teachers} teachers from {len(samples)} samples")
         
