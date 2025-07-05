@@ -1,282 +1,328 @@
 #!/bin/bash
-# Enhanced evaluation script for Qwen2.5-VL dense captioning/grounding inference results
-# Usage: ./eval/run_evaluation.sh [debug|info] [--check-only] [--enhanced] [--semantic-threshold] [--iou-threshold]
-# Examples:
-#   ./eval/run_evaluation.sh                                    # Standard evaluation with all enhancements
-#   ./eval/run_evaluation.sh debug                              # Debug mode with detailed logging
-#   ./eval/run_evaluation.sh info --check-only                 # Validate files only
-#   ./eval/run_evaluation.sh info --enhanced --semantic-threshold 0.8  # Custom semantic threshold
-#   ./eval/run_evaluation.sh debug --iou-threshold 0.7         # Custom IoU threshold
+# Simple evaluation pipeline - just set EXP_NAME and run
+set -e
 
-set -e  # Exit on any error
+###############################################################################
+# EVALUATION CONFIGURATION - ONLY EDIT THIS SECTION
+###############################################################################
 
-# Set Python path and offline mode
+# Experiment name (must match inference experiment)
+EXP_NAME="baseline_no_teacher"          # Must match the EXP_NAME from inference
+
+# Evaluation parameters
+IOU_THRESHOLD=0.3
+SEMANTIC_THRESHOLD=0.7
+ENABLE_SOFT_MATCHING=true
+ENABLE_HIERARCHICAL=true
+ENABLE_NOVEL_DETECTION=true
+MINIMAL_METRICS=true
+
+# Logging level (debug shows detailed validation issues)
+LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
+
+###############################################################################
+# AUTO-CONFIGURATION - DO NOT EDIT
+###############################################################################
+
+# Environment
 export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 
-# Configurable list of result files to evaluate
-RESULT_FILES=(
-    "infer_result/train-1024-teacher-1.json:train-1024-teacher-1"
-    # "infer_result/chinese-val.json:chinese-val"
-)
+# Find latest experiment with matching name
+OUTPUT_BASE="experiments"
+EXPERIMENT_DIR=$(find "$OUTPUT_BASE" -maxdepth 1 -type d -name "${EXP_NAME}_*" | sort | tail -1)
 
-###############################################################################
-# USER-CONFIGURABLE PARAMETERS (edit here, then simply run the script)         #
-###############################################################################
-
-# Python logging level (debug | info)
-LOG_LEVEL="info"
-
-# Whether to only check files without running evaluation
-CHECK_ONLY=false
-
-# Enhanced feature toggles
-ENHANCED_MODE=true    # master switch
-ENABLE_SOFT_MATCHING=true
-ENABLE_HIERARCHICAL=true
-ENABLE_NOVEL_DETECTION=true
-
-# Whether to save only representative metrics (compact JSON)
-MINIMAL_METRICS=true
-
-# Thresholds
-SEMANTIC_THRESHOLD=0.7
-IOU_THRESHOLD=0.3
-
-# Verbose bash output
-VERBOSE=false
-
-# Output directory for metrics/logs
-RESULTS_DIR="eval_result"
-mkdir -p "$RESULTS_DIR"
-
-echo "🎯 Enhanced Qwen2.5-VL Dense Captioning/Grounding Evaluation Pipeline"
-echo "====================================================================="
-echo "📊 Processing ${#RESULT_FILES[@]} result files with advanced metrics"
-echo "📁 Output directory: $RESULTS_DIR"
-echo ""
-echo "🚀 Evaluation Configuration:"
-echo "   Log level: $LOG_LEVEL"
-echo "   IoU threshold: $IOU_THRESHOLD"
-echo "   Semantic threshold: $SEMANTIC_THRESHOLD"
-echo "   Enhanced mode: $([ "$ENHANCED_MODE" = true ] && echo 'ENABLED' || echo 'DISABLED')"
-echo "   Verbose logging: $([ "$VERBOSE" = true ] && echo 'ENABLED' || echo 'DISABLED')"
-
-if [ "$CHECK_ONLY" = true ]; then
-    echo "   🔍 Mode: Validation only (no evaluation execution)"
-else
-    echo "   🔍 Mode: Full evaluation with metrics computation"
-fi
-
-echo ""
-echo "💡 Enhanced Features Status:"
-echo "   🧠 Soft Semantic Matching: $([ "$ENABLE_SOFT_MATCHING" = true ] && echo 'ENABLED' || echo 'DISABLED')"
-echo "   🌳 Hierarchical Label Matching: $([ "$ENABLE_HIERARCHICAL" = true ] && echo 'ENABLED' || echo 'DISABLED')"
-echo "   🔍 Novel Object Detection: $([ "$ENABLE_NOVEL_DETECTION" = true ] && echo 'ENABLED' || echo 'DISABLED')"
-echo "   📂 Individual Categories: ENABLED (default)"
-echo "   🎯 Multi-threshold Analysis: ENABLED (0.3, 0.5, 0.7, 0.8, 0.9)"
-echo "   📊 Error Categorization: ENABLED (localization, classification, background, missed)"
-echo "   🔧 Robust LLM Validation: ENABLED (handles malformed outputs)"
-echo ""
-
-# Validate thresholds using bash (requires bc)
-if (( $(echo "$IOU_THRESHOLD < 0.0" | bc -l) )) || (( $(echo "$IOU_THRESHOLD > 1.0" | bc -l) )); then
-    echo "❌ IoU threshold must be between 0.0 and 1.0, got $IOU_THRESHOLD"
+if [ -z "$EXPERIMENT_DIR" ]; then
+    echo "❌ No experiments found matching: ${EXP_NAME}_*"
+    echo ""
+    echo "Available experiments:"
+    ls -1 "$OUTPUT_BASE" 2>/dev/null | grep -E "^[^.]*_[0-9]{8}_[0-9]{6}$" || echo "  (none found)"
+    echo ""
+    echo "💡 Make sure you:"
+    echo "   1. Set the correct EXP_NAME (must match inference experiment)"
+    echo "   2. Run inference first: ./eval/infer_dataset.sh"
     exit 1
 fi
 
-if (( $(echo "$SEMANTIC_THRESHOLD < 0.0" | bc -l) )) || (( $(echo "$SEMANTIC_THRESHOLD > 1.0" | bc -l) )); then
-    echo "❌ Semantic threshold must be between 0.0 and 1.0, got $SEMANTIC_THRESHOLD"
+EXPERIMENT_ID=$(basename "$EXPERIMENT_DIR")
+INFERENCE_DIR="${EXPERIMENT_DIR}/inference"
+EVALUATION_DIR="${EXPERIMENT_DIR}/evaluation"
+
+echo "🎯 Starting evaluation for experiment: ${EXP_NAME}"
+echo "📁 Experiment ID: ${EXPERIMENT_ID}"
+echo "📊 Inference results: ${INFERENCE_DIR}"
+echo "📈 Evaluation output: ${EVALUATION_DIR}"
+echo ""
+
+# Validate inference directory exists
+if [ ! -d "$INFERENCE_DIR" ]; then
+    echo "❌ Inference directory not found: $INFERENCE_DIR"
+    echo "   Run inference first: ./eval/infer_dataset.sh"
     exit 1
 fi
 
-echo "✅ Thresholds validated"
+# Create evaluation directory
+mkdir -p "$EVALUATION_DIR"
 
-# Function to check if file exists and is valid JSON with enhanced validation
-check_responses_file() {
-    local file_path="$1"
-    local dataset_name="$2"
-    
-    if [ ! -f "$file_path" ]; then
-        echo "   ❌ File not found: $file_path"
-        return 1
-    fi
-    echo "   ✅ Found file for $dataset_name"
-    return 0
-}
+# Load experiment configuration
+CONFIG_FILE="${EXPERIMENT_DIR}/config.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "❌ Experiment configuration not found: $CONFIG_FILE"
+    exit 1
+fi
 
-# Function to run evaluation for a single dataset with enhanced features
-run_single_evaluation() {
-    local responses_file="$1"
-    local dataset_name="$2"
+echo "📋 Loading experiment configuration..."
+OUTPUT_SUFFIX=$(python -c "
+import json
+try:
+    with open('$CONFIG_FILE') as f:
+        config = json.load(f)
+    print(config['output_suffix'])
+except Exception as e:
+    print(f'Error: {e}', file=__import__('sys').stderr)
+    exit(1)
+" 2>/dev/null)
+
+if [ -z "$OUTPUT_SUFFIX" ]; then
+    echo "❌ Could not extract output suffix from config"
+    exit 1
+fi
+
+echo "🔧 Output suffix: ${OUTPUT_SUFFIX}"
+
+# Find all inference result files
+INFERENCE_FILES=($(find "$INFERENCE_DIR" -name "*_${OUTPUT_SUFFIX}.json" -type f))
+
+if [ ${#INFERENCE_FILES[@]} -eq 0 ]; then
+    echo "❌ No inference result files found matching: *_${OUTPUT_SUFFIX}.json"
+    echo ""
+    echo "Available files in ${INFERENCE_DIR}:"
+    ls -1 "$INFERENCE_DIR" 2>/dev/null || echo "  (empty)"
+    exit 1
+fi
+
+echo "📊 Found ${#INFERENCE_FILES[@]} inference result files to evaluate"
+echo ""
+
+# Process each inference result file
+successful_count=0
+failed_datasets=()
+
+for inference_file in "${INFERENCE_FILES[@]}"; do
+    # Extract dataset name from filename
+    filename=$(basename "$inference_file")
+    dataset_name="${filename%_${OUTPUT_SUFFIX}.json}"
     
-    local output_file="${RESULTS_DIR}/${dataset_name}_metric.json"
-    local log_file="${RESULTS_DIR}/${dataset_name}_evaluation.log"
+    evaluation_file="${EVALUATION_DIR}/${dataset_name}_${OUTPUT_SUFFIX}_metrics.json"
+    log_file="${EVALUATION_DIR}/${dataset_name}_evaluation.log"
     
-    echo "🚀 Running enhanced evaluation on $dataset_name dataset..."
-    echo "   📂 Input:  $responses_file"
-    echo "   📊 Output: $output_file"
-    echo "   📝 Log:    $log_file"
+    echo "=== Evaluating: ${dataset_name} ==="
+    echo "Input: ${inference_file}"
+    echo "Output: ${evaluation_file}"
     
-    # Prepare evaluation command with all enhanced features
-    local eval_cmd="python eval/eval_dataset.py \
-        --responses_file \"$responses_file\" \
-        --output_file \"$output_file\" \
-        --iou_threshold $IOU_THRESHOLD \
-        --semantic_threshold $SEMANTIC_THRESHOLD \
-        --log_level \"$LOG_LEVEL\""
+    # Build evaluation command
+    CMD="python eval/eval_dataset.py \
+        --responses_file \"${inference_file}\" \
+        --output_file \"${evaluation_file}\" \
+        --iou_threshold ${IOU_THRESHOLD} \
+        --semantic_threshold ${SEMANTIC_THRESHOLD} \
+        --log_level \"${LOG_LEVEL}\""
     
-    # Compact metrics flag
+    # Add evaluation flags
     if [ "$MINIMAL_METRICS" = true ]; then
-        eval_cmd="$eval_cmd --minimal"
+        CMD="${CMD} --minimal"
     fi
     
-    # Add feature flags
     if [ "$ENABLE_SOFT_MATCHING" = true ]; then
-        eval_cmd="$eval_cmd --enable_soft_matching"
+        CMD="${CMD} --enable_soft_matching"
     else
-        eval_cmd="$eval_cmd --disable_soft_matching"
+        CMD="${CMD} --disable_soft_matching"
     fi
     
     if [ "$ENABLE_HIERARCHICAL" = true ]; then
-        eval_cmd="$eval_cmd --enable_hierarchical"
+        CMD="${CMD} --enable_hierarchical"
     else
-        eval_cmd="$eval_cmd --disable_hierarchical"
+        CMD="${CMD} --disable_hierarchical"
     fi
     
     if [ "$ENABLE_NOVEL_DETECTION" = true ]; then
-        eval_cmd="$eval_cmd --enable_novel_detection"
+        CMD="${CMD} --enable_novel_detection"
     else
-        eval_cmd="$eval_cmd --disable_novel_detection"
+        CMD="${CMD} --disable_novel_detection"
     fi
     
-    if [ "$VERBOSE" = true ]; then
-        eval_cmd="$eval_cmd --verbose"
-    fi
+    echo "🚀 Running evaluation..."
     
-    echo "   🔧 Command: $eval_cmd"
-    echo ""
+    # Run evaluation with detailed logging
+    if bash -c "$CMD" 2>&1 | tee "$log_file"; then
+        if [ -f "$evaluation_file" ]; then
+            # Extract and display key metrics
+            metrics=$(python -c "
+import json
+try:
+    with open('$evaluation_file') as f:
+        data = json.load(f)
+    overall = data.get('overall_metrics', {})
+    info = data.get('evaluation_info', {})
     
-    # Run evaluation with timing
-    local start_time=$(date +%s)
+    # Show metrics
+    print(f'mAP: {overall.get(\"mAP\", 0):.4f}, mAR: {overall.get(\"mAR\", 0):.4f}, mF1: {overall.get(\"mF1\", 0):.4f}')
     
-    if bash -c "$eval_cmd" 2>&1 | tee "$log_file"; then
-        local end_time=$(date +%s)
-        local duration=$((end_time - start_time))
+    # Show validation summary
+    total = info.get('total_samples', 0)
+    valid = info.get('valid_samples', 0)
+    skipped = info.get('skipped_samples', 0)
+    if skipped > 0:
+        print(f'⚠️  Validation: {valid}/{total} valid samples ({skipped} skipped)')
+    else:
+        print(f'✅ Validation: {valid}/{total} samples processed')
         
-        echo "   ✅ Evaluation completed in ${duration}s"
-        
-        # Optional: print basic summary
-        if [ -f "$output_file" ]; then
-            echo "   📊 Metrics saved to $output_file"
+except Exception as e:
+    print(f'Unable to parse metrics: {e}')
+" 2>/dev/null)
+            echo "✅ Evaluation completed for ${dataset_name}:"
+            echo "   ${metrics}"
+            ((successful_count++))
+            
+            # Show validation issues if any (from log)
+            validation_issues=$(grep -c "Skipped.*invalid" "$log_file" 2>/dev/null || echo "0")
+            if [ "$validation_issues" -gt 0 ]; then
+                echo "   ⚠️  Found ${validation_issues} validation warnings in log"
+                echo "   📋 Check detailed log: ${log_file}"
+            fi
+        else
+            echo "❌ Evaluation file not created for ${dataset_name}"
+            failed_datasets+=("${dataset_name}")
         fi
-        
-        return 0
     else
-        echo "   ❌ Evaluation failed - check $log_file for details"
-        return 1
+        echo "❌ Evaluation failed for ${dataset_name}"
+        failed_datasets+=("${dataset_name}")
     fi
-}
-
-# Main evaluation loop with enhanced progress tracking
-success_count=0
-total_count=${#RESULT_FILES[@]}
-start_time=$(date +%s)
-
-echo "🏁 Starting enhanced evaluation pipeline..."
-echo ""
-
-for dataset_entry in "${RESULT_FILES[@]}"; do
-    # Parse dataset entry
-    IFS=':' read -r responses_file dataset_name <<< "$dataset_entry"
-    
-    echo "========================================"
-    echo "--- Processing: $dataset_name ---"
-    echo "========================================"
-    
-    # Check if responses file exists and is valid
-    if ! check_responses_file "$responses_file" "$dataset_name"; then
-        echo "   ⚠️ Skipping $dataset_name due to validation errors"
-        continue
-    fi
-    
-    # Skip evaluation if in check-only mode
-    if [ "$CHECK_ONLY" = true ]; then
-        echo "   ✅ $dataset_name validation passed (check-only mode)"
-        ((success_count++))
-        continue
-    fi
-    
-    # Run enhanced evaluation
-    dataset_start=$(date +%s)
-    if run_single_evaluation "$responses_file" "$dataset_name"; then
-        ((success_count++))
-        dataset_end=$(date +%s)
-        dataset_duration=$((dataset_end - dataset_start))
-        echo "   ⏱️  Dataset evaluation completed in ${dataset_duration}s"
-    else
-        echo "   ❌ Dataset evaluation failed"
-    fi
-    
     echo ""
 done
 
-# Final comprehensive summary
-end_time=$(date +%s)
-total_duration=$((end_time - start_time))
-total_minutes=$((total_duration / 60))
-total_seconds=$((total_duration % 60))
+# Generate summary report
+SUMMARY_FILE="${EVALUATION_DIR}/evaluation_summary.json"
+echo "📋 Generating evaluation summary..."
 
-echo "============================================================"
-echo "🏁 Enhanced Evaluation Pipeline Completed!"
-echo "============================================================"
-echo "⏱️  Total time: ${total_minutes}m ${total_seconds}s"
-echo "📊 Evaluation Summary:"
-echo "   Total datasets: $total_count"
-echo "   Successful: $success_count"
-echo "   Failed: $((total_count - success_count))"
+python -c "
+import json
+import os
+from glob import glob
 
-if [ "$CHECK_ONLY" = true ]; then
-    echo "   Mode: Validation only (no evaluation executed)"
-fi
+evaluation_dir = '$EVALUATION_DIR'
+output_suffix = '$OUTPUT_SUFFIX'
+exp_name = '$EXP_NAME'
 
-echo ""
+# Collect all metrics
+results = {}
+validation_summary = {}
 
-if [ $success_count -eq $total_count ]; then
-    echo "🎉 All evaluations completed successfully!"
-    echo "📁 Results saved in: $RESULTS_DIR/"
-    echo ""
-    echo "📋 Generated files:"
-    for dataset_entry in "${RESULT_FILES[@]}"; do
-        IFS=':' read -r responses_file dataset_name <<< "$dataset_entry"
-        metrics_file="$RESULTS_DIR/${dataset_name}_metric.json"
-        log_file="$RESULTS_DIR/${dataset_name}_evaluation.log"
+for metrics_file in glob(os.path.join(evaluation_dir, f'*_{output_suffix}_metrics.json')):
+    dataset_name = os.path.basename(metrics_file).replace(f'_{output_suffix}_metrics.json', '')
+    try:
+        with open(metrics_file) as f:
+            data = json.load(f)
+        results[dataset_name] = data.get('overall_metrics', {})
         
-        if [ -f "$metrics_file" ]; then
-            file_size=$(du -h "$metrics_file" | cut -f1)
-            echo "   📊 $metrics_file ($file_size)"
-        fi
-        if [ -f "$log_file" ]; then
-            file_size=$(du -h "$log_file" | cut -f1)
-            echo "   📝 $log_file ($file_size)"
-        fi
-    done
-    echo ""
-    echo "📋 Next steps:"
-    echo "   1. Check detailed results: cat $RESULTS_DIR/*_metric.json | jq ."
-    echo "   2. Visualize samples: python eval/visualize_samples_pure_json.py"
-    echo "   3. Run individual categories demo: python eval/demo_individual_categories.py"
-    echo "   4. Test enhanced features: python eval/test_all_evaluations.py"
-    exit 0
-else
-    echo "⚠️ Some evaluations failed. Check individual log files for details:"
-    for dataset_entry in "${RESULT_FILES[@]}"; do
-        IFS=':' read -r responses_file dataset_name <<< "$dataset_entry"
-        log_file="$RESULTS_DIR/${dataset_name}_evaluation.log"
-        if [ -f "$log_file" ]; then
-            echo "   📝 $log_file"
-        fi
-    done
-    exit 1
-fi 
+        # Collect validation info
+        eval_info = data.get('evaluation_info', {})
+        validation_summary[dataset_name] = {
+            'total_samples': eval_info.get('total_samples', 0),
+            'valid_samples': eval_info.get('valid_samples', 0),
+            'skipped_samples': eval_info.get('skipped_samples', 0)
+        }
+    except Exception as e:
+        results[dataset_name] = {'error': str(e)}
+        validation_summary[dataset_name] = {'error': str(e)}
+
+# Calculate aggregated metrics
+if results:
+    valid_results = {k: v for k, v in results.items() if 'error' not in v}
+    if valid_results:
+        # Calculate means across datasets
+        all_maps = [v.get('mAP', 0) for v in valid_results.values()]
+        all_mars = [v.get('mAR', 0) for v in valid_results.values()]
+        all_f1s = [v.get('mF1', 0) for v in valid_results.values()]
+        
+        aggregated = {
+            'mean_mAP': sum(all_maps) / len(all_maps) if all_maps else 0,
+            'mean_mAR': sum(all_mars) / len(all_mars) if all_mars else 0,
+            'mean_mF1': sum(all_f1s) / len(all_f1s) if all_f1s else 0,
+            'datasets_evaluated': len(valid_results),
+            'datasets_failed': len(results) - len(valid_results)
+        }
+    else:
+        aggregated = {'error': 'No valid results found'}
+else:
+    aggregated = {'error': 'No results found'}
+
+# Aggregate validation info
+total_samples = sum(v.get('total_samples', 0) for v in validation_summary.values() if 'error' not in v)
+total_valid = sum(v.get('valid_samples', 0) for v in validation_summary.values() if 'error' not in v)
+total_skipped = sum(v.get('skipped_samples', 0) for v in validation_summary.values() if 'error' not in v)
+
+summary = {
+    'exp_name': exp_name,
+    'experiment_id': '$EXPERIMENT_ID',
+    'evaluation_timestamp': '$(date -Iseconds)',
+    'aggregated_metrics': aggregated,
+    'validation_summary': {
+        'total_samples': total_samples,
+        'valid_samples': total_valid,
+        'skipped_samples': total_skipped,
+        'per_dataset': validation_summary
+    },
+    'per_dataset_metrics': results,
+    'evaluation_config': {
+        'iou_threshold': $IOU_THRESHOLD,
+        'semantic_threshold': $SEMANTIC_THRESHOLD,
+        'enable_soft_matching': $ENABLE_SOFT_MATCHING,
+        'enable_hierarchical': $ENABLE_HIERARCHICAL,
+        'enable_novel_detection': $ENABLE_NOVEL_DETECTION,
+        'minimal_metrics': $MINIMAL_METRICS,
+        'log_level': '$LOG_LEVEL'
+    }
+}
+
+with open('$SUMMARY_FILE', 'w') as f:
+    json.dump(summary, f, indent=2)
+
+# Print summary
+print()
+print('📊 EVALUATION SUMMARY FOR: $EXP_NAME')
+print('=' * 60)
+if 'error' not in aggregated:
+    print(f'Mean mAP: {aggregated[\"mean_mAP\"]:.4f}')
+    print(f'Mean mAR: {aggregated[\"mean_mAR\"]:.4f}')
+    print(f'Mean mF1: {aggregated[\"mean_mF1\"]:.4f}')
+    print(f'Datasets evaluated: {aggregated[\"datasets_evaluated\"]}')
+    if aggregated[\"datasets_failed\"] > 0:
+        print(f'Datasets failed: {aggregated[\"datasets_failed\"]}')
+else:
+    print(f'Error: {aggregated[\"error\"]}')
+
+print()
+print('📋 VALIDATION SUMMARY:')
+print(f'Total samples processed: {total_samples}')
+print(f'Valid samples: {total_valid}')
+if total_skipped > 0:
+    print(f'⚠️  Skipped samples: {total_skipped} ({total_skipped/total_samples*100:.1f}%)')
+    print('   Check evaluation logs for details on skipped samples')
+else:
+    print('✅ No validation issues found')
+"
+
+# Final summary
+echo ""
+echo "🏁 Evaluation completed for experiment: ${EXP_NAME}"
+echo "✅ Successful: ${successful_count}/${#INFERENCE_FILES[@]} datasets"
+if [ ${#failed_datasets[@]} -gt 0 ]; then
+    echo "❌ Failed: ${failed_datasets[*]}"
+fi
+echo "📁 Results: ${EVALUATION_DIR}"
+echo "📋 Summary: ${SUMMARY_FILE}"
+echo ""
+echo "🎯 Next step: Compare experiments"
+echo "   Run: python eval/compare_experiments.py"

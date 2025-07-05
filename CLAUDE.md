@@ -62,3 +62,9 @@ RESIZE="false" bash data_conversion/convert_dataset.sh
 - **Bbox out of bounds**: Verify smart_resize parameters
 
 For detailed documentation, see `docs/data_schema.md` and `docs/runbook.md`.
+
+## Code Maintenance Notes
+- Don't need the `legacy` or `backward compatibility`, just override the scripts and keep codebase clean.
+
+## Development Guidelines
+- Don't need any CLI as well, define everything we need in the bash script or python script at top
