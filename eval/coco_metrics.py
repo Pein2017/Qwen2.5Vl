@@ -59,6 +59,7 @@ class SemanticMatcher:
 
     def __init__(
         self,
+        label_hierarchy_path: str,
         model_name: str = "/data4/Qwen2.5-VL-main/model_cache/sentence-transformers/all-MiniLM-L6-v2",
     ):
         """Initialize semantic matcher with SentenceTransformer model."""
@@ -79,6 +80,37 @@ class SemanticMatcher:
 
         # Cache for embeddings to avoid recomputation
         self._embedding_cache = {}
+
+        # Load label hierarchy for categorization
+        self.category_patterns = self._load_label_hierarchy(label_hierarchy_path)
+
+    def _load_label_hierarchy(self, path: str) -> Dict[str, List[str]]:
+        """Load label hierarchy from a required JSON file."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                hierarchy = json.load(f)
+
+            patterns = defaultdict(list)
+            for item in hierarchy:
+                obj_type = item.get("object_type")
+                if not obj_type:
+                    continue
+                # The main category is the object_type itself
+                patterns[obj_type].append(obj_type.lower())
+                # Add properties as patterns
+                for prop in item.get("property", []):
+                    patterns[obj_type].append(prop.lower())
+
+            logger.info(f"Loaded {len(patterns)} categories from {path}")
+            return dict(patterns)
+
+        except (IOError, json.JSONDecodeError) as e:
+            logger.error(
+                f"Failed to load or parse required label hierarchy from {path}: {e}"
+            )
+            raise ValueError(
+                f"Could not load or parse label_hierarchy file at {path}"
+            ) from e
 
     def compute_similarity(self, desc1: str, desc2: str) -> float:
         """
@@ -201,16 +233,7 @@ class SemanticMatcher:
 
         desc_lower = description.lower()
 
-        category_patterns = {
-            "螺丝": ["螺丝", "screw"],
-            "BBU": ["bbu", "基带处理单元"],
-            "线缆": ["线缆", "cable", "光纤"],
-            "标签": ["标签", "label"],
-            "机柜": ["机柜", "cabinet"],
-            "挡风板": ["挡风板", "windshield"],
-        }
-
-        for category, patterns in category_patterns.items():
+        for category, patterns in self.category_patterns.items():
             if any(pattern in desc_lower for pattern in patterns):
                 return category
 
@@ -231,6 +254,7 @@ class COCOStyleMetrics:
 
     def __init__(
         self,
+        label_hierarchy_path: str,
         iou_thresholds: List[float] = None,
         semantic_threshold: float = 0.7,
         enable_soft_matching: bool = True,
@@ -242,6 +266,7 @@ class COCOStyleMetrics:
         Initialize COCO-style metrics calculator with enhanced features.
 
         Args:
+            label_hierarchy_path: Path to a JSON file defining label hierarchies.
             iou_thresholds: List of IoU thresholds for evaluation
             semantic_threshold: Threshold for semantic similarity matching
             enable_soft_matching: Use soft semantic scores instead of binary threshold
@@ -262,7 +287,9 @@ class COCOStyleMetrics:
         self.enable_novel_detection = enable_novel_detection
         self.use_individual_categories = use_individual_categories
 
-        self.semantic_matcher = SemanticMatcher()
+        self.semantic_matcher = SemanticMatcher(
+            label_hierarchy_path=label_hierarchy_path
+        )
 
         # Additional semantic thresholds for multi-threshold analysis
         self.semantic_thresholds = [0.3, 0.5, 0.7, 0.8, 0.9]
@@ -390,6 +417,8 @@ class COCOStyleMetrics:
         obj_type: str = "object",
         sample_idx: int = -1,
         obj_idx: int = -1,
+        image_width: int = 1000,
+        image_height: int = 1000,
     ) -> Dict | None:
         """
         Validate and clean an object (prediction or ground truth) from LLM output.
@@ -399,6 +428,8 @@ class COCOStyleMetrics:
             obj_type: Type description for logging ("prediction" or "ground_truth")
             sample_idx: Sample index for logging
             obj_idx: Object index within sample for logging
+            image_width: Maximum image width for bounds checking
+            image_height: Maximum image height for bounds checking
 
         Returns:
             Cleaned object dictionary or None if invalid
@@ -415,7 +446,9 @@ class COCOStyleMetrics:
             return None
 
         # Validate bounding box
-        valid_bbox = self.validate_and_fix_bbox(obj["bbox_2d"])
+        valid_bbox = self.validate_and_fix_bbox(
+            obj["bbox_2d"], image_width=image_width, image_height=image_height
+        )
         if valid_bbox is None:
             logger.debug(
                 f"Sample {sample_idx}, {obj_type} {obj_idx}: Invalid bbox_2d: {obj['bbox_2d']}"
@@ -1088,7 +1121,14 @@ class COCOStyleMetrics:
                 valid_gt_objects = []
                 invalid_gt_count = 0
                 for j, obj in enumerate(gt_objects):
-                    cleaned_obj = self.validate_object(obj, "ground_truth", i, j)
+                    cleaned_obj = self.validate_object(
+                        obj,
+                        "ground_truth",
+                        i,
+                        j,
+                        image_width=response.get("width", 1000),
+                        image_height=response.get("height", 1000),
+                    )
                     if cleaned_obj is not None:
                         valid_gt_objects.append(cleaned_obj)
                     else:
@@ -1103,7 +1143,14 @@ class COCOStyleMetrics:
                 valid_pred_objects = []
                 invalid_pred_count = 0
                 for j, obj in enumerate(pred_objects):
-                    cleaned_obj = self.validate_object(obj, "prediction", i, j)
+                    cleaned_obj = self.validate_object(
+                        obj,
+                        "prediction",
+                        i,
+                        j,
+                        image_width=response.get("width", 1000),
+                        image_height=response.get("height", 1000),
+                    )
                     if cleaned_obj is not None:
                         valid_pred_objects.append(cleaned_obj)
                     else:

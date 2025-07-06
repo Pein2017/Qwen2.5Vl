@@ -107,6 +107,7 @@ def run_evaluation(
 
     logger.info(f"Initializing enhanced COCO-style metrics evaluator...")
     evaluator = COCOStyleMetrics(
+        label_hierarchy_path="data_conversion/label_hierarchy.json",
         iou_thresholds=iou_thresholds,
         semantic_threshold=semantic_threshold,
         enable_soft_matching=enable_soft_matching,
