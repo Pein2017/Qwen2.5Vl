@@ -121,20 +121,19 @@ class BBUDataset(Dataset):
             )
 
         self._num_teachers = int(config.num_teacher_samples)
-        # Disable dynamic teacher injection for validation data (zero-shot eval)
-        if "val" in self.data_path.lower():
+        # Use consistent teacher sampling for both train and validation
+        # This prevents train/val data distribution mismatch
+        self.teacher_ratio = getattr(config, "teacher_ratio", 0.7)
+        
+        # Allow override for validation datasets if zero-shot evaluation is explicitly requested
+        if "val" in self.data_path.lower() and getattr(config, "val_zero_shot", False):
             logger.info(
-                "Validation dataset detected, disabling teacher sampling for zero-shot evaluation."
+                "Validation dataset with zero-shot mode enabled, disabling teacher sampling."
             )
             self._num_teachers = 0
-
-        # For training: mix teacher-student samples with single-shot samples
-        # This helps the model learn both multi-chat and single-shot patterns
-        if "train" in self.data_path.lower():
-            self.teacher_ratio = getattr(config, "teacher_ratio", 0.7)
-            logger.info(f"Training dataset: teacher ratio set to {self.teacher_ratio}")
-        else:
             self.teacher_ratio = 0.0
+        else:
+            logger.info(f"Dataset {self.data_path}: teacher ratio set to {self.teacher_ratio}")
 
         # Initialize teacher pool manager only if not provided
         if self._num_teachers > 0 and teacher_pool_manager is None:

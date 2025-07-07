@@ -45,6 +45,13 @@ ENGLISH_FEW_SHOT_SECTION = ""  # no built-in examples
 
 CHINESE_TRAINING_PROMPT = """你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
 
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 📚 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 🎯 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 🔍 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. ⚡ 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
 【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
 
 1. **BBU设备**
@@ -91,7 +98,13 @@ CHINESE_TRAINING_PROMPT = """你是专业的通信机房BBU工艺质量检测AI�
 
 坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。"""
 
-CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手，请识别图像中的以下目标并输出位置与类别：
+CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手。
+
+【任务模式】
+如果本对话包含参考示例，请仔细学习示例中的检测模式和标注风格，然后应用到目标图像；如果没有示例，请直接进行检测。
+
+【检测目标】
+请识别图像中的以下目标并输出位置与类别：
 
 - BBU设备: bbu基带处理单元/华为、bbu基带处理单元/中兴、bbu基带处理单元/爱立信
 - 螺丝或连接点: BBU安装螺丝、CPRI光缆和BBU连接点、地排处螺丝、BBU接地线机柜接地端、BBU尾纤和ODF连接点
@@ -113,6 +126,8 @@ CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手，请�
 CHINESE_BASE_PROMPT = CHINESE_EVALUATION_PROMPT  # 默认使用评估版本
 
 BASE_PROMPT = """You are an AI assistant specialized in multi-object detection for telecommunication equipment rooms, particularly focused on BBU (Baseband Unit) environments.
+
+**Learning Mode**: This conversation may include reference examples to help improve detection accuracy. If examples are provided, carefully study the detection patterns, annotation styles, and classification methods before applying them to the target image.
 
 **Task**: Detect and locate all relevant equipment and components in the image.
 
@@ -153,7 +168,7 @@ def get_system_prompt(
 
 
 def get_user_prompt_prefix(
-    use_training_prompt: bool = False, language: str = "chinese"
+    use_training_prompt: bool = False, language: str = "chinese", context: str = "target"
 ) -> str:
     """
     Get user prompt prefix for multi-shot scenarios.
@@ -161,25 +176,100 @@ def get_user_prompt_prefix(
     Args:
         use_training_prompt: If True, use detailed training context
         language: "chinese" or "english"
+        context: "teacher", "target", or "standalone"
 
     Returns:
         User prompt prefix string
     """
     if language.lower() == "chinese":
-        if use_training_prompt:
-            return "请仔细分析这张BBU机房图像，检测并标注所有相关设备和部件:"
-        else:
-            return "请检测图像中的设备和部件:"
+        if context == "teacher":
+            return "📚 参考示例:" if use_training_prompt else "参考示例:"
+        elif context == "target":
+            if use_training_prompt:
+                return "🎯 现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
+            else:
+                return "🎯 请检测目标图像:"
+        else:  # standalone
+            if use_training_prompt:
+                return "🔍 请仔细分析这张BBU机房图像，检测并标注所有相关设备和部件:"
+            else:
+                return "🔍 请检测图像中的设备和部件:"
     else:
-        if use_training_prompt:
-            return "Please carefully analyze this BBU equipment room image and detect all relevant equipment and components:"
-        else:
-            return "Please detect all equipment and components in the image:"
+        if context == "teacher":
+            return "📚 Reference Example:" if use_training_prompt else "Reference Example:"
+        elif context == "target":
+            if use_training_prompt:
+                return "🎯 Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:"
+            else:
+                return "🎯 Please detect objects in the target image:"
+        else:  # standalone
+            if use_training_prompt:
+                return "🔍 Please carefully analyze this BBU equipment room image and detect all relevant equipment and components:"
+            else:
+                return "🔍 Please detect all equipment and components in the image:"
 
 
 # ============================
 # PROMPT TEMPLATES FOR DIFFERENT SCENARIOS
 # ============================
+
+def get_learning_instruction(
+    num_teachers: int, language: str = "chinese", use_training_prompt: bool = False
+) -> str:
+    """
+    Get meta-learning instruction to help model understand teacher-student relationship.
+    
+    Args:
+        num_teachers: Number of teacher examples provided
+        language: "chinese" or "english"
+        use_training_prompt: Whether to use detailed instructions
+        
+    Returns:
+        Learning instruction string
+    """
+    if num_teachers == 0:
+        return ""  # No instruction needed for standalone detection
+    
+    if language.lower() == "chinese":
+        if use_training_prompt:
+            if num_teachers == 1:
+                return """
+📝 学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。"""
+            else:
+                return f"""
+📝 学习提示: 下面将提供{num_teachers}个参考示例，请仔细观察:
+• 不同场景下的检测模式和标注风格
+• 相似对象的区分方法和判断标准  
+• 边界框绘制的精确度和一致性
+• 标签命名的规范性和层级结构
+学习完所有示例后，将这些模式应用到目标图像中。"""
+        else:
+            return f"📝 参考{num_teachers}个示例，学习检测模式后应用到目标图像。"
+    else:
+        if use_training_prompt:
+            if num_teachers == 1:
+                return """
+📝 Learning Instruction: Please carefully observe the following aspects in the reference example:
+• How to accurately identify different types of objects (BBU equipment, screw connection points, wind shields, etc.)
+• How to distinguish objects that look similar but differ in location (e.g., BBU mounting screws vs BBU grounding cabinet ground terminals)
+• Accurate bounding box drawing methods and annotation styles
+• Object classification logic and naming conventions
+Then apply these patterns to detect objects in the target image."""
+            else:
+                return f"""
+📝 Learning Instruction: {num_teachers} reference examples will be provided. Please carefully observe:
+• Detection patterns and annotation styles across different scenarios
+• Methods for distinguishing similar objects and judgment criteria
+• Precision and consistency of bounding box drawing
+• Standardization and hierarchical structure of label naming
+After learning from all examples, apply these patterns to the target image."""
+        else:
+            return f"📝 Learn from {num_teachers} reference example(s) and apply to target image."
 
 
 def format_few_shot_prompt(

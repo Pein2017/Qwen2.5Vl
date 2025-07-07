@@ -191,13 +191,37 @@ class ChatProcessor:
         # 1) System prompt ----------------------------------------------------------------
         messages.append(ChatMessage(role="system", content=self.system_prompt))
 
-        # 2) Teacher examples --------------------------------------------------------------
+        # 2) Learning instruction if teachers are present --------------------------------
         teachers: Sequence[Dict[str, Any]] = sample.get("teachers", [])
-        for teacher in teachers:
-            # User uploads an image ------------------------------------------------------
-            messages.append(ChatMessage(role="user", content="<image>"))
+        
+        if teachers:
+            from src.utils.prompt import get_learning_instruction
+            learning_instruction = get_learning_instruction(
+                num_teachers=len(teachers), 
+                language=self.language, 
+                use_training_prompt=self.use_training_prompts
+            )
+            if learning_instruction.strip():
+                messages.append(ChatMessage(role="user", content=learning_instruction))
+                messages.append(ChatMessage(role="assistant", content="明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。" if self.language == "chinese" else "Understood! I will carefully study the detection patterns, annotation styles, and judgment criteria in the reference examples, then apply them to detect objects in the target image."))
 
-            # Assistant returns detection JSON -----------------------------------------
+        # 3) Teacher examples --------------------------------------------------------------  
+        for i, teacher in enumerate(teachers):
+            # User uploads a teacher example image with clear context
+            if self.language == "chinese":
+                if len(teachers) == 1:
+                    user_content = "📚 参考示例:\n<image>"
+                else:
+                    user_content = f"📚 参考示例 {i+1}/{len(teachers)}:\n<image>"
+            else:
+                if len(teachers) == 1:
+                    user_content = "📚 Reference Example:\n<image>"
+                else:
+                    user_content = f"📚 Reference Example {i+1}/{len(teachers)}:\n<image>"
+            
+            messages.append(ChatMessage(role="user", content=user_content))
+
+            # Assistant returns detection JSON with learning context
             objects = teacher.get("objects", [])
             sorted_objects = self._sort_objects_by_position(objects)
             assistant_response = self._format_objects_response(sorted_objects)
@@ -205,7 +229,20 @@ class ChatProcessor:
 
         # 3) Student target ---------------------------------------------------------------
         student = sample.get("student", sample)
-        messages.append(ChatMessage(role="user", content="<image>"))
+        
+        # Add transitional instruction if teachers were provided
+        if teachers:
+            if self.language == "chinese":
+                target_content = "🎯 现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:\n<image>"
+            else:
+                target_content = "🎯 Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:\n<image>"
+        else:
+            if self.language == "chinese":
+                target_content = "🔍 请检测以下图像中的设备和部件:\n<image>"
+            else:
+                target_content = "🔍 Please detect all equipment and components in the following image:\n<image>"
+            
+        messages.append(ChatMessage(role="user", content=target_content))
 
         student_objects = student.get("objects", [])
         sorted_student_objects = self._sort_objects_by_position(student_objects)

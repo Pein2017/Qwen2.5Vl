@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image, ImageOps
 
 from config import DataConversionConfig
+from coordinate_manager import CoordinateManager
 from utils.file_ops import FileOperations
 from utils.transformations import CoordinateTransformer
 from utils.validators import DataValidator
@@ -133,7 +134,7 @@ class ImageProcessor:
         for obj in objects:
             bbox = obj["bbox_2d"]
             try:
-                scaled_bbox = CoordinateTransformer.scale_bbox(
+                scaled_bbox = CoordinateManager.apply_smart_resize_scaling(
                     bbox, original_width, original_height, new_width, new_height
                 )
                 obj["bbox_2d"] = scaled_bbox

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from config import DataConversionConfig
+from coordinate_manager import CoordinateManager
 from data_splitter import DataSplitter
 from image_processor import ImageProcessor
 from teacher_selector import TeacherSelector
@@ -273,16 +274,16 @@ class UnifiedProcessor:
             # Get actual image dimensions
             actual_width, actual_height = FileOperations.get_image_dimensions(image_path)
             
-            # Use the actual image dimensions for processing (they should match JSON after cleaning)
+            # Detect dimension mismatch (likely due to EXIF orientation)
             if json_width != actual_width or json_height != actual_height:
-                logger.warning(
+                logger.info(
                     f"Dimension mismatch for {image_path.name}: "
                     f"JSON says {json_width}x{json_height} but image is {actual_width}x{actual_height}. "
-                    f"Using actual image dimensions."
+                    f"Will apply coordinate rescaling."
                 )
             
-            # Use actual image dimensions for processing
-            original_width, original_height = actual_width, actual_height
+            # Keep JSON dimensions for coordinate transformation pipeline
+            original_width, original_height = json_width, json_height
             
             # Extract objects from JSON data
             objects = []
@@ -297,19 +298,20 @@ class UnifiedProcessor:
                 logger.debug(f"No valid objects found in {json_path.name}")
                 return None
             
-            # Sort objects by position (top-left to bottom-right)
+            # Apply centralized coordinate transformation pipeline
+            sample_data = {"objects": objects}
+            processed_sample, final_width, final_height = CoordinateManager.process_sample_coordinates(
+                sample_data, image_path, json_width, json_height, self.config.resize_enabled
+            )
+            objects = processed_sample["objects"]
+            
+            # Sort objects by position (top-left to bottom-right) 
             objects.sort(key=lambda obj: (obj["bbox_2d"][1], obj["bbox_2d"][0]))
             
-            # Process image (copy/resize)
-            processed_image_path, final_width, final_height = self.image_processor.process_image(
-                image_path, original_width, original_height, self.output_dir.parent
+            # Process image (copy/resize) to match coordinate transformations
+            processed_image_path, _, _ = self.image_processor.process_image(
+                image_path, json_width, json_height, self.output_dir.parent
             )
-            
-            # Scale bounding boxes if image was resized
-            if self.config.resize_enabled:
-                self.image_processor.scale_object_coordinates(
-                    objects, original_width, original_height, final_width, final_height
-                )
             
             # Build relative image path for JSONL
             rel_image_path = FileOperations.calculate_relative_path(

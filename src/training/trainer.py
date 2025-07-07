@@ -2029,23 +2029,29 @@ def setup_data_module(
     # Create chat processor with training context
     from src.chat_processor import ChatProcessor
 
-    # Training chat processor (detailed prompts)
+    # Use consistent prompt style for training and evaluation to prevent distribution mismatch
+    # Allow override via config if different evaluation style is explicitly needed
+    use_consistent_prompts = getattr(config, "use_consistent_prompts", True)
+    training_prompt_style = getattr(config, "training_prompt_style", True)
+    
+    # Training chat processor
     train_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
         image_processor=image_processor,
         merge_size=config.merge_size,
         max_length=config.max_total_length,
-        use_training_prompts=True,  # Use detailed training prompts
+        use_training_prompts=training_prompt_style,
         language="chinese",
     )
 
-    # Evaluation chat processor (concise prompts)
+    # Evaluation chat processor - use same prompt style unless explicitly overridden
+    eval_prompt_style = training_prompt_style if use_consistent_prompts else False
     eval_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
         image_processor=image_processor,
         merge_size=config.merge_size,
         max_length=config.max_total_length,
-        use_training_prompts=False,  # Use concise evaluation prompts
+        use_training_prompts=eval_prompt_style,
         language="chinese",
     )
 
@@ -2069,12 +2075,15 @@ def setup_data_module(
         is_training=True,  # Training context
     )
 
-    # Create validation dataset with concise prompts and no teachers
+    # Create validation dataset - use consistent settings unless zero-shot explicitly requested
+    val_teacher_manager = teacher_pool_manager if use_consistent_prompts else None
+    val_teacher_ratio = config.teacher_ratio if use_consistent_prompts else 0.0
+    
     val_dataset = BBUDataset(
         data_path=config.val_data_path,
         chat_processor=eval_chat_processor,
-        teacher_pool_manager=None,  # No teachers for validation
-        teacher_ratio=0.0,  # No teachers for validation
+        teacher_pool_manager=val_teacher_manager,
+        teacher_ratio=val_teacher_ratio,
         is_training=False,  # Evaluation context
     )
 
