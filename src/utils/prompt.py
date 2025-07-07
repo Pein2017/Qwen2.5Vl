@@ -47,10 +47,10 @@ CHINESE_TRAINING_PROMPT = """你是专业的通信机房BBU工艺质量检测AI�
 
 【学习模式说明】
 本对话采用示例学习模式，帮助你提高检测准确性：
-1. 📚 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
-2. 🎯 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
-3. 🔍 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
-4. ⚡ 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
 
 【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
 
@@ -59,12 +59,12 @@ CHINESE_TRAINING_PROMPT = """你是专业的通信机房BBU工艺质量检测AI�
    - bbu基带处理单元/中兴
    - bbu基带处理单元/爱立信
 
-2. **螺丝或连接点**
-   - 螺丝或连接点/BBU安装螺丝(相似)
-   - 螺丝或连接点/CPRI光缆和BBU连接点
-   - 螺丝或连接点/地排处螺丝
-   - 螺丝或连接点/BBU接地线机柜接地端（相似）
-   - 螺丝或连接点/BBU尾纤和ODF连接点
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
    注意：子类别外观高度相似，必须结合"所在位置"判定：
      • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
      • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
@@ -107,7 +107,7 @@ CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手。
 请识别图像中的以下目标并输出位置与类别：
 
 - BBU设备: bbu基带处理单元/华为、bbu基带处理单元/中兴、bbu基带处理单元/爱立信
-- 螺丝或连接点: BBU安装螺丝、CPRI光缆和BBU连接点、地排处螺丝、BBU接地线机柜接地端、BBU尾纤和ODF连接点
+- 螺丝连接点: BBU安装螺丝、CPRI光缆和BBU连接点、地排处螺丝、BBU接地线机柜接地端、BBU尾纤和ODF连接点
   （请以位置关系为主进行判定，勿仅凭外观）
 - 挡风板: 挡风板/已安装、挡风板/未安装
 - 机柜空间: 机柜空间/满载、机柜空间/非满载
@@ -168,7 +168,9 @@ def get_system_prompt(
 
 
 def get_user_prompt_prefix(
-    use_training_prompt: bool = False, language: str = "chinese", context: str = "target"
+    use_training_prompt: bool = False,
+    language: str = "chinese",
+    context: str = "target",
 ) -> str:
     """
     Get user prompt prefix for multi-shot scenarios.
@@ -186,9 +188,11 @@ def get_user_prompt_prefix(
             return "📚 参考示例:" if use_training_prompt else "参考示例:"
         elif context == "target":
             if use_training_prompt:
-                return "🎯 现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
+                return (
+                    "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
+                )
             else:
-                return "🎯 请检测目标图像:"
+                return "请检测目标图像:"
         else:  # standalone
             if use_training_prompt:
                 return "🔍 请仔细分析这张BBU机房图像，检测并标注所有相关设备和部件:"
@@ -196,45 +200,48 @@ def get_user_prompt_prefix(
                 return "🔍 请检测图像中的设备和部件:"
     else:
         if context == "teacher":
-            return "📚 Reference Example:" if use_training_prompt else "Reference Example:"
+            return (
+                "📚 Reference Example:" if use_training_prompt else "Reference Example:"
+            )
         elif context == "target":
             if use_training_prompt:
-                return "🎯 Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:"
+                return "Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:"
             else:
-                return "🎯 Please detect objects in the target image:"
+                return "Please detect objects in the target image:"
         else:  # standalone
             if use_training_prompt:
-                return "🔍 Please carefully analyze this BBU equipment room image and detect all relevant equipment and components:"
+                return "Please carefully analyze this BBU equipment room image and detect all relevant equipment and components:"
             else:
-                return "🔍 Please detect all equipment and components in the image:"
+                return "Please detect all equipment and components in the image:"
 
 
 # ============================
 # PROMPT TEMPLATES FOR DIFFERENT SCENARIOS
 # ============================
 
+
 def get_learning_instruction(
     num_teachers: int, language: str = "chinese", use_training_prompt: bool = False
 ) -> str:
     """
     Get meta-learning instruction to help model understand teacher-student relationship.
-    
+
     Args:
         num_teachers: Number of teacher examples provided
         language: "chinese" or "english"
         use_training_prompt: Whether to use detailed instructions
-        
+
     Returns:
         Learning instruction string
     """
     if num_teachers == 0:
         return ""  # No instruction needed for standalone detection
-    
+
     if language.lower() == "chinese":
         if use_training_prompt:
             if num_teachers == 1:
                 return """
-📝 学习提示: 请仔细观察参考示例中的以下要点:
+学习提示: 请仔细观察参考示例中的以下要点:
 • 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
 • 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
 • 边界框的准确绘制方法和标注风格
@@ -242,7 +249,7 @@ def get_learning_instruction(
 然后将这些模式应用到目标图像的检测中。"""
             else:
                 return f"""
-📝 学习提示: 下面将提供{num_teachers}个参考示例，请仔细观察:
+学习提示: 下面将提供{num_teachers}个参考示例，请仔细观察:
 • 不同场景下的检测模式和标注风格
 • 相似对象的区分方法和判断标准  
 • 边界框绘制的精确度和一致性
@@ -254,7 +261,7 @@ def get_learning_instruction(
         if use_training_prompt:
             if num_teachers == 1:
                 return """
-📝 Learning Instruction: Please carefully observe the following aspects in the reference example:
+Learning Instruction: Please carefully observe the following aspects in the reference example:
 • How to accurately identify different types of objects (BBU equipment, screw connection points, wind shields, etc.)
 • How to distinguish objects that look similar but differ in location (e.g., BBU mounting screws vs BBU grounding cabinet ground terminals)
 • Accurate bounding box drawing methods and annotation styles
@@ -262,7 +269,7 @@ def get_learning_instruction(
 Then apply these patterns to detect objects in the target image."""
             else:
                 return f"""
-📝 Learning Instruction: {num_teachers} reference examples will be provided. Please carefully observe:
+Learning Instruction: {num_teachers} reference examples will be provided. Please carefully observe:
 • Detection patterns and annotation styles across different scenarios
 • Methods for distinguishing similar objects and judgment criteria
 • Precision and consistency of bounding box drawing
@@ -390,7 +397,7 @@ def get_optimized_prompt_for_context(
 CHINESE_CANDIDATES_SECTION = """
 **标准检测对象分类**:
 • BBU设备: bbu基带处理单元/华为、bbu基带处理单元/中兴、bbu基带处理单元/爱立信
-• 螺丝或连接点: 螺丝或连接点/BBU安装螺丝、螺丝或连接点/CPRI光缆和BBU连接点、螺丝或连接点/地排处螺丝、螺丝或连接点/BBU接地线机柜接地端、螺丝或连接点/BBU尾纤和ODF连接点
+• 螺丝连接点: 螺丝连接点/BBU安装螺丝、螺丝连接点/CPRI光缆和BBU连接点、螺丝连接点/地排处螺丝、螺丝连接点/BBU接地线机柜接地端、螺丝连接点/BBU尾纤和ODF连接点
 • 挡风板: 挡风板/已安装、挡风板/未安装
 • 机柜空间: 机柜空间/满载、机柜空间/非满载
 • 标签贴纸

@@ -90,9 +90,14 @@ class ImageProcessor:
             return output_path, existing_width, existing_height
         
         if self.config.resize_enabled:
-            # Smart resize
-            new_height, new_width = CoordinateTransformer.smart_resize(
-                height=height, width=width
+            # Smart resize using proper vision_process function that respects MAX_PIXELS
+            from data_conversion.vision_process import smart_resize, MIN_PIXELS, MAX_PIXELS, IMAGE_FACTOR
+            new_height, new_width = smart_resize(
+                height=height, 
+                width=width,
+                factor=IMAGE_FACTOR,
+                min_pixels=MIN_PIXELS,
+                max_pixels=MAX_PIXELS
             )
             
             with Image.open(image_path) as img:
@@ -106,7 +111,7 @@ class ImageProcessor:
                 )
                 resized_img.save(output_path)
             
-            logger.debug(f"Resized {image_path.name}: {width}x{height} → {new_width}x{new_height}")
+            logger.debug(f"Resized {image_path.name}: {width}x{height} → {new_width}x{new_height} (MAX_PIXELS={MAX_PIXELS})")
             return output_path, new_width, new_height
         
         else:

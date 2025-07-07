@@ -21,12 +21,13 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_p
 ## 3. Implementation hooks
 | Step | Code | Notes |
 |------|------|-------|
-| Apply LoRA | `src/models/wrapper.py::_apply_lora_config` | Uses `peft.get_peft_model` |
-| Group params | `src/training/trainer.py::init_param_groups` | PEFT params share `llm_lr` |
-| Save / load | `wrapper.save_pretrained` & `wrapper.from_pretrained` | Saves `adapter_config.json`, `adapter_model.safetensors` |
+| Apply LoRA | `src/core/model_factory.py` | Uses `peft.get_peft_model` during model creation. |
+| Group params | `src/training/parameter_manager.py` | PEFT params are grouped to share the `llm_lr`. |
+| Save / load | `src/core/checkpoint_manager.py` | Saves `adapter_config.json`, `adapter_model.safetensors`. |
 
 ---
 
 ### Related source files
-* `src/models/wrapper.py`
-* `src/training/trainer.py` 
+* `src/core/model_factory.py`
+* `src/training/parameter_manager.py`
+* `src/core/checkpoint_manager.py` 

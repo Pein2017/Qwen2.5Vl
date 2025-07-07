@@ -372,8 +372,10 @@ class BBUDataset(Dataset):
         Returns:
             Dict with "teachers" (List[Sample]) and "student" (Sample) keys
         """
-        # Evaluation mode: return single student sample (no teachers)
-        if not self.is_training:
+        # For evaluation mode: respect teacher_ratio if configured
+        # This allows validation to use the same teacher guidance as training
+        if not self.is_training and self.teacher_ratio == 0.0:
+            # Only skip teachers if explicitly configured with 0.0 ratio
             if "teachers" in raw_sample and "student" in raw_sample:
                 return {"teachers": [], "student": raw_sample["student"]}
             elif "examples" in raw_sample and "target" in raw_sample:

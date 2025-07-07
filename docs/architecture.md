@@ -1,24 +1,26 @@
 # Model & Training Architecture
 
-> **Purpose:** Describe how vision, language, and detection components interact during training and inference.
+> **Purpose:** Describe how vision, language, and detection components interact within the new modular training system.
 
 ---
 
-## 1. High-level Diagram
+## 1. High-level Diagram (New Architecture)
 ```mermaid
 graph TD
-    subgraph Vision Tower
-        VT[Visual Encoder]
+    subgraph Input Processing
+        IP(Chat Processor) --> TOKENS(Tokens & Images)
     end
-    VT --> V_EMB(vision_embeds)
-    V_EMB -->|concat text| LLM_IN(LLM Input)
-    LLM_IN --> LLM_BLOCKS(LLM Blocks)
-    LLM_BLOCKS --> HIDDEN(Last Hidden States)
-
-    subgraph Generation Path
-        HIDDEN --> LM_HEAD(LM Head) --> LM_LOSS[🤖 LM Loss]
-        LM_LOSS --> TEACHER_SPLIT[Teacher LM Loss]
-        LM_LOSS --> STUDENT_SPLIT[Student LM Loss]
+    
+    subgraph Model
+        subgraph Vision Tower
+            VT[Visual Encoder]
+        end
+        VT --> V_EMB(vision_embeds)
+        V_EMB -->|concat text| LLM_IN(LLM Input)
+        TOKENS --> LLM_IN
+        LLM_IN --> LLM_BLOCKS(LLM Blocks)
+        LLM_BLOCKS --> HIDDEN(Last Hidden States)
+        HIDDEN --> LM_HEAD(LM Head) --> LM_LOGITS
     end
 
     subgraph Detection Path
@@ -26,123 +28,87 @@ graph TD
         HIDDEN --> LANG_ADPT(Language Adapter)
         VIS_ADPT & LANG_ADPT --> MEM[Concat Memory]
         MEM --> DECODER(DETR Decoder)
-        DECODER --> BBOX[BBox Head]
-        DECODER --> OBJ[Objectness Head]
-        DECODER --> CAPTION[Caption Decoder]
-        BBOX & OBJ & CAPTION --> DET_LOSS[📦 Detection Loss]
+        DECODER --> DET_PREDS(Detection Predictions)
     end
 
-    TEACHER_SPLIT & STUDENT_SPLIT & DET_LOSS --> TOTAL[Total Loss]
+    subgraph Training Orchestration
+        TC(Training Coordinator)
+    end
+    
+    LM_LOGITS & DET_PREDS --> TC
+
+    subgraph Modular Components
+        LM[Loss Manager]
+        PM[Parameter Group Manager]
+    end
+
+    TC --> LM
+    TC --> PM
+
+    LM --> TOTAL_LOSS[Total Loss]
+    TOTAL_LOSS --> OPTIMIZER(Optimizer)
+
+    PM --> OPTIMIZER
 ```
 
-## 2. Core Components
+## 2. Core Components (New System)
 | Module | Code location | Functionality |
 |--------|---------------|---------------|
-| **Visual Encoder** | `src/models/wrapper.py` | Converts image patches to embeddings. |
-| **Vision/Language Adapters** | `src/models/detection_head.py` | Residual MLPs that align visual and textual hidden states. |
-| **DETR Decoder & Heads** | `src/models/detection_head.py` | Predict bounding boxes, objectness, and captions. |
-| **Chat Processor** | `src/chat_processor.py` | Builds conversation with vision tokens and extracts teacher/student spans. |
-| **BBUTrainer** | `src/training/trainer.py` | Custom `Trainer` subclass that computes multi-task loss. |
+| **ConfigManager** | `src/config/config_manager.py` | Loads, validates, and manages domain-specific configurations. |
+| **ModelFactory** | `src/core/model_factory.py` | Creates the model instance based on the configuration. |
+| **ChatProcessor** | `src/chat_processor.py` | Converts raw conversation data into token and image tensors. |
+| **TrainingCoordinator** | `src/training/training_coordinator.py` | Orchestrates the training loop, delegating tasks to managers. |
+| **LossManager** | `src/training/loss_manager.py` | Computes the multi-task loss (LM, detection, teacher/student). |
+| **ParameterGroupManager**| `src/training/parameter_manager.py`| Manages parameter groups for differential learning rates. |
+| **BBUTrainer** | `src/training/trainer.py` | `Trainer` subclass that integrates with the Training Coordinator. |
 
-## 3. Multi-Task Loss
+## 3. Multi-Task Loss Management
+The `LossManager` is responsible for computing all loss components. The logic is no longer embedded within the `BBUTrainer`.
+```python
+# In LossManager
+def compute_total_loss(self, model_outputs, inputs):
+    lm_loss = self._compute_language_modeling_loss(...)
+    detection_loss = self._compute_detection_loss(...)
+    teacher_loss, student_loss = self._compute_teacher_student_losses(...)
+    
+    total_loss = (self.weights.teacher * teacher_loss + 
+                  self.weights.student * student_loss + 
+                  detection_loss)
+    return total_loss, {...}
 ```
- total_loss = (teacher_lm_loss + student_lm_loss)
-            + bbox_l1_weight   * bbox_l1_loss
-            + bbox_giou_weight * bbox_giou_loss
-            + objectness_weight* objectness_loss
-            + caption_weight   * caption_loss
-```
-All weights are configurable in YAML.
+All weights are defined in the configuration and managed by the `ConfigManager`.
 
-## 4. Parameter Groups
-The trainer assigns every trainable parameter to one of five groups (`vision`, `merger`, `llm`, `detection`, `adapter`) with independent learning rates.  Unmatched parameters raise `KeyError` at startup (fail-fast principle).
+## 4. Parameter Group Management
+The `ParameterGroupManager` categorizes all trainable parameters and provides them to the optimizer, enabling differential learning rates. This logic is no longer handled directly by the `BBUTrainer`.
 
-## 5. Public APIs in `src/`
+## 5. Public APIs in `src/` (New System)
 | API | Role |
 |-----|------|
-| `ChatProcessor.process_sample(raw_sample)` | Converts one teacher-student JSON dict into token & image tensors (`ChatProcessorOutput`). |
-| `StandardDataCollator.__call__(instances)` | Pads a batch, builds `attention_mask`, and *preserves* teacher/student spans. |
-| `PackedDataCollator.__call__(instances)` | Concatenates sequences; returns `cu_seqlens` and boundary-masked labels for Flash-Attention 2. |
-| `BBUTrainer.compute_loss(model, inputs)` | Computes LM + detection loss, then calls `_compute_teacher_student_losses` for span-based split. |
-| `detection_loss.hungarian_matcher` | Performs set matching between predicted queries and GT objects (L1 + GIoU cost). |
-| `Inference.predict_detection(images, prompt)` | Full vision-language forward pass that returns `(boxes, captions)`.
+| `ConfigManager.load_from_yaml(path)` | Loads and validates a complete training configuration. |
+| `create_trainer_with_coordinator(...)`| Factory function in `trainer_factory.py` to build the complete training stack. |
+| `TrainingCoordinator.compute_loss(...)` | Orchestrates the forward pass and delegates loss computation to the `LossManager`. |
+| `LossManager.compute_total_loss(...)` | Computes the final weighted loss from all its components. |
+| `ParameterGroupManager.create_optimizer_groups()` | Creates the parameter groups required by the optimizer. |
+| `Inference.predict_detection(images, prompt)` | Full vision-language forward pass that returns `(boxes, captions)`. |
 
 ## 6. End-to-End Tensor Flow (Deep Dive)
-Below is a condensed walkthrough of **every tensor** from raw JSONL → loss computation, merged from the former *CLAUDE_TENSOR_ANALYSIS.md*.
+The overall tensor flow from raw data to model predictions remains similar, but the loss computation is now managed by dedicated components.
 
-### 6.1  Raw Sample → Structured Dict
-````jsonc
-{
-  "teachers": [{"images": ["ds_output/img001.jpeg"],
-                 "objects": [{"bbox_2d": [x1,y1,x2,y2],
-                               "desc": "螺丝连接点/BBU安装螺丝/连接正确"}]}],
-  "student":  {"images": ["ds_output/img002.jpeg"],
-                 "objects": [{"bbox_2d": [...], "desc": "..."}]}
-}
-````
-*Created by the conversion pipeline documented in* `docs/data_schema.md`.
+### 6.1 - 6.4 (Unchanged)
+The flow from raw sample to model forward pass is the same.
 
----
+### 6.5  Loss Computation Pipeline (New System)
+The `BBUTrainer` calls the `TrainingCoordinator`, which in turn uses the `LossManager` to perform the following steps:
+1.  **LM Loss**: Standard cross-entropy loss on language model logits.
+2.  **Teacher/Student Split**: The `LossManager` splits the LM loss into teacher and student components based on input spans.
+3.  **Detection Loss**: The `LossManager` calls the `DetectionLoss` module, which performs Hungarian matching and computes L1, GIoU, objectness, and caption losses.
+4.  **Weighted Sum**: The `LossManager` combines all losses using weights from the configuration to produce the final `total_loss` for backpropagation.
 
-### 6.2  ChatProcessor → Token & Image Tensors
-| Tensor | Shape | Notes |
-|--------|-------|-------|
-| `input_ids` | `(S,)` or `(B,S)` | Text + vision tokens (`<|vision_start|> <|image_pad|>×N <|vision_end|>`) |
-| `pixel_values` | `(T,C,H,W)` | All teacher + student images, **already smart-resized** |
-| `image_grid_thw` | `(T,3)` | ViT grid for each image *(temporal, height, width)* |
-| `ground_truth_objects` | list[list[GTObject]] | Normalised `[0,1]` boxes + desc strings |
-
-Vision token count is **data-dependent**; see `src/chat_processor.py::_calculate_image_tokens`.
-
----
-
-### 6.3  Collation Strategies
-1. **StandardDataCollator** – padding based (boolean `attention_mask`).
-2. **PackedDataCollator** *(default)* – concatenates sequences:
-   * `input_ids`: `(1, total_len)`
-   * `cu_seqlens`: `(B+1,)` cumulative lengths for Flash-Attention 2.
-
-Packed mode increases throughput ≈ 30 % and prevents *mRoPE* duplication bugs (see `docs/critical_fixes.md`).
-
----
-
-### 6.4  Model Forward Path
-````python
-outputs = model(
-    input_ids=input_ids,
-    pixel_values=pixel_values,
-    image_grid_thw=image_grid_thw,
-    cu_seqlens=cu_seqlens,           # packed only
-)
-````
-1. **Qwen-2.5-VL backbone** returns `hidden_states` (B,S,D=3584).
-2. **Detection wrapper** (`src/models/detection_head.py`) adapts vision + language streams, runs a DETR-style decoder and predicts:
-   * `pred_boxes   ∈ [0,1]`  (B,N,4)
-   * `pred_objness ∈ ℝ`      (B,N,1)
-   * `caption_logits`        (B,N,L,V)
-
----
-
-### 6.5  Loss Computation Pipeline
-````text
- teacher_lm_loss   ↘
- student_lm_loss    ↘
- bbox_l1_loss        ↘  weighted sum → **total_loss**
- bbox_giou_loss      ↗
- objectness_loss    ↗
- caption_loss      ↗
-````
-All components are calculated in `BBUTrainer.compute_loss()` with Hungarian matching for box ↔ query alignment.
-
----
-
-### 6.6  Flash-Attention 2 & mRoPE Patch
+### 6.6 Flash-Attention 2 & mRoPE Patch
 * Packed sequences use `cu_seqlens` → variable-length attention.
-* `apply_multimodal_rotary_pos_emb_fixed` (see `docs/critical_fixes.md`) ensures head-dim consistency (128) under multi-image batching.
+* `apply_multimodal_rotary_pos_emb_fixed` (see `docs/critical_fixes_log.md`) ensures head-dim consistency.
 
----
-
-### 6.7  Performance Snapshot *(Qwen-2.5-VL-3B)*
+### 6.7 Performance Snapshot *(Qwen-2.5-VL-3B)*
 | Batch Config | Mem / Sample | Speed | Notes |
 |--------------|--------------|-------|-------|
 | Padding (B=4) | 1.2× | 1.0× | Baseline |
@@ -153,7 +119,8 @@ All components are calculated in `BBUTrainer.compute_loss()` with Hungarian matc
 ---
 
 ### Related Deep-dive Sources
-* `src/chat_processor.py`
-* `src/data.py` (collators)
-* `src/models/detection_head.py`
+* `src/training/training_coordinator.py`
+* `src/training/loss_manager.py`
+* `src/training/parameter_manager.py`
+* `src/detection/detection_loss.py`
 * `src/training/trainer.py` 

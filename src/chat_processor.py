@@ -210,14 +210,14 @@ class ChatProcessor:
             # User uploads a teacher example image with clear context
             if self.language == "chinese":
                 if len(teachers) == 1:
-                    user_content = "📚 参考示例:\n<image>"
+                    user_content = "参考示例:\n<image>"
                 else:
-                    user_content = f"📚 参考示例 {i+1}/{len(teachers)}:\n<image>"
+                    user_content = f"参考示例 {i+1}/{len(teachers)}:\n<image>"
             else:
                 if len(teachers) == 1:
-                    user_content = "📚 Reference Example:\n<image>"
+                    user_content = "Reference Example:\n<image>"
                 else:
-                    user_content = f"📚 Reference Example {i+1}/{len(teachers)}:\n<image>"
+                    user_content = f"Reference Example {i+1}/{len(teachers)}:\n<image>"
             
             messages.append(ChatMessage(role="user", content=user_content))
 
@@ -233,14 +233,14 @@ class ChatProcessor:
         # Add transitional instruction if teachers were provided
         if teachers:
             if self.language == "chinese":
-                target_content = "🎯 现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:\n<image>"
+                target_content = "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:\n<image>"
             else:
-                target_content = "🎯 Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:\n<image>"
+                target_content = "Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:\n<image>"
         else:
             if self.language == "chinese":
-                target_content = "🔍 请检测以下图像中的设备和部件:\n<image>"
+                target_content = "请检测以下图像中的设备和部件:\n<image>"
             else:
-                target_content = "🔍 Please detect all equipment and components in the following image:\n<image>"
+                target_content = "Please detect all equipment and components in the following image:\n<image>"
             
         messages.append(ChatMessage(role="user", content=target_content))
 

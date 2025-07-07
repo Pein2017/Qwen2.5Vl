@@ -133,6 +133,9 @@ class CoordinateManager:
         This typically happens when:
         1. EXIF orientation was applied to image but not to JSON coordinates
         2. Image was preprocessed but JSON coordinates weren't updated
+        
+        Note: Returns float coordinates to preserve precision for subsequent transformations.
+        Final integer conversion happens in smart_resize_scaling.
         """
         if json_width == actual_width and json_height == actual_height:
             return bbox  # No rescaling needed
@@ -147,11 +150,11 @@ class CoordinateManager:
         new_x2 = x2 * scale_x
         new_y2 = y2 * scale_y
         
-        # Clamp to image bounds
-        new_x1 = max(0, min(new_x1, actual_width))
-        new_y1 = max(0, min(new_y1, actual_height))
-        new_x2 = max(0, min(new_x2, actual_width))
-        new_y2 = max(0, min(new_y2, actual_height))
+        # Clamp to image bounds (keep as float for precision)
+        new_x1 = max(0.0, min(new_x1, float(actual_width)))
+        new_y1 = max(0.0, min(new_y1, float(actual_height)))
+        new_x2 = max(0.0, min(new_x2, float(actual_width)))
+        new_y2 = max(0.0, min(new_y2, float(actual_height)))
         
         logger.debug(
             f"Dimension rescale: [{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}] "
@@ -168,28 +171,32 @@ class CoordinateManager:
         original_height: int,
         new_width: int,
         new_height: int
-    ) -> List[float]:
+    ) -> List[int]:
         """
         Scale bbox coordinates for smart resize operation.
+        Returns integer coordinates suitable for pixel-based operations.
         """
         if original_width == new_width and original_height == new_height:
-            return bbox  # No scaling needed
+            # Convert to integers even if no scaling needed
+            x1, y1, x2, y2 = bbox
+            return [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))]
         
         scale_x = new_width / original_width
         scale_y = new_height / original_height
         
         x1, y1, x2, y2 = bbox
         
-        new_x1 = round(x1 * scale_x)
-        new_y1 = round(y1 * scale_y)
-        new_x2 = round(x2 * scale_x)
-        new_y2 = round(y2 * scale_y)
+        # Apply scaling and round to integers
+        new_x1 = int(round(x1 * scale_x))
+        new_y1 = int(round(y1 * scale_y))
+        new_x2 = int(round(x2 * scale_x))
+        new_y2 = int(round(y2 * scale_y))
         
-        # Clamp to image bounds
-        new_x1 = max(0, min(new_x1, new_width))
-        new_y1 = max(0, min(new_y1, new_height))
-        new_x2 = max(0, min(new_x2, new_width))
-        new_y2 = max(0, min(new_y2, new_height))
+        # Clamp to image bounds and ensure valid bbox
+        new_x1 = max(0, min(new_x1, new_width - 1))
+        new_y1 = max(0, min(new_y1, new_height - 1))
+        new_x2 = max(new_x1 + 1, min(new_x2, new_width))  # Ensure x2 > x1
+        new_y2 = max(new_y1 + 1, min(new_y2, new_height))  # Ensure y2 > y1
         
         logger.debug(
             f"Smart resize scale: [{x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}] "
@@ -242,15 +249,22 @@ class CoordinateManager:
         
         # Step 4: Apply smart resize scaling if enabled
         if enable_smart_resize:
-            from utils.transformations import CoordinateTransformer
-            resize_h, resize_w = CoordinateTransformer.smart_resize(current_height, current_width, smart_resize_factor)
+            # Use the proper smart_resize function from vision_process.py that respects MAX_PIXELS
+            from data_conversion.vision_process import smart_resize, MIN_PIXELS, MAX_PIXELS
+            resize_h, resize_w = smart_resize(
+                height=current_height, 
+                width=current_width, 
+                factor=smart_resize_factor,
+                min_pixels=MIN_PIXELS,
+                max_pixels=MAX_PIXELS
+            )
             
             if resize_w != current_width or resize_h != current_height:
                 current_bbox = cls.apply_smart_resize_scaling(
                     current_bbox, current_width, current_height, resize_w, resize_h
                 )
                 current_width, current_height = resize_w, resize_h
-                logger.debug(f"Applied smart resize: -> {current_width}x{current_height}")
+                logger.debug(f"Applied smart resize: {current_width}x{current_height} (within MAX_PIXELS={MAX_PIXELS})")
         
         return current_bbox, current_width, current_height
     
@@ -260,7 +274,7 @@ class CoordinateManager:
         Validate that bbox coordinates are within image bounds.
         
         Args:
-            bbox: [x1, y1, x2, y2]
+            bbox: [x1, y1, x2, y2] (can be int or float)
             width, height: Image dimensions
         
         Returns:
@@ -272,8 +286,9 @@ class CoordinateManager:
         if x1 >= x2 or y1 >= y2:
             return False
         
-        # Check bounds
-        if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+        # Check bounds (allow small floating point tolerance)
+        tolerance = 0.1
+        if x1 < -tolerance or y1 < -tolerance or x2 > width + tolerance or y2 > height + tolerance:
             return False
         
         return True
@@ -302,9 +317,15 @@ class CoordinateManager:
         if "objects" not in sample_data or not sample_data["objects"]:
             # No objects to process, just get final dimensions
             if enable_smart_resize:
-                from utils.transformations import CoordinateTransformer
+                from data_conversion.vision_process import smart_resize, MIN_PIXELS, MAX_PIXELS
                 _, _, _, final_w, final_h = cls.get_exif_transform_matrix(image_path)
-                resize_h, resize_w = CoordinateTransformer.smart_resize(final_h, final_w)
+                resize_h, resize_w = smart_resize(
+                    height=final_h, 
+                    width=final_w,
+                    factor=28,
+                    min_pixels=MIN_PIXELS,
+                    max_pixels=MAX_PIXELS
+                )
                 return sample_data, resize_w, resize_h
             else:
                 _, _, _, final_w, final_h = cls.get_exif_transform_matrix(image_path)
