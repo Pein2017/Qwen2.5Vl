@@ -35,7 +35,7 @@ except Exception as e:
 
 # Define paths
 PROJECT_ROOT = Path("/data4/Qwen2.5-VL-main")
-DEFAULT_JSONL_FILE = PROJECT_ROOT / "data" / "val.jsonl"
+DEFAULT_JSONL_FILE = PROJECT_ROOT / "data" / "all_samples.jsonl"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "vis_tools" / "output"
 
 # Color mapping - consistent with vis_scaling_comparison.py

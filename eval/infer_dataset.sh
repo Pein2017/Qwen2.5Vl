@@ -7,7 +7,7 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="1_teacher"           # e.g., "1_teacher", "no_teacher", "baseline"
+EXP_NAME="1_teacher_finished_stage"           # e.g., "1_teacher", "no_teacher", "baseline"
 
 # Dataset to process (single dataset per run)
 DATASET="val"                  # "train" or "val"
@@ -17,7 +17,7 @@ NUM_TEACHERS=1                          # Set number of teachers manually (0 for
 TEACHER_POOL_FILE="data/teacher.jsonl"
 
 # Model configuration  
-MODEL_PATH="output-74/7-4-teacher_student_loss_weight_roundFloats/checkpoint-280"
+MODEL_PATH="output-7-7/7-7-teacher_student_fixed_box_prompt/checkpoint-280"
 MODEL_NAME="qwen2_5_vl"
 
 # Generation parameters
@@ -27,7 +27,7 @@ NUM_WORKERS=8
 ENABLE_TORCH_COMPILE=false
 
 # Logging level (debug shows validation details)
-LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
+LOG_LEVEL="info"                       # "debug" for detailed validation info, "info" for normal
 
 ###############################################################################
 # PIPELINE EXECUTION - DO NOT EDIT BELOW
@@ -46,7 +46,7 @@ if [[ "$DATASET" != "train" && "$DATASET" != "val" ]]; then
 fi
 
 # Create clean experiment structure
-OUTPUT_BASE="experiments"
+OUTPUT_BASE="experiments_707"
 EXPERIMENT_DIR="${OUTPUT_BASE}/${EXP_NAME}"
 DATASET_DIR="${EXPERIMENT_DIR}/${DATASET}"
 INFERENCE_DIR="${DATASET_DIR}/inference"
@@ -99,7 +99,7 @@ echo "💾 Saved experiment config: $CONFIG_FILE"
 
 # Determine teacher arguments
 if [ "$NUM_TEACHERS" -gt 0 ]; then
-    TEACHER_ARGS="--use_teacher --num_teachers $NUM_TEACHERS --teacher_pool_file $TEACHER_POOL_FILE"
+    TEACHER_ARGS="--num_teachers $NUM_TEACHERS --teacher_pool_file $TEACHER_POOL_FILE"
     echo "👨‍🏫 Using $NUM_TEACHERS teacher(s) from $TEACHER_POOL_FILE"
 else
     TEACHER_ARGS=""
@@ -111,6 +111,7 @@ INFERENCE_CMD="python src/inference.py \
     --model_path \"$MODEL_PATH\" \
     --input_file \"$DATASET_FILE\" \
     --output_file \"$OUTPUT_FILE\" \
+    --data_root \".\" \
     --max_new_tokens $MAX_NEW_TOKENS \
     --batch_size $BATCH_SIZE \
     --num_workers $NUM_WORKERS \
@@ -118,7 +119,7 @@ INFERENCE_CMD="python src/inference.py \
     $TEACHER_ARGS"
 
 if [ "$ENABLE_TORCH_COMPILE" = true ]; then
-    INFERENCE_CMD="$INFERENCE_CMD --enable_torch_compile"
+    INFERENCE_CMD="$INFERENCE_CMD --use_torch_compile"
 fi
 
 echo ""

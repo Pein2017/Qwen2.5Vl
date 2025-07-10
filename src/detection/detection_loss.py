@@ -195,11 +195,14 @@ class DetectionLoss(nn.Module):
 
         # ------------------------------------------------------------------
         # Loss normalisation strategy
-        # Stabler normalisation: divide by (num_gt + ε·num_queries) so images
-        # with few objects are not overweighted and zero-GT images are still
-        # well-defined.
-        epsilon = 1e-3
-        denom = num_gt_total + epsilon * batch_size * pred_boxes.shape[1]
+        # Use consistent normalization independent of GT count to prevent train/val mismatch
+        # Normalize by batch_size * num_queries for consistent scaling
+        num_queries = pred_boxes.shape[1]  # Number of detection queries
+        consistent_denom = batch_size * num_queries
+        
+        # Add small epsilon to prevent division by zero
+        epsilon = 1e-6
+        denom = consistent_denom + epsilon
 
         final_l1_loss = total_l1_loss / denom
         final_giou_loss = total_giou_loss / denom

@@ -47,18 +47,22 @@ class Qwen25VLWithDetection(nn.Module):
         num_queries: int,
         max_caption_length: int,
         tokenizer: PreTrainedTokenizerBase,
+        attn_implementation: str = None,
     ) -> None:
         super().__init__()
 
         # Store tokenizer for detection head initialization
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
 
+        # Determine effective attention implementation
+        effective_attn_impl = attn_implementation if attn_implementation is not None else config.attn_implementation
+        
         # Load official Qwen2.5-VL model with proper configuration
         self.base_model: Qwen2_5_VLForConditionalGeneration = (
             Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 base_model_path,
                 torch_dtype=_get_torch_dtype(config.torch_dtype),
-                attn_implementation=config.attn_implementation,
+                attn_implementation=effective_attn_impl,
                 device_map=None,  # Single GPU only - no multi-GPU device mapping
                 trust_remote_code=True,
                 use_cache=True,  # Enable KV cache for generation
@@ -272,6 +276,7 @@ class Qwen25VLWithDetection(nn.Module):
         max_caption_length: int = None,
         tokenizer=None,
         load_detection_head: bool = True,
+        attn_implementation: str = None,
         **kwargs,
     ):
         """
@@ -287,6 +292,7 @@ class Qwen25VLWithDetection(nn.Module):
             max_caption_length: Max caption length (auto-detected from checkpoint)
             tokenizer: Tokenizer for the model
             load_detection_head: Whether to load the detection head weights
+            attn_implementation: Override attention implementation ('flash_attention_2', 'eager', etc.)
             **kwargs: Additional arguments
 
         Returns:
@@ -299,16 +305,16 @@ class Qwen25VLWithDetection(nn.Module):
         if checkpoint_info["type"] == "unified":
             if load_detection_head:
                 return cls._load_unified_checkpoint(
-                    model_path, num_queries, max_caption_length, tokenizer, **kwargs
+                    model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
                 )
             else:
                 # Load just the base model part inside the unified directory
                 return cls._load_base_model(
-                    model_path, num_queries, max_caption_length, tokenizer, **kwargs
+                    model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
                 )
         else:  # base model
             return cls._load_base_model(
-                model_path, num_queries, max_caption_length, tokenizer, **kwargs
+                model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
             )
 
     @classmethod
@@ -347,6 +353,7 @@ class Qwen25VLWithDetection(nn.Module):
         num_queries: int,
         max_caption_length: int,
         tokenizer,
+        attn_implementation: str = None,
         **kwargs,
     ):
         """Load from unified checkpoint created by our trainer."""
@@ -398,6 +405,7 @@ class Qwen25VLWithDetection(nn.Module):
             num_queries=num_queries,
             max_caption_length=max_caption_length,
             tokenizer=tokenizer,
+            attn_implementation=attn_implementation,
         )
 
         # Load detection head weights
@@ -413,6 +421,7 @@ class Qwen25VLWithDetection(nn.Module):
         num_queries: int,
         max_caption_length: int,
         tokenizer,
+        attn_implementation: str = None,
         **kwargs,
     ):
         """Load base model without detection head (randomly initialized)."""
@@ -439,6 +448,7 @@ class Qwen25VLWithDetection(nn.Module):
             num_queries=num_queries,
             max_caption_length=max_caption_length,
             tokenizer=tokenizer,
+            attn_implementation=attn_implementation,
         )
 
         print(f"✅ Base model loaded with random detection head")

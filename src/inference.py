@@ -87,34 +87,32 @@ verify_qwen25_patches()
 # ---------------------------------------------------------------------------
 
 
-def verify_flash_attention_available() -> None:
-    """Ensure Flash Attention 2 is present in the current environment.
+def check_flash_attention_available() -> bool:
+    """Check if Flash Attention 2 is available in the current environment.
 
-    The check intentionally remains lightweight – we import the expected module
-    and inspect CUDA availability.  A `RuntimeError` is raised on failure so
-    that the caller can surface the issue immediately.
+    Returns:
+        bool: True if Flash Attention 2 is available, False otherwise.
     """
-
     try:
         import torch
 
         if not torch.cuda.is_available():
-            raise RuntimeError(
-                "CUDA is not available. Flash Attention 2 requires CUDA. "
-                "CPU inference is not supported."
-            )
+            return False
+
+        # Check if flash_attn package is installed
+        try:
+            import flash_attn
+        except ImportError:
+            return False
 
         # Lazy import – will raise if the fused kernels are missing.
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
             Qwen2_5_VLFlashAttention2,  # noqa: F401 – imported for availability check only
         )
+        return True
 
-    except ImportError as e:
-        raise RuntimeError(
-            "Flash Attention 2 is not available in the environment: "
-            f"{e}. Make sure the `flash-attn` package is installed and that "
-            "your GPU/driver/CUDA stack is compatible."
-        )
+    except ImportError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -164,18 +162,24 @@ class InferenceEngine:
         self.teacher_pool_file = teacher_pool_file
         self.num_teachers = num_teachers
 
-        # Verify CUDA is available (required for Flash Attention 2)
+        # Verify CUDA is available
         if device == "cpu":
             raise RuntimeError(
-                "CPU inference is not supported. Flash Attention 2 requires CUDA. "
+                "CPU inference is not supported. "
                 "Please use a CUDA-enabled device."
             )
 
         if not torch.cuda.is_available():
             raise RuntimeError(
-                "CUDA is not available. This inference script requires a GPU with CUDA support "
-                "for Flash Attention 2 and optimal performance."
+                "CUDA is not available. This inference script requires a GPU with CUDA support."
             )
+        
+        # Check flash attention availability
+        self.use_flash_attention = check_flash_attention_available()
+        if self.use_flash_attention:
+            logger.info("✅ Flash Attention 2 available - using optimized attention")
+        else:
+            logger.warning("⚠️ Flash Attention 2 not available - falling back to standard attention")
 
         # Load processor and model following demo approach
         self.processor, self.model = self._load_model_and_processor()
@@ -200,22 +204,18 @@ class InferenceEngine:
                     f"⚠️ torch.compile failed, continuing without compilation: {e}"
                 )
 
-        # Flash Attention is already configured during model loading via attn_implementation parameter
-        # No need to manually set it here
-
-        # Final verification of critical features
-        # Verify Flash Attention 2 is enabled
-        if not hasattr(self.model.config, "_attn_implementation"):
-            raise RuntimeError(
-                "Model config missing _attn_implementation attribute. "
-                "This indicates Flash Attention 2 setup failed."
-            )
-
-        if self.model.config._attn_implementation != "flash_attention_2":
-            raise RuntimeError(
-                f"Expected Flash Attention 2 but got: {self.model.config._attn_implementation}. "
-                "Flash Attention 2 is required for optimal performance."
-            )
+        # Flash Attention is configured during model loading via attn_implementation parameter
+        # Verify attention implementation
+        if hasattr(self.model.config, "_attn_implementation"):
+            attn_impl = self.model.config._attn_implementation
+            if attn_impl == "flash_attention_2":
+                logger.info("✅ Using Flash Attention 2")
+            elif attn_impl == "eager":
+                logger.info("✅ Using standard eager attention")
+            else:
+                logger.info(f"✅ Using attention implementation: {attn_impl}")
+        else:
+            logger.info("✅ Using default attention implementation")
 
         # Verify KV cache is enabled
         if not hasattr(self.model.config, "use_cache"):
@@ -231,7 +231,10 @@ class InferenceEngine:
             )
 
         logger.info("✅ Critical features verified:")
-        logger.info("   ⚡ Flash Attention 2: ENABLED")
+        if self.use_flash_attention:
+            logger.info("   ⚡ Flash Attention 2: ENABLED")
+        else:
+            logger.info("   ⚡ Standard Attention: ENABLED")
         logger.info("   💾 KV Cache: ENABLED")
 
         logger.info("✅ InferenceEngine initialized")
@@ -289,31 +292,38 @@ class InferenceEngine:
             raise FileNotFoundError(f"Model path does not exist: {self.model_path}")
 
         logger.info("🔧 Loading model via UNIFIED loader (same as training)")
-        
+
         try:
             from src.models.model_loader import load_model_and_processor_unified
-            
+
             # Use IDENTICAL loading process as training (only difference: for_inference=True)
+            # Pass attention implementation preference
+            attn_implementation = "flash_attention_2" if self.use_flash_attention else "eager"
             model, tokenizer, image_processor = load_model_and_processor_unified(
                 model_path=str(model_dir),
                 for_inference=True,  # ONLY difference from training
+                attn_implementation=attn_implementation,
             )
-            
+
             # Create processor-like object for compatibility
-            processor = type('UnifiedProcessor', (), {
-                'tokenizer': tokenizer,
-                'image_processor': image_processor,
-                'batch_decode': tokenizer.batch_decode,
-            })()
-            
+            processor = type(
+                "UnifiedProcessor",
+                (),
+                {
+                    "tokenizer": tokenizer,
+                    "image_processor": image_processor,
+                    "batch_decode": tokenizer.batch_decode,
+                },
+            )()
+
             model.eval()
-            
+
             logger.info("✅ UNIFIED model loading completed for inference")
             logger.debug(f"Model loaded on device: {next(model.parameters()).device}")
             logger.debug(f"Model dtype: {next(model.parameters()).dtype}")
 
             return processor, model
-            
+
         except Exception as e:
             logger.error(f"❌ UNIFIED model loading failed: {e}")
             raise RuntimeError(f"Failed to load model via unified loader: {e}")
@@ -640,11 +650,11 @@ class InferenceEngine:
             # Prepare batch inputs using the processor
             all_images = []
             all_texts = []
-            
+
             for text, images in zip(texts, images_list):
                 all_texts.append(text)
                 all_images.extend(images)  # Flatten all images into one list
-            
+
             # Use processor to handle batch processing
             if self.chat_processor:
                 # For chat processor, we need to process each sample individually
@@ -657,11 +667,11 @@ class InferenceEngine:
                         is_first_step=True,
                     )
                     batch_inputs.append(inputs)
-                
+
                 # Combine batch inputs
                 combined_inputs = {}
                 for key in batch_inputs[0].keys():
-                    if key == 'input_ids':
+                    if key == "input_ids":
                         # Pad and stack input_ids
                         input_ids_list = [inp[key] for inp in batch_inputs]
                         max_len = max(ids.shape[1] for ids in input_ids_list)
@@ -670,16 +680,24 @@ class InferenceEngine:
                             pad_len = max_len - ids.shape[1]
                             if pad_len > 0:
                                 # Left padding for generation
-                                padded = torch.cat([
-                                    torch.full((ids.shape[0], pad_len), self.processor.tokenizer.pad_token_id, dtype=ids.dtype, device=ids.device),
-                                    ids
-                                ], dim=1)
+                                padded = torch.cat(
+                                    [
+                                        torch.full(
+                                            (ids.shape[0], pad_len),
+                                            self.processor.tokenizer.pad_token_id,
+                                            dtype=ids.dtype,
+                                            device=ids.device,
+                                        ),
+                                        ids,
+                                    ],
+                                    dim=1,
+                                )
                             else:
                                 padded = ids
                             padded_ids.append(padded)
                         combined_inputs[key] = torch.cat(padded_ids, dim=0)
-                    
-                    elif key == 'attention_mask':
+
+                    elif key == "attention_mask":
                         # Pad and stack attention masks
                         mask_list = [inp[key] for inp in batch_inputs]
                         max_len = max(mask.shape[1] for mask in mask_list)
@@ -688,34 +706,47 @@ class InferenceEngine:
                             pad_len = max_len - mask.shape[1]
                             if pad_len > 0:
                                 # Left padding with zeros for attention mask
-                                padded = torch.cat([
-                                    torch.zeros((mask.shape[0], pad_len), dtype=mask.dtype, device=mask.device),
-                                    mask
-                                ], dim=1)
+                                padded = torch.cat(
+                                    [
+                                        torch.zeros(
+                                            (mask.shape[0], pad_len),
+                                            dtype=mask.dtype,
+                                            device=mask.device,
+                                        ),
+                                        mask,
+                                    ],
+                                    dim=1,
+                                )
                             else:
                                 padded = mask
                             padded_masks.append(padded)
                         combined_inputs[key] = torch.cat(padded_masks, dim=0)
-                    
-                    elif key == 'pixel_values':
+
+                    elif key == "pixel_values":
                         # Stack pixel values
-                        pixel_values_list = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        pixel_values_list = [
+                            inp[key] for inp in batch_inputs if inp[key] is not None
+                        ]
                         if pixel_values_list:
                             combined_inputs[key] = torch.cat(pixel_values_list, dim=0)
                         else:
                             combined_inputs[key] = None
-                    
-                    elif key == 'image_grid_thw':
+
+                    elif key == "image_grid_thw":
                         # Stack image grid info
-                        grid_list = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        grid_list = [
+                            inp[key] for inp in batch_inputs if inp[key] is not None
+                        ]
                         if grid_list:
                             combined_inputs[key] = torch.cat(grid_list, dim=0)
                         else:
                             combined_inputs[key] = None
-                    
+
                     else:
                         # For other keys, take the first non-None value or stack if possible
-                        values = [inp[key] for inp in batch_inputs if inp[key] is not None]
+                        values = [
+                            inp[key] for inp in batch_inputs if inp[key] is not None
+                        ]
                         if values:
                             if torch.is_tensor(values[0]):
                                 combined_inputs[key] = torch.cat(values, dim=0)
@@ -723,11 +754,13 @@ class InferenceEngine:
                                 combined_inputs[key] = values[0]
                         else:
                             combined_inputs[key] = None
-                
+
                 inputs = combined_inputs
             else:
                 # Fallback to processor batch handling (less reliable)
-                inputs = self.processor(text=all_texts, images=all_images, return_tensors="pt", padding=True)
+                inputs = self.processor(
+                    text=all_texts, images=all_images, return_tensors="pt", padding=True
+                )
 
             # Move inputs to device
             inputs = {
@@ -738,13 +771,16 @@ class InferenceEngine:
             # Log batch information
             logger.debug(f"BATCH INPUT IDS shape: {inputs['input_ids'].shape}")
             if "pixel_values" in inputs and inputs["pixel_values"] is not None:
-                logger.debug(f"BATCH PIXEL VALUES shape: {inputs['pixel_values'].shape}")
+                logger.debug(
+                    f"BATCH PIXEL VALUES shape: {inputs['pixel_values'].shape}"
+                )
 
             # Generate responses for the entire batch
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
             import time
+
             start_time = time.perf_counter()
 
             with (
@@ -779,7 +815,9 @@ class InferenceEngine:
             prompt_tokens = inputs["input_ids"].shape[1]
             total_tokens = output_ids.shape[1]
             generated_tokens = max(total_tokens - prompt_tokens, 1)
-            tokens_per_second = generated_tokens * batch_size / elapsed if elapsed > 0 else float("inf")
+            tokens_per_second = (
+                generated_tokens * batch_size / elapsed if elapsed > 0 else float("inf")
+            )
 
             logger.debug(
                 f"Batch generation took {elapsed:.2f}s for {generated_tokens} tokens × {batch_size} samples → {tokens_per_second:.2f} tokens/s"
@@ -809,7 +847,9 @@ class InferenceEngine:
                 else:
                     # Standard single-turn extraction
                     try:
-                        assistant_part = response_text.split("assistant\n", 1)[1].strip()
+                        assistant_part = response_text.split("assistant\n", 1)[
+                            1
+                        ].strip()
                     except IndexError:
                         assistant_part = response_text
 
@@ -828,15 +868,17 @@ class InferenceEngine:
 
                 cleaned_response = cleaned_response.strip()
                 responses.append(cleaned_response)
-                
-                logger.debug(f"Sample {i} OUTPUT (first 200 chars): {cleaned_response[:200]}...")
+
+                logger.debug(
+                    f"Sample {i} OUTPUT (first 200 chars): {cleaned_response[:200]}..."
+                )
 
             return responses
 
         except Exception as e:
             logger.error(f"Batch generation failed: {e}")
             logger.debug(f"Falling back to individual processing")
-            
+
             # Fallback to individual processing if batch fails
             responses = []
             for i, (text, images) in enumerate(zip(texts, images_list)):
@@ -858,7 +900,7 @@ class InferenceEngine:
 
     def run_inference_on_jsonl(
         self,
-        input_jsonl: str,
+        input_file: str,
         output_file: str,
         data_root: str,
         max_new_tokens: int = 1024,
@@ -872,7 +914,7 @@ class InferenceEngine:
             self.chat_processor.data_root = self.data_root
 
         # Count total samples
-        with open(input_jsonl, "r", encoding="utf-8") as f:
+        with open(input_file, "r", encoding="utf-8") as f:
             total_samples = sum(1 for _ in f)
 
         # Determine number of samples to process
@@ -894,7 +936,7 @@ class InferenceEngine:
         with open(output_file, "w", encoding="utf-8") as f_out:
             f_out.write("[\n")  # Start JSON array
 
-        with open(input_jsonl, "r", encoding="utf-8") as f_in:
+        with open(input_file, "r", encoding="utf-8") as f_in:
             batch_samples = []
             batch_indices = []
             result_count = 0
@@ -1061,11 +1103,11 @@ def main():
         "--model_path", type=str, required=True, help="Path to model directory"
     )
     parser.add_argument(
-        "--input_jsonl", type=str, required=True, help="Input JSONL file"
+        "--input_file", type=str, required=True, help="Input JSONL file"
     )
     parser.add_argument("--output_file", type=str, required=True, help="Output file")
     parser.add_argument(
-        "--data_root", type=str, required=True, help="Data root directory"
+        "--data_root", type=str, default=".", help="Data root directory"
     )
     parser.add_argument(
         "--max_new_tokens", type=int, default=1024, help="Max new tokens"
@@ -1123,16 +1165,19 @@ def main():
         verbose=False,
     )
 
-    # Verify Flash Attention availability after logging is ready
-    verify_flash_attention_available()
-
     # Re-acquire logger so it inherits the freshly installed handlers
-    global logger
     logger = get_logger("inference")
+    
+    # Check Flash Attention availability (non-blocking)
+    flash_available = check_flash_attention_available()
+    if flash_available:
+        logger.info("✅ Flash Attention 2 is available")
+    else:
+        logger.warning("⚠️ Flash Attention 2 not available - will use standard attention")
 
     logger.info(f"Starting inference with log level: {args.log_level}")
     logger.info(f"Model path: {args.model_path}")
-    logger.info(f"Input JSONL: {args.input_jsonl}")
+    logger.info(f"Input JSONL: {args.input_file}")
     logger.info(f"Output file: {args.output_file}")
     logger.info(f"Batch size: {args.batch_size}")
     if args.teacher_pool_file and args.num_teachers > 0:
@@ -1149,7 +1194,7 @@ def main():
         num_teachers=args.num_teachers,
     )
     engine.run_inference_on_jsonl(
-        input_jsonl=args.input_jsonl,
+        input_file=args.input_file,
         output_file=args.output_file,
         data_root=args.data_root,
         max_new_tokens=args.max_new_tokens,

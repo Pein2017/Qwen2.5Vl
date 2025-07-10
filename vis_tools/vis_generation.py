@@ -4,7 +4,6 @@ Visualization script for Qwen2.5-VL model inference results.
 Creates side-by-side comparisons of ground truth vs predictions with different colors for different labels.
 """
 
-import argparse
 import hashlib
 import json
 import logging
@@ -22,6 +21,23 @@ from matplotlib.font_manager import FontProperties, fontManager
 from matplotlib.patches import Rectangle
 from PIL import Image
 from tqdm import tqdm
+
+# =============================================================================
+# CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
+# =============================================================================
+INPUT_FILE = (
+    "experiments_707/1_teacher_finished_stage/val/inference/predictions.json"
+)
+OUTPUT_DIR = "707-1_teacher-val-new-final"
+BASE_PATH = "."
+MAX_SAMPLES = None  # Set to a number to limit samples, or None for all
+SAMPLE_INDICES = None  # Set to list of indices [0, 1, 2, 5] or None for all
+#
+# Examples:
+# - Process all samples: SAMPLE_INDICES = None, MAX_SAMPLES = None
+# - Process first 10 samples: SAMPLE_INDICES = None, MAX_SAMPLES = 10
+# - Process specific samples: SAMPLE_INDICES = [0, 5, 10, 15], MAX_SAMPLES = None
+# =============================================================================
 
 shutil.rmtree(matplotlib.get_cachedir())
 # Configure logging - reduce verbosity and suppress font warnings
@@ -399,31 +415,9 @@ def load_inference_results(json_file: str) -> List[Dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Visualize Qwen2.5-VL inference results"
-    )
-    parser.add_argument(
-        "--input", required=True, help="Path to inference results JSON file"
-    )
-    parser.add_argument(
-        "--output_dir",
-        default="visualizations",
-        help="Output directory for visualizations",
-    )
-    parser.add_argument("--base_path", default=".", help="Base path for image files")
-    parser.add_argument(
-        "--max_samples", type=int, help="Maximum number of samples to visualize"
-    )
-    parser.add_argument(
-        "--sample_indices",
-        help="Comma-separated list of specific sample indices to visualize",
-    )
-
-    args = parser.parse_args()
-
     # Load inference results
-    print(f"Loading inference results from {args.input}")
-    samples = load_inference_results(args.input)
+    print(f"Loading inference results from {INPUT_FILE}")
+    samples = load_inference_results(INPUT_FILE)
 
     if not samples:
         print("❌ No samples found in input file")
@@ -432,12 +426,12 @@ def main():
     print(f"✅ Loaded {len(samples)} samples")
 
     # Determine which samples to process
-    if args.sample_indices:
-        indices = [int(x.strip()) for x in args.sample_indices.split(",")]
+    if SAMPLE_INDICES:
+        indices = SAMPLE_INDICES
         samples_to_process = [samples[i] for i in indices if 0 <= i < len(samples)]
         print(f"📋 Processing specific samples: {indices}")
-    elif args.max_samples:
-        samples_to_process = samples[: args.max_samples]
+    elif MAX_SAMPLES:
+        samples_to_process = samples[:MAX_SAMPLES]
         print(f"📋 Processing first {len(samples_to_process)} samples")
     else:
         samples_to_process = samples
@@ -462,7 +456,7 @@ def main():
         total=len(samples_to_process), desc="Generating visualizations", unit="image"
     ) as pbar:
         for sample in samples_to_process:
-            if visualize_sample(sample, args.output_dir, color_map, args.base_path):
+            if visualize_sample(sample, OUTPUT_DIR, color_map, BASE_PATH):
                 success_count += 1
             pbar.update(1)
 
@@ -470,11 +464,11 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"VISUALIZATION SUMMARY")
     print(f"{'=' * 60}")
-    print(f"Input file: {args.input}")
+    print(f"Input file: {INPUT_FILE}")
     print(f"Total samples in file: {len(samples)}")
     print(f"Samples processed: {len(samples_to_process)}")
     print(f"✅ Successful visualizations: {success_count}")
-    print(f"📁 Output directory: {args.output_dir}")
+    print(f"📁 Output directory: {OUTPUT_DIR}")
     print(f"{'=' * 60}")
 
 

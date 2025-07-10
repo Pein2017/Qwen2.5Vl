@@ -20,6 +20,9 @@ ENABLE_HIERARCHICAL=true
 ENABLE_NOVEL_DETECTION=true
 MINIMAL_METRICS=true
 
+# Detailed analysis parameters
+ENABLE_DETAILED_ANALYSIS=true
+
 # Logging level (debug shows detailed validation issues)
 LOG_LEVEL="debug"
 
@@ -185,6 +188,29 @@ except Exception as e:
         echo "📁 Results saved to: ${EVALUATION_FILE}"
         echo "📋 Log saved to: ${LOG_FILE}"
         
+        # Run detailed analysis if enabled
+        if [ "$ENABLE_DETAILED_ANALYSIS" = true ]; then
+            echo ""
+            echo "🔍 Running detailed performance analysis..."
+            
+            DETAILED_ANALYSIS_DIR="${EVALUATION_DIR}/detailed_analysis"
+            DETAILED_CMD="python eval/detailed_analysis.py \
+                --predictions_file \"${INFERENCE_FILE}\" \
+                --output_dir \"${DETAILED_ANALYSIS_DIR}\" \
+                --label_vocab \"data/label_vocabulary.json\" \
+                --log_level \"${LOG_LEVEL}\""
+            
+            if bash -c "$DETAILED_CMD" 2>&1 | tee -a "$LOG_FILE"; then
+                echo "✅ Detailed analysis completed"
+                echo "📊 Human-readable report: ${DETAILED_ANALYSIS_DIR}/analysis_summary.txt"
+                echo "📈 Visual analysis: ${DETAILED_ANALYSIS_DIR}/visual_analysis.txt"
+                echo "📋 Raw data: ${DETAILED_ANALYSIS_DIR}/detailed_analysis.json"
+                echo "📊 Confusion matrix: ${DETAILED_ANALYSIS_DIR}/confusion_matrix.csv"
+            else
+                echo "⚠️  Detailed analysis failed (evaluation results still available)"
+            fi
+        fi
+        
     else
         echo "❌ Evaluation file not created for ${DATASET}"
         exit 1
@@ -199,5 +225,6 @@ echo "🏁 Evaluation completed for experiment: ${EXP_NAME}, dataset: ${DATASET}
 echo "📁 All results in: ${DATASET_DIR}"
 echo ""
 echo "🎯 Next steps:"
-echo "   1. Compare experiments: python eval/compare_experiments.py"
-echo "   2. Evaluate other datasets by changing DATASET parameter"
+echo "   1. Review detailed analysis: ${DATASET_DIR}/evaluation/detailed_analysis/analysis_summary.txt"
+echo "   2. Compare experiments: python eval/compare_experiments.py"
+echo "   3. Evaluate other datasets by changing DATASET parameter"

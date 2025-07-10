@@ -37,7 +37,8 @@ class ModelLoadingError(Exception):
 def load_model_and_processor_unified(
     model_path: str,
     for_inference: bool = False,
-    force_detection: bool = None
+    force_detection: bool = None,
+    attn_implementation: str = None
 ) -> Tuple[Union[torch.nn.Module, any], PreTrainedTokenizerBase, Qwen2VLImageProcessor]:
     """
     UNIFIED model and processor loading for training and inference.
@@ -49,6 +50,7 @@ def load_model_and_processor_unified(
         model_path: Path to model (base model or checkpoint)
         for_inference: Whether this is for inference (affects some settings)
         force_detection: Override detection_enabled from config (for testing)
+        attn_implementation: Override attention implementation ('flash_attention_2', 'eager', etc.)
         
     Returns:
         Tuple of (model, tokenizer, image_processor)
@@ -68,7 +70,7 @@ def load_model_and_processor_unified(
             raise ModelLoadingError("Failed to apply Qwen2.5-VL fixes - CRITICAL")
         
         # =====================================================================
-        # STEP 2: Determine detection mode
+        # STEP 2: Determine detection mode and attention implementation
         # =====================================================================
         if force_detection is not None:
             detection_enabled = force_detection
@@ -76,6 +78,14 @@ def load_model_and_processor_unified(
         else:
             detection_enabled = getattr(config, 'detection_enabled', False)
             logger.info(f"🎯 Detection mode from config: {detection_enabled}")
+        
+        # Determine effective attention implementation
+        if attn_implementation is not None:
+            effective_attn_impl = attn_implementation
+            logger.info(f"⚡ Attention implementation OVERRIDE: {effective_attn_impl}")
+        else:
+            effective_attn_impl = getattr(config, 'attn_implementation', 'flash_attention_2')
+            logger.info(f"⚡ Attention implementation from config: {effective_attn_impl}")
         
         # =====================================================================
         # STEP 3: Load tokenizer (IDENTICAL setup for training/inference)
@@ -112,6 +122,7 @@ def load_model_and_processor_unified(
                     max_caption_length=getattr(config, 'detection_max_caption_length', 256),
                     tokenizer=tokenizer,
                     load_detection_head=True,
+                    attn_implementation=effective_attn_impl,
                 )
                 
                 # CRITICAL: Move to GPU for inference
@@ -138,7 +149,7 @@ def load_model_and_processor_unified(
                 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     model_path,
                     torch_dtype=_get_torch_dtype(getattr(config, 'torch_dtype', 'auto')),
-                    attn_implementation=getattr(config, 'attn_implementation', 'flash_attention_2'),
+                    attn_implementation=effective_attn_impl,
                     device_map=None,  # Single GPU only - no multi-GPU device mapping
                     trust_remote_code=True,
                     use_cache=True,

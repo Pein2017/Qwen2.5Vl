@@ -4,8 +4,8 @@
 # =============================================================================
 
 # --- Run settings (high-frequency) ---
-run_name: "7-4-teacher_student_loss_weight_roundFloats"
-output_dir: "output-74"
+run_name: "7-7-teacher_student_fixed_box_prompt"
+output_dir: "output-7-7"
 bf16: true
 fp16: false
 learning_rate: 0
