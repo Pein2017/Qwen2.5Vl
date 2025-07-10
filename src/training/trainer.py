@@ -47,7 +47,6 @@ import torch.nn as nn
 from torch.optim import Optimizer
 from transformers import (
     AutoProcessor,
-    AutoTokenizer,
     PreTrainedTokenizerBase,
     Trainer,
     TrainingArguments,
@@ -58,9 +57,7 @@ from src.config import config
 from src.config.global_config import DirectConfig
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
-from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 from src.utils.schema import GroundTruthObject
-
 from src.utils.tokens.special_tokens import SpecialTokens
 
 
@@ -113,11 +110,11 @@ class BBUTrainer(Trainer):
         #   2) Global singleton initialised via src.config.init_config()
         # Fail fast if neither is available.
         # ------------------------------------------------------------------
-        from src.config import get_config
 
         # Check if global configuration is initialized
         _global_cfg: Optional[DirectConfig] = None
         from src.config.global_config import config as global_config_instance
+
         if global_config_instance is not None:
             _global_cfg = global_config_instance
 
@@ -146,11 +143,11 @@ class BBUTrainer(Trainer):
 
         object.__setattr__(self, "tokenizer", self.tokenizer_ref)
         self.image_processor = image_processor
-        
+
         # Integration with new training coordinator system
         self.training_coordinator = training_coordinator
         self._use_coordinator = training_coordinator is not None
-        
+
         if self._use_coordinator:
             self.logger.info("🎯 Using new training coordinator system")
             # When using coordinator, loss management is delegated
@@ -162,7 +159,7 @@ class BBUTrainer(Trainer):
             self._current_objectness_loss: float = 0.0
             self._current_bbox_l1_loss: float = 0.0
             self._current_bbox_giou_loss: float = 0.0
-            
+
             # Coordinator handles accumulators, but keep for compatibility
             self._accumulated_lm_loss: float = 0.0
             self._accumulated_teacher_lm_loss: float = 0.0
@@ -172,7 +169,7 @@ class BBUTrainer(Trainer):
             self._accumulated_caption_loss: float = 0.0
             self._accumulated_objectness_loss: float = 0.0
             self._micro_batch_count: int = 0
-            
+
             # Detection loss is handled by coordinator
             self.detection_loss = training_coordinator.loss_manager.detection_loss
         else:
@@ -580,12 +577,15 @@ class BBUTrainer(Trainer):
                 if not os.path.exists(dst):
                     if os.path.exists(src):
                         import shutil
+
                         shutil.copy(src, dst)
                         self.logger.info(
                             f"💾 Copied missing {fname} from base model directory."
                         )
                     else:
-                        raise FileNotFoundError(f"Required file {fname} not found at {src}")
+                        raise FileNotFoundError(
+                            f"Required file {fname} not found at {src}"
+                        )
 
         # Fail-fast: verify that essential HF files are present post-save. This
         # guards against broken checkpoints that would later crash
@@ -602,21 +602,30 @@ class BBUTrainer(Trainer):
         self.logger.info(f"💾 Detection config saved to: {config_path}")
 
     def _init_detection_loss(self) -> None:
-        """Initialize object detection loss with config parameters."""
-        from src.detection.detection_loss import DetectionLoss
+        """Initialize object detection loss with config parameters (legacy support)."""
+        try:
+            from legacy.detection.detection_loss import DetectionLoss
 
-        # Initialize with tokenizer for caption loss computation
-        self.detection_loss = DetectionLoss(
-            bbox_weight=self.config.detection_bbox_weight,
-            giou_weight=self.config.detection_giou_weight,
-            objectness_weight=self.config.detection_objectness_weight,
-            caption_weight=self.config.detection_caption_weight,
-            tokenizer=self.tokenizer_ref,
-            focal_loss_gamma=self.config.detection_focal_loss_gamma,
-            focal_loss_alpha=self.config.detection_focal_loss_alpha,
-        )
+            # Initialize with tokenizer for caption loss computation
+            self.detection_loss = DetectionLoss(
+                bbox_weight=self.config.detection_bbox_weight,
+                giou_weight=self.config.detection_giou_weight,
+                objectness_weight=self.config.detection_objectness_weight,
+                caption_weight=self.config.detection_caption_weight,
+                tokenizer=self.tokenizer_ref,
+                focal_loss_gamma=self.config.detection_focal_loss_gamma,
+                focal_loss_alpha=self.config.detection_focal_loss_alpha,
+            )
 
-        self.logger.info("🎯 Detection loss initialized in BBUTrainer")
+            self.logger.info(
+                "🎯 Detection loss initialized in BBUTrainer (legacy mode)"
+            )
+
+        except ImportError:
+            self.logger.warning(
+                "⚠️  Legacy detection loss not available - using coordinate tokens instead"
+            )
+            self.detection_loss = None
         self.logger.info(f"   bbox_weight: {self.config.detection_bbox_weight}")
         self.logger.info(f"   giou_weight: {self.config.detection_giou_weight}")
         self.logger.info(
@@ -735,7 +744,7 @@ class BBUTrainer(Trainer):
             "vision": self.config.vision_lr,
             "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
-            "detection": self.config.detection_lr,
+            "detection": self.config.coordinate_lr,
             "adapter": self.config.adapter_lr,
         }
 
@@ -961,7 +970,9 @@ class BBUTrainer(Trainer):
                         student_indices.append(flat_idx)
 
         # Compute teacher loss (with gradients for potential reweighting)
-        teacher_loss_tensor = torch.tensor(0.0, device=logits.device, requires_grad=True)
+        teacher_loss_tensor = torch.tensor(
+            0.0, device=logits.device, requires_grad=True
+        )
         teacher_loss_float = 0.0
         if teacher_indices:
             teacher_indices_tensor = torch.tensor(teacher_indices, device=logits.device)
@@ -978,7 +989,9 @@ class BBUTrainer(Trainer):
                 teacher_loss_float = teacher_loss_tensor.detach().item()
 
         # Compute student loss (with gradients for potential reweighting)
-        student_loss_tensor = torch.tensor(0.0, device=logits.device, requires_grad=True)
+        student_loss_tensor = torch.tensor(
+            0.0, device=logits.device, requires_grad=True
+        )
         student_loss_float = 0.0
         if student_indices:
             student_indices_tensor = torch.tensor(student_indices, device=logits.device)
@@ -1008,24 +1021,22 @@ class BBUTrainer(Trainer):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
         """
         Compute loss using the training coordinator system.
-        
+
         This method delegates complex loss computation to the coordinator
         while maintaining the same interface as the legacy compute_loss.
         """
         # Ensure we get hidden states for detection
         model_inputs = inputs.copy()
         model_inputs["output_hidden_states"] = True
-        
+
         # Run model forward pass
         outputs = model(**model_inputs)
-        
+
         # Use coordinator for loss computation
         total_loss, loss_components = self.training_coordinator.compute_loss(
-            model_outputs=outputs,
-            inputs=inputs,
-            is_training=model.training
+            model_outputs=outputs, inputs=inputs, is_training=model.training
         )
-        
+
         # Update current loss attributes for compatibility with legacy logging
         self._current_lm_loss = loss_components["lm_loss"]
         self._current_teacher_lm_loss = loss_components["teacher_lm_loss"]
@@ -1034,14 +1045,18 @@ class BBUTrainer(Trainer):
         self._current_bbox_giou_loss = loss_components["bbox_giou_loss"]
         self._current_caption_loss = loss_components["caption_loss"]
         self._current_objectness_loss = loss_components["objectness_loss"]
-        self._current_bbox_loss = self._current_bbox_l1_loss + self._current_bbox_giou_loss
-        
+        self._current_bbox_loss = (
+            self._current_bbox_l1_loss + self._current_bbox_giou_loss
+        )
+
         # Update coordinator state
         self.training_coordinator.step_update(
-            step=self.state.global_step if hasattr(self, 'state') else 0,
-            epoch=int(self.state.epoch) if hasattr(self, 'state') and self.state.epoch else 0
+            step=self.state.global_step if hasattr(self, "state") else 0,
+            epoch=int(self.state.epoch)
+            if hasattr(self, "state") and self.state.epoch
+            else 0,
         )
-        
+
         # Return in same format as legacy method
         if return_outputs:
             return total_loss, outputs
@@ -1066,11 +1081,11 @@ class BBUTrainer(Trainer):
         # ------------------------------------------------------------------
         if self._use_coordinator:
             return self._compute_loss_with_coordinator(model, inputs, return_outputs)
-        
+
         # ------------------------------------------------------------------
         # LEGACY: Original loss computation logic
         # ------------------------------------------------------------------
-        
+
         # Increment *micro-batch* counter **before** any early returns so that
         # every forward pass is accounted for. We only count batches during
         # training to avoid contaminating the counter with evaluation steps.
@@ -1236,32 +1251,29 @@ class BBUTrainer(Trainer):
         # ENHANCED: Use reweighted teacher-student losses for backpropagation
         # This ensures both teacher and student components get proper gradients
         # ------------------------------------------------------------------
-        
+
         # Check if we have teacher-student tensors available
-        if hasattr(self, '_teacher_loss_tensor') and hasattr(self, '_student_loss_tensor'):
+        if hasattr(self, "_teacher_loss_tensor") and hasattr(
+            self, "_student_loss_tensor"
+        ):
             # ------------------------------------------------------------------
             # STUDENT-FOCUSED WEIGHTING: Since final goal is student inference,
             # prioritize student loss while using teacher as auxiliary guidance
             # ------------------------------------------------------------------
-            
+
             # Get weights from config (following coding rules - no defaults)
             teacher_weight = self.config.teacher_loss_weight
             student_weight = self.config.student_loss_weight
-            
+
             # Compute weighted language modeling loss
             weighted_lm_loss = (
-                teacher_weight * self._teacher_loss_tensor + 
-                student_weight * self._student_loss_tensor
+                teacher_weight * self._teacher_loss_tensor
+                + student_weight * self._student_loss_tensor
             )
-            
+
             # Use weighted loss for backpropagation instead of original lm_loss
             total_loss = weighted_lm_loss + total_detection_loss
-            
-            # Log weighting info for debugging
-            if self.state.global_step % 50 == 0:  # Log every 50 steps
-                self.logger.info(
-                    f"🎯 Loss weights: teacher={teacher_weight:.2f}, student={student_weight:.2f}"
-                )
+
         else:
             # Fallback to original combined loss if spans not available
             total_loss = lm_loss + total_detection_loss
@@ -1371,7 +1383,9 @@ class BBUTrainer(Trainer):
         if self.control.should_log:
             # NEW: Use training coordinator for loss averaging if available
             if self._use_coordinator:
-                component_logs = self.training_coordinator.get_averaged_losses_and_reset()
+                component_logs = (
+                    self.training_coordinator.get_averaged_losses_and_reset()
+                )
                 total_avg_loss = component_logs.get("total_loss", 0.0)
             else:
                 # LEGACY: Original loss averaging logic
@@ -1385,8 +1399,12 @@ class BBUTrainer(Trainer):
                 # seen since the last log, independent of the gradient-accumulation
                 # configuration.
                 avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
-                avg_teacher_lm_loss = self._accumulated_teacher_lm_loss / num_micro_batches
-                avg_student_lm_loss = self._accumulated_student_lm_loss / num_micro_batches
+                avg_teacher_lm_loss = (
+                    self._accumulated_teacher_lm_loss / num_micro_batches
+                )
+                avg_student_lm_loss = (
+                    self._accumulated_student_lm_loss / num_micro_batches
+                )
                 total_avg_loss = avg_lm_loss
 
                 component_logs: Dict[str, float] = {
@@ -1773,7 +1791,9 @@ class BBUTrainer(Trainer):
         ids_dtype = batch["input_ids"].dtype
         lbl_dtype = batch["labels"].dtype
 
-        pad_id = self.tokenizer_ref.pad_token_id if self.tokenizer_ref is not None else 0
+        pad_id = (
+            self.tokenizer_ref.pad_token_id if self.tokenizer_ref is not None else 0
+        )
         IGNORE_INDEX = -100  # keep consistent with src.utils
 
         new_input_ids = torch.full(
@@ -1905,7 +1925,7 @@ def setup_model_and_tokenizer() -> Tuple[
 ]:
     """
     Centralized setup for model, tokenizer, and image processor using UNIFIED loader.
-    
+
     This function now delegates to the unified loader to ensure strict consistency
     between training and inference. NO SILENT FALLBACKS.
     """
@@ -1914,16 +1934,16 @@ def setup_model_and_tokenizer() -> Tuple[
 
     try:
         from src.models.model_loader import load_model_and_processor_unified
-        
+
         # Use unified loader with training mode
         model, tokenizer, image_processor = load_model_and_processor_unified(
             model_path=config.model_path,
             for_inference=False,  # Training mode
         )
-        
+
         logger.info("✅ Training model setup completed via unified loader")
         return model, tokenizer, image_processor
-        
+
     except Exception as e:
         logger.error(f"❌ Training model setup failed: {e}")
         raise RuntimeError(f"Failed to setup model for training: {e}")
@@ -2033,7 +2053,7 @@ def setup_data_module(
     # Allow override via config if different evaluation style is explicitly needed
     use_consistent_prompts = getattr(config, "use_consistent_prompts", True)
     training_prompt_style = getattr(config, "training_prompt_style", True)
-    
+
     # Training chat processor
     train_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
@@ -2078,7 +2098,7 @@ def setup_data_module(
     # Create validation dataset - use consistent settings unless zero-shot explicitly requested
     val_teacher_manager = teacher_pool_manager if use_consistent_prompts else None
     val_teacher_ratio = config.teacher_ratio if use_consistent_prompts else 0.0
-    
+
     val_dataset = BBUDataset(
         data_path=config.val_data_path,
         chat_processor=eval_chat_processor,

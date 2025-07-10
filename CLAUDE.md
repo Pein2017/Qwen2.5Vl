@@ -13,7 +13,7 @@ This implementation has evolved significantly beyond the standard Qwen2.5-VL fin
 The project requires:
 - Conda environment: `ms`
 - CUDA_VISIBLE_DEVICES for GPU selection
-- HF_HOME for model cache (typically `/data4/swift/model_cache`)
+- HF_HOME for model cache (typically `/data3/Qwen2.5-VL-main/model_cache`)
 
 **Important Reminders:**
 - We need to activate `ms` virtual environment, remember this.

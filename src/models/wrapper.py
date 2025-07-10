@@ -7,17 +7,33 @@ that adds object detection capabilities while preserving all original functional
 
 import json
 from dataclasses import dataclass
-from typing import Any, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from transformers import PreTrainedTokenizerBase, Qwen2_5_VLForConditionalGeneration
+import torch.nn.functional as F
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
+    Qwen2_5_VLForConditionalGeneration,
 )
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src.config import config
 from src.models.patches import apply_comprehensive_qwen25_fixes
+
+
+@dataclass
+class CoordinateConfig:
+    """Configuration for coordinate token extension."""
+
+    max_coord_value: int = 2048
+    coord_token_init_std: float = 0.01
+    coordinate_loss_weight: float = 1.0
+    regular_loss_weight: float = 1.0
+    soft_expectation_temperature: float = 1.0
+    focal_loss_alpha: float = 0.25
+    focal_loss_gamma: float = 2.0
+    enable_coordinate_tokens: bool = False  # Feature flag
 
 
 def _get_torch_dtype(dtype_str: str) -> torch.dtype:
@@ -38,7 +54,8 @@ class Qwen25VLWithDetection(nn.Module):
     This wrapper adds a detection head while preserving all original functionality
     of the Qwen2.5-VL model for generation tasks.
 
-    SIMPLIFIED: Only supports loading from official model path with randomly initialized detection head.
+    ENHANCED: Supports coordinate token extension for soft expectation regression.
+    All pretrained weights are preserved when extending vocabulary.
     """
 
     def __init__(
@@ -48,15 +65,30 @@ class Qwen25VLWithDetection(nn.Module):
         max_caption_length: int,
         tokenizer: PreTrainedTokenizerBase,
         attn_implementation: str = None,
+        coordinate_config: Optional[CoordinateConfig] = None,
     ) -> None:
         super().__init__()
 
         # Store tokenizer for detection head initialization
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
 
+        # Store coordinate configuration
+        self.coordinate_config = coordinate_config or CoordinateConfig()
+
+        # Coordinate token tracking
+        self.coordinate_tokens_enabled = self.coordinate_config.enable_coordinate_tokens
+        self.original_vocab_size = None
+        self.extended_vocab_size = None
+        self.extended_embeddings = None
+        self.extended_lm_head = None
+
         # Determine effective attention implementation
-        effective_attn_impl = attn_implementation if attn_implementation is not None else config.attn_implementation
-        
+        effective_attn_impl = (
+            attn_implementation
+            if attn_implementation is not None
+            else config.attn_implementation
+        )
+
         # Load official Qwen2.5-VL model with proper configuration
         self.base_model: Qwen2_5_VLForConditionalGeneration = (
             Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -68,7 +100,7 @@ class Qwen25VLWithDetection(nn.Module):
                 use_cache=True,  # Enable KV cache for generation
             )
         )
-        
+
         # CRITICAL: Move base model to GPU if available
         if torch.cuda.is_available():
             self.base_model = self.base_model.to("cuda:0")
@@ -76,76 +108,68 @@ class Qwen25VLWithDetection(nn.Module):
         # CRITICAL: Apply fixes for mRoPE and visual processing
         apply_comprehensive_qwen25_fixes()
 
-        # Initialize detection head if enabled
-        self.detection_head = None
-        if config.detection_enabled:
-            self.detection_enabled = True  # Set flag for forward method
-            self._init_detection_head()
-        else:
-            self.detection_enabled = False
-            self.detection_head = None
+        # Store original vocab size before any modifications
+        self.original_vocab_size = self.base_model.config.vocab_size
 
-        # Share token embedding from base model
-        if self.detection_head is not None:
-            self.detection_head.set_token_embedding(
-                self.base_model.get_input_embeddings()
-            )
+        # Initialize coordinate token support if enabled
+        if self.coordinate_tokens_enabled:
+            self._setup_coordinate_tokens()
+        else:
+            # No coordinate tokens - use original vocab
+            self.extended_vocab_size = self.original_vocab_size
+
+        # Legacy detection head (moved to coordinate tokens)
+        self.detection_head = None
+        self.detection_enabled = False
+        # NOTE: Detection head functionality replaced by coordinate token soft expectation
+        # Original DETR-style detection moved to legacy/detection/
+        # if config.detection_enabled:
+        #     self.detection_enabled = True
+        #     self._init_detection_head()
+        # else:
+        #     self.detection_enabled = False
+        #     self.detection_head = None
+
+        # Legacy detection head setup (disabled)
+        # NOTE: Detection head functionality replaced by coordinate tokens
+        # if self.detection_head is not None:
+        #     self.detection_head.set_token_embedding(self.base_model.get_input_embeddings())
+        #     device = next(self.base_model.parameters()).device
+        #     self.detection_head = self.detection_head.to(device=device)
 
         # Store our custom config for internal use, but expose base model config for DeepSpeed
         self._custom_config = config
 
-        # Move detection head to same device as base model
+        # Move coordinate token components to same device as base model
         device = next(self.base_model.parameters()).device
 
-        # Move to device (dtype already set during initialization)
-        if self.detection_head is not None:
-            self.detection_head = self.detection_head.to(device=device)
+        # Move extended components to device if they exist
+        if self.extended_embeddings is not None:
+            self.extended_embeddings = self.extended_embeddings.to(device=device)
+        if self.extended_lm_head is not None:
+            self.extended_lm_head = self.extended_lm_head.to(device=device)
 
     def _init_detection_head(self):
-        """Initialize the detection head with proper configuration."""
-        from src.config import config
-        from src.detection.detection_head import DetectionHead
-
-        # Get configuration - use the correct attribute names from base_flat.yaml
-        num_queries = config.detection_num_queries
-        max_caption_length = config.detection_max_caption_length
-        # Use the tokenizer stored in the instance instead of config.tokenizer
-        tokenizer = self.tokenizer
-        target_dtype = _get_torch_dtype(config.torch_dtype)
-
-        # Ensure the number of cross-attention heads divides the model hidden size
-        hf_num_heads = self.base_model.config.num_attention_heads
-        d_model = self.base_model.config.hidden_size
-        if d_model % hf_num_heads != 0:
-            raise ValueError(
-                f"Cannot set detection head nhead={hf_num_heads} with hidden_size={d_model}; must divide evenly"
-            )
-        # Add detection head using official config with matching head count
-        self.detection_head = DetectionHead(
-            config=self.base_model.config,
-            num_queries=num_queries,
-            max_caption_length=max_caption_length,
-            tokenizer=tokenizer,
-            detection_decoder_dim_feedforward_factor=config.detection_decoder_dim_feedforward_factor,
-            detection_decoder_num_layers=config.detection_decoder_num_layers,
-            detection_caption_decoder_dim_feedforward_factor=config.detection_caption_decoder_dim_feedforward_factor,
-            detection_caption_decoder_num_layers=config.detection_caption_decoder_num_layers,
-            detection_head_dropout=config.detection_head_dropout,
-            adapter_bottleneck_ratio=config.detection_adapter_bottleneck_ratio,
-            adapter_num_layers=config.detection_adapter_num_layers,
-            dtype=target_dtype,
+        """LEGACY: Initialize the detection head - REPLACED BY COORDINATE TOKENS."""
+        # NOTE: This method is preserved for reference but no longer used.
+        # Detection functionality moved to coordinate token soft expectation.
+        # Original implementation moved to legacy/detection/
+        raise NotImplementedError(
+            "Detection head replaced by coordinate token soft expectation. "
+            "Enable coordinate tokens via CoordinateConfig instead."
         )
-
-        # Share token embedding from base model
-        self.detection_head.set_token_embedding(self.base_model.get_input_embeddings())
+        
+        # Legacy implementation (commented out):
+        # from src.config import config
+        # from legacy.detection.detection_head import DetectionHead
+        # ... (original implementation moved to legacy/)
 
     def forward(
         self, **inputs: Any
     ) -> Union[Tuple[Any, ...], Qwen2_5_VLCausalLMOutputWithPast]:
         """
-        Forward pass that preserves all functionality and returns combined loss during training.
+        Forward pass that preserves all functionality and supports coordinate tokens.
         """
-
         # Store original ground truth objects for detection loss (don't pop them)
         # The trainer will handle detection loss computation
 
@@ -154,12 +178,13 @@ class Qwen25VLWithDetection(nn.Module):
         model_inputs.pop("ground_truth_objects", None)
         model_inputs.pop("image_counts_per_sample", None)
 
-        # Standard Qwen2.5-VL forward pass with all parameters preserved
-        outputs = self.base_model(**model_inputs)
-
-        # The trainer will handle detection loss computation, so we just return the base model outputs
-        # This ensures no duplicate loss computation
-        return outputs
+        # Handle coordinate token processing if enabled
+        if self.coordinate_tokens_enabled and "input_ids" in model_inputs:
+            return self._forward_with_coordinate_tokens(model_inputs, inputs)
+        else:
+            # Standard Qwen2.5-VL forward pass with all parameters preserved
+            outputs = self.base_model(**model_inputs)
+            return outputs
 
     def generate(self, **kwargs):
         """Disable detection during generation to maintain compatibility"""
@@ -182,6 +207,328 @@ class Qwen25VLWithDetection(nn.Module):
         """Delegate to base model for token embedding resizing"""
         return self.base_model.resize_token_embeddings(new_num_tokens)
 
+    def _setup_coordinate_tokens(self):
+        """Setup coordinate token support while preserving pretrained weights."""
+        print("🚀 Setting up coordinate token support...")
+
+        # Calculate new vocabulary size (only coordinate tokens, reuse existing box tokens)
+        num_new_tokens = (
+            self.coordinate_config.max_coord_value
+        )  # Only coordinate tokens
+        self.extended_vocab_size = self.original_vocab_size + num_new_tokens
+
+        # Store official box token IDs
+        self.box_start_id = 151648  # <|box_start|>
+        self.box_end_id = 151649  # <|box_end|>
+
+        # Extend tokenizer with coordinate tokens
+        self._extend_tokenizer()
+
+        # Create extended embeddings and LM head
+        self._create_extended_embeddings()
+        self._create_extended_lm_head()
+
+        print(
+            f"✅ Extended vocab from {self.original_vocab_size} to {self.extended_vocab_size}"
+        )
+        print(
+            f"✅ Added {num_new_tokens} coordinate tokens (reusing official box tokens)"
+        )
+        print("✅ All pretrained weights preserved")
+
+    def _extend_tokenizer(self):
+        """Add coordinate tokens to tokenizer (reuse existing box tokens)."""
+        # Only add coordinate tokens - box tokens already exist
+        coordinate_tokens = [
+            f"<coord_{i}>" for i in range(self.coordinate_config.max_coord_value)
+        ]
+
+        num_added = self.tokenizer.add_special_tokens(
+            {"additional_special_tokens": coordinate_tokens}
+        )
+
+        print(f"✅ Added {num_added} coordinate tokens to tokenizer")
+        print(
+            f"✅ Reusing official box tokens: <|box_start|> ({self.box_start_id}), <|box_end|> ({self.box_end_id})"
+        )
+
+    def _create_extended_embeddings(self):
+        """Create extended embeddings while preserving pretrained weights."""
+        original_embeddings = self.base_model.get_input_embeddings()
+        hidden_size = original_embeddings.weight.shape[1]
+
+        # Create new embedding layer
+        self.extended_embeddings = nn.Embedding(
+            self.extended_vocab_size,
+            hidden_size,
+            device=original_embeddings.weight.device,
+            dtype=original_embeddings.weight.dtype,
+        )
+
+        # Copy pretrained weights (PRESERVE)
+        with torch.no_grad():
+            self.extended_embeddings.weight[: self.original_vocab_size].copy_(
+                original_embeddings.weight
+            )
+
+            # Initialize new coordinate tokens
+            nn.init.normal_(
+                self.extended_embeddings.weight[self.original_vocab_size :],
+                std=self.coordinate_config.coord_token_init_std,
+            )
+
+        # Freeze original embeddings by detaching them first
+        with torch.no_grad():
+            self.extended_embeddings.weight[: self.original_vocab_size].requires_grad_(False)
+
+    def _create_extended_lm_head(self):
+        """Create extended LM head while preserving pretrained weights."""
+        original_lm_head = self.base_model.get_output_embeddings()
+        hidden_size = original_lm_head.weight.shape[1]
+
+        # Create new LM head
+        self.extended_lm_head = nn.Linear(
+            hidden_size,
+            self.extended_vocab_size,
+            bias=False,
+            device=original_lm_head.weight.device,
+            dtype=original_lm_head.weight.dtype,
+        )
+
+        # Copy pretrained weights (PRESERVE)
+        with torch.no_grad():
+            self.extended_lm_head.weight[: self.original_vocab_size].copy_(
+                original_lm_head.weight
+            )
+
+            # Initialize new coordinate projections
+            nn.init.normal_(
+                self.extended_lm_head.weight[self.original_vocab_size :],
+                std=self.coordinate_config.coord_token_init_std,
+            )
+
+        # Freeze original projections by detaching them first
+        with torch.no_grad():
+            self.extended_lm_head.weight[: self.original_vocab_size].requires_grad_(False)
+
+    def _forward_with_coordinate_tokens(
+        self, model_inputs: Dict, original_inputs: Dict
+    ):
+        """Forward pass with coordinate token processing."""
+        input_ids = model_inputs.get("input_ids")
+        labels = original_inputs.get("labels")
+
+        # Replace input_ids with extended embeddings
+        if input_ids is not None:
+            inputs_embeds = self.extended_embeddings(input_ids)
+            model_inputs["inputs_embeds"] = inputs_embeds
+            # Keep input_ids for shape information but mark to use inputs_embeds
+            # Some models need input_ids for position/attention mask calculation
+
+        # Forward through base model (exclude output_hidden_states if not needed)
+        model_inputs["labels"] = None  # Remove labels to compute loss ourselves
+        model_inputs["output_hidden_states"] = True  # Ensure we get hidden states
+        outputs = self.base_model(**model_inputs)
+
+        # Use extended LM head - get hidden states from the last layer
+        hidden_states = outputs.hidden_states[-1]  # Last layer hidden states
+        logits = self.extended_lm_head(hidden_states)
+
+        # Compute coordinate-aware loss if labels provided
+        loss = None
+        if labels is not None:
+            loss = self._compute_coordinate_aware_loss(logits, labels)
+
+        # Return with updated logits and loss
+        if hasattr(outputs, "loss"):
+            outputs.loss = loss
+        if hasattr(outputs, "logits"):
+            outputs.logits = logits
+
+        return outputs
+
+    def _compute_coordinate_aware_loss(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute hybrid loss: standard CE for regular tokens + soft expectation for coordinates."""
+        # Shift for causal modeling
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        # Flatten
+        flat_logits = shift_logits.view(-1, self.extended_vocab_size)
+        flat_labels = shift_labels.view(-1)
+
+        # Filter out ignore_index (-100)
+        valid_mask = flat_labels != -100
+        if not valid_mask.any():
+            return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+
+        valid_logits = flat_logits[valid_mask]
+        valid_labels = flat_labels[valid_mask]
+
+        # Create coordinate mask
+        coord_mask = self._get_coordinate_mask(valid_labels)
+        regular_mask = ~coord_mask
+
+        total_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+
+        # Regular token loss (standard cross-entropy)
+        if regular_mask.any():
+            regular_logits = valid_logits[regular_mask]
+            regular_labels = valid_labels[regular_mask]
+
+            # Ensure labels are within original vocab range
+            valid_regular_mask = regular_labels < self.original_vocab_size
+            if valid_regular_mask.any():
+                regular_loss = F.cross_entropy(
+                    regular_logits[valid_regular_mask, : self.original_vocab_size],
+                    regular_labels[valid_regular_mask],
+                )
+                total_loss += self.coordinate_config.regular_loss_weight * regular_loss
+
+        # Coordinate token loss (soft expectation)
+        if coord_mask.any():
+            coord_logits = valid_logits[coord_mask]
+            coord_labels = valid_labels[coord_mask]
+
+            coord_loss = self._compute_soft_expectation_loss(coord_logits, coord_labels)
+            total_loss += self.coordinate_config.coordinate_loss_weight * coord_loss
+
+        return total_loss
+
+    def _get_coordinate_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Create mask for coordinate tokens."""
+        coord_start = self.original_vocab_size  # Start immediately after original vocab
+        coord_end = coord_start + self.coordinate_config.max_coord_value
+        return (token_ids >= coord_start) & (token_ids < coord_end)
+
+    def _compute_soft_expectation_loss(
+        self, coord_logits: torch.Tensor, coord_labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute soft expectation loss for coordinate tokens."""
+        # Extract coordinate portion of logits
+        coord_start = self.original_vocab_size
+        coord_end = coord_start + self.coordinate_config.max_coord_value
+        coord_only_logits = coord_logits[:, coord_start:coord_end]
+
+        # Convert labels to coordinate indices
+        coord_indices = coord_labels - coord_start
+        coord_indices = torch.clamp(
+            coord_indices, 0, self.coordinate_config.max_coord_value - 1
+        )
+
+        # Soft expectation computation
+        temperature = self.coordinate_config.soft_expectation_temperature
+        soft_weights = F.softmax(coord_only_logits / temperature, dim=-1)
+
+        # Expected coordinate values
+        coord_range = torch.arange(
+            self.coordinate_config.max_coord_value,
+            device=coord_logits.device,
+            dtype=torch.float32,
+        )
+        expected_coords = torch.sum(soft_weights * coord_range, dim=-1)
+
+        # L1 loss on expected coordinates
+        l1_loss = F.l1_loss(expected_coords, coord_indices.float())
+
+        # Optional: Add focal loss on distribution for sharpness
+        focal_loss = self._compute_focal_loss_on_distribution(
+            soft_weights, coord_indices
+        )
+
+        return l1_loss + 0.1 * focal_loss  # Weighted combination
+
+    def _compute_focal_loss_on_distribution(
+        self, soft_weights: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute focal loss to encourage sharp distributions."""
+        # Convert to one-hot
+        one_hot = F.one_hot(
+            targets, num_classes=self.coordinate_config.max_coord_value
+        ).float()
+
+        # Focal loss computation
+        alpha = self.coordinate_config.focal_loss_alpha
+        gamma = self.coordinate_config.focal_loss_gamma
+
+        # Ensure consistent dtype for loss computation
+        one_hot = one_hot.to(soft_weights.dtype)
+        ce_loss = F.binary_cross_entropy(soft_weights, one_hot, reduction="none")
+        p_t = soft_weights * one_hot + (1 - soft_weights) * (1 - one_hot)
+        focal_weight = alpha * (1 - p_t) ** gamma
+
+        focal_loss = focal_weight * ce_loss
+        return focal_loss.mean()
+
+    def get_coordinate_tokenizer_utils(self):
+        """Get utility functions for coordinate token conversion."""
+        if not self.coordinate_tokens_enabled:
+            return None
+
+        return {
+            "convert_bbox_to_tokens": self._convert_bbox_to_tokens,
+            "convert_tokens_to_bbox": self._convert_tokens_to_bbox,
+            "coord_start_id": self.original_vocab_size,
+            "coord_end_id": self.original_vocab_size
+            + self.coordinate_config.max_coord_value,
+            "box_start_id": self.box_start_id,  # 151648
+            "box_end_id": self.box_end_id,  # 151649
+        }
+
+    def _convert_bbox_to_tokens(self, bbox: List[float]) -> List[int]:
+        """Convert normalized bbox to coordinate token IDs."""
+        coord_start = self.original_vocab_size
+
+        coord_tokens = []
+        for coord in bbox:
+            coord_idx = int(coord * (self.coordinate_config.max_coord_value - 1))
+            coord_idx = max(
+                0, min(coord_idx, self.coordinate_config.max_coord_value - 1)
+            )
+            coord_tokens.append(coord_start + coord_idx)
+
+        return [self.box_start_id] + coord_tokens + [self.box_end_id]
+
+    def _convert_tokens_to_bbox(self, token_ids: List[int]) -> Optional[List[float]]:
+        """Convert coordinate token IDs back to normalized bbox."""
+        coord_start = self.original_vocab_size
+
+        try:
+            # Find box boundaries using official tokens
+            if self.box_start_id not in token_ids or self.box_end_id not in token_ids:
+                return None
+
+            start_idx = token_ids.index(self.box_start_id)
+            end_idx = token_ids.index(self.box_end_id)
+
+            # Extract coordinate tokens
+            coord_token_ids = token_ids[start_idx + 1 : end_idx]
+
+            if len(coord_token_ids) != 4:
+                return None
+
+            # Convert to coordinates
+            bbox = []
+            for token_id in coord_token_ids:
+                if (
+                    token_id < coord_start
+                    or token_id >= coord_start + self.coordinate_config.max_coord_value
+                ):
+                    return None
+
+                coord_idx = token_id - coord_start
+                normalized_coord = coord_idx / (
+                    self.coordinate_config.max_coord_value - 1
+                )
+                bbox.append(normalized_coord)
+
+            return bbox
+
+        except (ValueError, IndexError):
+            return None
+
     @property
     def device(self):
         """Return the device of the base model"""
@@ -191,14 +538,16 @@ class Qwen25VLWithDetection(nn.Module):
         """Override train mode to handle both base model and detection head"""
         super().train(mode)
         self.base_model.train(mode)
-        self.detection_head.train(mode)
+        if self.detection_head is not None:
+            self.detection_head.train(mode)
         return self
 
     def eval(self):
         """Override eval mode to handle both base model and detection head"""
         super().eval()
         self.base_model.eval()
-        self.detection_head.eval()
+        if self.detection_head is not None:
+            self.detection_head.eval()
         return self
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
@@ -305,16 +654,31 @@ class Qwen25VLWithDetection(nn.Module):
         if checkpoint_info["type"] == "unified":
             if load_detection_head:
                 return cls._load_unified_checkpoint(
-                    model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
+                    model_path,
+                    num_queries,
+                    max_caption_length,
+                    tokenizer,
+                    attn_implementation,
+                    **kwargs,
                 )
             else:
                 # Load just the base model part inside the unified directory
                 return cls._load_base_model(
-                    model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
+                    model_path,
+                    num_queries,
+                    max_caption_length,
+                    tokenizer,
+                    attn_implementation,
+                    **kwargs,
                 )
         else:  # base model
             return cls._load_base_model(
-                model_path, num_queries, max_caption_length, tokenizer, attn_implementation, **kwargs
+                model_path,
+                num_queries,
+                max_caption_length,
+                tokenizer,
+                attn_implementation,
+                **kwargs,
             )
 
     @classmethod
@@ -548,6 +912,14 @@ class Qwen25VLWithDetection(nn.Module):
     @property
     def config(self):
         """Return the base model's config for DeepSpeed compatibility"""
+        # Update vocab_size if coordinate tokens are enabled
+        if self.coordinate_tokens_enabled and self.extended_vocab_size:
+            # Create a copy to avoid modifying the original config
+            config_copy = type(self.base_model.config)(
+                **self.base_model.config.__dict__
+            )
+            config_copy.vocab_size = self.extended_vocab_size
+            return config_copy
         return self.base_model.config
 
     # ------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # --- Run settings (high-frequency) ---
-run_name: "630-filtered_sample-updated_prompt"
-output_dir: "output-630"
+run_name: "710-det"
+output_dir: "output-710"
 bf16: true
 fp16: false
 learning_rate: 0
@@ -8,24 +8,25 @@ adapter_lr: 5e-3
 vision_lr: 5e-7
 merger_lr: 1e-5
 llm_lr: 5e-6
-detection_lr: 1e-5
+coordinate_lr: 1e-4  # Learning rate for coordinate token components
 num_train_epochs: 30
-per_device_train_batch_size: 4
-per_device_eval_batch_size: 4
-gradient_accumulation_steps: 2
-detection_enabled: false
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+detection_enabled: false  # LEGACY: DETR detection disabled
 detection_freeze_epochs: 0
+coordinate_tokens_enabled: true  # NEW: Enable coordinate token soft expectation
 
 # --- Model settings ---
-model_path: "/data4/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
 model_size: "3B"
 model_max_length: 120000
 model_hidden_size: 3584
 model_num_layers: 28
 model_num_attention_heads: 28
 model_vocab_size: 152064
-attn_implementation: "flash_attention_2"
-use_flash_attention: true
+attn_implementation: "eager"
+use_flash_attention: false
 torch_dtype: "bfloat16"
 mixed_precision: "bf16"
 gradient_checkpointing: true
@@ -61,24 +62,42 @@ num_teacher_samples: 1
 # time standard: 1804s ， 1809
 # time packed: 1751.7069 1779.2363 1756.0005
 
-# --- Detection head architecture ---
-detection_num_queries: 100
-detection_max_caption_length: 32
-detection_decoder_dim_feedforward_factor: 2.0
-detection_decoder_num_layers: 2
-detection_caption_decoder_dim_feedforward_factor: 2.0
-detection_caption_decoder_num_layers: 4
-detection_head_dropout: 0.1
-detection_adapter_bottleneck_ratio: 8
-detection_adapter_num_layers: 1
+# --- Coordinate Token Configuration ---
+coordinate_config:
+  enable_coordinate_tokens: true
+  max_coord_value: 2048  # Coordinate resolution (0-2047)
+  coord_token_init_std: 0.01  # Initialization std for coordinate tokens
+  coordinate_loss_weight: 1.0  # Weight for coordinate token loss
+  regular_loss_weight: 1.0  # Weight for regular token loss
+  soft_expectation_temperature: 1.0  # Softmax temperature for soft expectation
+  focal_loss_alpha: 0.25  # Alpha parameter for focal loss
+  focal_loss_gamma: 2.0  # Gamma parameter for focal loss
 
-# --- Loss component weights ---
-detection_bbox_weight: 10.0
-detection_giou_weight: 20.0
-detection_objectness_weight: 10.0
-detection_caption_weight: 0.02
-detection_focal_loss_gamma: 2.0
-detection_focal_loss_alpha: 0.25
+# --- ChatProcessor Coordinate Settings ---
+chat_processor:
+  enable_coordinate_tokens: true
+  max_coord_value: 2048
+  use_official_box_tokens: true
+
+# --- LEGACY: Detection head architecture (DISABLED) ---
+# NOTE: DETR detection replaced by coordinate token soft expectation
+# detection_num_queries: 100
+# detection_max_caption_length: 32
+# detection_decoder_dim_feedforward_factor: 2.0
+# detection_decoder_num_layers: 2
+# detection_caption_decoder_dim_feedforward_factor: 2.0
+# detection_caption_decoder_num_layers: 4
+# detection_head_dropout: 0.1
+# detection_adapter_bottleneck_ratio: 8
+# detection_adapter_num_layers: 1
+
+# --- LEGACY: Loss component weights (DISABLED) ---
+# detection_bbox_weight: 10.0
+# detection_giou_weight: 20.0
+# detection_objectness_weight: 10.0
+# detection_caption_weight: 0.02
+# detection_focal_loss_gamma: 2.0
+# detection_focal_loss_alpha: 0.25
 
 # --- Evaluation settings ---
 eval_strategy: "steps"
@@ -103,8 +122,8 @@ save_token_analysis: true
 save_raw_text: true
 
 # --- Performance settings ---
-dataloader_num_workers: 8
-pin_memory: true
+dataloader_num_workers: 0
+pin_memory: false
 prefetch_factor: 2
 batching_strategy: "standard"
 remove_unused_columns: false
@@ -128,3 +147,10 @@ student_loss_weight: 1.0  # Weight for student loss in backpropagation
 # --- Learning Rate Auto-Scaling ---
 auto_scale_lr: false # Automatically adjust LRs based on collator type
 lr_reference_batch_size: 0 # Disable reference batch size scaling
+
+# --- Additional Required Settings ---
+run_name: "coordinate-det"
+tb_dir: "tb"
+gradient_clip_reduction_factor: 0.5
+learning_rate_reduction_factor: 0.5
+candidates_file: null

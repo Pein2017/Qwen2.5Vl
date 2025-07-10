@@ -12,17 +12,20 @@ from typeguard import typechecked
 
 from src.config import config
 from src.logger_utils import get_chat_logger
+from src.utils.coordinate_processor import (
+    CoordinateTokenConfig,
+    CoordinateTokenProcessor,
+)
 from src.utils.prompt import (
-    CHINESE_BASE_PROMPT,
     CHINESE_CANDIDATES_SECTION,
     CHINESE_FEW_SHOT_SECTION,
-    ENGLISH_BASE_PROMPT,
     ENGLISH_CANDIDATES_SECTION,
     ENGLISH_FEW_SHOT_SECTION,
     get_system_prompt,
 )
 from src.utils.schema import ChatMessage, ChatProcessorOutput, GroundTruthObject
 from src.utils.tokens import SpecialTokens
+
 
 logger = get_chat_logger()
 
@@ -70,6 +73,14 @@ class ChatProcessor:
 
         # Initialize special tokens (vision-only)
         self.tokens = SpecialTokens()
+
+        # Initialize coordinate token processor
+        coordinate_config = CoordinateTokenConfig(
+            enable_coordinate_tokens=kwargs.get("enable_coordinate_tokens", False),
+            max_coord_value=kwargs.get("max_coord_value", 2048),
+            use_official_box_tokens=True,
+        )
+        self.coordinate_processor = CoordinateTokenProcessor(coordinate_config)
 
         # Build system prompt using global config
         self.system_prompt = self._build_system_prompt()
@@ -193,32 +204,42 @@ class ChatProcessor:
 
         # 2) Learning instruction if teachers are present --------------------------------
         teachers: Sequence[Dict[str, Any]] = sample.get("teachers", [])
-        
+
         if teachers:
             from src.utils.prompt import get_learning_instruction
+
             learning_instruction = get_learning_instruction(
-                num_teachers=len(teachers), 
-                language=self.language, 
-                use_training_prompt=self.use_training_prompts
+                num_teachers=len(teachers),
+                language=self.language,
+                use_training_prompt=self.use_training_prompts,
             )
             if learning_instruction.strip():
                 messages.append(ChatMessage(role="user", content=learning_instruction))
-                messages.append(ChatMessage(role="assistant", content="明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。" if self.language == "chinese" else "Understood! I will carefully study the detection patterns, annotation styles, and judgment criteria in the reference examples, then apply them to detect objects in the target image."))
+                messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content="明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。"
+                        if self.language == "chinese"
+                        else "Understood! I will carefully study the detection patterns, annotation styles, and judgment criteria in the reference examples, then apply them to detect objects in the target image.",
+                    )
+                )
 
-        # 3) Teacher examples --------------------------------------------------------------  
+        # 3) Teacher examples --------------------------------------------------------------
         for i, teacher in enumerate(teachers):
             # User uploads a teacher example image with clear context
             if self.language == "chinese":
                 if len(teachers) == 1:
                     user_content = "参考示例:\n<image>"
                 else:
-                    user_content = f"参考示例 {i+1}/{len(teachers)}:\n<image>"
+                    user_content = f"参考示例 {i + 1}/{len(teachers)}:\n<image>"
             else:
                 if len(teachers) == 1:
                     user_content = "Reference Example:\n<image>"
                 else:
-                    user_content = f"Reference Example {i+1}/{len(teachers)}:\n<image>"
-            
+                    user_content = (
+                        f"Reference Example {i + 1}/{len(teachers)}:\n<image>"
+                    )
+
             messages.append(ChatMessage(role="user", content=user_content))
 
             # Assistant returns detection JSON with learning context
@@ -229,7 +250,7 @@ class ChatProcessor:
 
         # 3) Student target ---------------------------------------------------------------
         student = sample.get("student", sample)
-        
+
         # Add transitional instruction if teachers were provided
         if teachers:
             if self.language == "chinese":
@@ -241,7 +262,7 @@ class ChatProcessor:
                 target_content = "请检测以下图像中的设备和部件:\n<image>"
             else:
                 target_content = "Please detect all equipment and components in the following image:\n<image>"
-            
+
         messages.append(ChatMessage(role="user", content=target_content))
 
         student_objects = student.get("objects", [])
@@ -275,7 +296,7 @@ class ChatProcessor:
         return sorted(objects, key=sort_key)
 
     def _format_objects_response(self, objects: List[Dict[str, Any]]) -> str:
-        """Format objects into JSON array format."""
+        """Format objects into appropriate format (JSON or coordinate tokens)."""
         if not objects:
             return "[]"
 
@@ -288,8 +309,18 @@ class ChatProcessor:
             json_obj = {"bbox_2d": box, "label": desc}
             json_objects.append(json_obj)
 
-        # Return formatted JSON array
-        return json.dumps(json_objects, ensure_ascii=False, separators=(",", ": "))
+        # Format as JSON first
+        json_response = json.dumps(
+            json_objects, ensure_ascii=False, separators=(",", ": ")
+        )
+
+        # Convert to coordinate token format if enabled
+        if self.coordinate_processor.enabled:
+            return self.coordinate_processor.convert_json_to_coordinate_format(
+                json_response
+            )
+        else:
+            return json_response
 
     def _process_images_and_tokens(
         self, conversation: List[ChatMessage], image_paths: List[str]
@@ -370,7 +401,7 @@ class ChatProcessor:
     def _extract_and_normalize_ground_truth(
         self, sample: Dict[str, Any], image_dims: List[Tuple[int, int]]
     ) -> List[GroundTruthObject]:
-        """Return a list of :class:`src.schema.GroundTruthObject` instances.
+        r"""Return a list of :class:`src.schema.GroundTruthObject` instances.
 
         The bounding boxes are converted from absolute pixel coordinates to the
         *normalised* \[0,1] range expected by the detection loss.

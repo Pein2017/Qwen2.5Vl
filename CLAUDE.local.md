@@ -27,6 +27,7 @@
 * **Document**: For each file, note purpose, key classes/functions, inputs/outputs.
 * **Plan & Act**: List refactors/fixes in order and implement immediately.
 * **Refactoring Rule**: Directly override existing files. For important files, copy/move to `legacy` for reference. No fallback or backward compatibility design.
+* **File Management**: Try to reuse/override/merge the files. Don't create new but similar files.
 
 ### Code Quality
 
@@ -45,3 +46,9 @@
 
 * Create and run temporal tests under `./temporal` directory to keep main codebase clean
 * After completing a task, leave one or few evidence results to verify task completion
+
+### Package References
+
+* HuggingFace Transformers Package Location: `/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/models/qwen2_5_vl`
+* Official HuggingFace transformers package is now available for Qwen2.5VL source code reference
+* `/src/reference` is a copy from the transformers package, can be used for reference as well

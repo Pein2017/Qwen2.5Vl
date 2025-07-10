@@ -25,9 +25,7 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = (
-    "experiments_707/1_teacher_finished_stage/val/inference/predictions.json"
-)
+INPUT_FILE = "experiments_707/1_teacher_finished_stage/val/inference/predictions.json"
 OUTPUT_DIR = "707-1_teacher-val-new-final"
 BASE_PATH = "."
 MAX_SAMPLES = None  # Set to a number to limit samples, or None for all

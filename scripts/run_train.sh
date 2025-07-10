@@ -12,21 +12,21 @@ set -euo pipefail
 # CONFIGURATION
 # =============================================================================
 
-export PYTHONPATH=/data4/Qwen2.5-VL-main
+export PYTHONPATH=/data3/Qwen2.5-VL-main
 
 # Project paths
-PROJECT_ROOT="/data4/Qwen2.5-VL-main"
+PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
-CONFIG_NAME="base_flat_v2"                   # Config to use: base_flat | base_flat_v2 | debug_flat
-GPU_DEVICES="0,1,2,3,4,5"             # GPU devices (comma-separated)
+CONFIG_NAME="base_flat_det"                   # Config to use: base_flat_v2 | base_flat_det
+GPU_DEVICES="4,5"             # GPU devices (comma-separated)
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # NEW: Training system configuration
 USE_NEW_CONFIG=false                      # Use new domain-specific config system (true/false)
 
 # Debug mode configuration
-DEBUG_MODE=false                           # true: console output, false: log to run.log
+DEBUG_MODE=True                           # true: console output, false: log to run.log
 
 # Logging configuration
 LOG_LEVEL="INFO"                          # Logging level: DEBUG | INFO | WARNING | ERROR
@@ -46,8 +46,8 @@ setup_environment() {
     conda activate ms
     
     # Core environment variables
-    export HF_MODULES_CACHE="/data4/swift/model_cache"
-    export HF_HOME="/data4/swift/model_cache"
+    export HF_MODULES_CACHE="/data3/Qwen2.5-VL-main/model_cache"
+    export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
     export TOKENIZERS_PARALLELISM=false
     export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
     export TRANSFORMERS_NO_TQDM=1

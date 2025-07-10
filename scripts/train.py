@@ -114,7 +114,7 @@ def create_training_arguments_with_deepspeed():
         # Performance settings
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_pin_memory=config.pin_memory,
-        dataloader_prefetch_factor=config.prefetch_factor,
+        dataloader_prefetch_factor=config.prefetch_factor if config.dataloader_num_workers > 0 else None,
         remove_unused_columns=config.remove_unused_columns,
         # DeepSpeed configuration
         deepspeed=deepspeed_config if deepspeed_enabled else None,

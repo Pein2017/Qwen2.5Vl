@@ -25,8 +25,15 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from transformers import PreTrainedTokenizerBase
 
 from src.config import config
-from src.detection.detection_loss import DetectionLoss
 from src.logger_utils import get_training_logger
+
+# LEGACY: Detection loss import (conditional for backward compatibility)
+try:
+    from legacy.detection.detection_loss import DetectionLoss
+    DETECTION_AVAILABLE = True
+except ImportError:
+    DETECTION_AVAILABLE = False
+    DetectionLoss = None
 from src.utils.schema import GroundTruthObject
 from src.utils.utils import IGNORE_INDEX
 
@@ -58,14 +65,17 @@ class LossManager:
         self.detection_enabled = detection_enabled
         self.logger = get_training_logger()
         
-        # Initialize detection loss if enabled
+        # Initialize detection loss if enabled (legacy support)
         self.detection_loss = None
-        if detection_enabled:
+        if detection_enabled and DETECTION_AVAILABLE and DetectionLoss is not None:
             self.detection_loss = DetectionLoss(
                 tokenizer=tokenizer,
                 **detection_config
             )
             self.logger.info("✅ Detection loss initialized")
+        elif detection_enabled and not DETECTION_AVAILABLE:
+            self.logger.warning("⚠️  Detection loss requested but legacy detection module not available")
+            self.detection_enabled = False
         
         # Current loss components (single forward pass)
         self._current_lm_loss: float = 0.0

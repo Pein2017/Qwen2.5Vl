@@ -30,10 +30,10 @@ class DirectConfig:
     Direct configuration access - all values are flat and accessible directly.
     No nested structures, no parameter passing, no conversions.
     
-    NOTE: All fields without defaults must come first to avoid dataclass errors.
+    NOTE: Fields without defaults must come before fields with defaults to avoid dataclass errors.
     """
 
-    # === ALL REQUIRED FIELDS (no defaults) ===
+    # === REQUIRED FIELDS (no defaults) ===
     
     # Model settings
     model_path: str
@@ -42,10 +42,6 @@ class DirectConfig:
     attn_implementation: str
     torch_dtype: str
     use_cache: bool
-    model_hidden_size: int
-    model_num_layers: int
-    model_num_attention_heads: int
-    model_vocab_size: int
 
     # Training settings
     num_train_epochs: int
@@ -65,8 +61,6 @@ class DirectConfig:
     gradient_checkpointing: bool
     bf16: bool
     fp16: bool
-    use_flash_attention: bool
-    mixed_precision: str
 
     # Data settings
     train_data_path: str
@@ -96,20 +90,36 @@ class DirectConfig:
     verbose: bool
     disable_tqdm: bool
 
-    # Detection/Coordinate configuration
+    # Detection loss configuration (LEGACY - DISABLED)
     detection_enabled: bool
+    
+    # Coordinate Token Configuration (NEW APPROACH)
     coordinate_tokens_enabled: bool
-    coordinate_config_enable_coordinate_tokens: bool
-    coordinate_config_max_coord_value: int
-    coordinate_config_coord_token_init_std: float
-    coordinate_config_coordinate_loss_weight: float
-    coordinate_config_regular_loss_weight: float
-    coordinate_config_soft_expectation_temperature: float
-    coordinate_config_focal_loss_alpha: float
-    coordinate_config_focal_loss_gamma: float
+    
+    # Coordinate token specific settings (nested config will be flattened)
+    coordinate_enable_coordinate_tokens: bool
+    coordinate_max_coord_value: int
+    coordinate_coord_token_init_std: float
+    coordinate_coordinate_loss_weight: float
+    coordinate_regular_loss_weight: float
+    coordinate_soft_expectation_temperature: float
+    coordinate_focal_loss_alpha: float
+    coordinate_focal_loss_gamma: float
+    
+    # ChatProcessor coordinate settings
     chat_processor_enable_coordinate_tokens: bool
     chat_processor_max_coord_value: int
     chat_processor_use_official_box_tokens: bool
+    
+    # Model architecture (match official Qwen2.5-VL)
+    model_hidden_size: int
+    model_num_layers: int
+    model_num_attention_heads: int
+    model_vocab_size: int
+
+    # Training configuration
+    use_flash_attention: bool
+    mixed_precision: str
 
     # Performance settings
     dataloader_num_workers: int
@@ -151,17 +161,15 @@ class DirectConfig:
     # Additional settings
     gradient_clip_reduction_factor: float
     learning_rate_reduction_factor: float
+    candidates_file: Optional[str]
     enable_monitoring: bool
     save_predictions: bool
     save_token_analysis: bool
     save_raw_text: bool
     
-    # === OPTIONAL FIELDS (with defaults) ===
-    
-    # Optional candidates file
-    candidates_file: Optional[str] = None
-    
-    # LEGACY: Detection settings (with defaults for backward compatibility)
+    # === FIELDS WITH DEFAULTS (legacy/backward compatibility) ===
+
+    # LEGACY: Detection Head Architecture (DISABLED) - defaults provided for backward compatibility
     detection_num_queries: int = 100
     detection_max_caption_length: int = 32
     detection_decoder_dim_feedforward_factor: float = 2.0
@@ -169,19 +177,76 @@ class DirectConfig:
     detection_caption_decoder_dim_feedforward_factor: float = 2.0
     detection_caption_decoder_num_layers: int = 4
     detection_head_dropout: float = 0.1
+
+    # LEGACY: Adapter hyperparameters for detection head (DISABLED)
     detection_adapter_bottleneck_ratio: int = 8
     detection_adapter_num_layers: int = 1
+
+    # LEGACY: Loss component weights (DISABLED)
     detection_bbox_weight: float = 10.0
     detection_giou_weight: float = 20.0
     detection_objectness_weight: float = 10.0
     detection_caption_weight: float = 0.02
+
+    # LEGACY: Focal Loss specific weights (DISABLED)
     detection_focal_loss_gamma: float = 2.0
     detection_focal_loss_alpha: float = 0.25
 
-    # Runtime properties (added dynamically during initialization)
-    run_output_dir: str = ""
-    tensorboard_dir: str = ""
-    log_file_dir: str = ""
+    # Model architecture (match official Qwen2.5-VL)
+    model_hidden_size: int
+    model_num_layers: int
+    model_num_attention_heads: int
+    model_vocab_size: int
+
+    # Training configuration
+    use_flash_attention: bool
+    mixed_precision: str
+
+    # Performance settings
+    dataloader_num_workers: int
+    pin_memory: bool
+    prefetch_factor: int
+    batching_strategy: str
+    remove_unused_columns: bool
+
+    # Output settings
+    output_dir: str
+    run_name: Optional[str]
+    tb_dir: str
+
+    # Stability settings
+    max_consecutive_nan: int
+    max_consecutive_zero: int
+    max_nan_ratio: float
+    nan_monitoring_window: int
+    allow_occasional_nan: bool
+    nan_recovery_enabled: bool
+    learning_rate_reduction_factor: float
+    gradient_clip_reduction_factor: float
+
+    # Debug settings
+    test_samples: int
+    test_forward_pass: bool
+
+    # Training schedule tweaks
+    detection_freeze_epochs: int
+
+    # Vision processing parameters (Qwen2.5-VL image processor)
+    patch_size: int  # Spatial patch size of vision encoder (default: 14)
+    merge_size: int  # Merge size from vision encoder to LLM encoder (default: 2)
+    temporal_patch_size: int  # Temporal patch size of vision encoder (default: 2)
+
+    # Teacher-Student Loss Weights
+    teacher_loss_weight: float  # Weight for teacher loss in backpropagation
+    student_loss_weight: float  # Weight for student loss in backpropagation
+
+    # --- Fields with defaults (must be last in dataclass) ---
+    candidates_file: Optional[str] = None
+    lr_reference_batch_size: int = 0
+    auto_scale_lr: bool = True
+    run_output_dir: str = field(init=False)
+    tensorboard_dir: str = field(init=False)
+    log_file_dir: str = field(init=False)
 
     @property
     def tune_vision(self) -> bool:
@@ -189,8 +254,8 @@ class DirectConfig:
         return self.vision_lr > 0
 
     @property
-    def tune_merger(self) -> bool:
-        """Auto-determine if merger should be trained based on learning rate."""
+    def tune_mlp(self) -> bool:
+        """Auto-determine if MLP connector should be trained based on learning rate."""
         return self.merger_lr > 0
 
     @property
@@ -335,29 +400,176 @@ def init_config(config_path: str) -> DirectConfig:
     # Validate the final configuration
     _validate_config(config)
 
+    # ------------------------------------------------------------------
+    # Automatic learning-rate scaling based on effective global batch size
+    # and collator type
+    # ------------------------------------------------------------------
+    _apply_auto_lr_scaling(config)
+    if config.auto_scale_lr:
+        _apply_collator_lr_scaling(config)
+
     return config
 
 
-def _validate_config(config: DirectConfig) -> None:
-    """Validate configuration values."""
-    if config.per_device_train_batch_size <= 0:
-        raise ValueError("per_device_train_batch_size must be positive")
-    
-    if config.coordinate_lr < 0:
-        raise ValueError("coordinate_lr must be non-negative")
-        
-    if config.coordinate_config_max_coord_value <= 0:
-        raise ValueError("coordinate_config_max_coord_value must be positive")
-
-
-def reset_config() -> None:
-    """Reset global configuration (for testing purposes)."""
+def reset_config():
+    """Reset global configuration (useful for testing)."""
     global config
     config = None
 
 
 def get_config() -> DirectConfig:
-    """Get the global configuration instance."""
+    """
+    Get global configuration instance.
+
+    Returns:
+        DirectConfig: Global configuration
+
+    Raises:
+        RuntimeError: If config not initialized
+    """
     if config is None:
-        raise RuntimeError("Configuration not initialized. Call init_config() first.")
+        raise RuntimeError("Config not initialized. Call init_config() first.")
     return config
+
+
+def _validate_config(cfg: DirectConfig):
+    """Validate configuration values."""
+    if not cfg.model_path:
+        raise ValueError("model_path cannot be empty")
+    if not cfg.train_data_path or not cfg.val_data_path:
+        raise ValueError("train_data_path and val_data_path must be specified")
+
+    if cfg.language not in ["english", "chinese"]:
+        raise ValueError(
+            f"language must be 'english' or 'chinese' in YAML config, but got: '{cfg.language}'"
+        )
+    if cfg.num_teacher_samples < 0:
+        raise ValueError("num_teacher_samples must be non-negative")
+    # Add more validation rules as needed...
+
+
+def _apply_auto_lr_scaling(cfg: DirectConfig) -> None:
+    """Linearly scale all learning-rate fields according to effective
+    batch size.
+
+    The scale factor is computed as:
+        scale = (per_device_batch * grad_accum_steps * world_size) / reference_bs
+
+    * ``world_size`` is read from the *launcher-set* env var ``BBU_NUM_GPUS`` –
+      falling back to 1 when undefined.
+    * ``reference_bs`` comes from the YAML key ``lr_reference_batch_size`` or the
+      env var ``LR_REFERENCE_BATCH_SIZE``.  If neither is provided, scaling is
+      disabled (factor = 1).
+    """
+    import os
+
+    # ------------------------------------------------------------------
+    # Resolve reference (baseline) batch size
+    # ------------------------------------------------------------------
+    ref_bs_env = os.getenv("LR_REFERENCE_BATCH_SIZE")
+    reference_bs = (
+        int(ref_bs_env) if ref_bs_env is not None else cfg.lr_reference_batch_size
+    )
+
+    if reference_bs is None or reference_bs <= 0:
+        # No baseline → skip scaling entirely
+        return
+
+    # ------------------------------------------------------------------
+    # Compute current *effective* batch size
+    # ------------------------------------------------------------------
+    world_size_env = os.getenv("BBU_NUM_GPUS", "1")
+    try:
+        world_size = int(world_size_env)
+    except ValueError:
+        world_size = 1
+
+    effective_bs = (
+        cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps * world_size
+    )
+
+    scale = effective_bs / reference_bs
+    if abs(scale - 1.0) < 1e-6:
+        # No change needed
+        return
+
+    lr_fields = [
+        "learning_rate",
+        "adapter_lr",
+        "vision_lr",
+        "merger_lr",
+        "llm_lr",
+        "detection_lr",
+    ]
+
+    for field_name in lr_fields:
+        current_lr = getattr(cfg, field_name, None)
+        if current_lr is not None and current_lr > 0:
+            setattr(cfg, field_name, current_lr * scale)
+
+    # Inform the user once – this runs on every process but is cheap
+    print(
+        f"🔄 Auto LR scaling: effective_bs={effective_bs}, reference_bs={reference_bs}, "
+        f"scale={scale:.2f}.  Learning rates updated accordingly."
+    )
+
+
+def _apply_collator_lr_scaling(cfg: DirectConfig) -> None:
+    """
+    Apply token-length-aware learning rate scaling to ensure equivalent training
+    dynamics between different collator types.
+
+    This function automatically adjusts learning rates based on the collator type
+    to compensate for token length inconsistency between standard (padded) and
+    packed collators.
+    """
+    import os
+
+    # Check if collator-aware scaling is disabled
+    disable_collator_scaling = (
+        os.getenv("DISABLE_COLLATOR_LR_SCALING", "false").lower() == "true"
+    )
+    if disable_collator_scaling:
+        return
+
+    # Create token-length-aware learning rate scaler (import here to avoid circular imports)
+    try:
+        from src.lr_scaling import create_token_length_scaler
+    except ImportError:
+        raise RuntimeError("lr_scaling module required for auto_scale_lr=True but not available")
+
+    scaler = create_token_length_scaler(
+        auto_scale_lr=cfg.auto_scale_lr,
+        base_collator_type="standard",  # Treat standard as reference
+    )
+
+    # Convert config to dictionary for processing
+    config_dict = {
+        "collator_type": cfg.collator_type,
+        "learning_rate": cfg.learning_rate,
+        "llm_lr": cfg.llm_lr,
+        "adapter_lr": cfg.adapter_lr,
+        "vision_lr": cfg.vision_lr,
+        "merger_lr": cfg.merger_lr,
+        "detection_lr": cfg.detection_lr,
+    }
+
+    # Apply token-length-aware scaling
+    scaled_config = scaler.scale_learning_rates(
+        config=config_dict,
+        collator_type=cfg.collator_type,
+    )
+
+    # Update the original config with scaled values
+    if "learning_rate" in scaled_config:
+        cfg.learning_rate = scaled_config["learning_rate"]
+    if "llm_lr" in scaled_config:
+        cfg.llm_lr = scaled_config["llm_lr"]
+    if "adapter_lr" in scaled_config:
+        cfg.adapter_lr = scaled_config["adapter_lr"]
+    if "vision_lr" in scaled_config:
+        cfg.vision_lr = scaled_config["vision_lr"]
+    if "merger_lr" in scaled_config:
+        cfg.merger_lr = scaled_config["merger_lr"]
+    if "detection_lr" in scaled_config:
+        cfg.detection_lr = scaled_config["detection_lr"]
