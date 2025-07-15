@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# ! Ignore this file for now
 """
 Standalone inference runner for Qwen2.5-VL with mandatory performance optimizations.
 
@@ -54,19 +53,13 @@ W = TypeVar("W")
 logger = get_logger("inference")
 
 # Initialize logger (will be reconfigured in main)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('inference')
 
 # -------------------- Monkey-patch logger utils for compatibility --------------------
 # Some modules still expect the old logger interface, so we provide minimal compatibility
 
 
-# Initialize config with default settings
-from pathlib import Path as _Path
-
-from src.config import init_config as _init_config
-
-_default_cfg_path = _Path(__file__).resolve().parents[1] / "configs" / "base_flat.yaml"
-_init_config(str(_default_cfg_path))
+# Config will be initialized from command line argument - no automatic loading
 
 # Apply all critical Qwen2.5-VL fixes **before** we import the model
 from src.models.patches import (
@@ -174,18 +167,17 @@ class InferenceEngine:
                 "CUDA is not available. This inference script requires a GPU with CUDA support."
             )
         
-        # Check flash attention availability
-        self.use_flash_attention = check_flash_attention_available()
-        if self.use_flash_attention:
-            logger.info("✅ Flash Attention 2 available - using optimized attention")
-        else:
-            logger.warning("⚠️ Flash Attention 2 not available - falling back to standard attention")
+        # Force eager attention for inference to avoid vocabulary and triton issues
+        self.use_flash_attention = False  # Always disable for inference
+        logger.info("🔧 Using eager attention for inference (flash attention disabled for stability)")
 
         # Load processor and model following demo approach
         self.processor, self.model = self._load_model_and_processor()
 
         # Set to evaluation mode
         self.model.eval()
+        
+        # Model type detection will be set during loading
 
         # Single GPU only - no multi-GPU support
         logger.info(
@@ -231,10 +223,8 @@ class InferenceEngine:
             )
 
         logger.info("✅ Critical features verified:")
-        if self.use_flash_attention:
-            logger.info("   ⚡ Flash Attention 2: ENABLED")
-        else:
-            logger.info("   ⚡ Standard Attention: ENABLED")
+        logger.info("   ⚡ Eager Attention: ENABLED (for stability)")
+        logger.info("   🚫 Flash Attention: DISABLED (to avoid triton issues)")
         logger.info("   💾 KV Cache: ENABLED")
 
         logger.info("✅ InferenceEngine initialized")
@@ -295,10 +285,23 @@ class InferenceEngine:
 
         try:
             from src.models.model_loader import load_model_and_processor_unified
+            from src.config import config
+
+            # Detect model type based on config - coordinate tokens drive detection wrapper usage
+            coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
+            detection_enabled = coordinate_tokens_enabled  # For coordinate tokens, we need the wrapper
+            
+            logger.info(f"🎯 Model type detection:")
+            logger.info(f"   Coordinate tokens enabled: {coordinate_tokens_enabled}")
+            logger.info(f"   Detection wrapper enabled: {detection_enabled}")
+            
+            # Log configuration for debugging
+            logger.debug(f"Full config attributes: {[attr for attr in dir(config) if not attr.startswith('_')]}")
 
             # Use IDENTICAL loading process as training (only difference: for_inference=True)
-            # Pass attention implementation preference
-            attn_implementation = "flash_attention_2" if self.use_flash_attention else "eager"
+            # Force eager attention for inference to avoid triton issues
+            attn_implementation = "eager"  # Always use eager for inference
+            logger.info(f"🔧 Forcing eager attention for inference to avoid triton issues")
             model, tokenizer, image_processor = load_model_and_processor_unified(
                 model_path=str(model_dir),
                 for_inference=True,  # ONLY difference from training
@@ -318,9 +321,20 @@ class InferenceEngine:
 
             model.eval()
 
+            # Store model type for later use
+            self.detection_enabled = detection_enabled
+            self.coordinate_tokens_enabled = coordinate_tokens_enabled
+
             logger.info("✅ UNIFIED model loading completed for inference")
             logger.debug(f"Model loaded on device: {next(model.parameters()).device}")
             logger.debug(f"Model dtype: {next(model.parameters()).dtype}")
+            
+            if coordinate_tokens_enabled:
+                logger.info("🚀 Coordinate token model detected - ready for soft expectation inference")
+            elif detection_enabled:
+                logger.info("🎯 Detection model detected - ready for bbox inference")
+            else:
+                logger.info("📄 Base model detected - ready for standard VL inference")
 
             return processor, model
 
@@ -898,6 +912,17 @@ class InferenceEngine:
 
             return responses
 
+    def _process_model_response(self, response: str) -> str:
+        """Process model response based on model type."""
+        if not hasattr(self, 'coordinate_tokens_enabled'):
+            logger.warning("⚠️ Model type not detected - returning raw response")
+            return response
+            
+        # The coordinate token model is generating JSON format directly
+        # No coordinate token conversion needed for this implementation
+        logger.debug(f"📄 Model response (first 100 chars): {response[:100]}...")
+        return response
+
     def run_inference_on_jsonl(
         self,
         input_file: str,
@@ -1019,6 +1044,15 @@ class InferenceEngine:
                             ground_truth = json.dumps(
                                 ground_truth_objects, ensure_ascii=False
                             )
+                            
+                            # Process model response based on model type
+                            processed_response = self._process_model_response(response)
+                            
+                            # Log response processing for debugging
+                            if hasattr(self, 'coordinate_tokens_enabled') and self.coordinate_tokens_enabled:
+                                logger.debug(f"📄 Coordinate token model response: {processed_response[:200]}...")
+                            else:
+                                logger.debug(f"📄 Standard model response: {processed_response[:200]}...")
 
                             result = {
                                 # Updated key names aligned with downstream evaluation
@@ -1026,7 +1060,7 @@ class InferenceEngine:
                                 if target_images
                                 else image_id,
                                 "ground_truth": ground_truth,
-                                "pred_result": response,
+                                "pred_result": processed_response,
                                 "height": target.get("height"),
                                 "width": target.get("width"),
                             }
@@ -1100,6 +1134,12 @@ class InferenceEngine:
 def main():
     parser = argparse.ArgumentParser(description="Simplified inference runner")
     parser.add_argument(
+        "--config_path", 
+        type=str, 
+        required=True, 
+        help="Path to configuration YAML file"
+    )
+    parser.add_argument(
         "--model_path", type=str, required=True, help="Path to model directory"
     )
     parser.add_argument(
@@ -1156,6 +1196,22 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Initialize config from EXPLICITLY provided config path (no fallbacks)
+    from src.config import init_config as _init_config
+    
+    if not Path(args.config_path).exists():
+        print(f"❌ Configuration file not found: {args.config_path}")
+        print(f"Please provide a valid config file path using --config_path")
+        exit(1)
+    
+    print(f"🔧 Loading configuration from: {args.config_path}")
+    try:
+        _init_config(args.config_path)
+        print(f"✅ Configuration loaded successfully")
+    except Exception as e:
+        print(f"❌ Failed to load configuration: {e}")
+        exit(1)
 
     # Configure global logging once for the whole run
     configure_global_logging(

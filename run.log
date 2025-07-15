@@ -1,93 +1,2393 @@
 🚀 BBU Training Launcher
-   📄 Config: base_flat_det | 🖥️ GPUs: 4,5 | 📊 Log: INFO
+   📄 Config: base_flat_det | 🖥️ GPUs: 0,1,2,3,4,5,6,7 | 📊 Log: INFO
    📄 Output redirected to run.log
 🌍 Setting up environment...
 ✅ Environment configured (Python: /root/miniconda3/envs/ms/bin/python)
-🚀 Multi-GPU detected (2 GPUs) - DeepSpeed ENABLED
+🚀 Multi-GPU detected (8 GPUs) - DeepSpeed ENABLED
    🔧 BBU_DEEPSPEED_ENABLED=true
    ⚙️  BBU_DEEPSPEED_CONFIG=scripts/zero2.json
-   🖥️  BBU_NUM_GPUS=2
+   🖥️  BBU_NUM_GPUS=8
 🔍 Validating configuration...
 ✅ DeepSpeed config validated: scripts/zero2.json
 ✅ Configuration validation passed
 🚀 Multi-GPU Training with DeepSpeed
-   🖥️  GPUs: 2 devices (4,5)
+   🖥️  GPUs: 8 devices (0,1,2,3,4,5,6,7)
    ⚙️  DeepSpeed Config: scripts/zero2.json
    📄 Training Config: base_flat_det
    📊 Log Level: INFO (Verbose: true)
-   🔗 Master Port: 25581 (randomly generated)
+   🔗 Master Port: 23687 (randomly generated)
+[2025-07-15 01:42:37,332] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,525] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,655] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,874] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,898] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,906] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,967] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-07-15 01:42:37,969] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
 📄 Loading configuration...
 📄 Using legacy configuration system
 ✅ Legacy config loaded: configs/base_flat_det.yaml
 📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
-2025-07-10 15:45:25 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
-2025-07-10 15:45:25 - INFO - training - 📄 Config: base_flat_det
-2025-07-10 15:45:25 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
-2025-07-10 15:45:25 - INFO - training - 🌍 Environment: All variables handled by launcher script
-2025-07-10 15:45:25 - INFO - training - 🔧 Configuration loaded and validated successfully
+2025-07-15 01:42:38 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:38 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:38 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:38 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:38 - INFO - training - 🔧 Configuration loaded and validated successfully
+2025-07-15 01:42:38 - INFO - datasets - PyTorch version 2.5.1 available.
 📄 Loading configuration...
 📄 Using legacy configuration system
 ✅ Legacy config loaded: configs/base_flat_det.yaml
 📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
-2025-07-10 15:45:25 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
-2025-07-10 15:45:25 - INFO - training - 📄 Config: base_flat_det
-2025-07-10 15:45:25 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
-2025-07-10 15:45:25 - INFO - training - 🌍 Environment: All variables handled by launcher script
-2025-07-10 15:45:25 - INFO - training - 🔧 Configuration loaded and validated successfully
-[2025-07-10 15:45:27,906] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-07-10 15:45:28,121] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-2025-07-10 15:45:28 - INFO - datasets - PyTorch version 2.5.1 available.
-❌ Training failed: No module named 'src.detection'
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 213, in main
-    from src.training.trainer_factory import (
-  File "/data3/Qwen2.5-VL-main/src/training/trainer_factory.py", line 32, in <module>
-    from .training_coordinator import TrainingCoordinator
-  File "/data3/Qwen2.5-VL-main/src/training/training_coordinator.py", line 27, in <module>
-    from .loss_manager import LossManager
-  File "/data3/Qwen2.5-VL-main/src/training/loss_manager.py", line 28, in <module>
-    from src.detection.detection_loss import DetectionLoss
-ModuleNotFoundError: No module named 'src.detection'
-2025-07-10 15:45:29 - INFO - datasets - PyTorch version 2.5.1 available.
-❌ Training failed: No module named 'src.detection'
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 213, in main
-    from src.training.trainer_factory import (
-  File "/data3/Qwen2.5-VL-main/src/training/trainer_factory.py", line 32, in <module>
-    from .training_coordinator import TrainingCoordinator
-  File "/data3/Qwen2.5-VL-main/src/training/training_coordinator.py", line 27, in <module>
-    from .loss_manager import LossManager
-  File "/data3/Qwen2.5-VL-main/src/training/loss_manager.py", line 28, in <module>
-    from src.detection.detection_loss import DetectionLoss
-ModuleNotFoundError: No module named 'src.detection'
-W0710 15:45:30.321000 182225 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 182261 closing signal SIGTERM
-E0710 15:45:31.438000 182225 site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 0 (pid: 182260) of binary: /root/miniconda3/envs/ms/bin/python3.10
-Traceback (most recent call last):
-  File "/root/miniconda3/envs/ms/bin/torchrun", line 8, in <module>
-    sys.exit(main())
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
-    return f(*args, **kwargs)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 919, in main
-    run(args)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 910, in run
-    elastic_launch(
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
-    return launch_agent(self._config, self._entrypoint, list(args))
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
-    raise ChildFailedError(
-torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
-============================================================
-scripts/train.py FAILED
-------------------------------------------------------------
-Failures:
-  <NO_OTHER_FAILURES>
-------------------------------------------------------------
-Root Cause (first observed failure):
-[0]:
-  time      : 2025-07-10_15:45:30
-  host      : pein-train-5cd8f88577-qrsk7
-  rank      : 0 (local_rank: 0)
-  exitcode  : 1 (pid: 182260)
-  error_file: <N/A>
-  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
-============================================================
+2025-07-15 01:42:38 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:38 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:38 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:38 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:38 - INFO - training - 🔧 Configuration loaded and validated successfully
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:38 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:38 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:38 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:38 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:38 - INFO - training - 🔧 Configuration loaded and validated successfully
+2025-07-15 01:42:38 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:38 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,008] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.939455470 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:39 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:39 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:39 - INFO - training - 🔧 Configuration loaded and validated successfully
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:39 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:39 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:39 - INFO - training - 🔧 Configuration loaded and validated successfully
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:39 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:39 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:39 - INFO - training - 🔧 Configuration loaded and validated successfully
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:39 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:39 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:39 - INFO - training - 🔧 Configuration loaded and validated successfully
+2025-07-15 01:42:39 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:39 - INFO - datasets - PyTorch version 2.5.1 available.
+📄 Loading configuration...
+📄 Using legacy configuration system
+✅ Legacy config loaded: configs/base_flat_det.yaml
+📊 Configuring logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🚀 BBU Training Started - Direct Configuration System
+2025-07-15 01:42:39 - INFO - training - 📄 Config: base_flat_det
+2025-07-15 01:42:39 - INFO - training - 📊 Logging: Level=INFO, Verbose=True, Console=INFO
+2025-07-15 01:42:39 - INFO - training - 🌍 Environment: All variables handled by launcher script
+2025-07-15 01:42:39 - INFO - training - 🔧 Configuration loaded and validated successfully
+2025-07-15 01:42:39 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,219] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.151325232 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,231] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.161832076 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - datasets - PyTorch version 2.5.1 available.
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,463] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.393937960 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,496] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.427403081 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,526] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.457721187 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,544] [INFO] [comm.py:669:init_distributed] cdb=None
+[2025-07-15 01:42:39,545] [INFO] [comm.py:700:init_distributed] Initializing TorchBackend in DeepSpeed with backend nccl
+[W715 01:42:39.476705617 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - training - 🔧 Creating TrainingArguments with DeepSpeed configuration...
+[2025-07-15 01:42:39,628] [INFO] [comm.py:669:init_distributed] cdb=None
+[W715 01:42:39.559143404 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-07-15 01:42:39 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:39 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:39 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:39 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:39 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:39 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:39 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:39 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:39 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:39 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:39 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:39 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:39 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:39 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:39 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:39 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:39 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - training - 🏋️ Creating unified BBU trainer...
+2025-07-15 01:42:40 - INFO - training - 🔧 Setting up model with UNIFIED loading mechanism...
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 UNIFIED MODEL LOADING: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:40 - INFO - unified_loader -    Mode: TRAINING
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Applying comprehensive Qwen2.5-VL fixes...
+2025-07-15 01:42:40 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:40 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:40 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:40 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:40 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:40 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:40 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:40 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Detection wrapper enabled for coordinate tokens: True
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Coordinate tokens enabled: True
+2025-07-15 01:42:40 - INFO - unified_loader - ⚡ Attention implementation from config: flash_attention_2
+2025-07-15 01:42:40 - INFO - unified_loader - 🔤 Loading tokenizer from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.36it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  7.98it/s]
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+2025-07-15 01:42:40 - INFO - unified_loader - 🎯 Loading DETECTION-ENABLED model via wrapper
+2025-07-15 01:42:40 - INFO - unified_loader - 🔧 Coordinate tokens enabled: True
+🔄 Loading base model from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+   Detection head will be randomly initialized
+   Detection queries: 100
+   Max caption length: 32
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  6.73it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 10.13it/s]
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.35it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.33it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.01it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.40it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  7.99it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.35it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.06it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.42it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.44it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.00it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.09it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.12it/s]
+2025-07-15 01:42:44 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:44 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:44 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:44 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:44 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:44 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:44 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:44 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:44 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:44 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:44 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:45 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:45 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:45 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:45 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:45 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:45 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:45 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:45 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:45 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:45 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:45 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:45 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:45 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:45 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:45 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:45 - INFO - chat -    Language: chinese
+2025-07-15 01:42:45 - INFO - chat -    Data root: ./
+2025-07-15 01:42:45 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:45 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:45 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:45 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:45 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:45 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:45 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:45 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:45 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:45 - INFO - chat -    Language: chinese
+2025-07-15 01:42:45 - INFO - chat -    Data root: ./
+2025-07-15 01:42:45 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:45 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:45 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:45 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:45 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:45 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:45 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:45 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:45 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:45 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:45 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:45 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:45 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:45 - INFO - data - Dataset mode: training
+2025-07-15 01:42:45 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:45 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:45 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:45 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:45 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:45 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:45 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:45 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:45 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:45 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:45 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:45 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:45 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:45 - INFO - training -    Collator type: packed
+2025-07-15 01:42:45 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:45 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:45 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:45 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:45 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:45 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:45 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:45 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:45 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:45 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:45 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:45 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - patches - ✅ Official mRoPE fix applied (with batch dimension fix)
+2025-07-15 01:42:45 - INFO - patches - ✅ Safe visual forward patch applied for generation
+2025-07-15 01:42:45 - INFO - patches - 🔇 qwenvl Flash-Attention override skipped – using HF default
+2025-07-15 01:42:45 - INFO - patches - ✅ All Qwen2.5-VL fixes applied successfully
+2025-07-15 01:42:45 - INFO - patches -    - mRoPE: Uses official doubling logic + batch fix
+2025-07-15 01:42:45 - INFO - patches -    - Visual: Safe processing for generation
+2025-07-15 01:42:45 - INFO - patches -    - Dimension handling: Robust edge case management
+2025-07-15 01:42:45 - INFO - patches -    - Batch handling: Fixed mrope_section duplication
+✅ Base model loaded with random detection head
+2025-07-15 01:42:45 - INFO - unified_loader - ✅ Detection-enabled model loaded successfully
+2025-07-15 01:42:45 - INFO - unified_loader - 📊 Loading processor from: /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+2025-07-15 01:42:45 - INFO - data_conversion.vision_process - set VIDEO_TOTAL_PIXELS: 90316800
+2025-07-15 01:42:45 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:45 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:45 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:45 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:45 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:45 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:45 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:45 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:45 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:45 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Processor loaded successfully
+2025-07-15 01:42:46 - INFO - unified_loader - 🔧 Applying training chat template...
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ Training chat template applied
+2025-07-15 01:42:46 - INFO - unified_loader - 🔍 Verifying Qwen2.5-VL patches...
+2025-07-15 01:42:46 - INFO - patches - ✅ mRoPE patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ Safe visual forward patch verification successful
+2025-07-15 01:42:46 - INFO - patches - ✅ All patch verifications successful
+2025-07-15 01:42:46 - INFO - unified_loader - ✅ UNIFIED MODEL LOADING COMPLETE
+2025-07-15 01:42:46 - INFO - unified_loader -    Model type: Detection-enabled
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer vocab size: 151665
+2025-07-15 01:42:46 - INFO - unified_loader -    Tokenizer padding side: right
+2025-07-15 01:42:46 - INFO - unified_loader -    Model device: cuda:0
+2025-07-15 01:42:46 - INFO - unified_loader -    Model dtype: torch.bfloat16
+2025-07-15 01:42:46 - INFO - training - ✅ Training model setup completed via unified loader
+NCCL version 2.21.5+cuda12.4
+2025-07-15 01:42:46 - INFO - training - 🔧 Vision encoder: TRAINING (lr=5e-07)
+2025-07-15 01:42:46 - INFO - training - 🔧 MLP connector: TRAINING (lr=1e-05)
+2025-07-15 01:42:46 - INFO - training - 🔧 LLM: TRAINING (lr=5e-06)
+2025-07-15 01:42:46 - INFO - training - 🔧 Setting up data module with context-aware prompts...
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - detection - 📝 Using standard JSON format (coordinate tokens disabled)
+2025-07-15 01:42:46 - INFO - chat - ✅ ChatProcessor initialized:
+2025-07-15 01:42:46 - INFO - chat -    Language: chinese
+2025-07-15 01:42:46 - INFO - chat -    Data root: ./
+2025-07-15 01:42:46 - INFO - chat -    Model max length: 12000
+2025-07-15 01:42:46 - INFO - chat -    Use candidates: False
+2025-07-15 01:42:46 - INFO - chat -    Output format: Pure JSON (Qwen2.5-VL compatible)
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (first 500 chars):
+2025-07-15 01:42:46 - INFO - chat -    '你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。\n\n【学习模式说明】\n本对话采用示例学习模式，帮助你提高检测准确性：\n1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果\n2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法\n3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测\n4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节\n\n【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：\n\n1. **BBU设备**\n   - bbu基带处理单元/华为\n   - bbu基带处理单元/中兴\n   - bbu基带处理单元/爱立信\n\n2. **螺丝连接点**\n   - 螺丝连接点/BBU安装螺丝(相似)\n   - 螺丝连接点/CPRI光缆和BBU连接点\n   - 螺丝连接点/地排处螺丝\n   - 螺丝连接点/BBU接地线机柜接地端（相似）\n   - 螺丝连接点/BBU尾纤和ODF连接点\n   注意：子类别外观高度相似，必须结合"所在位置"判定：\n '
+2025-07-15 01:42:46 - INFO - chat - 📄 System prompt sample (last 200 chars):
+2025-07-15 01:42:46 - INFO - chat -    '\n2. 使用"类别/属性"格式作为 label，与上表完全一致\n3. 忽略时间戳、水印及未列出的其它物体（如线缆）\n4. 对部分遮挡目标，仅标注可见部分\n\n【输出格式】严格输出 JSON 数组，无其它文本：\n```json\n[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]\n```\n\n坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。'
+2025-07-15 01:42:46 - INFO - data - ✅ TeacherPoolManager initialized:
+2025-07-15 01:42:46 - INFO - data -    Teacher pool file: data/teacher.jsonl
+2025-07-15 01:42:46 - INFO - data -    Number of teacher images: 10
+2025-07-15 01:42:46 - INFO - data -    Number of teacher samples: 10
+2025-07-15 01:42:46 - INFO - training - ✅ Teacher pool manager created with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 347 samples from data/train.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: training
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/train.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - data - Loaded 38 samples from data/val.jsonl
+2025-07-15 01:42:46 - INFO - data - Dataset mode: evaluation
+2025-07-15 01:42:46 - INFO - data - Teacher ratio: 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool size: 10
+2025-07-15 01:42:46 - INFO - data - Dataset data/val.jsonl: teacher ratio set to 0.7
+2025-07-15 01:42:46 - INFO - data - Teacher pool manager active with 10 teachers
+2025-07-15 01:42:46 - INFO - training - ✅ Data module setup completed with improved prompts:
+2025-07-15 01:42:46 - INFO - training -    Train samples: 347 (detailed prompts, teacher_ratio=0.7)
+2025-07-15 01:42:46 - INFO - training -    Val samples: 38 (concise prompts, no teachers)
+2025-07-15 01:42:46 - INFO - training -    Collator type: packed
+2025-07-15 01:42:46 - INFO - training -    Training prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+2025-07-15 01:42:46 - INFO - training -    Evaluation prompt: 你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1...
+/data3/Qwen2.5-VL-main/src/training/trainer.py:132: FutureWarning: `tokenizer` is deprecated and will be removed in version 5.0.0 for `BBUTrainer.__init__`. Use `processing_class` instead.
+  super().__init__(*args, **kwargs)
+2025-07-15 01:42:46 - INFO - training - ✅ Added 2 special tokens to the tokenizer.
+2025-07-15 01:42:46 - INFO - training - ✅ Resized model token embeddings to match new tokenizer size.
+2025-07-15 01:42:46 - INFO - training - 📄 Using legacy training system
+2025-07-15 01:42:46 - INFO - training - 🔧 Initializing parameter groups for differential learning rate...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision': 385 tensors, 631.98M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger': 5 tensors, 36.71M params
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm': 434 tensors, 3085.39M params
+2025-07-15 01:42:46 - INFO - training - ✅ BBU trainer created successfully
+2025-07-15 01:42:46 - INFO - training - 💾 Configuration saved to: output-714/714-det/base_flat_det.yaml
+2025-07-15 01:42:46 - INFO - training - 🚀 Starting training...
+2025-07-15 01:42:46 - INFO - training - 🆕 Starting fresh training from predefined model checkpoint
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+2025-07-15 01:42:46 - INFO - training - 🚀 Creating optimizer with differential learning rates...
+2025-07-15 01:42:46 - INFO - training -    - Group 'vision' assigned LR: 5e-07
+2025-07-15 01:42:46 - INFO - training -    - Group 'merger' assigned LR: 1e-05
+2025-07-15 01:42:46 - INFO - training -    - Group 'llm' assigned LR: 5e-06
+2025-07-15 01:42:46 - INFO - training - ✅ Optimizer with differential learning rates created successfully.
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+2025-07-15 01:43:02 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:02 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*480<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [99,206,168,288],"label": "螺丝连接点/BBU接地线机柜接地端"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [5,68,717,494],"label": "机柜空间/满载"},{"bbox_2d": [2,236,714,383],"label": "bbu基带处理单元/华为"},{"bbox_2d": [351,277,441,311],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [444,345,471,383],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:02 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:02 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [99,206,168,288],"label": "螺丝连接点/BBU接地线机柜接地端"}]<|im_end|>{"bbox_2d": [5,68,717,494],"label": "机柜空间/满载"},{"bbox_2d": [2,236,714,383],"label": "bbu基带处理单元/华为"},{"bbox_2d": [351,277,441,311],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [444,345,471,383],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>
+2025-07-15 01:43:02 - INFO - training - 📝 ================================
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+2025-07-15 01:43:02 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:02 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [146,0,529,728],"label": "bbu基带处理单元/华为"},{"bbox_2d": [383,623,464,703],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*496<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [149,339,185,367],"label": "螺丝连接点/地排处螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:02 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:02 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [146,0,529,728],"label": "bbu基带处理单元/华为"},{"bbox_2d": [383,623,464,703],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>{"bbox_2d": [149,339,185,367],"label": "螺丝连接点/地排处螺丝"}]<|im_end|>
+2025-07-15 01:43:02 - INFO - training - 📝 ================================
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+2025-07-15 01:43:03 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:03 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [3,86,532,640],"label": "机柜空间/非满载"},{"bbox_2d": [457,96,532,636],"label": "bbu基带处理单元/华为"},{"bbox_2d": [262,108,364,639],"label": "bbu基带处理单元/华为"},{"bbox_2d": [398,109,463,636],"label": "挡风板/安装"},{"bbox_2d": [211,115,259,636],"label": "挡风板/安装"},{"bbox_2d": [280,174,311,224],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [492,177,522,253],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [314,179,338,228],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [467,456,498,498],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [263,464,282,505],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [150,0,532,579],"label": "机柜空间/满载"},{"bbox_2d": [220,0,532,120],"label": "bbu基带处理单元/华为"},{"bbox_2d": [225,44,268,75],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [221,179,532,430],"label": "bbu基带处理单元/华为"},{"bbox_2d": [229,196,264,229],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [446,251,532,324],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [230,338,254,359],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:03 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:03 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [3,86,532,640],"label": "机柜空间/非满载"},{"bbox_2d": [457,96,532,636],"label": "bbu基带处理单元/华为"},{"bbox_2d": [262,108,364,639],"label": "bbu基带处理单元/华为"},{"bbox_2d": [398,109,463,636],"label": "挡风板/安装"},{"bbox_2d": [211,115,259,636],"label": "挡风板/安装"},{"bbox_2d": [280,174,311,224],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [492,177,522,253],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [314,179,338,228],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [467,456,498,498],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [263,464,282,505],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>{"bbox_2d": [150,0,532,579],"label": "机柜空间/满载"},{"bbox_2d": [220,0,532,120],"label": "bbu基带处理单元/华为"},{"bbox_2d": [225,44,268,75],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [221,179,532,430],"label": "bbu基带处理单元/华为"},{"bbox_2d": [229,196,264,229],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [446,251,532,324],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [230,338,254,359],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:43:03 - INFO - training - 📝 ================================
+2025-07-15 01:43:03 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:03 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [153,101,389,629],"label": "机柜空间/非满载"},{"bbox_2d": [318,108,330,119],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [235,113,332,631],"label": "bbu基带处理单元/华为"},{"bbox_2d": [189,129,235,599],"label": "挡风板/安装"},{"bbox_2d": [301,186,318,237],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [277,376,298,406],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [228,432,250,455],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [276,611,286,621],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [319,615,332,624],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*496<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [103,87,174,148],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [138,266,209,336],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,394,236,529],"label": "挡风板/安装"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:03 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:03 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [153,101,389,629],"label": "机柜空间/非满载"},{"bbox_2d": [318,108,330,119],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [235,113,332,631],"label": "bbu基带处理单元/华为"},{"bbox_2d": [189,129,235,599],"label": "挡风板/安装"},{"bbox_2d": [301,186,318,237],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [277,376,298,406],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [228,432,250,455],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [276,611,286,621],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [319,615,332,624],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>{"bbox_2d": [103,87,174,148],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [138,266,209,336],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,394,236,529],"label": "挡风板/安装"}]<|im_end|>
+2025-07-15 01:43:03 - INFO - training - 📝 ================================
+2025-07-15 01:43:03 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:03 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [48,0,472,725],"label": "机柜空间/非满载"},{"bbox_2d": [190,3,383,703],"label": "bbu基带处理单元/华为"},{"bbox_2d": [205,326,242,369],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [288,684,304,696],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [371,686,391,709],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*480<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [91,0,420,212],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,9,420,850],"label": "机柜空间/非满载"},{"bbox_2d": [91,214,420,596],"label": "挡风板/安装"},{"bbox_2d": [101,611,418,883],"label": "bbu基带处理单元/中兴"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:03 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:03 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [48,0,472,725],"label": "机柜空间/非满载"},{"bbox_2d": [190,3,383,703],"label": "bbu基带处理单元/华为"},{"bbox_2d": [205,326,242,369],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [288,684,304,696],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [371,686,391,709],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>{"bbox_2d": [91,0,420,212],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,9,420,850],"label": "机柜空间/非满载"},{"bbox_2d": [91,214,420,596],"label": "挡风板/安装"},{"bbox_2d": [101,611,418,883],"label": "bbu基带处理单元/中兴"}]<|im_end|>
+2025-07-15 01:43:03 - INFO - training - 📝 ================================
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+2025-07-15 01:43:03 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:03 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [2,28,532,718],"label": "机柜空间/满载"},{"bbox_2d": [416,42,532,706],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [150,46,221,675],"label": "挡风板/安装"},{"bbox_2d": [259,46,285,78],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [355,48,425,695],"label": "挡风板/安装"},{"bbox_2d": [67,54,150,682],"label": "bbu基带处理单元/爱立信"},{"bbox_2d": [212,54,331,690],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [307,54,335,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [427,54,447,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [215,61,236,85],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,78,41,669],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,180,98,232],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [62,251,96,342],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [421,272,459,313],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [270,399,305,471],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [481,552,514,592],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [22,640,37,664],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [63,647,84,672],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [208,661,230,680],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [299,664,325,687],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [413,671,434,692],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [517,677,532,707],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*480<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [0,0,329,285],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [0,0,299,778],"label": "机柜空间/非满载"},{"bbox_2d": [207,178,324,285],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:03 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:03 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [2,28,532,718],"label": "机柜空间/满载"},{"bbox_2d": [416,42,532,706],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [150,46,221,675],"label": "挡风板/安装"},{"bbox_2d": [259,46,285,78],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [355,48,425,695],"label": "挡风板/安装"},{"bbox_2d": [67,54,150,682],"label": "bbu基带处理单元/爱立信"},{"bbox_2d": [212,54,331,690],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [307,54,335,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [427,54,447,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [215,61,236,85],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,78,41,669],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,180,98,232],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [62,251,96,342],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [421,272,459,313],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [270,399,305,471],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [481,552,514,592],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [22,640,37,664],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [63,647,84,672],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [208,661,230,680],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [299,664,325,687],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [413,671,434,692],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [517,677,532,707],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>{"bbox_2d": [0,0,329,285],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [0,0,299,778],"label": "机柜空间/非满载"},{"bbox_2d": [207,178,324,285],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:43:03 - INFO - training - 📝 ================================
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+2025-07-15 01:43:03 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:03 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [2,28,532,718],"label": "机柜空间/满载"},{"bbox_2d": [416,42,532,706],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [150,46,221,675],"label": "挡风板/安装"},{"bbox_2d": [259,46,285,78],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [355,48,425,695],"label": "挡风板/安装"},{"bbox_2d": [67,54,150,682],"label": "bbu基带处理单元/爱立信"},{"bbox_2d": [212,54,331,690],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [307,54,335,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [427,54,447,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [215,61,236,85],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,78,41,669],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,180,98,232],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [62,251,96,342],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [421,272,459,313],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [270,399,305,471],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [481,552,514,592],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [22,640,37,664],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [63,647,84,672],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [208,661,230,680],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [299,664,325,687],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [413,671,434,692],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [517,677,532,707],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [178,161,532,384],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:03 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:03 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [2,28,532,718],"label": "机柜空间/满载"},{"bbox_2d": [416,42,532,706],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [150,46,221,675],"label": "挡风板/安装"},{"bbox_2d": [259,46,285,78],"label": "螺丝连接点/BBU接地线机柜接地端"},{"bbox_2d": [355,48,425,695],"label": "挡风板/安装"},{"bbox_2d": [67,54,150,682],"label": "bbu基带处理单元/爱立信"},{"bbox_2d": [212,54,331,690],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [307,54,335,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [427,54,447,76],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [215,61,236,85],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,78,41,669],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [68,180,98,232],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [62,251,96,342],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [421,272,459,313],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [270,399,305,471],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [481,552,514,592],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [22,640,37,664],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [63,647,84,672],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [208,661,230,680],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [299,664,325,687],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [413,671,434,692],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [517,677,532,707],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>{"bbox_2d": [178,161,532,384],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|>
+2025-07-15 01:43:03 - INFO - training - 📝 ================================
+2025-07-15 01:43:04 - INFO - training - 📝 ===== Sample conversation (train) =====
+2025-07-15 01:43:04 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。<|im_end|>
+
+<|im_start|>assistant
+明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>
+<|im_start|>user
+参考示例:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [186,154,350,260],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|>
+<|im_start|>user
+现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [0,4,532,721],"label": "机柜空间/非满载"},{"bbox_2d": [71,6,464,388],"label": "bbu基带处理单元/华为"},{"bbox_2d": [350,310,426,386],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [117,321,169,373],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:43:04 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:43:04 - INFO - training - ！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。<|im_end|>{"bbox_2d": [186,154,350,260],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|>{"bbox_2d": [0,4,532,721],"label": "机柜空间/非满载"},{"bbox_2d": [71,6,464,388],"label": "bbu基带处理单元/华为"},{"bbox_2d": [350,310,426,386],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [117,321,169,373],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:43:04 - INFO - training - 📝 ================================
+{'loss': 0.8472588062286377, 'grad_norm': 107.6133041381836, 'lm_loss': 0.8472588062286377, 'teacher_lm_loss': 0.8313217163085938, 'student_lm_loss': 0.8108416646718979, 'remaining_hr': 0.488, 'lr/vision': 5e-08, 'lr/merger': 1.0000000000000002e-06, 'lr/llm': 5.000000000000001e-07, 'epoch': 0.18181818181818182}
+{'loss': 0.7949594780802727, 'grad_norm': 149.16531372070312, 'lm_loss': 0.7949594780802727, 'teacher_lm_loss': 0.719432607293129, 'student_lm_loss': 0.8385723978281021, 'remaining_hr': 0.46, 'lr/vision': 1e-07, 'lr/merger': 2.0000000000000003e-06, 'lr/llm': 1.0000000000000002e-06, 'epoch': 0.36363636363636365}
+{'loss': 0.7192588672041893, 'grad_norm': 97.11612701416016, 'lm_loss': 0.7192588672041893, 'teacher_lm_loss': 0.4306105524301529, 'student_lm_loss': 0.7181069180369377, 'remaining_hr': 0.447, 'lr/vision': 1.5e-07, 'lr/merger': 3e-06, 'lr/llm': 1.5e-06, 'epoch': 0.5454545454545454}
+{'loss': 0.7312807962298393, 'grad_norm': 57.96851348876953, 'lm_loss': 0.7312807962298393, 'teacher_lm_loss': 0.5377058535814285, 'student_lm_loss': 0.7295137196779251, 'remaining_hr': 0.44, 'lr/vision': 2e-07, 'lr/merger': 4.000000000000001e-06, 'lr/llm': 2.0000000000000003e-06, 'epoch': 0.7272727272727273}
+{'loss': 0.6209562569856644, 'grad_norm': 72.82516479492188, 'lm_loss': 0.6209562569856644, 'teacher_lm_loss': 0.355914656072855, 'student_lm_loss': 0.6664179638028145, 'remaining_hr': 0.433, 'lr/vision': 2.5e-07, 'lr/merger': 5e-06, 'lr/llm': 2.5e-06, 'epoch': 0.9090909090909091}
+{'loss': 0.6128724921833385, 'grad_norm': 97.58226013183594, 'lm_loss': 0.6128724921833385, 'teacher_lm_loss': 0.3472872864116322, 'student_lm_loss': 0.6301942630247637, 'remaining_hr': 0.452, 'lr/vision': 3e-07, 'lr/merger': 6e-06, 'lr/llm': 3e-06, 'epoch': 1.1818181818181819}
+{'loss': 0.6034464612603188, 'grad_norm': 148.29518127441406, 'lm_loss': 0.6034464612603188, 'teacher_lm_loss': 0.26732778549194336, 'student_lm_loss': 0.6312418803572655, 'remaining_hr': 0.442, 'lr/vision': 3.5e-07, 'lr/merger': 7e-06, 'lr/llm': 3.5e-06, 'epoch': 1.3636363636363638}
+{'loss': 0.5635544396936893, 'grad_norm': 511.4503173828125, 'lm_loss': 0.5635544396936893, 'teacher_lm_loss': 0.39163660258054733, 'student_lm_loss': 0.6094739064574242, 'remaining_hr': 0.434, 'lr/vision': 4e-07, 'lr/merger': 8.000000000000001e-06, 'lr/llm': 4.000000000000001e-06, 'epoch': 1.5454545454545454}
+{'loss': 0.6018250733613968, 'grad_norm': 90.91826629638672, 'lm_loss': 0.6018250733613968, 'teacher_lm_loss': 0.1753624677658081, 'student_lm_loss': 0.6592050939798355, 'remaining_hr': 0.427, 'lr/vision': 4.5e-07, 'lr/merger': 9e-06, 'lr/llm': 4.5e-06, 'epoch': 1.7272727272727273}
+{'loss': 0.5483250543475151, 'grad_norm': 56.894287109375, 'lm_loss': 0.5483250543475151, 'teacher_lm_loss': 0.36830707639455795, 'student_lm_loss': 0.5934988185763359, 'remaining_hr': 0.42, 'lr/vision': 5e-07, 'lr/merger': 1e-05, 'lr/llm': 5e-06, 'epoch': 1.9090909090909092}
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [101,239,300,718],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [101,239,300,718],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [16,31,532,723],"label": "机柜空间/满载"},{"bbox_2d": [102,127,532,728],"label": "bbu基带处理单元/华为"},{"bbox_2d": [80,223,468,728],"label": "挡风板/安装"},{"bbox_2d": [219,233,327,450],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [16,31,532,723],"label": "机柜空间/满载"},{"bbox_2d": [102,127,532,728],"label": "bbu基带处理单元/华为"},{"bbox_2d": [80,223,468,728],"label": "挡风板/安装"},{"bbox_2d": [219,233,327,450],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [349,235,427,394],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [349,235,427,394],"label": "螺丝连接点/BBU尾纤和ODF连接点"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*480<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [4,7,405,861],"label": "机柜空间/非满载"},{"bbox_2d": [149,167,237,245],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [135,249,420,559],"label": "挡风板/安装"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [4,7,405,861],"label": "机柜空间/非满载"},{"bbox_2d": [149,167,237,245],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [135,249,420,559],"label": "挡风板/安装"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [111,52,470,626],"label": "机柜空间/非满载"},{"bbox_2d": [343,93,359,108],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [245,95,350,604],"label": "bbu基带处理单元/华为"},{"bbox_2d": [259,104,273,116],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [287,381,312,433],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [329,597,338,610],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [111,52,470,626],"label": "机柜空间/非满载"},{"bbox_2d": [343,93,359,108],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [245,95,350,604],"label": "bbu基带处理单元/华为"},{"bbox_2d": [259,104,273,116],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [287,381,312,433],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [329,597,338,610],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [0,0,506,671],"label": "机柜空间/满载"},{"bbox_2d": [166,14,332,696],"label": "bbu基带处理单元/华为"},{"bbox_2d": [168,16,195,49],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [274,24,304,51],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [219,124,279,225],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [192,448,231,484],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [0,0,506,671],"label": "机柜空间/满载"},{"bbox_2d": [166,14,332,696],"label": "bbu基带处理单元/华为"},{"bbox_2d": [168,16,195,49],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [274,24,304,51],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [219,124,279,225],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [192,448,231,484],"label": "螺丝连接点/CPRI光缆和BBU连接点"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*494<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [205,0,358,719],"label": "bbu基带处理单元/华为"},{"bbox_2d": [210,0,232,23],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [314,0,340,20],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [8,3,524,724],"label": "机柜空间/满载"},{"bbox_2d": [279,96,309,125],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [277,118,308,156],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [280,159,314,185],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [249,178,271,208],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [230,422,256,456],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [334,648,362,676],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [234,658,254,675],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [205,0,358,719],"label": "bbu基带处理单元/华为"},{"bbox_2d": [210,0,232,23],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [314,0,340,20],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [8,3,524,724],"label": "机柜空间/满载"},{"bbox_2d": [279,96,309,125],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [277,118,308,156],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [280,159,314,185],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [249,178,271,208],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [230,422,256,456],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [334,648,362,676],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [234,658,254,675],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+2025-07-15 01:45:49 - INFO - training - 📝 ===== Sample conversation (eval) =====
+2025-07-15 01:45:49 - INFO - training - <|im_start|>system
+你是专业的通信机房BBU工艺质量检测AI助手，负责精确识别和定位图像中的所有相关设备及部件，为后续合规性判定提供准确的位置信息。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【标注要求】
+1. 逐像素检查，框出所有目标；外接矩形需完整包围对象
+2. 使用"类别/属性"格式作为 label，与上表完全一致
+3. 忽略时间戳、水印及未列出的其它物体（如线缆）
+4. 对部分遮挡目标，仅标注可见部分
+
+【输出格式】严格输出 JSON 数组，无其它文本：
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "类别/属性"}]
+```
+
+坐标为绝对像素值，(x1,y1) 左上角，(x2,y2) 右下角。<|im_end|>
+<|im_start|>user
+请检测以下图像中的设备和部件:
+<|vision_start|><|image_pad|>*512<|vision_end|><|im_end|>
+
+<|im_start|>assistant
+[{"bbox_2d": [9,11,431,875],"label": "机柜空间/满载"},{"bbox_2d": [179,63,368,868],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [98,69,198,778],"label": "挡风板/安装"},{"bbox_2d": [0,72,136,852],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [324,78,354,105],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [75,88,112,127],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,189,57,306],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [6,481,39,525],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [189,482,240,553],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [51,527,87,606],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [244,544,287,671],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [21,777,46,805],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [178,820,210,847],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [288,847,318,873],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|><|endoftext|>*1
+2025-07-15 01:45:49 - INFO - training - 📝 Teacher and target answers (labels≠IGNORE):
+2025-07-15 01:45:49 - INFO - training - [{"bbox_2d": [9,11,431,875],"label": "机柜空间/满载"},{"bbox_2d": [179,63,368,868],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [98,69,198,778],"label": "挡风板/安装"},{"bbox_2d": [0,72,136,852],"label": "bbu基带处理单元/中兴"},{"bbox_2d": [324,78,354,105],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [75,88,112,127],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [0,189,57,306],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [6,481,39,525],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [189,482,240,553],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [51,527,87,606],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [244,544,287,671],"label": "螺丝连接点/CPRI光缆和BBU连接点"},{"bbox_2d": [21,777,46,805],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [178,820,210,847],"label": "螺丝连接点/BBU安装螺丝"},{"bbox_2d": [288,847,318,873],"label": "螺丝连接点/BBU安装螺丝"}]<|im_end|>
+2025-07-15 01:45:49 - INFO - training - 📝 ================================
+{'eval_loss': 0.6229164600372314, 'eval_runtime': 2.9261, 'eval_samples_per_second': 12.987, 'eval_steps_per_second': 1.709, 'lr/vision': 5e-07, 'lr/merger': 1e-05, 'lr/llm': 5e-06, 'epoch': 1.9090909090909092}
+{'eval_loss': 0.6229164600372314, 'eval_runtime': 2.9261, 'eval_samples_per_second': 12.987, 'eval_steps_per_second': 1.709, 'lr/vision': 5e-07, 'lr/merger': 1e-05, 'lr/llm': 5e-06, 'epoch': 1.9090909090909092, 'eval_lm_loss': 0.5714, 'eval_lm_teacher_loss': 0.0, 'eval_lm_student_loss': 0.5741}
+{'loss': 0.5257195776159113, 'grad_norm': 95.74322509765625, 'lm_loss': 0.5257195776159113, 'teacher_lm_loss': 0.45958987962115894, 'student_lm_loss': 0.5805186846039512, 'remaining_hr': 0.434, 'lr/vision': 4.998477067547739e-07, 'lr/merger': 9.99695413509548e-06, 'lr/llm': 4.99847706754774e-06, 'epoch': 2.1818181818181817}
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 6): 68/100 samples with teacher (actual ratio: 0.680, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 116): 77/100 samples with teacher (actual ratio: 0.770, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 23): 79/100 samples with teacher (actual ratio: 0.790, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 216): 78/100 samples with teacher (actual ratio: 0.780, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 198): 64/100 samples with teacher (actual ratio: 0.640, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 286): 65/100 samples with teacher (actual ratio: 0.650, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 345): 68/100 samples with teacher (actual ratio: 0.680, configured: 0.700)
+2025-07-15 01:46:14 - INFO - data - 📊 Teacher Assignment Stats (sample 163): 71/100 samples with teacher (actual ratio: 0.710, configured: 0.700)
+{'loss': 0.5418609641492367, 'grad_norm': 55.641685485839844, 'lm_loss': 0.5418609641492367, 'teacher_lm_loss': 0.2873946689069271, 'student_lm_loss': 0.596555694937706, 'remaining_hr': 0.426, 'lr/vision': 4.99391012564956e-07, 'lr/merger': 9.987820251299121e-06, 'lr/llm': 4.993910125649561e-06, 'epoch': 2.3636363636363638}
+{'loss': 0.5141529701650143, 'grad_norm': 49.515708923339844, 'lm_loss': 0.5141529701650143, 'teacher_lm_loss': 0.33054373785853386, 'student_lm_loss': 0.5625919625163078, 'remaining_hr': 0.418, 'lr/vision': 4.986304738420683e-07, 'lr/merger': 9.972609476841368e-06, 'lr/llm': 4.986304738420684e-06, 'epoch': 2.5454545454545454}
+{'loss': 0.5351119190454483, 'grad_norm': 91.2960433959961, 'lm_loss': 0.5351119190454483, 'teacher_lm_loss': 0.2545180097222328, 'student_lm_loss': 0.5727630592882633, 'remaining_hr': 0.411, 'lr/vision': 4.975670171853925e-07, 'lr/merger': 9.951340343707852e-06, 'lr/llm': 4.975670171853926e-06, 'epoch': 2.7272727272727275}
+{'loss': 0.5256698317825794, 'grad_norm': 52.106407165527344, 'lm_loss': 0.5256698317825794, 'teacher_lm_loss': 0.1697630025446415, 'student_lm_loss': 0.5780871883034706, 'remaining_hr': 0.405, 'lr/vision': 4.96201938253052e-07, 'lr/merger': 9.924038765061042e-06, 'lr/llm': 4.962019382530521e-06, 'epoch': 2.909090909090909}
+{'loss': 0.4902109151536768, 'grad_norm': 37.84062576293945, 'lm_loss': 0.4902109151536768, 'teacher_lm_loss': 0.2835696881467646, 'student_lm_loss': 0.5374087420376864, 'remaining_hr': 0.408, 'lr/vision': 4.945369001834514e-07, 'lr/merger': 9.890738003669029e-06, 'lr/llm': 4.9453690018345144e-06, 'epoch': 3.1818181818181817}
+{'loss': 0.5537270270287991, 'grad_norm': 55.29118728637695, 'lm_loss': 0.5537270270287991, 'teacher_lm_loss': 0.131566034629941, 'student_lm_loss': 0.593248076736927, 'remaining_hr': 0.401, 'lr/vision': 4.925739315689991e-07, 'lr/merger': 9.851478631379982e-06, 'lr/llm': 4.925739315689991e-06, 'epoch': 3.3636363636363638}
+{'loss': 0.4922091215848923, 'grad_norm': 53.01515579223633, 'lm_loss': 0.4922091215848923, 'teacher_lm_loss': 0.13778332620859146, 'student_lm_loss': 0.5181530565023422, 'remaining_hr': 0.394, 'lr/vision': 4.903154239845797e-07, 'lr/merger': 9.806308479691595e-06, 'lr/llm': 4.903154239845798e-06, 'epoch': 3.5454545454545454}
+{'loss': 0.511171393096447, 'grad_norm': 54.63341522216797, 'lm_loss': 0.511171393096447, 'teacher_lm_loss': 0.21352586522698402, 'student_lm_loss': 0.5647314228117466, 'remaining_hr': 0.388, 'lr/vision': 4.877641290737883e-07, 'lr/merger': 9.755282581475769e-06, 'lr/llm': 4.8776412907378845e-06, 'epoch': 3.7272727272727275}

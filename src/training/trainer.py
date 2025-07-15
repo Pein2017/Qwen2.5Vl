@@ -63,9 +63,9 @@ from src.utils.tokens.special_tokens import SpecialTokens
 
 class BBUTrainer(Trainer):
     """
-    Custom trainer that integrates object detection loss when configured.
+    Custom trainer for coordinate token training.
 
-    Extends the standard Transformers Trainer to add object detection capabilities
+    Extends the standard Transformers Trainer with coordinate token support
     while maintaining clean separation of concerns.
     """
 
@@ -171,7 +171,7 @@ class BBUTrainer(Trainer):
             self._micro_batch_count: int = 0
 
             # Detection loss is handled by coordinator
-            self.detection_loss = training_coordinator.loss_manager.detection_loss
+            # Detection is now handled via coordinate tokens
         else:
             self.logger.info("📄 Using legacy training system")
             # Legacy system: manual loss tracking
@@ -196,10 +196,8 @@ class BBUTrainer(Trainer):
             # Counter for the number of *micro-batches* processed since the last log.
             self._micro_batch_count: int = 0
 
-            # Initialize object detection loss if configured
+            # Detection is now handled via coordinate tokens
             self.detection_loss = None
-            if self.config.detection_enabled:
-                self._init_detection_loss()
 
         # Cache for per-step weight / grad norms (populated in training_step)
         self._norm_cache: Dict[str, float] = {}
@@ -242,8 +240,7 @@ class BBUTrainer(Trainer):
 
         1. Always save the *base* Qwen2.5-VL model with `max_shard_size` so
            enormous weights are split across multiple files (faster I/O).
-        2. If a detection head is present **and enabled**, save its weights
-           separately as `detection_head.pth` plus a small JSON config.
+        2. Save the coordinate token enhanced model.
         3. Tokenizer / processor and training args are stored with standard
            Transformers helpers.
         """
@@ -261,16 +258,15 @@ class BBUTrainer(Trainer):
         # CRITICAL FIX: Save the full model, not just base_model
         # For Qwen2.5-VL, visual tower is part of the main model, not base_model
         if (
-            hasattr(self.model, "detection_enabled")
-            and not self.model.detection_enabled
+            not getattr(self.model, "coordinate_tokens_enabled", False)
         ):
-            # For detection_enabled=False, save the full Qwen2.5-VL model
+            # For coordinate tokens disabled, save the full Qwen2.5-VL model
             self.logger.info(
                 "💾 Saving complete Qwen2.5-VL model with visual tower (sharded)…"
             )
             model_to_save = self.model
         else:
-            # For detection wrapper, save base model + detection head separately
+            # For coordinate tokens enabled, save the enhanced model
             self.logger.info("💾 Saving base Qwen2.5-VL model (sharded)…")
             model_to_save = getattr(self.model, "base_model", self.model)
 
@@ -337,11 +333,7 @@ class BBUTrainer(Trainer):
             f"   ✅ Image processor config saved with {len(ip_cfg)} parameters (preserving base config)"
         )
 
-        # --- 3. Save detection head (if any) -------------------------------
-        if getattr(self.model, "detection_enabled", False) and hasattr(
-            self.model, "detection_head"
-        ):
-            self._save_detection_components(output_dir)
+        # Detection is now handled via coordinate tokens
 
         # --- 4. Copy essential files from base model -------------------
         self._copy_essential_files_from_base_model(output_dir)
@@ -479,172 +471,13 @@ class BBUTrainer(Trainer):
         self.logger.info(f"   ✅ Visual tower parameters found: {len(visual_keys)}")
         self.logger.info(f"      Examples: {visual_keys[:3]}...")
 
-    def _save_detection_components(self, output_dir: str) -> None:
-        """Save detection head weights and configuration."""
-        import json
-        import os
-
-        import torch
-
-        # Save detection head weights
-        detection_state_dict = self.model.detection_head.state_dict()
-        detection_path = os.path.join(output_dir, "detection_head.pth")
-        torch.save(detection_state_dict, detection_path)
-
-        # ------------------------------------------------------------------
-        # Save a CLEAN `preprocessor_config.json` for reload. We start from the
-        # base model's pristine file and only override the pixel limits the
-        # user may have tweaked. This prevents invalid key combinations that
-        # trigger `get_size_dict` errors at load time.
-        # ------------------------------------------------------------------
-
-        if self.image_processor:
-            base_model_dir = getattr(self.model.base_model, "name_or_path", None)
-            src_preproc = (
-                os.path.join(base_model_dir, "preprocessor_config.json")
-                if base_model_dir
-                else None
-            )
-            dst_preproc = os.path.join(output_dir, "preprocessor_config.json")
-
-            if src_preproc and os.path.exists(src_preproc):
-                with open(src_preproc, "r", encoding="utf-8") as f:
-                    preproc_cfg = json.load(f)
-            else:
-                preproc_cfg = {}
-
-            # Update only the pixel constraints the training pipeline may have
-            # changed. Keep other keys untouched and REMOVE any nested `size`
-            # dict which is not accepted by HF utils.
-            if hasattr(self.image_processor, "min_pixels"):
-                preproc_cfg["min_pixels"] = int(self.image_processor.min_pixels)
-            if hasattr(self.image_processor, "max_pixels"):
-                preproc_cfg["max_pixels"] = int(self.image_processor.max_pixels)
-
-            # Ensure allowed size keys only. Prefer `longest_edge` if user set
-            # something via `.size`.
-            if "size" in preproc_cfg:
-                size_dict = preproc_cfg["size"]
-                clean_size = {}
-                for key in (
-                    "height",
-                    "width",
-                    "shortest_edge",
-                    "longest_edge",
-                    "max_height",
-                    "max_width",
-                ):
-                    if key in size_dict:
-                        clean_size[key] = size_dict[key]
-                        break  # keep only the first valid key set
-                if clean_size:
-                    preproc_cfg["size"] = clean_size
-                else:
-                    preproc_cfg.pop("size")
-
-            with open(dst_preproc, "w", encoding="utf-8") as f:
-                json.dump(preproc_cfg, f, indent=2, ensure_ascii=False)
-
-            self.logger.info("💾 Cleaned preprocessor_config.json saved.")
-
-        # Save detection head configuration with UNIFIED filename
-        detection_config = {
-            "num_queries": self.model.detection_head.num_queries,
-            "max_caption_length": self.model.detection_head.max_caption_length,
-            "hidden_size": self.model.detection_head.hidden_size,
-            "vocab_size": self.model.detection_head.vocab_size,
-            "detection_enabled": True,
-            "checkpoint_type": "unified",  # Marker for unified checkpoint
-        }
-
-        # Use the UNIFIED config filename (not legacy)
-        config_path = os.path.join(output_dir, "detection_config.json")
-        with open(config_path, "w") as f:
-            json.dump(detection_config, f, indent=2)
-
-        # ------------------------------------------------------------------
-        # Ensure essential HF files exist (config.json, generation_config.json).
-        # If the wrapper model cannot create them automatically (because it is
-        # not a PreTrainedModel), copy them from the original base model dir so
-        # that `from_pretrained()` works without manual intervention.
-        # ------------------------------------------------------------------
-
-        base_model_dir = getattr(self.model.base_model, "name_or_path", None)
-        if base_model_dir and os.path.isdir(base_model_dir):
-            for fname in ["config.json", "generation_config.json"]:
-                src = os.path.join(base_model_dir, fname)
-                dst = os.path.join(output_dir, fname)
-                if not os.path.exists(dst):
-                    if os.path.exists(src):
-                        import shutil
-
-                        shutil.copy(src, dst)
-                        self.logger.info(
-                            f"💾 Copied missing {fname} from base model directory."
-                        )
-                    else:
-                        raise FileNotFoundError(
-                            f"Required file {fname} not found at {src}"
-                        )
-
-        # Fail-fast: verify that essential HF files are present post-save. This
-        # guards against broken checkpoints that would later crash
-        # `from_pretrained()` during evaluation or inference.
-        for critical in ["config.json", "generation_config.json"]:
-            critical_path = os.path.join(output_dir, critical)
-            assert os.path.exists(critical_path), (
-                f"Checkpoint incomplete – expected {critical_path} to exist. "
-                "Make sure save_pretrained() produced the file or it was copied "
-                "from the base model directory."
-            )
-
-        self.logger.info(f"💾 Detection head saved to: {detection_path}")
-        self.logger.info(f"💾 Detection config saved to: {config_path}")
-
-    def _init_detection_loss(self) -> None:
-        """Initialize object detection loss with config parameters (legacy support)."""
-        try:
-            from legacy.detection.detection_loss import DetectionLoss
-
-            # Initialize with tokenizer for caption loss computation
-            self.detection_loss = DetectionLoss(
-                bbox_weight=self.config.detection_bbox_weight,
-                giou_weight=self.config.detection_giou_weight,
-                objectness_weight=self.config.detection_objectness_weight,
-                caption_weight=self.config.detection_caption_weight,
-                tokenizer=self.tokenizer_ref,
-                focal_loss_gamma=self.config.detection_focal_loss_gamma,
-                focal_loss_alpha=self.config.detection_focal_loss_alpha,
-            )
-
-            self.logger.info(
-                "🎯 Detection loss initialized in BBUTrainer (legacy mode)"
-            )
-
-        except ImportError:
-            self.logger.warning(
-                "⚠️  Legacy detection loss not available - using coordinate tokens instead"
-            )
-            self.detection_loss = None
-        self.logger.info(f"   bbox_weight: {self.config.detection_bbox_weight}")
-        self.logger.info(f"   giou_weight: {self.config.detection_giou_weight}")
-        self.logger.info(
-            f"   objectness_weight: {self.config.detection_objectness_weight}"
-        )
-        self.logger.info(f"   caption_weight: {self.config.detection_caption_weight}")
-        self.logger.info(
-            f"   focal_loss_gamma: {self.config.detection_focal_loss_gamma}"
-        )
-        self.logger.info(
-            f"   focal_loss_alpha: {self.config.detection_focal_loss_alpha}"
-        )
 
     def init_param_groups(self) -> None:
         """
         Initializes parameter groups for differential learning rate.
 
         This method categorizes all trainable parameters into 'vision', 'merger',
-        'llm', and 'detection' groups. It will raise a ValueError if any
+        and 'llm' groups. It will raise a ValueError if any
         trainable parameters cannot be categorized, ensuring that all parts of
         the model are explicitly handled.
         """
@@ -656,8 +489,6 @@ class BBUTrainer(Trainer):
             "vision": [],
             "merger": [],
             "llm": [],
-            "detection": [],
-            "adapter": [],  # detection adapters (vision & lang)
             "others": [],  # For uncategorized parameters
         }
 
@@ -667,13 +498,8 @@ class BBUTrainer(Trainer):
 
             # Correct parameter name matching based on the model's structure.
             # The order is critical: check for the most specific names first.
-            if "detection_head" in name:
-                if ".adapter" in name:
-                    param_groups_with_names["adapter"].append((name, param))
-                else:
-                    param_groups_with_names["detection"].append((name, param))
             # "merger" is part of the vision tower, so check for it *before* "visual".
-            elif "merger" in name:
+            if "merger" in name:
                 param_groups_with_names["merger"].append((name, param))
             elif "visual" in name:
                 param_groups_with_names["vision"].append((name, param))
@@ -693,7 +519,7 @@ class BBUTrainer(Trainer):
                 self.logger.error(f"   - {name}")
             raise ValueError(
                 "Uncategorized trainable parameters found. All parameters must be explicitly "
-                "assigned to a learning rate group (vision, merger, llm, detection)."
+                "assigned to a learning rate group (vision, merger, llm)."
             )
 
         # Remove the (now empty) 'others' group
@@ -744,8 +570,6 @@ class BBUTrainer(Trainer):
             "vision": self.config.vision_lr,
             "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
-            "detection": self.config.coordinate_lr,
-            "adapter": self.config.adapter_lr,
         }
 
         optimizer_grouped_parameters = []
@@ -1098,14 +922,8 @@ class BBUTrainer(Trainer):
         # Extract and store GT objects separately
         ground_truth_objects = self._extract_ground_truth_objects(inputs)
 
-        # Fail-fast sanity check: detection enabled but batch has no GT boxes
-        if self.config.detection_enabled and not any(
-            len(gt) > 0 for gt in ground_truth_objects
-        ):
-            raise ValueError(
-                "Detection training is enabled but the current batch contains no ground-truth objects. "
-                "Verify that your dataset JSON provides the 'objects' field for every sample."
-            )
+        # Coordinate token validation - check for valid objects in training data
+        # Note: Ground truth validation now handled by coordinate token processing
 
         # Prepare clean inputs for model (remove GT objects)
         model_inputs = inputs.copy()
@@ -1175,15 +993,10 @@ class BBUTrainer(Trainer):
         # the first `detection_freeze_epochs` to let the caption head warm up.
         # ------------------------------------------------------------------
 
-        # Enable detection head training from the first epoch
-        detection_training_enabled = self.config.detection_enabled
+        # Legacy detection head training disabled - using coordinate tokens
+        detection_training_enabled = False
 
-        if (
-            detection_training_enabled
-            and self.detection_loss is not None
-            and ground_truth_objects
-            and any(len(gt) > 0 for gt in ground_truth_objects)
-        ):
+        if False:  # Detection head training disabled
             # Prepare full list of LLM hidden states for detection
             hidden_states_list = list(
                 outputs.hidden_states
@@ -1413,7 +1226,7 @@ class BBUTrainer(Trainer):
                     "student_lm_loss": avg_student_lm_loss,
                 }
 
-            if self.config.detection_enabled and not self._use_coordinator:
+            if False:  # Detection disabled - using coordinate tokens
                 # LEGACY: Only compute detection averages if not using coordinator
                 avg_bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
                 avg_bbox_giou_loss = (
@@ -1733,7 +1546,7 @@ class BBUTrainer(Trainer):
             metrics[f"{metric_key_prefix}_lm_student_loss"] = round(
                 self._accumulated_student_lm_loss / num_batches, 4
             )
-            if self.config.detection_enabled:
+            if False:  # Detection metrics disabled
                 metrics[f"{metric_key_prefix}_bbox_l1_loss"] = round(
                     self._accumulated_bbox_l1_loss / num_batches, 4
                 )
@@ -1909,15 +1722,7 @@ def set_model_training_params(model):
         f"🔧 LLM: {'TRAINING' if llm_trainable else 'FROZEN'} (lr={config.llm_lr})"
     )
 
-    # Detection head (optional)
-    if config.detection_enabled and has_detection_head:
-        _toggle(
-            model.detection_head.named_parameters(),
-            config.detection_lr,
-            "Detection head",
-        )
-    else:
-        logger.info("🔧 Detection head: DISABLED (config.detection_enabled False)")
+    # Detection head removed - using coordinate regression approach
 
 
 def setup_model_and_tokenizer() -> Tuple[
@@ -2178,10 +1983,7 @@ def create_trainer(
     if config.use_differential_lr:
         trainer.init_param_groups()
 
-    # Set the detection loss function in the model wrapper after trainer creation
-    if config.detection_enabled and hasattr(trainer.model, "set_detection_loss_fn"):
-        trainer.model.set_detection_loss_fn(trainer.detection_loss)
-        trainer.logger.info("🎯 Detection loss function set in model wrapper")
+    # Legacy detection loss function setup disabled - using coordinate tokens
 
     # ------------------------------------------------------------------
     # Register BestCheckpointCallback to keep the best N checkpoints based

@@ -18,6 +18,10 @@ import sys
 import warnings
 from pathlib import Path
 
+# Apply compatibility patches early (before any torch/flash_attn imports)
+from src.models.patches import patch_torch_library_wrap_triton
+patch_torch_library_wrap_triton()
+
 # Suppress the specific deprecation warning about Trainer.tokenizer
 warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 

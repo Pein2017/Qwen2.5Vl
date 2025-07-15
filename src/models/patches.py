@@ -29,6 +29,24 @@ from src.logger_utils import get_patches_logger
 logger = get_patches_logger()
 
 
+def patch_torch_library_wrap_triton():
+    """
+    Compatibility patch for torch.library.wrap_triton missing in PyTorch 2.5.1.
+    This function adds the missing wrap_triton method to maintain Flash Attention compatibility.
+    """
+    if not hasattr(torch.library, 'wrap_triton'):
+        def wrap_triton(kernel_fn):
+            """Fallback implementation that returns the kernel directly for older PyTorch versions."""
+            return kernel_fn
+        
+        torch.library.wrap_triton = wrap_triton
+        logger.info("🔧 Applied torch.library.wrap_triton compatibility patch for PyTorch 2.5.1")
+
+
+# Apply the patch immediately when this module is imported
+patch_torch_library_wrap_triton()
+
+
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]

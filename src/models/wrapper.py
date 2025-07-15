@@ -118,17 +118,8 @@ class Qwen25VLWithDetection(nn.Module):
             # No coordinate tokens - use original vocab
             self.extended_vocab_size = self.original_vocab_size
 
-        # Legacy detection head (moved to coordinate tokens)
+        # Legacy detection head removed - using coordinate token approach
         self.detection_head = None
-        self.detection_enabled = False
-        # NOTE: Detection head functionality replaced by coordinate token soft expectation
-        # Original DETR-style detection moved to legacy/detection/
-        # if config.detection_enabled:
-        #     self.detection_enabled = True
-        #     self._init_detection_head()
-        # else:
-        #     self.detection_enabled = False
-        #     self.detection_head = None
 
         # Legacy detection head setup (disabled)
         # NOTE: Detection head functionality replaced by coordinate tokens
@@ -187,13 +178,8 @@ class Qwen25VLWithDetection(nn.Module):
             return outputs
 
     def generate(self, **kwargs):
-        """Disable detection during generation to maintain compatibility"""
-        old_detection_enabled = self.detection_enabled
-        self.detection_enabled = False
-        try:
-            return self.base_model.generate(**kwargs)
-        finally:
-            self.detection_enabled = old_detection_enabled
+        """Generate using base model - no detection head to disable"""
+        return self.base_model.generate(**kwargs)
 
     def prepare_inputs_for_generation(self, **kwargs):
         """Delegate to base model's preparation method"""
@@ -444,21 +430,20 @@ class Qwen25VLWithDetection(nn.Module):
         self, soft_weights: torch.Tensor, targets: torch.Tensor
     ) -> torch.Tensor:
         """Compute focal loss to encourage sharp distributions."""
-        # Convert to one-hot
-        one_hot = F.one_hot(
-            targets, num_classes=self.coordinate_config.max_coord_value
-        ).float()
-
-        # Focal loss computation
+        # Focal loss computation using cross-entropy (not binary cross-entropy)
         alpha = self.coordinate_config.focal_loss_alpha
         gamma = self.coordinate_config.focal_loss_gamma
 
-        # Ensure consistent dtype for loss computation
-        one_hot = one_hot.to(soft_weights.dtype)
-        ce_loss = F.binary_cross_entropy(soft_weights, one_hot, reduction="none")
-        p_t = soft_weights * one_hot + (1 - soft_weights) * (1 - one_hot)
-        focal_weight = alpha * (1 - p_t) ** gamma
-
+        # Get target probabilities from soft distribution
+        target_probs = soft_weights.gather(1, targets.unsqueeze(-1)).squeeze(-1)
+        
+        # Compute focal weight: alpha * (1 - p_t)^gamma
+        focal_weight = alpha * (1 - target_probs) ** gamma
+        
+        # Compute cross-entropy loss: -log(p_t)
+        ce_loss = -torch.log(target_probs + 1e-8)  # Add epsilon for numerical stability
+        
+        # Apply focal weighting
         focal_loss = focal_weight * ce_loss
         return focal_loss.mean()
 
@@ -475,24 +460,29 @@ class Qwen25VLWithDetection(nn.Module):
             + self.coordinate_config.max_coord_value,
             "box_start_id": self.box_start_id,  # 151648
             "box_end_id": self.box_end_id,  # 151649
+            "max_coord_value": self.coordinate_config.max_coord_value,  # 2048
         }
 
-    def _convert_bbox_to_tokens(self, bbox: List[float]) -> List[int]:
-        """Convert normalized bbox to coordinate token IDs."""
+    def _convert_bbox_to_tokens(self, bbox: List[int]) -> List[int]:
+        """Convert integer bbox [0, 2047] to coordinate token IDs."""
         coord_start = self.original_vocab_size
+
+        # Validate input coordinates are integers in [0, 2047]
+        for i, coord in enumerate(bbox):
+            if not isinstance(coord, int):
+                raise ValueError(f"Coordinate {i} must be integer, got {type(coord)}: {coord}")
+            if not (0 <= coord < self.coordinate_config.max_coord_value):
+                raise ValueError(f"Coordinate {i} = {coord} out of bounds [0, {self.coordinate_config.max_coord_value})")
 
         coord_tokens = []
         for coord in bbox:
-            coord_idx = int(coord * (self.coordinate_config.max_coord_value - 1))
-            coord_idx = max(
-                0, min(coord_idx, self.coordinate_config.max_coord_value - 1)
-            )
-            coord_tokens.append(coord_start + coord_idx)
+            # Direct mapping: integer coordinate -> token ID
+            coord_tokens.append(coord_start + coord)
 
         return [self.box_start_id] + coord_tokens + [self.box_end_id]
 
-    def _convert_tokens_to_bbox(self, token_ids: List[int]) -> Optional[List[float]]:
-        """Convert coordinate token IDs back to normalized bbox."""
+    def _convert_tokens_to_bbox(self, token_ids: List[int]) -> Optional[List[int]]:
+        """Convert coordinate token IDs back to integer bbox [0, 2047]."""
         coord_start = self.original_vocab_size
 
         try:
@@ -509,7 +499,7 @@ class Qwen25VLWithDetection(nn.Module):
             if len(coord_token_ids) != 4:
                 return None
 
-            # Convert to coordinates
+            # Convert to integer coordinates
             bbox = []
             for token_id in coord_token_ids:
                 if (
@@ -518,11 +508,9 @@ class Qwen25VLWithDetection(nn.Module):
                 ):
                     return None
 
+                # Direct mapping: token ID -> integer coordinate
                 coord_idx = token_id - coord_start
-                normalized_coord = coord_idx / (
-                    self.coordinate_config.max_coord_value - 1
-                )
-                bbox.append(normalized_coord)
+                bbox.append(coord_idx)
 
             return bbox
 
@@ -605,7 +593,7 @@ class Qwen25VLWithDetection(nn.Module):
             "max_caption_length": self.detection_head.max_caption_length,
             "hidden_size": self.detection_head.hidden_size,
             "vocab_size": self.detection_head.vocab_size,
-            "detection_enabled": True,
+            "coordinate_tokens_enabled": True,
             "checkpoint_type": "unified",  # Marker for unified checkpoint
         }
 
@@ -774,6 +762,9 @@ class Qwen25VLWithDetection(nn.Module):
 
         # Load detection head weights
         model.load_detection_head_weights(checkpoint_info["detection_head_path"])
+
+        # CRITICAL: Load coordinate token extensions if they exist
+        model._load_coordinate_extensions(model_path)
 
         print(f"✅ Unified checkpoint loaded successfully")
         return model
@@ -973,7 +964,111 @@ class Qwen25VLWithDetection(nn.Module):
         if self.detection_head is not None:
             self.save_detection_head_weights(save_directory)
 
+        # ------------------------------------------------------------------
+        # 3. CRITICAL: Save coordinate token extensions if enabled
+        # ------------------------------------------------------------------
+        if self.coordinate_tokens_enabled and hasattr(self, 'extended_embeddings') and hasattr(self, 'extended_lm_head'):
+            import torch
+            
+            coord_weights_path = os.path.join(save_directory, "coordinate_extensions.pt")
+            coord_metadata = {
+                'coordinate_tokens_enabled': True,
+                'original_vocab_size': self.original_vocab_size,
+                'extended_vocab_size': self.extended_vocab_size,
+                'coordinate_config': {
+                    'max_coord_value': self.coordinate_config.max_coord_value,
+                    'enable_coordinate_tokens': self.coordinate_config.enable_coordinate_tokens,
+                    'use_official_box_tokens': self.coordinate_config.use_official_box_tokens,
+                },
+                'extended_embeddings': self.extended_embeddings.state_dict(),
+                'extended_lm_head': self.extended_lm_head.state_dict(),
+                'box_start_id': self.box_start_id,
+                'box_end_id': self.box_end_id,
+            }
+            
+            torch.save(coord_metadata, coord_weights_path)
+            print(f"✅ Saved coordinate token extensions to {coord_weights_path}")
+            print(f"   Original vocab: {self.original_vocab_size}")
+            print(f"   Extended vocab: {self.extended_vocab_size}")
+            print(f"   Coordinate tokens: {self.coordinate_config.max_coord_value}")
+
         # NOTE: Tokenizer / processor saving is handled by Trainer once per
         # checkpoint; duplicating here is unnecessary and may overwrite user
         # modifications.
         print(f"✅ save_pretrained completed for directory: {save_directory}")
+
+    def _load_coordinate_extensions(self, model_path: str):
+        """Load coordinate token extensions if they exist."""
+        import os
+        import torch
+        
+        coord_weights_path = os.path.join(model_path, "coordinate_extensions.pt")
+        
+        if not os.path.exists(coord_weights_path):
+            print("📄 No coordinate extensions found - using standard model")
+            return
+        
+        try:
+            print(f"🔧 Loading coordinate token extensions from {coord_weights_path}")
+            coord_metadata = torch.load(coord_weights_path, map_location='cpu')
+            
+            # Restore coordinate configuration
+            self.coordinate_tokens_enabled = coord_metadata['coordinate_tokens_enabled']
+            self.original_vocab_size = coord_metadata['original_vocab_size']
+            self.extended_vocab_size = coord_metadata['extended_vocab_size']
+            self.box_start_id = coord_metadata['box_start_id']
+            self.box_end_id = coord_metadata['box_end_id']
+            
+            # Restore coordinate config
+            coord_config_data = coord_metadata['coordinate_config']
+            self.coordinate_config = CoordinateConfig(
+                enable_coordinate_tokens=coord_config_data['enable_coordinate_tokens'],
+                max_coord_value=coord_config_data['max_coord_value'],
+                use_official_box_tokens=coord_config_data['use_official_box_tokens'],
+            )
+            
+            # Recreate extended embeddings and LM head with correct shapes
+            hidden_size = self.base_model.get_input_embeddings().weight.shape[1]
+            
+            # Extended embeddings
+            self.extended_embeddings = nn.Embedding(
+                self.extended_vocab_size,
+                hidden_size,
+                device=self.base_model.device,
+                dtype=self.base_model.dtype,
+            )
+            self.extended_embeddings.load_state_dict(coord_metadata['extended_embeddings'])
+            
+            # Extended LM head
+            self.extended_lm_head = nn.Linear(
+                hidden_size,
+                self.extended_vocab_size,
+                bias=False,
+                device=self.base_model.device,
+                dtype=self.base_model.dtype,
+            )
+            self.extended_lm_head.load_state_dict(coord_metadata['extended_lm_head'])
+            
+            print(f"✅ Coordinate token extensions loaded successfully")
+            print(f"   Original vocab: {self.original_vocab_size}")
+            print(f"   Extended vocab: {self.extended_vocab_size}")
+            print(f"   Coordinate tokens: {self.coordinate_config.max_coord_value}")
+            
+            # Coordinate token models loaded successfully
+            
+            # CRITICAL: Add coordinate tokens to tokenizer if missing
+            coordinate_tokens = [f"<coord_{i}>" for i in range(self.coordinate_config.max_coord_value)]
+            existing_tokens = set(self.tokenizer.get_vocab().keys())
+            missing_tokens = [token for token in coordinate_tokens if token not in existing_tokens]
+            
+            if missing_tokens:
+                print(f"🔧 Adding {len(missing_tokens)} coordinate tokens to tokenizer")
+                num_added = self.tokenizer.add_special_tokens({"additional_special_tokens": missing_tokens})
+                print(f"✅ Added {num_added} coordinate tokens to tokenizer")
+            else:
+                print(f"✅ All {len(coordinate_tokens)} coordinate tokens already in tokenizer")
+            
+        except Exception as e:
+            print(f"❌ Failed to load coordinate extensions: {e}")
+            print("📄 Falling back to standard model")
+            self.coordinate_tokens_enabled = False

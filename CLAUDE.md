@@ -17,12 +17,14 @@ The project requires:
 
 **Important Reminders:**
 - We need to activate `ms` virtual environment, remember this.
+- **NEW**: Directly use `/root/miniconda3/envs/ms/bin/python` to avoid conda activation inconsistencies
+- Always use the full path to Python in the `ms` environment to ensure package consistency
 
 ## Enhanced Data Processing Pipeline
 
 ### Quick Start
 ```bash
-conda activate ms
+source activate ms
 bash data_conversion/convert_dataset.sh
 ```
 

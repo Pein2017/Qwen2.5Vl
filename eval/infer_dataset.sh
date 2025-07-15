@@ -7,7 +7,7 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="1_teacher_finished_stage"           # e.g., "1_teacher", "no_teacher", "baseline"
+EXP_NAME="det_coordinates"           # e.g., "1_teacher", "no_teacher", "baseline"
 
 # Dataset to process (single dataset per run)
 DATASET="val"                  # "train" or "val"
@@ -17,16 +17,20 @@ NUM_TEACHERS=1                          # Set number of teachers manually (0 for
 TEACHER_POOL_FILE="data/teacher.jsonl"
 
 # Model configuration  
-MODEL_PATH="output-7-7/7-7-teacher_student_fixed_box_prompt/checkpoint-280"
+MODEL_PATH="output-714/coordinate-det/checkpoint-150"
 MODEL_NAME="qwen2_5_vl"
+CONFIG_PATH="configs/base_flat_det.yaml"  # EXPLICIT configuration file path - no fallbacks
 
-# Generation parameters
+# Generation parameters (optimized for coordinate token models)
 MAX_NEW_TOKENS=2048
-BATCH_SIZE=64
-NUM_WORKERS=8
+BATCH_SIZE=1          # Use batch_size=1 for coordinate token models
+NUM_WORKERS=0         # Use 0 workers to avoid memory issues
 ENABLE_TORCH_COMPILE=false
 
-# Logging level (debug shows validation details)
+# Force eager attention to avoid Flash Attention triton issues
+FORCE_EAGER_ATTENTION=true
+
+# Logging level (debug shows validation details)  
 LOG_LEVEL="info"                       # "debug" for detailed validation info, "info" for normal
 
 ###############################################################################
@@ -34,7 +38,7 @@ LOG_LEVEL="info"                       # "debug" for detailed validation info, "
 ###############################################################################
 
 # Environment
-export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
+export PYTHONPATH=/data3/Qwen2.5-VL-main:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export CUDA_VISIBLE_DEVICES=5
@@ -46,7 +50,7 @@ if [[ "$DATASET" != "train" && "$DATASET" != "val" ]]; then
 fi
 
 # Create clean experiment structure
-OUTPUT_BASE="experiments_707"
+OUTPUT_BASE="exp_det_coordinates"
 EXPERIMENT_DIR="${OUTPUT_BASE}/${EXP_NAME}"
 DATASET_DIR="${EXPERIMENT_DIR}/${DATASET}"
 INFERENCE_DIR="${DATASET_DIR}/inference"
@@ -106,8 +110,17 @@ else
     echo "🚫 No teacher mode"
 fi
 
+# Validate config file exists
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "❌ Configuration file not found: $CONFIG_PATH"
+    echo "Available config files:"
+    ls -1 configs/*.yaml 2>/dev/null || echo "  (none found)"
+    exit 1
+fi
+
 # Build inference command
 INFERENCE_CMD="python src/inference.py \
+    --config_path \"$CONFIG_PATH\" \
     --model_path \"$MODEL_PATH\" \
     --input_file \"$DATASET_FILE\" \
     --output_file \"$OUTPUT_FILE\" \
@@ -124,6 +137,7 @@ fi
 
 echo ""
 echo "🔧 Configuration:"
+echo "   Config: $CONFIG_PATH"
 echo "   Model: $MODEL_PATH"
 echo "   Dataset: $DATASET_FILE"
 echo "   Output: $OUTPUT_FILE"

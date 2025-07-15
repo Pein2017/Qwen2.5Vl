@@ -1,7 +1,8 @@
 ## AI Assistant Codebase Guidelines
 
 ### Environment
-- `conda activate ms`
+- ~~`source activate ms`~~
+- **Updated Environment Initialization**: Use `/root/miniconda3/envs/ms/bin/python` directly instead of generic `python` command
 - Located in China, cannot access to foreign website like `github` `google` `huggingface`
 
 ### Workflow

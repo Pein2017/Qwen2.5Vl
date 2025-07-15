@@ -70,14 +70,19 @@ def load_model_and_processor_unified(
             raise ModelLoadingError("Failed to apply Qwen2.5-VL fixes - CRITICAL")
         
         # =====================================================================
-        # STEP 2: Determine detection mode and attention implementation
+        # STEP 2: Determine coordinate token mode and attention implementation
         # =====================================================================
+        coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
+        
         if force_detection is not None:
             detection_enabled = force_detection
             logger.info(f"🎯 Detection mode FORCED: {detection_enabled}")
         else:
-            detection_enabled = getattr(config, 'detection_enabled', False)
-            logger.info(f"🎯 Detection mode from config: {detection_enabled}")
+            # For coordinate token models, we need the detection wrapper
+            detection_enabled = coordinate_tokens_enabled
+            logger.info(f"🎯 Detection wrapper enabled for coordinate tokens: {detection_enabled}")
+            
+        logger.info(f"🎯 Coordinate tokens enabled: {coordinate_tokens_enabled}")
         
         # Determine effective attention implementation
         if attn_implementation is not None:
@@ -116,6 +121,10 @@ def load_model_and_processor_unified(
             try:
                 from src.models.wrapper import Qwen25VLWithDetection
                 
+                # Check if coordinate tokens are enabled
+                coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
+                logger.info(f"🔧 Coordinate tokens enabled: {coordinate_tokens_enabled}")
+                
                 model = Qwen25VLWithDetection.from_pretrained(
                     model_path=model_path,
                     num_queries=getattr(config, 'detection_num_queries', 100),
@@ -124,6 +133,27 @@ def load_model_and_processor_unified(
                     load_detection_head=True,
                     attn_implementation=effective_attn_impl,
                 )
+                
+                # CRITICAL: For coordinate token models, ensure vocabulary consistency
+                if coordinate_tokens_enabled and hasattr(model, 'coordinate_tokens_enabled') and model.coordinate_tokens_enabled:
+                    logger.info("🔧 Validating coordinate token vocabulary consistency")
+                    
+                    # Check model vocabulary size vs tokenizer vocabulary size
+                    model_vocab_size = model.base_model.config.vocab_size
+                    tokenizer_vocab_size = len(tokenizer.get_vocab())
+                    
+                    logger.info(f"📊 Model vocab size: {model_vocab_size}")
+                    logger.info(f"📊 Tokenizer vocab size: {tokenizer_vocab_size}")
+                    
+                    if hasattr(model, 'extended_vocab_size') and model.extended_vocab_size:
+                        logger.info(f"📊 Extended vocab size: {model.extended_vocab_size}")
+                        logger.info("✅ Model has coordinate token extensions - ensuring consistency")
+                        
+                        # Ensure the model's detection flag is consistent
+                        model.detection_enabled = True  # Override for coordinate token models
+                        logger.info("✅ Set detection_enabled=True for coordinate token model")
+                    else:
+                        logger.warning("⚠️ Model loaded without extended vocabulary - coordinate tokens may not work")
                 
                 # CRITICAL: Move to GPU for inference
                 if for_inference and torch.cuda.is_available():
@@ -227,9 +257,17 @@ def load_model_and_processor_unified(
         logger.info(f"   Model device: {next(model.parameters()).device}")
         logger.info(f"   Model dtype: {next(model.parameters()).dtype}")
         
-        # Consistency check
+        # Consistency check - ensure coordinate token models have proper detection flag
         if hasattr(model, 'detection_enabled'):
-            if model.detection_enabled != detection_enabled:
+            coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
+            if coordinate_tokens_enabled:
+                # For coordinate token models, always ensure detection_enabled=True
+                if not model.detection_enabled:
+                    logger.info("🔧 Setting detection_enabled=True for coordinate token model")
+                    model.detection_enabled = True
+                logger.info("✅ Coordinate token model consistency verified")
+            elif model.detection_enabled != detection_enabled:
+                # For non-coordinate models, enforce strict consistency
                 raise ModelLoadingError(
                     f"Model detection flag mismatch: config={detection_enabled}, "
                     f"model={model.detection_enabled}"

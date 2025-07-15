@@ -17,7 +17,7 @@ Usage:
     data_root = config.data_root
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
@@ -29,12 +29,12 @@ class DirectConfig:
     """
     Direct configuration access - all values are flat and accessible directly.
     No nested structures, no parameter passing, no conversions.
-    
+
     NOTE: All fields without defaults must come first to avoid dataclass errors.
     """
 
     # === ALL REQUIRED FIELDS (no defaults) ===
-    
+
     # Model settings
     model_path: str
     model_size: str
@@ -96,8 +96,7 @@ class DirectConfig:
     verbose: bool
     disable_tqdm: bool
 
-    # Detection/Coordinate configuration
-    detection_enabled: bool
+    # Coordinate token configuration (replaces legacy detection)
     coordinate_tokens_enabled: bool
     coordinate_config_enable_coordinate_tokens: bool
     coordinate_config_max_coord_value: int
@@ -155,12 +154,12 @@ class DirectConfig:
     save_predictions: bool
     save_token_analysis: bool
     save_raw_text: bool
-    
+
     # === OPTIONAL FIELDS (with defaults) ===
-    
+
     # Optional candidates file
     candidates_file: Optional[str] = None
-    
+
     # LEGACY: Detection settings (with defaults for backward compatibility)
     detection_num_queries: int = 100
     detection_max_caption_length: int = 32
@@ -215,15 +214,17 @@ class DirectConfig:
 config: Optional[DirectConfig] = None
 
 
-def _flatten_nested_config(config_dict: dict, parent_key: str = "", sep: str = "_") -> dict:
+def _flatten_nested_config(
+    config_dict: dict, parent_key: str = "", sep: str = "_"
+) -> dict:
     """
     Flatten nested configuration dictionary.
-    
+
     Args:
         config_dict: Dictionary to flatten
         parent_key: Parent key prefix
         sep: Separator character
-        
+
     Returns:
         Flattened dictionary
     """
@@ -265,7 +266,7 @@ def init_config(config_path: str) -> DirectConfig:
 
     with open(config_file, "r") as f:
         raw_config_dict = yaml.safe_load(f)
-    
+
     # Flatten nested configurations
     config_dict = _flatten_nested_config(raw_config_dict)
 
@@ -342,10 +343,10 @@ def _validate_config(config: DirectConfig) -> None:
     """Validate configuration values."""
     if config.per_device_train_batch_size <= 0:
         raise ValueError("per_device_train_batch_size must be positive")
-    
+
     if config.coordinate_lr < 0:
         raise ValueError("coordinate_lr must be non-negative")
-        
+
     if config.coordinate_config_max_coord_value <= 0:
         raise ValueError("coordinate_config_max_coord_value must be positive")
 

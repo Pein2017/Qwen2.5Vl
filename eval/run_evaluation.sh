@@ -7,10 +7,10 @@ set -e
 ###############################################################################
 
 # Experiment name (must match inference experiment)
-EXP_NAME="no_teacher"          # Must match the EXP_NAME from inference
+EXP_NAME="det_coordinates"          # Must match the EXP_NAME from inference
 
 # Dataset to evaluate (single dataset per run)
-DATASET="val"
+DATASET="train"
 
 # Evaluation parameters
 IOU_THRESHOLD=0.3

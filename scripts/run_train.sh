@@ -19,14 +19,14 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
 CONFIG_NAME="base_flat_det"                   # Config to use: base_flat_v2 | base_flat_det
-GPU_DEVICES="4,5"             # GPU devices (comma-separated)
+GPU_DEVICES="0,1,2,3,4,5,6,7"             # GPU devices (comma-separated)
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # NEW: Training system configuration
 USE_NEW_CONFIG=false                      # Use new domain-specific config system (true/false)
 
 # Debug mode configuration
-DEBUG_MODE=True                           # true: console output, false: log to run.log
+DEBUG_MODE=false                           # true: console output, false: log to run.log
 
 # Logging configuration
 LOG_LEVEL="INFO"                          # Logging level: DEBUG | INFO | WARNING | ERROR
