@@ -13,11 +13,11 @@ The system is enabled with the `--use-new-config` flag.
 Configurations are now split into logical domains:
 
 ### ModelConfig (`src/config/domain_configs.py`)
-| Name | Type | Example |
-|------|------|---------|
-| `model_path` | str | `/path/to/model` |
-| `model_max_length` | int | 12000 |
-| `attn_implementation`| str | `flash_attention_2`|
+| Name | Type | Example | Notes |
+|------|------|---------|-------|
+| `model_path` | str | `/path/to/model` | Path to model directory |
+| `model_max_length` | int | 12000 | Maximum sequence length |
+| `attn_implementation`| str | `flash_attention_2`| Use `flash_attention_2` for speed. Compatibility patch auto-applied for PyTorch 2.5.1 |
 
 ### TrainingConfig (`src/config/domain_configs.py`)
 | Name | Type | Example |
@@ -32,7 +32,7 @@ Configurations are now split into logical domains:
 ### DataConfig (`src/config/domain_configs.py`)
 | Name | Type | Example | Notes |
 |------|------|---------|-------|
-| `collator_type` | str | `packed` | `packed` for Flash-Attention 2. |
+| `collator_type` | str | `packed` | `packed` for Flash-Attention 2. Requires compatibility patch for PyTorch 2.5.1. |
 | `teacher_ratio` | float | 0.7 | Fraction of teacher batches. |
 | `language` | str | `chinese` | Affects prompt selection. |
 

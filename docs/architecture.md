@@ -115,12 +115,12 @@ graph TD
 | **ParameterManager** | `src/training/parameter_manager.py` | Manages parameter groups for differential learning rates |
 | **TrainerFactory** | `src/training/trainer_factory.py` | Factory for creating trainer instances with proper configuration |
 
-### 2.5 Detection System
+### 2.5 Coordinate Token System
 | Module | Code location | Functionality |
 |--------|---------------|---------------|
-| **DetectionHead** | `src/detection/detection_head.py` | DETR-style detection head with configurable architecture |
-| **DetectionLoss** | `src/detection/detection_loss.py` | Hungarian matching with L1, GIoU, objectness, and caption losses |
-| **DetectionAdapter** | `src/detection/detection_adapter.py` | Adapts VLM features for detection tasks |
+| **CoordinateProcessor** | `src/utils/coordinate_processor.py` | Handles coordinate token encoding/decoding with soft expectation regression |
+| **SpecialTokens** | `src/utils/tokens/special_tokens.py` | Manages coordinate tokens and vocabulary extensions |
+| **CoordinateConfig** | `src/models/wrapper.py` | Configuration for coordinate token functionality and loss weighting |
 
 ### 2.6 Inference System
 | Module | Code location | Functionality |
@@ -262,69 +262,71 @@ Optimized collation for memory efficiency:
 # - Memory efficiency: 100% utilization vs ~70% with padding
 ```
 
-### 6.7 DETR-Style Detection System (Current Implementation)
+### 6.7 Coordinate Token System (Current Implementation)
 
-#### 6.7.1 Detection Head Architecture
-The detection system implements a DETR-style architecture with the following components:
+#### 6.7.1 Coordinate Token Architecture
+The system uses coordinate tokens for object detection with soft expectation regression:
 
 ```python
-# Detection head structure (src/detection/detection_head.py)
-class DetectionHead(nn.Module):
+# Coordinate processor structure (src/utils/coordinate_processor.py)
+class CoordinateProcessor:
     def __init__(self, config):
-        # Vision and language adapters
-        self.vision_adapter = VisionAdapter(config.vision_dim, config.hidden_dim)
-        self.language_adapter = LanguageAdapter(config.language_dim, config.hidden_dim)
+        self.max_coord_value = config.max_coord_value  # 2048
+        self.temperature = config.soft_expectation_temperature  # 100.0
+        self.coordinate_loss_weight = config.coordinate_loss_weight  # 1.0
+        self.regular_loss_weight = config.regular_loss_weight  # 1.0
         
-        # DETR decoder with configurable layers
-        self.decoder = TransformerDecoder(
-            num_layers=config.num_decoder_layers,
-            num_heads=config.num_attention_heads,
-            hidden_dim=config.hidden_dim
-        )
+    def encode_coordinates(self, bbox_list):
+        # Convert bounding boxes to coordinate tokens
+        # Uses soft expectation for differentiable coordinate prediction
         
-        # Output heads
-        self.bbox_head = nn.Linear(config.hidden_dim, 4)  # x, y, w, h
-        self.objectness_head = nn.Linear(config.hidden_dim, 1)
-        self.caption_head = nn.Linear(config.hidden_dim, config.vocab_size)
+    def compute_coordinate_loss(self, logits, targets):
+        # Focal loss + soft expectation regression
+        # Handles coordinate token learning
 ```
 
-#### 6.7.2 Hungarian Matching Algorithm
-The detection loss uses Hungarian matching to assign predictions to ground truth:
+#### 6.7.2 Soft Expectation Regression
+The coordinate system uses soft expectation for differentiable coordinate prediction:
 
 ```python
-# Hungarian matching (src/detection/detection_loss.py)
-def hungarian_matching(predictions, targets):
-    # Cost matrix combines:
-    # - L1 distance between bounding boxes
-    # - GIoU loss between boxes  
-    # - Caption similarity (when available)
+# Soft expectation regression (src/utils/coordinate_processor.py)
+def compute_soft_expectation(self, logits, coordinate_mask):
+    # Apply temperature scaling for smooth gradients
+    scaled_logits = logits / self.temperature
     
-    cost_matrix = l1_cost + giou_cost + caption_cost
-    indices = scipy.optimize.linear_sum_assignment(cost_matrix)
-    return indices
+    # Softmax over coordinate range
+    probabilities = F.softmax(scaled_logits, dim=-1)
+    
+    # Expected value as coordinate prediction
+    coordinates = torch.arange(self.max_coord_value, device=logits.device)
+    expected_coords = torch.sum(probabilities * coordinates, dim=-1)
+    
+    return expected_coords
 ```
 
-#### 6.7.3 Multi-Task Detection Loss
-The detection loss combines multiple objectives:
+#### 6.7.3 Coordinate Token Loss
+The coordinate loss combines focal loss with coordinate regression:
 
 ```python
-# Multi-task loss computation
-def compute_detection_loss(predictions, targets, indices):
-    # Matched predictions and targets
-    matched_preds = predictions[indices[0]]
-    matched_targets = targets[indices[1]]
+# Coordinate token loss computation
+def compute_coordinate_loss(self, logits, targets, coordinate_mask):
+    # Extract coordinate logits and targets
+    coord_logits = logits[coordinate_mask]  # [num_coords, max_coord_value]
+    coord_targets = targets[coordinate_mask]  # [num_coords]
     
-    # Loss components
-    bbox_loss = F.l1_loss(matched_preds.boxes, matched_targets.boxes)
-    giou_loss = generalized_iou_loss(matched_preds.boxes, matched_targets.boxes)
-    objectness_loss = focal_loss(predictions.objectness, objectness_labels)
-    caption_loss = F.cross_entropy(matched_preds.captions, matched_targets.captions)
+    # Focal loss for coordinate classification
+    focal_loss = self.focal_loss(coord_logits, coord_targets)
     
-    # Weighted combination
-    total_loss = (self.weights.bbox * bbox_loss + 
-                  self.weights.giou * giou_loss +
-                  self.weights.objectness * objectness_loss +
-                  self.weights.caption * caption_loss)
+    # Soft expectation regression loss
+    predicted_coords = self.compute_soft_expectation(coord_logits, coordinate_mask)
+    regression_loss = F.smooth_l1_loss(predicted_coords, coord_targets.float())
+    
+    # Combined loss
+    coordinate_loss = focal_loss + regression_loss
+    
+    # Weight with regular language modeling loss
+    total_loss = (self.coordinate_loss_weight * coordinate_loss + 
+                  self.regular_loss_weight * regular_lm_loss)
     
     return total_loss
 ```

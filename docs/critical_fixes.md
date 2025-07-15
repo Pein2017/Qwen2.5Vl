@@ -22,6 +22,7 @@ The project underwent significant fixes addressing two critical categories of is
 ### High-Impact Runtime Bugs
 | Issue | Impact | Status |
 |-------|--------|--------|
+| **Flash Attention Compatibility** | `AttributeError: module 'torch.library' has no attribute 'wrap_triton'` - training startup blocked | **Fixed** |
 | **mRoPE Dimension Mismatch** | `split_with_sizes expects 128 but got 288` - blocked multi-image training | **Fixed** |
 | **Image Embedding Shape Error** | `shape '[0, 4, -1]' is invalid for input of size 1280` - training crashes | **Fixed** |
 | **Teacher-Student Loss Missing** | Student never learned through backpropagation | **Fixed** |
@@ -317,15 +318,33 @@ spans = instance.get("teacher_assistant_spans", [])
 
 ### 2. Flash Attention 2 Integration
 
+**Problem**: PyTorch 2.5.1 + FlashAttention 2.8.0+ compatibility issue:
+```
+AttributeError: module 'torch.library' has no attribute 'wrap_triton'
+```
+
+**Root Cause**: FlashAttention 2.8.0+ uses `torch.library.wrap_triton` which doesn't exist in PyTorch 2.5.1.
+
 **Solution Applied**:
-- Specific padding alignment requirements
-- `cu_seqlens` for variable-length sequences
-- Memory layout optimizations
+```python
+# src/models/patches.py
+def patch_torch_library_wrap_triton():
+    if not hasattr(torch.library, 'wrap_triton'):
+        def wrap_triton(kernel_fn):
+            return kernel_fn
+        torch.library.wrap_triton = wrap_triton
+```
+
+**Configuration**:
+- `attn_implementation: "flash_attention_2"` for optimal performance
+- Automatic patch application during model loading
+- Maintains compatibility while preserving speed benefits
 
 **Performance Gains**:
 - 80% memory reduction
 - 80% speed improvement
 - Better scaling with sequence length
+- PyTorch 2.5.1 compatibility maintained
 
 ### 3. Smart Resize Optimization
 

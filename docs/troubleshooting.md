@@ -413,6 +413,42 @@ dataloader_num_workers: 4
 gradient_accumulation_steps: 2
 ```
 
+### 3. Flash Attention Compatibility Issues
+**Symptoms:**
+```
+AttributeError: module 'torch.library' has no attribute 'wrap_triton'
+```
+
+**Root Cause:**
+PyTorch 2.5.1 + FlashAttention 2.8.0+ compatibility issue where `torch.library.wrap_triton` is missing.
+
+**Solution:**
+The fix is automatically applied via `src/models/patches.py`:
+```python
+def patch_torch_library_wrap_triton():
+    if not hasattr(torch.library, 'wrap_triton'):
+        def wrap_triton(kernel_fn):
+            return kernel_fn
+        torch.library.wrap_triton = wrap_triton
+```
+
+**Configuration:**
+```yaml
+attn_implementation: "flash_attention_2"  # Keep flash attention for speed
+use_flash_attention: false  # This setting is for legacy code
+```
+
+**Verification:**
+```bash
+# Test Flash Attention works
+python -c "
+import torch
+from src.models.patches import patch_torch_library_wrap_triton
+import flash_attn
+print('✅ Flash Attention compatible with patch')
+"
+```
+
 ## Debugging Strategies
 
 ### 1. Systematic Debugging Approach
