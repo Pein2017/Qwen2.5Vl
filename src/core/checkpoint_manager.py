@@ -19,39 +19,20 @@ from typing import Any, Dict, Optional
 import torch
 from transformers.models.auto.processing_auto import AutoProcessor
 
-from src.config import config, get_config_manager
+from src.config import config
 from src.logger_utils import get_training_logger
 
 
 class CheckpointManager:
     """Manager for model checkpoints and saving/loading operations."""
 
-    def __init__(self, use_new_config: bool = False):
+    def __init__(self):
         """
         Initialize checkpoint manager.
-
-        Args:
-            use_new_config: Whether to use new domain-specific config system
         """
-        self.use_new_config = use_new_config
         self.logger = get_training_logger()
-
-        # Get configuration
-        if use_new_config:
-            try:
-                self.config = get_config_manager()
-                self.logger.info(
-                    "✅ CheckpointManager using new domain-specific configuration"
-                )
-            except RuntimeError:
-                self.logger.warning(
-                    "⚠️  New config system not available, falling back to legacy"
-                )
-                self.config = config
-                self.use_new_config = False
-        else:
-            self.config = config
-            self.logger.info("📄 CheckpointManager using legacy configuration system")
+        self.config = config
+        self.logger.info("📄 CheckpointManager using unified configuration system")
 
     def save_model_safely(self, trainer: Any, output_dir: str) -> bool:
         """
@@ -121,11 +102,7 @@ class CheckpointManager:
     def _save_image_processor(self, output_dir: str) -> None:
         """Save image processor to output directory."""
         try:
-            model_path = (
-                self.config.model.model_path
-                if self.use_new_config
-                else self.config.model_path
-            )
+            model_path = self.config.model_path
 
             processor = AutoProcessor.from_pretrained(model_path)
             processor.image_processor.save_pretrained(output_dir)
@@ -139,33 +116,17 @@ class CheckpointManager:
         try:
             metadata = {
                 "checkpoint_type": "bbu_training",
-                "config_system": "new" if self.use_new_config else "legacy",
+                "config_system": "unified",
                 "model_architecture": "Qwen2.5-VL-BBU",
                 "training_framework": "transformers_bbu_custom",
                 "creation_timestamp": str(
                     torch.cuda.Event().query() if torch.cuda.is_available() else "cpu"
                 ),
+                "model_path": self.config.model_path,
+                "coordinate_tokens_enabled": getattr(
+                    self.config, "coordinate_tokens_enabled", False
+                ),
             }
-
-            # Add configuration info
-            if self.use_new_config:
-                metadata.update(
-                    {
-                        "model_path": self.config.model.model_path,
-                        "coordinate_tokens_enabled": getattr(
-                            self.config, "coordinate_tokens_enabled", False
-                        ),
-                    }
-                )
-            else:
-                metadata.update(
-                    {
-                        "model_path": self.config.model_path,
-                        "coordinate_tokens_enabled": getattr(
-                            self.config, "coordinate_tokens_enabled", False
-                        ),
-                    }
-                )
 
             metadata_path = Path(output_dir) / "checkpoint_metadata.json"
             with open(metadata_path, "w") as f:

@@ -17,7 +17,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import config
+from src.config import get_config
 from src.logger_utils import get_data_logger
 
 logger = get_data_logger()
@@ -211,6 +211,9 @@ def create_teacher_pool_manager() -> TeacherPoolManager:
         FileNotFoundError: If required files not found
         ValueError: If configuration is invalid
     """
+    # Get config 
+    config = get_config()
+    
     # Fail fast if not configured
     if not hasattr(config, "teacher_pool_file"):
         raise AttributeError("teacher_pool_file not configured in config")

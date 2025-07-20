@@ -58,7 +58,6 @@ class DirectConfig:
     llm_lr: float
     coordinate_lr: float  # Learning rate for coordinate token components
     adapter_lr: float
-    detection_lr: float  # Legacy detection head learning rate (unused)
     warmup_ratio: float
     weight_decay: float
     max_grad_norm: float
@@ -283,29 +282,31 @@ def init_config(config_path: str) -> DirectConfig:
 
     # Create and populate config using dictionary unpacking
     try:
-        config = DirectConfig(**converted_dict)
+        new_config = DirectConfig(**converted_dict)
     except TypeError as e:
         raise ValueError(f"Configuration error: Missing or extra keys in YAML. {e}")
 
     # --- Automatically derive and set paths ---
-    if not config.run_name:
+    if not new_config.run_name:
         raise ValueError("`run_name` must be defined in the configuration.")
 
     # 1. Main output directory for the run
-    config.run_output_dir = str(Path(config.output_dir) / config.run_name)
+    new_config.run_output_dir = str(Path(new_config.output_dir) / new_config.run_name)
 
     # 2. TensorBoard directory
-    config.tensorboard_dir = str(Path(config.tb_dir) / config.run_name)
+    new_config.tensorboard_dir = str(Path(new_config.tb_dir) / new_config.run_name)
 
     # 3. Log file directory
-    config.log_file_dir = str(Path(config.run_output_dir) / "logs")
+    new_config.log_file_dir = str(Path(new_config.run_output_dir) / "logs")
 
     # Create directories
-    Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)
+    Path(new_config.run_output_dir).mkdir(parents=True, exist_ok=True)
 
     # Validate the final configuration
-    _validate_config(config)
+    _validate_config(new_config)
 
+    # Set global config and return
+    config = new_config
     return config
 
 
@@ -316,6 +317,23 @@ def _validate_config(config: DirectConfig) -> None:
 
     if config.coordinate_lr < 0:
         raise ValueError("coordinate_lr must be non-negative")
+    
+    # Coordinate token validation
+    if config.coordinate_tokens_enabled:
+        if not hasattr(config, 'coordinate_config_max_coord_value'):
+            raise ValueError("coordinate_config_max_coord_value required when coordinate tokens enabled")
+        if config.coordinate_config_max_coord_value <= 0:
+            raise ValueError("coordinate_config_max_coord_value must be positive")
+        if config.coordinate_config_coordinate_loss_weight < 0:
+            raise ValueError("coordinate_config_coordinate_loss_weight must be non-negative")
+        if config.coordinate_config_regular_loss_weight < 0:
+            raise ValueError("coordinate_config_regular_loss_weight must be non-negative")
+        if config.coordinate_config_soft_expectation_temperature <= 0:
+            raise ValueError("coordinate_config_soft_expectation_temperature must be positive")
+        if not (0.0 <= config.coordinate_config_focal_loss_alpha <= 1.0):
+            raise ValueError("coordinate_config_focal_loss_alpha must be between 0 and 1")
+        if config.coordinate_config_focal_loss_gamma < 0:
+            raise ValueError("coordinate_config_focal_loss_gamma must be non-negative")
 
     if config.coordinate_config_max_coord_value <= 0:
         raise ValueError("coordinate_config_max_coord_value must be positive")

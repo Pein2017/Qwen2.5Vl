@@ -1,25 +1,10 @@
 """
-Loss Manager for Multi-Component BBU Training
+Simplified Loss Manager for BBU Training
 
-This module extracts and centralizes all loss computation logic from the monolithic
-BBUTrainer class. It handles:
-
-- Language modeling loss computation and NaN detection
-- Teacher-student loss splitting and tracking
-- Detection loss integration and coordination
-- Loss accumulation across gradient accumulation steps
-- Component-wise loss averaging and logging
-- Ground truth object extraction and validation
-
-Key Features:
-- Clean separation of loss logic from training orchestration
-- Robust loss accumulation with proper averaging
-- Component-wise loss tracking for detailed monitoring
-- Integration with detection system when enabled
-- Proper teacher-student loss attribution
+Streamlined loss computation without excessive validation and accumulation complexity.
 """
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -27,89 +12,25 @@ from transformers import PreTrainedTokenizerBase
 
 from src.config import config
 from src.logger_utils import get_training_logger
-from src.utils.schema import GroundTruthObject
-from src.utils.utils import IGNORE_INDEX
 
 
 class LossManager:
     """
-    Centralized manager for all loss computation in BBU training.
-
-    Handles multi-component loss computation including language modeling,
-    detection, and teacher-student learning with proper accumulation
-    and averaging across gradient accumulation steps.
+    Simplified manager for loss computation in BBU training.
+    
+    Delegates most loss computation to the model wrapper and focuses
+    on clean loss extraction and logging.
     """
 
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        **detection_config,
-    ):
-        """
-        Initialize loss manager.
-
-        Args:
-            tokenizer: Tokenizer for loss computation
-            **detection_config: Legacy parameters, ignored
-        """
-        # Strict validation - fail fast
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, **kwargs):
+        """Initialize simplified loss manager."""
         if tokenizer is None:
             raise ValueError("tokenizer is required")
-        if not hasattr(tokenizer, "get_vocab"):
-            raise ValueError("tokenizer must have get_vocab method")
-
+            
         self.tokenizer = tokenizer
         self.logger = get_training_logger()
-
-        if detection_config:
-            self.logger.info(
-                "🚀 Detection module has been migrated to coordinate tokens - ignoring legacy detection config"
-            )
-
-        # Detection loss is no longer used
-        self.detection_loss = None
-
-        # Current loss components (single forward pass)
-        self._current_lm_loss: float = 0.0
-        self._current_teacher_lm_loss: float = 0.0
-        self._current_student_lm_loss: float = 0.0
-        self._current_bbox_loss: float = 0.0
-        self._current_caption_loss: float = 0.0
-        self._current_objectness_loss: float = 0.0
-        self._current_bbox_l1_loss: float = 0.0
-        self._current_bbox_giou_loss: float = 0.0
-        # Add coordinate token loss tracking
-        self._current_coordinate_loss: float = 0.0
-        self._current_focal_loss: float = 0.0
-        self._current_regular_loss: float = 0.0
-        self._current_l1_loss: float = 0.0
-        self._current_giou_loss: float = 0.0
-
-        # Loss accumulators for gradient accumulation
-        self._accumulated_lm_loss: float = 0.0
-        self._accumulated_teacher_lm_loss: float = 0.0
-        self._accumulated_student_lm_loss: float = 0.0
-        self._accumulated_bbox_l1_loss: float = 0.0
-        self._accumulated_bbox_giou_loss: float = 0.0
-        self._accumulated_caption_loss: float = 0.0
-        self._accumulated_objectness_loss: float = 0.0
-        # Add coordinate token loss accumulation
-        self._accumulated_focal_loss: float = 0.0
-        self._accumulated_regular_loss: float = 0.0
-        self._accumulated_l1_loss: float = 0.0
-        self._accumulated_giou_loss: float = 0.0
-
-        # Micro-batch counter for proper averaging
         self._micro_batch_count: int = 0
-
-        # Teacher performance tracking
-        self._teacher_performance_stats = {
-            "student_with_teacher_count": 0,
-            "student_without_teacher_count": 0,
-            "student_with_teacher_loss_sum": 0.0,
-            "student_without_teacher_loss_sum": 0.0,
-            "log_interval": 50,  # Log every 50 batches with teacher-student data
-        }
+        self._current_losses: Dict[str, float] = {}
 
     def compute_total_loss(
         self,
@@ -119,12 +40,12 @@ class LossManager:
         detection_training_enabled: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Compute total loss with clear separation between coordinate token and standard LLM modes.
+        Simplified loss computation.
 
         Args:
             model_outputs: Output from model forward pass
             inputs: Batch inputs containing labels and ground truth
-            is_training: Whether in training mode (affects accumulation)
+            is_training: Whether in training mode
             detection_training_enabled: Whether detection training is active
 
         Returns:
@@ -133,647 +54,147 @@ class LossManager:
         if is_training:
             self._micro_batch_count += 1
 
-        # Check coordinate tokens mode for proper loss separation
-        coordinate_tokens_enabled = self._get_coordinate_tokens_enabled()
-        
-        # 1. Compute base language modeling loss
-        lm_loss = self._compute_language_modeling_loss(model_outputs, inputs)
-
-        # 2. Compute teacher-student loss split
-        teacher_loss, student_loss = self._compute_teacher_student_losses(
-            model_outputs.logits, inputs.get("labels"), inputs
-        )
-
-        # 3. Process coordinate or detection losses based on mode
-        if coordinate_tokens_enabled:
-            coordinate_components = self._extract_and_process_coordinate_losses(model_outputs)
-            total_coordinate_loss = self._compute_total_coordinate_loss(coordinate_components)
+        # Extract loss from model outputs (model handles coordinate/standard loss internally)
+        if hasattr(model_outputs, 'loss') and model_outputs.loss is not None:
+            total_loss = model_outputs.loss
+            self.logger.info(f"🔍 TRAINING LOSS CHECK: model_outputs.loss = {total_loss.item():.6f}")
+            if total_loss.item() == 0.0:
+                self.logger.error(f"🚨 MODEL OUTPUT LOSS IS 0.0! This means the model is not computing loss correctly!")
+                self.logger.error(f"   - model_outputs type: {type(model_outputs)}")
+                self.logger.error(f"   - hasattr(loss): {hasattr(model_outputs, 'loss')}")
+                self.logger.error(f"   - loss value: {model_outputs.loss}")
+                self.logger.error(f"   - loss shape: {model_outputs.loss.shape if hasattr(model_outputs.loss, 'shape') else 'no shape'}")
+                raise RuntimeError(f"Model is returning 0.0 loss! Check model forward pass.")
         else:
-            coordinate_components = self._get_zero_coordinate_components()
-            total_coordinate_loss = torch.tensor(0.0, device=lm_loss.device)
+            # EXPOSE ERROR: This should never happen in training!
+            labels = inputs.get("labels")
+            self.logger.error(f"🚨 LOSS COMPUTATION FALLBACK TRIGGERED!")
+            self.logger.error(f"   - model_outputs.loss is None: {not hasattr(model_outputs, 'loss') or model_outputs.loss is None}")
+            self.logger.error(f"   - labels present: {labels is not None}")
+            if labels is not None:
+                self.logger.error(f"   - labels shape: {labels.shape}")
+                total_loss = F.cross_entropy(
+                    model_outputs.logits.view(-1, model_outputs.logits.size(-1)),
+                    labels.view(-1),
+                    ignore_index=-100
+                )
+                self.logger.error(f"   - Computed fallback loss: {total_loss.item():.6f}")
+            else:
+                self.logger.error(f"   - NO LABELS FOUND - Setting loss to 0.0 (THIS IS WRONG!)")
+                total_loss = torch.tensor(0.0, device=model_outputs.logits.device)
+                raise RuntimeError("Training loss is 0.0 because no labels found in inputs! This means data loading is broken.")
 
-        # 4. Get loss weights from config with validation
-        teacher_weight, student_weight = self._get_validated_loss_weights()
+        # Clean loss separation: LLM loss vs Coordinate loss components
+        loss_components = {}
+        
+        # 1. LLM Loss (standard shifted cross entropy from Qwen2.5)
+        llm_loss = self._safe_item(model_outputs._regular_loss) if hasattr(model_outputs, '_regular_loss') else self._safe_item(model_outputs.loss)
+        loss_components["llm_loss"] = llm_loss
+        
+        # 2. Individual Coordinate Loss Components (no duplicates or summations)
+        focal_loss = self._safe_item(model_outputs._focal_loss) if hasattr(model_outputs, '_focal_loss') else 0.0
+        l1_loss = self._safe_item(model_outputs._l1_loss) if hasattr(model_outputs, '_l1_loss') else 0.0
+        giou_loss = self._safe_item(model_outputs._giou_loss) if hasattr(model_outputs, '_giou_loss') else 0.0
+        
+        loss_components["focal_loss"] = focal_loss
+        loss_components["l1_loss"] = l1_loss  
+        loss_components["giou_loss"] = giou_loss
+        
+        # Compute total coordinate loss for teacher-student differentiation
+        coord_loss_total = focal_loss + l1_loss + giou_loss
+        
+        # 3. Teacher-Student differentiation (determine from sample type)
+        is_teacher_sample = self._is_teacher_sample(inputs)
+        if is_teacher_sample:
+            # Teacher samples: only LLM loss with coordinate tokens inserted
+            loss_components["teacher_lm_loss"] = llm_loss
+            loss_components["student_lm_loss"] = 0.0
+        else:
+            # Student samples: both LLM + coordinate losses
+            loss_components["teacher_lm_loss"] = 0.0
+            loss_components["student_lm_loss"] = llm_loss + coord_loss_total
+        
+        # Remove coordinate_loss duplication - it's same as l1_loss
+        # Don't add coordinate_loss separately to avoid confusion
+        # objectness_loss removed - not needed for coordinate token system
 
-        # 5. Combine all losses for backpropagation
-        weighted_teacher_loss = teacher_weight * teacher_loss
-        weighted_student_loss = student_weight * student_loss
-
-        total_loss = (
-            lm_loss
-            + total_coordinate_loss
-            + weighted_teacher_loss
-            + weighted_student_loss
-        )
-
-        # 6. Update current loss components
-        self._update_current_losses(
-            lm_loss, teacher_loss, student_loss, coordinate_components
-        )
-
-        # 7. Accumulate losses if training
-        if is_training:
-            self._accumulate_losses()
-            self._accumulate_coordinate_losses()
-
-        # 8. Prepare comprehensive loss components dictionary
-        loss_components = self._prepare_loss_components_dict(coordinate_components)
-
-        # 9. Log loss computation details if coordinate tokens enabled
-        if coordinate_tokens_enabled:
-            self._log_coordinate_loss_details(coordinate_components, total_coordinate_loss)
-
+        # Store current losses
+        self._current_losses = loss_components.copy()
+        
         return total_loss, loss_components
 
-    def _get_coordinate_tokens_enabled(self) -> bool:
-        """Get coordinate tokens enabled status with proper validation."""
-        if not hasattr(config, "coordinate_tokens_enabled"):
-            raise RuntimeError("coordinate_tokens_enabled not found in config - configuration incomplete")
-        return config.coordinate_tokens_enabled
-    
-    def _extract_and_process_coordinate_losses(self, model_outputs: Any) -> Dict[str, float]:
-        """Extract and process coordinate token loss components from model outputs."""
-        self.logger.debug(f"🔍 Extracting coordinate losses (coordinate tokens enabled)")
-        
-        # NO DEFAULTS - FAIL FAST if required coordinate losses are missing
-        required_coordinate_losses = [
-            ("_focal_loss", "focal_loss"),
-            ("_regular_loss", "regular_loss"),
-            ("_l1_loss", "l1_loss"),
-            ("_giou_loss", "giou_loss"),
-        ]
-        
-        # Check for missing required attributes first
-        missing_attrs = []
-        for attr_name, component_name in required_coordinate_losses:
-            if not hasattr(model_outputs, attr_name):
-                missing_attrs.append(attr_name)
-        
-        if missing_attrs:
-            raise RuntimeError(
-                f"Coordinate tokens enabled but model outputs missing required attributes: {missing_attrs}. "
-                f"This indicates model wrapper is not properly attaching coordinate losses."
-            )
-        
-        # Initialize coordinate loss components with extracted values
-        coordinate_components = {
-            "total_tokens": 0,
-            "coordinate_tokens": 0,
-            "regular_tokens": 0,
-            # Legacy compatibility
-            "bbox_l1_loss": 0.0,
-            "bbox_giou_loss": 0.0,
-            "caption_loss": 0.0,
-            "objectness_loss": 0.0,
-        }
-
-        # Extract coordinate losses from model outputs - NO DEFAULTS
-        for attr_name, component_name in required_coordinate_losses:
-            value = getattr(model_outputs, attr_name)
-            coordinate_components[component_name] = float(value)
-            self.logger.debug(f"   ✅ Extracted {component_name}: {value}")
-        
-        # Extract detection loss if available (optional)
-        if hasattr(model_outputs, "_detection_loss"):
-            coordinate_components["detection_loss"] = float(model_outputs._detection_loss)
-            self.logger.debug(f"   ✅ Extracted detection_loss: {model_outputs._detection_loss}")
-        else:
-            coordinate_components["detection_loss"] = 0.0
-            self.logger.debug(f"   📄 No detection_loss in model outputs (optional)")
-
-        # Extract token count metrics
-        token_metrics = [
-            ("_total_tokens", "total_tokens"),
-            ("_coordinate_tokens", "coordinate_tokens"),
-            ("_regular_tokens", "regular_tokens"),
-        ]
-        
-        for attr_name, component_name in token_metrics:
-            if hasattr(model_outputs, attr_name):
-                value = getattr(model_outputs, attr_name)
-                coordinate_components[component_name] = int(value)
-                self.logger.debug(f"   📊 {component_name}: {value}")
-
-        # Update internal tracking
-        self._current_focal_loss = coordinate_components["focal_loss"]
-        self._current_regular_loss = coordinate_components["regular_loss"]
-        self._current_l1_loss = coordinate_components["l1_loss"]
-        self._current_giou_loss = coordinate_components["giou_loss"]
-
-        # Legacy compatibility mapping
-        coordinate_components["bbox_l1_loss"] = coordinate_components["l1_loss"]
-        coordinate_components["bbox_giou_loss"] = coordinate_components["giou_loss"]
-
-        # STRICT VALIDATION: Ensure coordinate losses are properly extracted
-        total_coord_loss = (coordinate_components["focal_loss"] + 
-                           coordinate_components["l1_loss"] + 
-                           coordinate_components["giou_loss"])
-        
-        if total_coord_loss == 0.0:
-            self.logger.error("❌ LOSS_MANAGER: All coordinate losses are zero despite coordinate tokens being enabled!")
-            self.logger.error(f"   focal_loss: {coordinate_components['focal_loss']}")
-            self.logger.error(f"   l1_loss: {coordinate_components['l1_loss']}")
-            self.logger.error(f"   giou_loss: {coordinate_components['giou_loss']}")
-            self.logger.error(f"   coordinate_tokens: {coordinate_components['coordinate_tokens']}")
-            self.logger.error(f"   regular_tokens: {coordinate_components['regular_tokens']}")
-            
-            # Check if coordinate tokens are present
-            if coordinate_components["coordinate_tokens"] > 0:
-                raise RuntimeError(
-                    f"Coordinate tokens detected ({coordinate_components['coordinate_tokens']} tokens) "
-                    f"but all coordinate losses are zero. This indicates coordinate loss computation failed."
-                )
-            else:
-                self.logger.warning("⚠️ LOSS_MANAGER: No coordinate tokens detected in this batch - zero losses expected")
-        else:
-            self.logger.debug(f"✅ LOSS_MANAGER: Total coordinate loss: {total_coord_loss}")
-
-        return coordinate_components
-    
-    def _get_zero_coordinate_components(self) -> Dict[str, float]:
-        """Get zero coordinate components for standard LLM mode."""
-        self.logger.debug(f"📄 Using standard LLM mode (coordinate tokens disabled)")
-        
-        # Reset internal tracking to zero
-        self._current_coordinate_loss = 0.0
-        self._current_focal_loss = 0.0
-        self._current_regular_loss = 0.0
-        self._current_l1_loss = 0.0
-        self._current_giou_loss = 0.0
-        
-        return {
-            "coordinate_loss": 0.0,
-            "focal_loss": 0.0,
-            "regular_loss": 0.0,
-            "l1_loss": 0.0,
-            "giou_loss": 0.0,
-            "detection_loss": 0.0,
-            "total_tokens": 0,
-            "coordinate_tokens": 0,
-            "regular_tokens": 0,
-            "bbox_l1_loss": 0.0,
-            "bbox_giou_loss": 0.0,
-            "caption_loss": 0.0,
-            "objectness_loss": 0.0,
-        }
-    
-    def _compute_total_coordinate_loss(self, coordinate_components: Dict[str, float]) -> torch.Tensor:
-        """Compute total coordinate loss from components."""
-        # Sum all coordinate loss components for backpropagation
-        total_loss = (
-            coordinate_components["focal_loss"] +
-            coordinate_components["l1_loss"] +
-            coordinate_components["giou_loss"]
-        )
-        
-        # Note: regular_loss is handled separately as it's standard CE loss
-        # detection_loss is typically a combination, not added separately
-        
-        device = next(iter([p for p in self.tokenizer.get_vocab().values()][:1]), 'cpu')
-        if isinstance(device, str):
-            device = 'cpu'
-        else:
-            device = 'cpu'  # Default fallback
-            
-        return torch.tensor(total_loss, dtype=torch.float32)
-    
-    def _get_validated_loss_weights(self) -> Tuple[float, float]:
-        """Get validated teacher and student loss weights from config."""
-        if not hasattr(config, "teacher_loss_weight"):
-            raise ValueError("teacher_loss_weight must be explicitly configured in config")
-        if not hasattr(config, "student_loss_weight"):
-            raise ValueError("student_loss_weight must be explicitly configured in config")
-        
-        return config.teacher_loss_weight, config.student_loss_weight
-    
-    def _prepare_loss_components_dict(self, coordinate_components: Dict[str, float]) -> Dict[str, float]:
-        """Prepare clean loss components dictionary with consistent naming."""
-        loss_dict = {
-            "teacher_lm_loss": self._current_teacher_lm_loss,
-            "student_lm_loss": self._current_student_lm_loss,
-            "regular_loss": coordinate_components.get("regular_loss", 0.0),
-        }
-        
-        # Add coordinate losses with coord_ prefix (only if non-zero to avoid clutter)
-        # Note: Do NOT add raw focal_loss, l1_loss, giou_loss - only prefixed versions
-        focal_loss = coordinate_components.get("focal_loss", 0.0)
-        l1_loss = coordinate_components.get("l1_loss", 0.0)  
-        giou_loss = coordinate_components.get("giou_loss", 0.0)
-        
-        if focal_loss > 0:
-            loss_dict["coord_focal_loss"] = focal_loss
-        if l1_loss > 0:
-            loss_dict["coord_l1_loss"] = l1_loss
-        if giou_loss > 0:
-            loss_dict["coord_giou_loss"] = giou_loss
-            
-        # Add token counts for debugging (only if non-zero)
-        if coordinate_components.get("total_tokens", 0) > 0:
-            loss_dict["total_tokens"] = coordinate_components["total_tokens"]
-        if coordinate_components.get("coordinate_tokens", 0) > 0:
-            loss_dict["coordinate_tokens"] = coordinate_components["coordinate_tokens"]
-        if coordinate_components.get("regular_tokens", 0) > 0:
-            loss_dict["regular_tokens"] = coordinate_components["regular_tokens"]
-        
-        return loss_dict
-    
-    def _log_coordinate_loss_details(self, coordinate_components: Dict[str, float], total_coordinate_loss: torch.Tensor):
-        """Log detailed coordinate loss information for debugging."""
-        total_coord_loss = sum([
-            coordinate_components["focal_loss"],
-            coordinate_components["l1_loss"],
-            coordinate_components["giou_loss"],
-        ])
-        
-        self.logger.debug(f"📊 Coordinate Loss Summary:")
-        self.logger.debug(f"   focal_loss: {coordinate_components['focal_loss']:.6f}")
-        self.logger.debug(f"   regular_loss: {coordinate_components['regular_loss']:.6f}")
-        self.logger.debug(f"   l1_loss: {coordinate_components['l1_loss']:.6f}")
-        self.logger.debug(f"   giou_loss: {coordinate_components['giou_loss']:.6f}")
-        self.logger.debug(f"   Total for backprop: {total_coord_loss:.6f}")
-        self.logger.debug(f"   Token counts - total: {coordinate_components['total_tokens']}, coord: {coordinate_components['coordinate_tokens']}, regular: {coordinate_components['regular_tokens']}")
-
-    def _compute_language_modeling_loss(
-        self, model_outputs: Any, inputs: Dict[str, Any]
-    ) -> torch.Tensor:
-        """Compute language modeling loss with NaN detection."""
-        lm_loss = model_outputs.loss
-
-        # NaN detection and logging
-        if torch.isnan(lm_loss):
-            self.logger.error("❌ NaN detected in language modeling loss!")
-            # Return a small positive loss to continue training
-            lm_loss = torch.tensor(1e-6, device=lm_loss.device, requires_grad=True)
-
-        return lm_loss
-
-    def _compute_teacher_student_losses(
-        self, logits: torch.Tensor, labels: torch.Tensor, inputs: Dict[str, Any]
-    ) -> Tuple[float, float]:
-        """
-        Compute separate losses for teacher and student spans.
-
-        Args:
-            logits: Model output logits (B, S, V)
-            labels: Target labels (B, S)
-            inputs: Batch inputs containing span information
-
-        Returns:
-            Tuple of (teacher_loss, student_loss) as float values
-        """
-        if logits is None or labels is None:
-            return 0.0, 0.0
-
-        # Get teacher and student spans from inputs
-        teacher_spans = inputs.get("teacher_assistant_spans", [])
-        student_spans = inputs.get("student_assistant_spans", [])
-
-        if not teacher_spans and not student_spans:
-            return 0.0, 0.0
-
-        # Apply shifting for next-token prediction (align logits and labels)
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-
-        batch_size, shifted_seq_len, vocab_size = shift_logits.shape
-
-        # Flatten tensors for easier indexing
-        flat_logits = shift_logits.view(-1, vocab_size)
-        flat_labels = shift_labels.view(-1)
-
-        # Collect indices for teacher and student spans
-        teacher_indices = []
-        student_indices = []
-
-        for batch_idx in range(batch_size):
-            # Process teacher spans
-            if batch_idx < len(teacher_spans):
-                for start, end in teacher_spans[batch_idx]:
-                    for pos in range(start, end):
-                        shifted_pos = pos - 1  # Adjust for shifting
-                        if 0 <= shifted_pos < shifted_seq_len:
-                            flat_idx = batch_idx * shifted_seq_len + shifted_pos
-                            if flat_labels[flat_idx] != IGNORE_INDEX:
-                                teacher_indices.append(flat_idx)
-
-            # Process student spans
-            if batch_idx < len(student_spans):
-                for start, end in student_spans[batch_idx]:
-                    for pos in range(start, end):
-                        shifted_pos = pos - 1  # Adjust for shifting
-                        if 0 <= shifted_pos < shifted_seq_len:
-                            flat_idx = batch_idx * shifted_seq_len + shifted_pos
-                            if flat_labels[flat_idx] != IGNORE_INDEX:
-                                student_indices.append(flat_idx)
-
-        # Compute separate losses AS TENSORS (maintain gradients!)
-        teacher_loss_tensor = torch.tensor(
-            0.0, device=logits.device, requires_grad=True
-        )
-        student_loss_tensor = torch.tensor(
-            0.0, device=logits.device, requires_grad=True
-        )
-
-        if teacher_indices:
-            teacher_indices = torch.tensor(teacher_indices, device=logits.device)
-            teacher_logits = flat_logits[teacher_indices]
-            teacher_labels = flat_labels[teacher_indices]
-            teacher_loss_tensor = F.cross_entropy(
-                teacher_logits, teacher_labels, reduction="mean"
-            )
-
-        if student_indices:
-            student_indices = torch.tensor(student_indices, device=logits.device)
-            student_logits = flat_logits[student_indices]
-            student_labels = flat_labels[student_indices]
-            student_loss_tensor = F.cross_entropy(
-                student_logits, student_labels, reduction="mean"
-            )
-
-        # Track student performance with/without teacher for analysis
-        self._track_student_performance_by_teacher(
-            teacher_spans, student_spans, teacher_loss_tensor, student_loss_tensor
-        )
-
-        return teacher_loss_tensor, student_loss_tensor
-
-    def _track_student_performance_by_teacher(
-        self,
-        teacher_spans: List[List[Tuple[int, int]]],
-        student_spans: List[List[Tuple[int, int]]],
-        teacher_loss: torch.Tensor,
-        student_loss: torch.Tensor,
-    ):
-        """
-        Track student performance separately for samples with/without teachers.
-
-        This helps analyze whether teacher guidance is improving student learning.
-        """
-        # Only track when student spans are present
-        if not student_spans or len(student_spans) == 0:
-            return
-
-        # Check if teachers are present in this batch
-        has_teacher = bool(teacher_spans and any(spans for spans in teacher_spans))
-
-        # Convert loss tensors to float for tracking (detach from graph for logging)
-        student_loss_value = (
-            student_loss.detach().item()
-            if student_loss.requires_grad
-            else student_loss.item()
-        )
-
-        # Update statistics
-        stats = self._teacher_performance_stats
-        if has_teacher:
-            stats["student_with_teacher_count"] += 1
-            stats["student_with_teacher_loss_sum"] += student_loss_value
-        else:
-            stats["student_without_teacher_count"] += 1
-            stats["student_without_teacher_loss_sum"] += student_loss_value
-
-        # Log comparison periodically
-        total_tracked = (
-            stats["student_with_teacher_count"] + stats["student_without_teacher_count"]
-        )
-        if total_tracked > 0 and total_tracked % stats["log_interval"] == 0:
-            # Calculate average losses
-            avg_with_teacher = (
-                stats["student_with_teacher_loss_sum"]
-                / stats["student_with_teacher_count"]
-                if stats["student_with_teacher_count"] > 0
-                else 0.0
-            )
-            avg_without_teacher = (
-                stats["student_without_teacher_loss_sum"]
-                / stats["student_without_teacher_count"]
-                if stats["student_without_teacher_count"] > 0
-                else 0.0
-            )
-
-            # Calculate teacher effectiveness
-            improvement = (
-                (avg_without_teacher - avg_with_teacher)
-                if avg_without_teacher > 0
-                else 0.0
-            )
-            improvement_pct = (
-                (improvement / avg_without_teacher * 100)
-                if avg_without_teacher > 0
-                else 0.0
-            )
-
-            self.logger.info(
-                f"📊 Teacher Effectiveness Analysis (after {total_tracked} teacher-student batches):"
-            )
-            self.logger.info(
-                f"   🎯 Student loss WITH teacher: {avg_with_teacher:.4f} "
-                f"({stats['student_with_teacher_count']} batches)"
-            )
-            self.logger.info(
-                f"   🎯 Student loss WITHOUT teacher: {avg_without_teacher:.4f} "
-                f"({stats['student_without_teacher_count']} batches)"
-            )
-            if improvement > 0:
-                self.logger.info(
-                    f"   ✅ Teacher improves student loss by {improvement:.4f} ({improvement_pct:.1f}%)"
-                )
-            elif improvement < 0:
-                self.logger.info(
-                    f"   ⚠️  Teacher guidance shows higher loss by {abs(improvement):.4f} ({abs(improvement_pct):.1f}%)"
-                )
-            else:
-                self.logger.info("   ➖ No significant difference observed")
-
-    def _extract_ground_truth_objects(
-        self, inputs: Dict[str, Any]
-    ) -> List[List[GroundTruthObject]]:
-        """Extract ground truth objects from batch inputs."""
-        return inputs.get("ground_truth_objects", [])
-
-    def _update_current_losses(
-        self,
-        lm_loss: torch.Tensor,
-        teacher_loss: torch.Tensor,
-        student_loss: torch.Tensor,
-        detection_components: Dict[str, float],
-    ):
-        """Update current loss components."""
-        self._current_lm_loss = lm_loss.item()
-        self._current_teacher_lm_loss = (
-            teacher_loss.item()
-            if isinstance(teacher_loss, torch.Tensor)
-            else float(teacher_loss)
-        )
-        self._current_student_lm_loss = (
-            student_loss.item()
-            if isinstance(student_loss, torch.Tensor)
-            else float(student_loss)
-        )
-
-        # Update detection losses (legacy)
-        self._current_bbox_l1_loss = detection_components.get("bbox_l1_loss", 0.0)
-        self._current_bbox_giou_loss = detection_components.get("bbox_giou_loss", 0.0)
-        self._current_caption_loss = detection_components.get("caption_loss", 0.0)
-        self._current_objectness_loss = detection_components.get("objectness_loss", 0.0)
-        self._current_bbox_loss = (
-            self._current_bbox_l1_loss + self._current_bbox_giou_loss
-        )
-
-        # CRITICAL FIX: Update coordinate token losses from detection_components
-        # These are already extracted in _extract_coordinate_losses but need to be
-        # properly updated in current loss tracking
-        self._current_coordinate_loss = detection_components.get("coordinate_loss", 0.0)
-        self._current_focal_loss = detection_components.get("focal_loss", 0.0)
-        self._current_regular_loss = detection_components.get("regular_loss", 0.0)
-        self._current_l1_loss = detection_components.get("l1_loss", 0.0)
-        self._current_giou_loss = detection_components.get("giou_loss", 0.0)
-
-    def _accumulate_losses(self):
-        """Accumulate current losses to accumulators."""
-        self._accumulated_lm_loss += self._current_lm_loss
-        self._accumulated_teacher_lm_loss += self._current_teacher_lm_loss
-        self._accumulated_student_lm_loss += self._current_student_lm_loss
-        self._accumulated_bbox_l1_loss += self._current_bbox_l1_loss
-        self._accumulated_bbox_giou_loss += self._current_bbox_giou_loss
-        self._accumulated_caption_loss += self._current_caption_loss
-        self._accumulated_objectness_loss += self._current_objectness_loss
-
-    def _accumulate_coordinate_losses(self):
-        """Accumulate coordinate token losses to accumulators."""
-        self._accumulated_focal_loss += self._current_focal_loss
-        self._accumulated_regular_loss += self._current_regular_loss
-        self._accumulated_l1_loss += self._current_l1_loss
-        self._accumulated_giou_loss += self._current_giou_loss
-
-    def get_averaged_losses(self) -> Dict[str, float]:
-        """
-        Get averaged loss components with clean naming (no duplicates or unused losses).
-
-        Returns:
-            Dictionary of averaged loss components
-        """
-        num_micro_batches = max(1, self._micro_batch_count)
-        coordinate_tokens_enabled = self._get_coordinate_tokens_enabled()
-
-        # Base LLM losses (clean naming - no lm_loss)
-        averaged_losses = {
-            "teacher_lm_loss": self._accumulated_teacher_lm_loss / num_micro_batches,
-            "student_lm_loss": self._accumulated_student_lm_loss / num_micro_batches,
-        }
-
-        # Add coordinate token losses if enabled and available (with coord_ prefix, only if non-zero)
-        if coordinate_tokens_enabled and hasattr(self, "_accumulated_focal_loss"):
-            regular_loss = self._accumulated_regular_loss / num_micro_batches
-            focal_loss = self._accumulated_focal_loss / num_micro_batches
-            l1_loss = self._accumulated_l1_loss / num_micro_batches
-            giou_loss = self._accumulated_giou_loss / num_micro_batches
-            
-            # Always add regular_loss
-            averaged_losses["regular_loss"] = regular_loss
-            
-            # Only add coordinate losses if they're non-zero (student samples)
-            if focal_loss > 0:
-                averaged_losses["coord_focal_loss"] = focal_loss
-            if l1_loss > 0:
-                averaged_losses["coord_l1_loss"] = l1_loss
-            if giou_loss > 0:
-                averaged_losses["coord_giou_loss"] = giou_loss
-            
-            # Log coordinate loss summary
-            total_coord_loss = focal_loss + l1_loss + giou_loss
-            if total_coord_loss > 0:
-                self.logger.debug(f"📊 Averaged coordinate losses - total: {total_coord_loss:.6f}")
-        else:
-            # Standard LLM mode - minimal logging
-            averaged_losses["regular_loss"] = 0.0
-
-        # Legacy detection losses (for backward compatibility - only if non-zero)
-        bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
-        bbox_giou_loss = self._accumulated_bbox_giou_loss / num_micro_batches
-        caption_loss = self._accumulated_caption_loss / num_micro_batches
-        objectness_loss = self._accumulated_objectness_loss / num_micro_batches
-        
-        if bbox_l1_loss > 0:
-            averaged_losses["bbox_l1_loss"] = bbox_l1_loss
-        if bbox_giou_loss > 0:
-            averaged_losses["bbox_giou_loss"] = bbox_giou_loss
-        if caption_loss > 0:
-            averaged_losses["caption_loss"] = caption_loss
-        if objectness_loss > 0:
-            averaged_losses["objectness_loss"] = objectness_loss
-
-        # Note: total_loss computation removed - handled by trainer directly
-
-        # Reset accumulators
-        self._reset_accumulators()
-
-        return averaged_losses
-
-    def _reset_accumulators(self):
-        """Reset all loss accumulators."""
-        self._accumulated_lm_loss = 0.0
-        self._accumulated_teacher_lm_loss = 0.0
-        self._accumulated_student_lm_loss = 0.0
-        self._accumulated_bbox_l1_loss = 0.0
-        self._accumulated_bbox_giou_loss = 0.0
-        self._accumulated_caption_loss = 0.0
-        self._accumulated_objectness_loss = 0.0
-        # Reset coordinate token accumulators if they exist
-        if hasattr(self, "_accumulated_focal_loss"):
-            self._accumulated_focal_loss = 0.0
-            self._accumulated_regular_loss = 0.0
-            self._accumulated_l1_loss = 0.0
-            self._accumulated_giou_loss = 0.0
+    def reset_loss_accumulation(self):
+        """Reset loss accumulation for new gradient accumulation cycle."""
         self._micro_batch_count = 0
 
-    def save_training_state(self) -> Dict[str, Any]:
-        """Save current training state for evaluation isolation."""
+    def get_averaged_losses(self) -> Dict[str, float]:
+        """Get averaged losses for logging."""
+        # Return current losses instead of empty dict to support coordinator
+        return self._current_losses.copy()
+
+    def get_training_stats(self) -> Dict[str, Any]:
+        """Get training statistics."""
         return {
-            "accumulated_lm_loss": self._accumulated_lm_loss,
-            "accumulated_teacher_lm_loss": self._accumulated_teacher_lm_loss,
-            "accumulated_student_lm_loss": self._accumulated_student_lm_loss,
-            "accumulated_bbox_l1_loss": self._accumulated_bbox_l1_loss,
-            "accumulated_bbox_giou_loss": self._accumulated_bbox_giou_loss,
-            "accumulated_caption_loss": self._accumulated_caption_loss,
-            "accumulated_objectness_loss": self._accumulated_objectness_loss,
-            "accumulated_focal_loss": self._accumulated_focal_loss,
-            "accumulated_regular_loss": self._accumulated_regular_loss,
-            "accumulated_l1_loss": self._accumulated_l1_loss,
-            "accumulated_giou_loss": self._accumulated_giou_loss,
             "micro_batch_count": self._micro_batch_count,
         }
-
+    
+    def get_current_losses(self) -> Dict[str, float]:
+        """Get current loss components."""
+        return self._current_losses.copy()
+    
+    def save_training_state(self) -> Dict[str, Any]:
+        """Save training state for evaluation."""
+        return {
+            "micro_batch_count": self._micro_batch_count,
+            "current_losses": self._current_losses.copy(),
+        }
+    
     def restore_training_state(self, state: Dict[str, Any]):
         """Restore training state after evaluation."""
-        self._accumulated_lm_loss = state["accumulated_lm_loss"]
-        self._accumulated_teacher_lm_loss = state["accumulated_teacher_lm_loss"]
-        self._accumulated_student_lm_loss = state["accumulated_student_lm_loss"]
-        self._accumulated_bbox_l1_loss = state["accumulated_bbox_l1_loss"]
-        self._accumulated_bbox_giou_loss = state["accumulated_bbox_giou_loss"]
-        self._accumulated_caption_loss = state["accumulated_caption_loss"]
-        self._accumulated_objectness_loss = state["accumulated_objectness_loss"]
-        # Restore coordinate token losses if they exist
-        self._accumulated_focal_loss = state.get("accumulated_focal_loss", 0.0)
-        self._accumulated_regular_loss = state.get("accumulated_regular_loss", 0.0)
-        self._accumulated_l1_loss = state.get("accumulated_l1_loss", 0.0)
-        self._accumulated_giou_loss = state.get("accumulated_giou_loss", 0.0)
         self._micro_batch_count = state["micro_batch_count"]
-
-    def get_current_losses(self) -> Dict[str, float]:
-        """Get current loss components (single forward pass)."""
-        return {
-            "lm_loss": self._current_lm_loss,
-            "teacher_lm_loss": self._current_teacher_lm_loss,
-            "student_lm_loss": self._current_student_lm_loss,
-            "bbox_l1_loss": self._current_bbox_l1_loss,
-            "bbox_giou_loss": self._current_bbox_giou_loss,
-            "caption_loss": self._current_caption_loss,
-            "objectness_loss": self._current_objectness_loss,
-            "bbox_loss": self._current_bbox_loss,
-            "coordinate_loss": self._current_coordinate_loss,
-            "focal_loss": self._current_focal_loss,
-            "regular_loss": self._current_regular_loss,
-            "l1_loss": self._current_l1_loss,
-            "giou_loss": self._current_giou_loss,
-        }
+        self._current_losses = state["current_losses"]
+    
+    def _safe_item(self, value) -> float:
+        """Extract scalar value from tensor or float - FAIL FAST on unexpected types."""
+        if hasattr(value, 'item'):
+            return value.item()
+        elif isinstance(value, (int, float)):
+            return float(value)
+        else:
+            raise TypeError(f"Expected tensor or numeric value, got {type(value)}: {value}")
+    
+    def _is_teacher_sample(self, inputs: Dict[str, Any]) -> bool:
+        """
+        Determine if the current sample is a teacher sample.
+        
+        Teacher samples are typically identified by having longer descriptions
+        or specific markers in the input data.
+        
+        Args:
+            inputs: Batch inputs containing labels and metadata
+            
+        Returns:
+            True if this is a teacher sample, False if student sample
+        """
+        # Method 1: Check if this is a teacher sample based on input_ids length
+        # Teacher samples tend to have longer, more descriptive text
+        if "input_ids" in inputs:
+            input_ids = inputs["input_ids"]
+            if hasattr(input_ids, 'shape'):
+                seq_length = input_ids.shape[-1]
+                # Heuristic: Teacher samples are typically longer
+                # This is a simple approach - could be improved with explicit marking
+                return seq_length > 1500  # Adjust threshold based on your data
+        
+        # Method 2: Check for explicit teacher marker in batch
+        if "is_teacher" in inputs:
+            return inputs["is_teacher"]
+        
+        # Method 3: Check metadata or other indicators
+        if "teacher_assistant_spans" in inputs:
+            # If teacher_assistant_spans exist, this might be a teacher sample
+            spans = inputs["teacher_assistant_spans"]
+            return spans is not None and len(spans) > 0
+        
+        # Default: assume student sample if we can't determine
+        return False

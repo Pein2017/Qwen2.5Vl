@@ -10,12 +10,9 @@ from torchtyping import TensorType
 # Runtime & shape-checking ----------------------------------------------
 from typeguard import typechecked
 
-from src.config import config
+from src.config import get_config
 from src.logger_utils import get_chat_logger
-from src.utils.coordinate_processor import (
-    CoordinateTokenConfig,
-    CoordinateTokenProcessor,
-)
+# Legacy coordinate processor removed - using unified coordinate manager
 from src.utils.prompt import (
     CHINESE_CANDIDATES_SECTION,
     CHINESE_FEW_SHOT_SECTION,
@@ -60,6 +57,7 @@ class ChatProcessor:
         self.image_processor = image_processor
 
         # Store data root from global config
+        config = get_config()
         self.data_root = Path(config.data_root)
 
         # ---------------- Optional kwargs ----------------
@@ -74,21 +72,9 @@ class ChatProcessor:
         # Initialize special tokens (vision-only)
         self.tokens = SpecialTokens()
 
-        # Initialize coordinate token processor (deprecated - use manager instead)
+        # Initialize unified coordinate token manager
         coordinate_enabled = kwargs.get("enable_coordinate_tokens", False)
-        coordinate_config = CoordinateTokenConfig(
-            enable_coordinate_tokens=coordinate_enabled,
-            max_coord_value=kwargs.get("max_coord_value", 2048),
-            use_official_box_tokens=True,
-        )
-        self.coordinate_processor = CoordinateTokenProcessor(coordinate_config)
-        
-        logger.debug(f"🎯 COORDINATE PROCESSOR INIT: enabled={coordinate_enabled}")
-        logger.debug(f"   📋 Config: {coordinate_config}")
-        logger.debug(f"   🎯 Processor enabled: {self.coordinate_processor.enabled}")
-        
-        # Initialize coordinate token manager if enabled
-        if kwargs.get("enable_coordinate_tokens", False):
+        if coordinate_enabled:
             from src.utils.coordinate_token_manager import create_coordinate_token_manager
             
             # Get original vocab size from tokenizer
@@ -109,6 +95,7 @@ class ChatProcessor:
                 original_vocab_size=original_vocab_size,
                 coordinate_config=coordinate_config_dict,
             )
+            logger.debug(f"🎯 Coordinate manager initialized: max_coord={coordinate_config_dict['max_coord_value']}")
         else:
             self.coordinate_manager = None
 
@@ -134,6 +121,9 @@ class ChatProcessor:
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
+        
+        # Get config for this method
+        config = get_config()
 
         # Use the proper prompt selection function
         base_prompt = get_system_prompt(
@@ -345,8 +335,8 @@ class ChatProcessor:
         )
 
         # Convert to coordinate token format if enabled
-        if self.coordinate_processor.enabled:
-            coordinate_response = self.coordinate_processor.convert_json_to_coordinate_format(
+        if self.coordinate_manager and self.coordinate_manager.config.enable_coordinate_tokens:
+            coordinate_response = self.coordinate_manager.convert_json_to_coordinate_format(
                 json_response
             )
             logger.debug(f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format")

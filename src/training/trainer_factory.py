@@ -24,24 +24,23 @@ from transformers import (
 )
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 
-from src.config import config, get_config_manager
+from src.config import get_config
 from src.logger_utils import get_training_logger
-from src.core import ModelFactory, DataProcessor, CheckpointManager
+from src.core import DataProcessor, CheckpointManager
+from src.models.wrapper import Qwen25VLWithDetection
 
-from .trainer import BBUTrainer, create_trainer as legacy_create_trainer
+from .trainer import BBUTrainer
 from .training_coordinator import TrainingCoordinator
 
 
 def create_trainer_with_coordinator(
-    training_args: TrainingArguments,
-    use_new_config: bool = False
+    training_args: TrainingArguments
 ) -> BBUTrainer:
     """
     Create BBU trainer with new training coordinator system.
     
     Args:
         training_args: HuggingFace training arguments
-        use_new_config: Whether to use new domain-specific config system
         
     Returns:
         Configured BBUTrainer instance
@@ -49,32 +48,42 @@ def create_trainer_with_coordinator(
     logger = get_training_logger()
     logger.info("🏭 Creating trainer with new coordinator system...")
     
-    # Get configuration
-    if use_new_config:
-        try:
-            config_manager = get_config_manager()
-            cfg = config_manager
-            logger.info("✅ Using new domain-specific configuration system")
-        except RuntimeError:
-            logger.warning("⚠️  New config system not available, falling back to legacy")
-            cfg = config
-            use_new_config = False
-    else:
-        cfg = config
-        logger.info("📄 Using legacy configuration system")
+    # Use unified configuration
+    config = get_config()
+    cfg = config
+    logger.info("📄 Using unified configuration system")
     
-    # Create model using ModelFactory
-    logger.info("🤖 Loading model...")
-    model_factory = ModelFactory(use_new_config=use_new_config)
-    model = model_factory.create_model()
-    
-    # Create tokenizer and processor using ModelFactory
+    # Create tokenizer and processor first
     logger.info("🔤 Loading tokenizer and processor...")
-    tokenizer, image_processor = model_factory.create_tokenizer_and_processor()
+    tokenizer = AutoTokenizer.from_pretrained(config.model_path)
+    image_processor = Qwen2VLImageProcessor.from_pretrained(config.model_path)
+    
+    # Create coordinate config from global config
+    from src.models.wrapper import CoordinateConfig
+    coordinate_config = CoordinateConfig(
+        enable_coordinate_tokens=config.coordinate_tokens_enabled,
+        max_coord_value=getattr(config, 'coordinate_config_max_coord_value', 2048),
+        coord_token_init_std=getattr(config, 'coordinate_config_coord_token_init_std', 0.01),
+        coordinate_loss_weight=getattr(config, 'coordinate_config_coordinate_loss_weight', 1.0),
+        regular_loss_weight=getattr(config, 'coordinate_config_regular_loss_weight', 1.0),
+        soft_expectation_temperature=getattr(config, 'coordinate_config_soft_expectation_temperature', 1.0),
+        focal_loss_alpha=getattr(config, 'coordinate_config_focal_loss_alpha', 0.25),
+        focal_loss_gamma=getattr(config, 'coordinate_config_focal_loss_gamma', 2.0),
+    )
+    
+    # Create model with tokenizer and coordinate config
+    logger.info("🤖 Loading model...")
+    model = Qwen25VLWithDetection.from_pretrained(
+        config.model_path,
+        tokenizer=tokenizer,
+        coordinate_config=coordinate_config,
+        attn_implementation=config.attn_implementation,
+        torch_dtype=getattr(torch, config.torch_dtype),
+    )
     
     # Create datasets and collator using DataProcessor
     logger.info("📊 Creating datasets...")
-    data_processor = DataProcessor(tokenizer, image_processor, use_new_config=use_new_config)
+    data_processor = DataProcessor(tokenizer, image_processor)
     train_dataset, eval_dataset = data_processor.create_datasets()
     
     # Create data collator using DataProcessor
@@ -85,8 +94,7 @@ def create_trainer_with_coordinator(
     logger.info("🎯 Creating training coordinator...")
     coordinator = TrainingCoordinator(
         model=model,
-        tokenizer=tokenizer,
-        use_domain_config=use_new_config
+        tokenizer=tokenizer
     )
     
     # Setup training
@@ -100,7 +108,7 @@ def create_trainer_with_coordinator(
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        cfg=cfg if not use_new_config else None,
+        cfg=cfg,
         image_processor=image_processor,
         # Pass coordinator for integration
         training_coordinator=coordinator
@@ -150,7 +158,7 @@ def safe_save_model_for_hf_trainer(trainer: BBUTrainer, output_dir: str):
         output_dir: Directory to save the model
     """
     # Use CheckpointManager for centralized saving logic
-    checkpoint_manager = CheckpointManager(use_new_config=False)  # Auto-detect from trainer
+    checkpoint_manager = CheckpointManager()
     
     success = checkpoint_manager.save_model_safely(trainer, output_dir)
     if not success:
@@ -170,6 +178,6 @@ def create_trainer(training_args: TrainingArguments, use_new_system: bool = Fals
         Configured BBUTrainer instance
     """
     if use_new_system:
-        return create_trainer_with_coordinator(training_args, use_new_config=True)
+        return create_trainer_with_coordinator(training_args)
     else:
         return create_legacy_trainer(training_args)

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src.logger_utils import get_logger
@@ -110,15 +111,16 @@ class CoordinateTokenManager:
         # to prevent double addition and vocabulary size mismatches
         if config.enable_coordinate_tokens:
             self._update_coordinate_token_ranges()
-            self._validate_coordinate_tokens()
+            # Defer validation until first use - tokenizer may not be extended yet
+            self._validation_deferred = True
 
         self.logger.info(f"✅ CoordinateTokenManager initialized:")
         self.logger.info(f"   Enabled: {config.enable_coordinate_tokens}")
         self.logger.info(f"   Original vocab: {original_vocab_size}")
         self.logger.info(f"   Extended vocab: {self.extended_vocab_size}")
-        self.logger.info(
-            f"   Coordinate range: [{self.coord_start_id}, {self.coord_end_id})"
-        )
+        if config.enable_coordinate_tokens:
+            self.logger.info(f"   Coordinate range: [{self.coord_start_id}, {self.coord_end_id}) [tentative]")
+            self.logger.info("   Validation deferred until tokenizer extension completes")
 
     def _update_coordinate_token_ranges(self):
         """Update coordinate token ID ranges based on actual tokenizer state."""
@@ -134,18 +136,30 @@ class CoordinateTokenManager:
             self.logger.info(f"   Actual coord_start_id: {self.coord_start_id}")
             self.logger.info(f"   Actual coord_end_id: {self.coord_end_id}")
         else:
-            self.logger.warning("⚠️ Could not find <coord_0> token in tokenizer")
+            # Coordinate tokens not found - skip silently during initialization
+            pass
 
     def _validate_coordinate_tokens(self):
         """Validate that coordinate tokens exist in tokenizer (added by wrapper)."""
-        # Verify token IDs are in expected range
+        # Check if coordinate tokens exist - if not, skip validation
+        first_coord_id = self.tokenizer.convert_tokens_to_ids("<coord_0>")
+
+        if first_coord_id == self.tokenizer.unk_token_id:
+            # Coordinate tokens not extended yet - skip validation silently
+            return
+
+        # Update coordinate ranges based on actual token positions
+        self.coord_start_id = first_coord_id
+        self.coord_end_id = first_coord_id + self.config.max_coord_value
+
+        # Verify token IDs are in expected sequence
         missing_tokens = []
         for i in range(min(10, self.config.max_coord_value)):  # Check first 10 tokens
             token_text = f"<coord_{i}>"
             token_id = self.tokenizer.convert_tokens_to_ids(token_text)
             expected_id = self.coord_start_id + i
 
-            if token_id != expected_id:
+            if token_id == self.tokenizer.unk_token_id or token_id != expected_id:
                 missing_tokens.append((token_text, token_id, expected_id))
 
         if missing_tokens:
@@ -159,6 +173,9 @@ class CoordinateTokenManager:
             )
         else:
             self.logger.info(f"✅ Coordinate tokens validated (checked first 10)")
+            self.logger.info(
+                f"   Coordinate range: [{self.coord_start_id}, {self.coord_end_id})"
+            )
 
     def _setup_coordinate_tokens(self):
         """DEPRECATED: Token addition now handled by wrapper to prevent double-addition."""
@@ -272,32 +289,6 @@ class CoordinateTokenManager:
             self._metrics["validation_errors"] += 1
             return "[]"
 
-    def detect_bbox_spans(self, token_ids: torch.Tensor) -> List[Tuple[int, int]]:
-        """
-        Detect bbox spans in token sequence.
-
-        Args:
-            token_ids: Token ID tensor (batch_size, seq_len)
-
-        Returns:
-            List of (start_idx, end_idx) tuples for bbox spans
-        """
-        bbox_spans = []
-
-        # Handle both batched and unbatched input
-        if token_ids.dim() == 2:
-            # Batched input - process each sequence
-            for batch_idx in range(token_ids.size(0)):
-                batch_spans = self._detect_bbox_spans_single(token_ids[batch_idx])
-                bbox_spans.extend(
-                    [(batch_idx, start, end) for start, end in batch_spans]
-                )
-        else:
-            # Single sequence
-            bbox_spans = self._detect_bbox_spans_single(token_ids)
-
-        self._metrics["bbox_spans_detected"] += len(bbox_spans)
-        return bbox_spans
 
     def _detect_bbox_spans_single(
         self, token_ids: torch.Tensor
@@ -519,6 +510,270 @@ class CoordinateTokenManager:
         if 0 <= coord_index < self.config.max_coord_value:
             return self.coord_start_id + coord_index
         return None
+
+    # =========================================================================
+    # COORDINATE LOSS COMPUTATION
+    # =========================================================================
+
+    def compute_coordinate_losses(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        bbox_spans: List[List[Tuple[int, int]]],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Simplified coordinate loss computation.
+
+        Args:
+            logits: Model logits [batch_size, seq_len, vocab_size]
+            labels: Target labels [batch_size, seq_len]
+            bbox_spans: List of bbox spans for each batch item
+
+        Returns:
+            Dictionary containing computed losses
+        """
+        if not self.config.enable_coordinate_tokens or not bbox_spans:
+            return {}
+
+        # Create coordinate mask
+        coordinate_mask = self._create_coordinate_mask(labels, bbox_spans)
+
+        if coordinate_mask.sum() == 0:
+            return {}  # No coordinate tokens found
+
+        # Extract coordinate logits and labels
+        coord_logits = logits.view(-1, logits.size(-1))[coordinate_mask]
+        coord_labels = labels.view(-1)[coordinate_mask]
+
+        # Compute soft expectation loss
+        soft_expectations = self._compute_soft_expectations(coord_logits)
+        target_coords = coord_labels - self.coord_start_id  # Convert to [0, max_coord)
+
+        # Main coordinate loss (L1 on expectations)
+        coordinate_loss = F.l1_loss(soft_expectations, target_coords.float())
+
+        # Focal loss for attention on hard coordinates
+        focal_loss = self._compute_focal_loss(coord_logits, coord_labels)
+
+        # GIoU loss for bounding box regression
+        giou_loss = self._compute_giou_loss(soft_expectations, target_coords.float(), bbox_spans)
+
+        return {
+            "coordinate_loss": coordinate_loss,
+            "focal_loss": focal_loss,
+            "giou_loss": giou_loss,
+        }
+
+    def _create_coordinate_mask(
+        self, labels: torch.Tensor, bbox_spans: List[List[Tuple[int, int]]]
+    ) -> torch.Tensor:
+        """Create mask for coordinate tokens within bbox spans."""
+        batch_size, seq_len = labels.shape
+        coordinate_mask = torch.zeros(
+            batch_size * seq_len, dtype=torch.bool, device=labels.device
+        )
+
+        for batch_idx, spans in enumerate(bbox_spans):
+            for start_idx, end_idx in spans:
+                # Only mark coordinate tokens within bbox spans (exclude box_start/box_end)
+                for pos in range(start_idx + 1, end_idx - 1):
+                    if pos < seq_len:
+                        flat_idx = batch_idx * seq_len + pos
+                        token_id = labels[batch_idx, pos].item()
+                        if self.is_coordinate_token(token_id):
+                            coordinate_mask[flat_idx] = True
+
+        return coordinate_mask
+
+    def _compute_soft_expectations(self, logits: torch.Tensor) -> torch.Tensor:
+        """Compute soft expectations over coordinate tokens."""
+        # Extract only coordinate token logits
+        coord_logits = logits[:, self.coord_start_id : self.coord_end_id]
+
+        # Apply temperature scaling
+        scaled_logits = coord_logits / self.config.soft_expectation_temperature
+
+        # Compute softmax probabilities
+        probs = F.softmax(scaled_logits, dim=-1)
+
+        # Compute expectation
+        coord_indices = torch.arange(
+            self.config.max_coord_value, device=logits.device, dtype=torch.float32
+        )
+        expectations = torch.sum(probs * coord_indices.unsqueeze(0), dim=-1)
+
+        return expectations
+
+    def _compute_focal_loss(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute focal loss for coordinate tokens."""
+        ce_loss = F.cross_entropy(logits, labels, reduction="none")
+        pt = torch.exp(-ce_loss)
+        focal_loss = (
+            self.config.focal_loss_alpha
+            * (1 - pt) ** self.config.focal_loss_gamma
+            * ce_loss
+        )
+        return focal_loss.mean()
+
+    def detect_bbox_spans(self, input_ids: torch.Tensor) -> List[List[Tuple[int, int]]]:
+        """
+        Simplified bbox span detection.
+
+        Args:
+            input_ids: Input token IDs [batch_size, seq_len]
+
+        Returns:
+            List of bbox spans for each batch item
+        """
+        bbox_spans = []
+
+        for batch_idx in range(input_ids.shape[0]):
+            batch_spans = []
+            seq = input_ids[batch_idx]
+
+            # Find box_start and box_end pairs
+            i = 0
+            while i < len(seq):
+                if seq[i] == self.config.box_start_id:
+                    # Look for matching box_end
+                    j = i + 1
+                    while j < len(seq) and seq[j] != self.config.box_end_id:
+                        j += 1
+                    if j < len(seq):  # Found matching box_end
+                        batch_spans.append((i, j + 1))  # Include end token
+                        i = j + 1
+                    else:
+                        i += 1
+                else:
+                    i += 1
+
+            bbox_spans.append(batch_spans)
+
+        return bbox_spans
+
+    def _compute_giou_loss(
+        self,
+        pred_coords: torch.Tensor,
+        target_coords: torch.Tensor,
+        bbox_spans: List[List[Tuple[int, int]]],
+    ) -> torch.Tensor:
+        """
+        Compute Generalized IoU (GIoU) loss for bounding box regression.
+
+        Args:
+            pred_coords: Predicted coordinates from soft expectation [N,]
+            target_coords: Ground truth coordinate indices [N,]
+            bbox_spans: List of bbox spans to group coordinates into boxes
+
+        Returns:
+            GIoU loss tensor
+        """
+        if pred_coords.numel() == 0 or len(bbox_spans) == 0:
+            return torch.tensor(0.0, device=pred_coords.device, dtype=pred_coords.dtype)
+
+        # Group coordinates into bounding boxes (x1, y1, x2, y2)
+        pred_boxes = []
+        target_boxes = []
+        
+        coord_idx = 0
+        for batch_spans in bbox_spans:
+            for start_idx, end_idx in batch_spans:
+                # Each bbox span contains 4 coordinates (x1, y1, x2, y2)
+                expected_coords = 4
+                if coord_idx + expected_coords <= pred_coords.numel():
+                    # Extract 4 coordinates for this bbox
+                    pred_box = pred_coords[coord_idx:coord_idx + expected_coords]
+                    target_box = target_coords[coord_idx:coord_idx + expected_coords]
+                    
+                    # Normalize to [0, 1] range for GIoU computation
+                    max_coord = float(self.config.max_coord_value - 1)
+                    pred_box_norm = pred_box / max_coord
+                    target_box_norm = target_box / max_coord
+                    
+                    pred_boxes.append(pred_box_norm)
+                    target_boxes.append(target_box_norm)
+                    
+                    coord_idx += expected_coords
+
+        if not pred_boxes:
+            return torch.tensor(0.0, device=pred_coords.device, dtype=pred_coords.dtype)
+
+        # Stack boxes: [N, 4] where each row is [x1, y1, x2, y2]
+        pred_boxes = torch.stack(pred_boxes)
+        target_boxes = torch.stack(target_boxes)
+
+        # Compute GIoU loss
+        giou = self._compute_giou(pred_boxes, target_boxes)
+        
+        # GIoU loss: 1 - GIoU (since GIoU ranges from -1 to 1)
+        giou_loss = 1.0 - giou.mean()
+        
+        return giou_loss
+
+    def _compute_giou(
+        self, pred_boxes: torch.Tensor, target_boxes: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute Generalized IoU (GIoU) for bounding boxes.
+
+        Args:
+            pred_boxes: Predicted boxes [N, 4] in format (x1, y1, x2, y2)
+            target_boxes: Ground truth boxes [N, 4] in format (x1, y1, x2, y2)
+
+        Returns:
+            GIoU values [N,]
+        """
+        # Ensure boxes are in proper format (x1 <= x2, y1 <= y2)
+        pred_boxes = torch.stack([
+            torch.min(pred_boxes[:, 0], pred_boxes[:, 2]),  # x1
+            torch.min(pred_boxes[:, 1], pred_boxes[:, 3]),  # y1
+            torch.max(pred_boxes[:, 0], pred_boxes[:, 2]),  # x2
+            torch.max(pred_boxes[:, 1], pred_boxes[:, 3]),  # y2
+        ], dim=1)
+
+        target_boxes = torch.stack([
+            torch.min(target_boxes[:, 0], target_boxes[:, 2]),  # x1
+            torch.min(target_boxes[:, 1], target_boxes[:, 3]),  # y1
+            torch.max(target_boxes[:, 0], target_boxes[:, 2]),  # x2
+            torch.max(target_boxes[:, 1], target_boxes[:, 3]),  # y2
+        ], dim=1)
+
+        # Compute intersection area
+        inter_x1 = torch.max(pred_boxes[:, 0], target_boxes[:, 0])
+        inter_y1 = torch.max(pred_boxes[:, 1], target_boxes[:, 1])
+        inter_x2 = torch.min(pred_boxes[:, 2], target_boxes[:, 2])
+        inter_y2 = torch.min(pred_boxes[:, 3], target_boxes[:, 3])
+
+        inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(
+            inter_y2 - inter_y1, min=0
+        )
+
+        # Compute union area
+        pred_area = (pred_boxes[:, 2] - pred_boxes[:, 0]) * (
+            pred_boxes[:, 3] - pred_boxes[:, 1]
+        )
+        target_area = (target_boxes[:, 2] - target_boxes[:, 0]) * (
+            target_boxes[:, 3] - target_boxes[:, 1]
+        )
+        union_area = pred_area + target_area - inter_area
+
+        # Compute IoU
+        iou = inter_area / (union_area + 1e-7)
+
+        # Compute enclosing box area
+        enclose_x1 = torch.min(pred_boxes[:, 0], target_boxes[:, 0])
+        enclose_y1 = torch.min(pred_boxes[:, 1], target_boxes[:, 1])
+        enclose_x2 = torch.max(pred_boxes[:, 2], target_boxes[:, 2])
+        enclose_y2 = torch.max(pred_boxes[:, 3], target_boxes[:, 3])
+
+        enclose_area = (enclose_x2 - enclose_x1) * (enclose_y2 - enclose_y1)
+
+        # Compute GIoU
+        giou = iou - (enclose_area - union_area) / (enclose_area + 1e-7)
+
+        return giou
 
 
 def create_coordinate_token_manager(

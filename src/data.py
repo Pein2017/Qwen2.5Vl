@@ -25,7 +25,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 from src.chat_processor import ChatProcessor
-from src.config import config
+from src.config import get_config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
@@ -65,6 +65,9 @@ class BBUDataset(Dataset):
             teacher_ratio: Ratio of samples to use teacher examples (0.0 = no teachers)
             is_training: Whether this is a training dataset (affects prompt selection)
         """
+        # Get config for this instance
+        config = get_config()
+        
         self.data_path = data_path
         self.chat_processor = chat_processor
         self.teacher_pool_manager = teacher_pool_manager

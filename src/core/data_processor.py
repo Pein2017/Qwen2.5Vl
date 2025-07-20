@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Tuple
 
 from src.chat_processor import ChatProcessor
-from src.config import config, get_config_manager
+from src.config import get_config
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.teacher_pool import create_teacher_pool_manager
@@ -25,38 +25,21 @@ from src.teacher_pool import create_teacher_pool_manager
 class DataProcessor:
     """Unified data processing and dataset creation."""
 
-    def __init__(
-        self, tokenizer: Any, image_processor: Any, use_new_config: bool = False
-    ):
+    def __init__(self, tokenizer: Any, image_processor: Any):
         """
         Initialize data processor.
 
         Args:
             tokenizer: Model tokenizer
             image_processor: Image processor
-            use_new_config: Whether to use new domain-specific config system
         """
         self.tokenizer = tokenizer
         self.image_processor = image_processor
-        self.use_new_config = use_new_config
         self.logger = get_training_logger()
 
-        # Get configuration
-        if use_new_config:
-            try:
-                self.config = get_config_manager()
-                self.logger.info(
-                    "✅ DataProcessor using new domain-specific configuration"
-                )
-            except RuntimeError:
-                self.logger.warning(
-                    "⚠️  New config system not available, falling back to legacy"
-                )
-                self.config = config
-                self.use_new_config = False
-        else:
-            self.config = config
-            self.logger.info("📄 DataProcessor using legacy configuration system")
+        # Use unified configuration
+        self.config = get_config()
+        self.logger.info("📄 DataProcessor using unified configuration system")
 
         # Initialize components
         self._init_chat_processor()
@@ -64,36 +47,20 @@ class DataProcessor:
 
     def _init_chat_processor(self) -> None:
         """Initialize chat processor."""
-        model_max_length = (
-            self.config.model.model_max_length
-            if self.use_new_config
-            else self.config.model_max_length
-        )
+        model_max_length = self.config.model_max_length
 
         # Get coordinate token configuration - strict validation
-        if self.use_new_config:
-            coordinate_tokens_enabled = self.config.coordinate.enable_coordinate_tokens
-            max_coord_value = self.config.coordinate.max_coord_value
-        else:
-            if not hasattr(self.config, "coordinate_tokens_enabled"):
-                raise ValueError("coordinate_tokens_enabled must be explicitly configured in config")
-            coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-            
-            # Try to get max_coord_value from coordinate_config section first, then fallback
-            if hasattr(self.config, "coordinate_config") and hasattr(self.config.coordinate_config, "max_coord_value"):
-                max_coord_value = self.config.coordinate_config.max_coord_value
-            elif hasattr(self.config, "coordinate_config_max_coord_value"):
-                max_coord_value = self.config.coordinate_config_max_coord_value
-            else:
-                self.logger.warning("⚠️ max_coord_value not found in config, using default 2048")
-                max_coord_value = 2048
+        if not hasattr(self.config, "coordinate_tokens_enabled"):
+            raise ValueError("coordinate_tokens_enabled must be explicitly configured in config")
+        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
+        
+        # Get max_coord_value from flattened config
+        max_coord_value = getattr(self.config, "coordinate_config_max_coord_value", 2048)
+        if max_coord_value == 2048 and not hasattr(self.config, "coordinate_config_max_coord_value"):
+            self.logger.warning("⚠️ coordinate_config_max_coord_value not found in config, using default 2048")
 
-        # Get additional coordinate token configuration
-        use_official_box_tokens = True  # Default
-        if hasattr(self.config, "coordinate_config") and hasattr(self.config.coordinate_config, "use_official_box_tokens"):
-            use_official_box_tokens = self.config.coordinate_config.use_official_box_tokens
-        elif hasattr(self.config, "chat_processor") and hasattr(self.config.chat_processor, "use_official_box_tokens"):
-            use_official_box_tokens = self.config.chat_processor.use_official_box_tokens
+        # Get additional coordinate token configuration from flattened config
+        use_official_box_tokens = getattr(self.config, "coordinate_config_use_official_box_tokens", True)
 
         self.logger.debug(f"🎯 CHAT PROCESSOR CONFIG: enabled={coordinate_tokens_enabled}, max_coord={max_coord_value}, box_tokens={use_official_box_tokens}")
 
@@ -117,11 +84,7 @@ class DataProcessor:
 
     def _init_teacher_pool_manager(self) -> None:
         """Initialize teacher pool manager if available."""
-        teacher_pool_file = (
-            self.config.data.teacher_pool_file
-            if self.use_new_config
-            else self.config.teacher_pool_file
-        )
+        teacher_pool_file = self.config.teacher_pool_file
 
         self.teacher_pool_manager = None
         if teacher_pool_file and Path(teacher_pool_file).exists():
@@ -176,11 +139,7 @@ class DataProcessor:
         """
         self.logger.info("📦 Creating data collator...")
 
-        collator_type = (
-            self.config.data.collator_type
-            if self.use_new_config
-            else self.config.collator_type
-        )
+        collator_type = self.config.collator_type
 
         data_collator = create_data_collator(self.tokenizer, collator_type)
         self.logger.info(f"✅ Data collator created: {collator_type}")
@@ -188,18 +147,11 @@ class DataProcessor:
 
     def _get_data_config(self) -> dict:
         """Get data configuration parameters."""
-        if self.use_new_config:
-            return {
-                "train_data_path": self.config.data.train_data_path,
-                "val_data_path": self.config.data.val_data_path,
-                "teacher_ratio": self.config.data.teacher_ratio,
-            }
-        else:
-            return {
-                "train_data_path": self.config.train_data_path,
-                "val_data_path": self.config.val_data_path,
-                "teacher_ratio": self.config.teacher_ratio,
-            }
+        return {
+            "train_data_path": self.config.train_data_path,
+            "val_data_path": self.config.val_data_path,
+            "teacher_ratio": self.config.teacher_ratio,
+        }
 
     def get_data_statistics(self) -> dict:
         """
@@ -222,7 +174,7 @@ class DataProcessor:
 
     @classmethod
     def create_datasets_and_collator(
-        cls, tokenizer: Any, image_processor: Any, use_new_config: bool = False
+        cls, tokenizer: Any, image_processor: Any
     ) -> Tuple[BBUDataset, BBUDataset, Any]:
         """
         Convenience method to create datasets and collator in one call.
@@ -230,12 +182,11 @@ class DataProcessor:
         Args:
             tokenizer: Model tokenizer
             image_processor: Image processor
-            use_new_config: Whether to use new domain-specific config system
 
         Returns:
             Tuple of (train_dataset, eval_dataset, data_collator)
         """
-        processor = cls(tokenizer, image_processor, use_new_config)
+        processor = cls(tokenizer, image_processor)
         train_dataset, eval_dataset = processor.create_datasets()
         data_collator = processor.create_data_collator()
         return train_dataset, eval_dataset, data_collator

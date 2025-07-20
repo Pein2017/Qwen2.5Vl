@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
 
-from src.config import config
+from src.config import get_config
 from src.logger_utils import get_training_logger
 
 
@@ -74,6 +74,8 @@ class ParameterGroupManager:
 
     def _initialize_group_configs(self):
         """Initialize parameter group configurations from global config."""
+        config = get_config()
+        
         self.group_configs = {
             "vision": ParameterGroupConfig(
                 name="vision",
@@ -161,49 +163,32 @@ class ParameterGroupManager:
         if any(pattern in param_name for pattern in ["adapter", "lora", "bottleneck"]):
             return "adapter"
 
-        # Vision encoder parameters
+        # Vision encoder parameters - Qwen2.5-VL structure: visual.*
         if any(
             pattern in param_name
             for pattern in [
-                "visual",
-                "vision",
-                "patch_embed",
-                "pos_embed",
-                "vision_tower",
-                "image_processor",
-                "vision_encoder",
+                "visual.",
+                "base_model.visual.",
             ]
         ):
             return "vision"
 
-        # Vision-language merger/connector parameters
+        # Language model parameters - Qwen2.5-VL structure: model.* and lm_head.*
         if any(
             pattern in param_name
             for pattern in [
-                "merger",
-                "connector",
-                "mm_projector",
-                "multi_modal_projector",
-                "vision_proj",
-                "visual_proj",
-            ]
-        ):
-            return "merger"
-
-        # Language model parameters (catch-all for transformer layers)
-        if any(
-            pattern in param_name
-            for pattern in [
-                "language_model",
-                "transformer",
-                "layers",
-                "embed_tokens",
-                "norm",
-                "lm_head",
-                "output_projection",
+                "model.embed_tokens.",
+                "model.layers.",
+                "model.norm.",
+                "lm_head.",
+                "base_model.model.",
+                "base_model.lm_head.",
             ]
         ):
             return "llm"
+            
+        # Qwen2.5-VL has no explicit merger - vision-language fusion happens in attention
+        # So merger parameters will be empty, which is expected
 
         # Fallback for unrecognized parameters
         return "other"
@@ -365,6 +350,9 @@ class ParameterGroupManager:
         # Check for components with learning rate but no parameters
         for category, group_config in self.group_configs.items():
             if group_config.enabled and group_config.param_count == 0:
+                # Suppress warning for merger - Qwen2.5-VL has no explicit merger component
+                if category == "merger":
+                    continue
                 warnings.append(
                     f"Component '{category}' has lr > 0 but no parameters found"
                 )
