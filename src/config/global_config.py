@@ -58,6 +58,7 @@ class DirectConfig:
     llm_lr: float
     coordinate_lr: float  # Learning rate for coordinate token components
     adapter_lr: float
+    detection_lr: float  # Legacy detection head learning rate (unused)
     warmup_ratio: float
     weight_decay: float
     max_grad_norm: float
@@ -88,13 +89,13 @@ class DirectConfig:
     save_steps: int
     save_total_limit: int
 
-    # Logging settings
+    # Logging settings - simplified with rank-aware logging
     logging_steps: int
     logging_dir: str
     log_level: str
     report_to: str
-    verbose: bool
     disable_tqdm: bool
+    verbose: bool
 
     # Coordinate token configuration (replaces legacy detection)
     coordinate_tokens_enabled: bool
@@ -106,29 +107,23 @@ class DirectConfig:
     coordinate_config_soft_expectation_temperature: float
     coordinate_config_focal_loss_alpha: float
     coordinate_config_focal_loss_gamma: float
+    coordinate_config_use_official_box_tokens: bool
     chat_processor_enable_coordinate_tokens: bool
     chat_processor_max_coord_value: int
     chat_processor_use_official_box_tokens: bool
 
-    # Performance settings
+    # Essential settings
+    remove_unused_columns: bool
+
+    # DataLoader performance settings
     dataloader_num_workers: int
     pin_memory: bool
     prefetch_factor: int
-    batching_strategy: str
-    remove_unused_columns: bool
 
     # Output settings
     output_dir: str
     run_name: str
     tb_dir: str
-
-    # Stability settings
-    max_consecutive_nan: int
-    max_consecutive_zero: int
-    max_nan_ratio: float
-    nan_monitoring_window: int
-    allow_occasional_nan: bool
-    nan_recovery_enabled: bool
 
     # Test settings
     test_samples: int
@@ -147,35 +142,10 @@ class DirectConfig:
     merge_size: int
     temporal_patch_size: int
 
-    # Additional settings
-    gradient_clip_reduction_factor: float
-    learning_rate_reduction_factor: float
-    enable_monitoring: bool
-    save_predictions: bool
-    save_token_analysis: bool
-    save_raw_text: bool
-
     # === OPTIONAL FIELDS (with defaults) ===
 
     # Optional candidates file
     candidates_file: Optional[str] = None
-
-    # LEGACY: Detection settings (with defaults for backward compatibility)
-    detection_num_queries: int = 100
-    detection_max_caption_length: int = 32
-    detection_decoder_dim_feedforward_factor: float = 2.0
-    detection_decoder_num_layers: int = 2
-    detection_caption_decoder_dim_feedforward_factor: float = 2.0
-    detection_caption_decoder_num_layers: int = 4
-    detection_head_dropout: float = 0.1
-    detection_adapter_bottleneck_ratio: int = 8
-    detection_adapter_num_layers: int = 1
-    detection_bbox_weight: float = 10.0
-    detection_giou_weight: float = 20.0
-    detection_objectness_weight: float = 10.0
-    detection_caption_weight: float = 0.02
-    detection_focal_loss_gamma: float = 2.0
-    detection_focal_loss_alpha: float = 0.25
 
     # Runtime properties (added dynamically during initialization)
     run_output_dir: str = ""

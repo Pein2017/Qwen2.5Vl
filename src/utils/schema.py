@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+
 """schema.py – Centralised tensor & structure definitions
 
 This module formalises **all** intermediate data structures used in the
 Qwen-BBU dense-object captioning pipeline.  It provides:
 
-1.   `@dataclass` wrappers with explicit **PyTorch tensor ranks** and    
-     descriptive docstrings.
+1.   `@dataclass` wrappers with explicit **PyTorch tensor ranks** and descriptive docstrings.
 2.   Light-weight `__post_init__` runtime assertions (fail-fast) to catch
      shape regressions early during development.  These checks add
      negligible overhead and are skipped by TorchScript at export time.
@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple, TypeVar
 import torch
 from torchtyping import TensorType, patch_typeguard  # type: ignore
 from typeguard import typechecked
+
 
 # Enable automatic runtime checks globally (no-op if called multiple times)
 patch_typeguard()
@@ -428,12 +429,14 @@ def assert_vision_features(vision_feats):
 
 
 if TYPE_CHECKING:  # Only imported for static type checkers / IDEs
-    from transformers import PretrainedConfig as _HFPretrainedConfig
-    from transformers import PreTrainedTokenizerBase as _HFPreTrainedTokenizerBase
+    from transformers.configuration_utils import PretrainedConfig as _HFPretrainedConfig
 
     # Config class (exists in the 2_5 namespace)
     from transformers.models.qwen2_vl.image_processing_qwen2_vl import (
         Qwen2VLImageProcessor as HFQwen25VLImageProcessor,
+    )
+    from transformers.tokenization_utils_base import (
+        PreTrainedTokenizerBase as _HFPreTrainedTokenizerBase,
     )
 
 
@@ -578,7 +581,7 @@ def assert_model_output(output: ModelOutput):
 
 @dataclass
 class GroundTruthObject:  # noqa: D401 – simple container
-    """Single object annotation used throughout the dense-caption pipeline.
+    r"""Single object annotation used throughout the dense-caption pipeline.
 
     Attributes
     ----------

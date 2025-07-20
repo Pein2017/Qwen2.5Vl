@@ -1,8 +1,10 @@
 """
 Coordinate Token Processor for Soft Expectation Regression
 
-Converts between JSON bbox format and coordinate token sequences.
-Integrates with existing ChatProcessor pipeline.
+⚠️ DEPRECATED: This module is deprecated in favor of the unified CoordinateTokenManager.
+Use src.utils.coordinate_token_manager.CoordinateTokenManager instead.
+
+Legacy wrapper for backward compatibility.
 """
 
 import json
@@ -109,7 +111,7 @@ class CoordinateTokenProcessor:
                 try:
                     json.loads(coordinate_response)
                     return coordinate_response
-                except:
+                except Exception:
                     return "[]"
 
             # Convert back to JSON format
@@ -245,7 +247,6 @@ class CoordinateTokenProcessor:
 
         # Check for coordinate token pattern
         coord_pattern = r"<\|box_start\|>(<coord_\d+>){4}<\|box_end\|>"
-        matches = re.findall(coord_pattern, text)
 
         # Validate coordinate ranges
         for match in re.finditer(coord_pattern, text):
@@ -281,21 +282,22 @@ def demo_coordinate_conversion():
     # Example JSON input with integer coordinates
     json_input = '[{"bbox_2d": [204, 409, 1638, 1843], "label": "screw connector"}]'
 
-    print("JSON Input:")
-    print(json_input)
+    logger = get_detection_logger()
+    logger.debug("JSON Input:")
+    logger.debug(json_input)
 
     # Convert to coordinate format
     coord_format = processor.convert_json_to_coordinate_format(json_input)
-    print("\nCoordinate Format:")
-    print(coord_format)
+    logger.debug("\nCoordinate Format:")
+    logger.debug(coord_format)
 
     # Convert back to JSON
     json_output = processor.convert_coordinate_to_json_format(coord_format)
-    print("\nJSON Output:")
-    print(json_output)
+    logger.debug("\nJSON Output:")
+    logger.debug(json_output)
 
     # Validate roundtrip
-    print(f"\nRoundtrip successful: {json_input == json_output}")
+    logger.debug(f"\nRoundtrip successful: {json_input == json_output}")
 
     # Test coordinate validation
     try:
@@ -303,14 +305,14 @@ def demo_coordinate_conversion():
         invalid_bbox = [0.5, 0.5, 0.5, 0.5]
         processor._bbox_to_coordinate_tokens(invalid_bbox)
     except ValueError as e:
-        print(f"\nCorrectly caught invalid coordinate: {e}")
+        logger.debug(f"\nCorrectly caught invalid coordinate: {e}")
 
     try:
         # Test out of bounds coordinate
         invalid_bbox = [0, 0, 2048, 2048]
         processor._bbox_to_coordinate_tokens(invalid_bbox)
     except ValueError as e:
-        print(f"\nCorrectly caught out of bounds coordinate: {e}")
+        logger.debug(f"\nCorrectly caught out of bounds coordinate: {e}")
 
 
 if __name__ == "__main__":

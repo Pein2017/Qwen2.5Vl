@@ -31,12 +31,12 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar
 import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor
 
 from src.logger_utils import (
     configure_global_logging,
     get_logger,
 )
+
 
 # Runtime type-checking ---------------------------------------------------
 
@@ -53,7 +53,7 @@ W = TypeVar("W")
 logger = get_logger("inference")
 
 # Initialize logger (will be reconfigured in main)
-logger = logging.getLogger('inference')
+logger = logging.getLogger("inference")
 
 # -------------------- Monkey-patch logger utils for compatibility --------------------
 # Some modules still expect the old logger interface, so we provide minimal compatibility
@@ -66,6 +66,7 @@ from src.models.patches import (
     apply_comprehensive_qwen25_fixes,
     verify_qwen25_patches,
 )
+
 
 if not apply_comprehensive_qwen25_fixes():
     raise RuntimeError(
@@ -102,6 +103,7 @@ def check_flash_attention_available() -> bool:
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
             Qwen2_5_VLFlashAttention2,  # noqa: F401 – imported for availability check only
         )
+
         return True
 
     except ImportError:
@@ -158,25 +160,26 @@ class InferenceEngine:
         # Verify CUDA is available
         if device == "cpu":
             raise RuntimeError(
-                "CPU inference is not supported. "
-                "Please use a CUDA-enabled device."
+                "CPU inference is not supported. Please use a CUDA-enabled device."
             )
 
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA is not available. This inference script requires a GPU with CUDA support."
             )
-        
+
         # Force eager attention for inference to avoid vocabulary and triton issues
         self.use_flash_attention = False  # Always disable for inference
-        logger.info("🔧 Using eager attention for inference (flash attention disabled for stability)")
+        logger.info(
+            "🔧 Using eager attention for inference (flash attention disabled for stability)"
+        )
 
         # Load processor and model following demo approach
         self.processor, self.model = self._load_model_and_processor()
 
         # Set to evaluation mode
         self.model.eval()
-        
+
         # Model type detection will be set during loading
 
         # Single GPU only - no multi-GPU support
@@ -284,24 +287,29 @@ class InferenceEngine:
         logger.info("🔧 Loading model via UNIFIED loader (same as training)")
 
         try:
-            from src.models.model_loader import load_model_and_processor_unified
             from src.config import config
+            from src.models.model_loader import load_model_and_processor_unified
 
-            # Detect model type based on config - coordinate tokens drive detection wrapper usage
-            coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
-            detection_enabled = coordinate_tokens_enabled  # For coordinate tokens, we need the wrapper
-            
+            # Detect model type based on config - coordinate tokens drive wrapper usage
+            coordinate_tokens_enabled = getattr(
+                config, "coordinate_tokens_enabled", False
+            )
+
             logger.info(f"🎯 Model type detection:")
             logger.info(f"   Coordinate tokens enabled: {coordinate_tokens_enabled}")
-            logger.info(f"   Detection wrapper enabled: {detection_enabled}")
-            
+            logger.info(f"   Detection wrapper enabled: {coordinate_tokens_enabled}")
+
             # Log configuration for debugging
-            logger.debug(f"Full config attributes: {[attr for attr in dir(config) if not attr.startswith('_')]}")
+            logger.debug(
+                f"Full config attributes: {[attr for attr in dir(config) if not attr.startswith('_')]}"
+            )
 
             # Use IDENTICAL loading process as training (only difference: for_inference=True)
             # Force eager attention for inference to avoid triton issues
             attn_implementation = "eager"  # Always use eager for inference
-            logger.info(f"🔧 Forcing eager attention for inference to avoid triton issues")
+            logger.info(
+                "🔧 Forcing eager attention for inference to avoid triton issues"
+            )
             model, tokenizer, image_processor = load_model_and_processor_unified(
                 model_path=str(model_dir),
                 for_inference=True,  # ONLY difference from training
@@ -322,17 +330,16 @@ class InferenceEngine:
             model.eval()
 
             # Store model type for later use
-            self.detection_enabled = detection_enabled
             self.coordinate_tokens_enabled = coordinate_tokens_enabled
 
             logger.info("✅ UNIFIED model loading completed for inference")
             logger.debug(f"Model loaded on device: {next(model.parameters()).device}")
             logger.debug(f"Model dtype: {next(model.parameters()).dtype}")
-            
+
             if coordinate_tokens_enabled:
-                logger.info("🚀 Coordinate token model detected - ready for soft expectation inference")
-            elif detection_enabled:
-                logger.info("🎯 Detection model detected - ready for bbox inference")
+                logger.info(
+                    "🚀 Coordinate token model detected - ready for soft expectation inference"
+                )
             else:
                 logger.info("📄 Base model detected - ready for standard VL inference")
 
@@ -914,10 +921,10 @@ class InferenceEngine:
 
     def _process_model_response(self, response: str) -> str:
         """Process model response based on model type."""
-        if not hasattr(self, 'coordinate_tokens_enabled'):
+        if not hasattr(self, "coordinate_tokens_enabled"):
             logger.warning("⚠️ Model type not detected - returning raw response")
             return response
-            
+
         # The coordinate token model is generating JSON format directly
         # No coordinate token conversion needed for this implementation
         logger.debug(f"📄 Model response (first 100 chars): {response[:100]}...")
@@ -1044,15 +1051,22 @@ class InferenceEngine:
                             ground_truth = json.dumps(
                                 ground_truth_objects, ensure_ascii=False
                             )
-                            
+
                             # Process model response based on model type
                             processed_response = self._process_model_response(response)
-                            
+
                             # Log response processing for debugging
-                            if hasattr(self, 'coordinate_tokens_enabled') and self.coordinate_tokens_enabled:
-                                logger.debug(f"📄 Coordinate token model response: {processed_response[:200]}...")
+                            if (
+                                hasattr(self, "coordinate_tokens_enabled")
+                                and self.coordinate_tokens_enabled
+                            ):
+                                logger.debug(
+                                    f"📄 Coordinate token model response: {processed_response[:200]}..."
+                                )
                             else:
-                                logger.debug(f"📄 Standard model response: {processed_response[:200]}...")
+                                logger.debug(
+                                    f"📄 Standard model response: {processed_response[:200]}..."
+                                )
 
                             result = {
                                 # Updated key names aligned with downstream evaluation
@@ -1134,10 +1148,7 @@ class InferenceEngine:
 def main():
     parser = argparse.ArgumentParser(description="Simplified inference runner")
     parser.add_argument(
-        "--config_path", 
-        type=str, 
-        required=True, 
-        help="Path to configuration YAML file"
+        "--config_path", type=str, required=True, help="Path to configuration YAML file"
     )
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to model directory"
@@ -1199,18 +1210,20 @@ def main():
 
     # Initialize config from EXPLICITLY provided config path (no fallbacks)
     from src.config import init_config as _init_config
-    
+
     if not Path(args.config_path).exists():
-        print(f"❌ Configuration file not found: {args.config_path}")
-        print(f"Please provide a valid config file path using --config_path")
+        logger = get_logger("inference")
+        logger.error(f"❌ Configuration file not found: {args.config_path}")
+        logger.error(f"Please provide a valid config file path using --config_path")
         exit(1)
-    
-    print(f"🔧 Loading configuration from: {args.config_path}")
+
+    logger = get_logger("inference")
+    logger.info(f"🔧 Loading configuration from: {args.config_path}")
     try:
         _init_config(args.config_path)
-        print(f"✅ Configuration loaded successfully")
+        logger.info(f"✅ Configuration loaded successfully")
     except Exception as e:
-        print(f"❌ Failed to load configuration: {e}")
+        logger.error(f"❌ Failed to load configuration: {e}")
         exit(1)
 
     # Configure global logging once for the whole run
@@ -1223,13 +1236,15 @@ def main():
 
     # Re-acquire logger so it inherits the freshly installed handlers
     logger = get_logger("inference")
-    
+
     # Check Flash Attention availability (non-blocking)
     flash_available = check_flash_attention_available()
     if flash_available:
         logger.info("✅ Flash Attention 2 is available")
     else:
-        logger.warning("⚠️ Flash Attention 2 not available - will use standard attention")
+        logger.warning(
+            "⚠️ Flash Attention 2 not available - will use standard attention"
+        )
 
     logger.info(f"Starting inference with log level: {args.log_level}")
     logger.info(f"Model path: {args.model_path}")

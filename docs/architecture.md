@@ -118,7 +118,9 @@ graph TD
 ### 2.5 Coordinate Token System
 | Module | Code location | Functionality |
 |--------|---------------|---------------|
-| **CoordinateProcessor** | `src/utils/coordinate_processor.py` | Handles coordinate token encoding/decoding with soft expectation regression |
+| **CoordinateTokenManager** | `src/utils/coordinate_token_manager.py` | Core coordinate token management with soft expectation regression |
+| **CoordinateProcessor** | `src/utils/coordinate_processor.py` | Legacy coordinate token interface (deprecated - use manager) |
+| **CoordinateLossComputer** | `src/utils/coordinate_loss_computer.py` | Multi-component coordinate loss computation with bbox span detection |
 | **SpecialTokens** | `src/utils/tokens/special_tokens.py` | Manages coordinate tokens and vocabulary extensions |
 | **CoordinateConfig** | `src/models/wrapper.py` | Configuration for coordinate token functionality and loss weighting |
 
@@ -265,24 +267,25 @@ Optimized collation for memory efficiency:
 ### 6.7 Coordinate Token System (Current Implementation)
 
 #### 6.7.1 Coordinate Token Architecture
-The system uses coordinate tokens for object detection with soft expectation regression:
+The system uses coordinate tokens for object detection with automatic bbox conversion and soft expectation regression:
 
 ```python
-# Coordinate processor structure (src/utils/coordinate_processor.py)
-class CoordinateProcessor:
-    def __init__(self, config):
-        self.max_coord_value = config.max_coord_value  # 2048
-        self.temperature = config.soft_expectation_temperature  # 100.0
-        self.coordinate_loss_weight = config.coordinate_loss_weight  # 1.0
-        self.regular_loss_weight = config.regular_loss_weight  # 1.0
+# Current implementation (src/utils/coordinate_token_manager.py)
+class CoordinateTokenManager:
+    def __init__(self, tokenizer, original_vocab_size, coordinate_config):
+        self.max_coord_value = coordinate_config["max_coord_value"]  # 2048
+        self.temperature = coordinate_config["soft_expectation_temperature"]  # 1.0
+        self.coordinate_loss_weight = coordinate_config["coordinate_loss_weight"]  # 1.0
         
-    def encode_coordinates(self, bbox_list):
-        # Convert bounding boxes to coordinate tokens
-        # Uses soft expectation for differentiable coordinate prediction
+    def soft_expectation_loss(self, logits, targets):
+        # Multi-component loss: focal + L1 + GIoU
+        # Enhanced bbox span detection and validation
         
-    def compute_coordinate_loss(self, logits, targets):
-        # Focal loss + soft expectation regression
-        # Handles coordinate token learning
+# Data conversion (src/chat_processor.py)
+def _format_objects_response(self, objects):
+    # Automatic conversion: [x1,y1,x2,y2] → <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>
+    if self.coordinate_processor.enabled:
+        return self.coordinate_processor.convert_json_to_coordinate_format(json_response)
 ```
 
 #### 6.7.2 Soft Expectation Regression
@@ -304,31 +307,34 @@ def compute_soft_expectation(self, logits, coordinate_mask):
     return expected_coords
 ```
 
-#### 6.7.3 Coordinate Token Loss
-The coordinate loss combines focal loss with coordinate regression:
+#### 6.7.3 Coordinate Token Loss (Current Implementation)
+The coordinate loss system now features enhanced multi-component loss computation:
 
 ```python
-# Coordinate token loss computation
-def compute_coordinate_loss(self, logits, targets, coordinate_mask):
-    # Extract coordinate logits and targets
-    coord_logits = logits[coordinate_mask]  # [num_coords, max_coord_value]
-    coord_targets = targets[coordinate_mask]  # [num_coords]
+# Enhanced coordinate loss computation (src/utils/coordinate_loss_computer.py)
+def compute_coordinate_aware_loss(self, logits, labels, attention_mask=None):
+    # 1. Detect bbox spans in token sequences
+    bbox_spans = self._detect_bbox_spans_batch_enhanced(labels)
     
-    # Focal loss for coordinate classification
-    focal_loss = self.focal_loss(coord_logits, coord_targets)
+    # 2. Create coordinate token mask
+    coordinate_mask = self._create_validated_coordinate_mask(labels, bbox_spans, valid_mask)
     
-    # Soft expectation regression loss
-    predicted_coords = self.compute_soft_expectation(coord_logits, coordinate_mask)
-    regression_loss = F.smooth_l1_loss(predicted_coords, coord_targets.float())
+    # 3. Multi-component loss computation
+    coord_loss_dict = self._compute_coordinate_token_loss_enhanced(
+        coord_logits, coord_targets, bbox_spans
+    )
     
-    # Combined loss
-    coordinate_loss = focal_loss + regression_loss
+    # Components: coordinate_loss, focal_loss, regular_loss, l1_loss, giou_loss
+    total_loss = self._combine_coordinate_losses(coord_loss_dict)
     
-    # Weight with regular language modeling loss
-    total_loss = (self.coordinate_loss_weight * coordinate_loss + 
-                  self.regular_loss_weight * regular_lm_loss)
-    
-    return total_loss
+    return total_loss, coord_loss_dict
+
+# Mode-aware loss management (src/training/loss_manager.py)
+def compute_total_loss(self, logits, labels, attention_mask=None):
+    if self._get_coordinate_tokens_enabled():
+        return self._compute_coordinate_aware_loss(logits, labels, attention_mask)
+    else:
+        return self._compute_standard_loss(logits, labels, attention_mask)
 ```
 
 #### 6.7.4 Dynamic Loss Scheduling

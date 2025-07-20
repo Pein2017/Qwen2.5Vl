@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer
 
 from src.logger_utils import get_logger
 
+
 logger = get_logger("response_parser")
 
 

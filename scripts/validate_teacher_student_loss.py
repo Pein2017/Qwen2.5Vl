@@ -42,7 +42,7 @@ def test_teacher_student_loss_backpropagation():
     # Create loss manager
     loss_manager = LossManager(
         tokenizer=tokenizer,
-        detection_enabled=config.detection_enabled,
+        # detection_enabled removed - using coordinate tokens instead
         bbox_weight=config.detection_bbox_weight,
         giou_weight=config.detection_giou_weight,
         objectness_weight=config.detection_objectness_weight,
@@ -91,7 +91,7 @@ def test_teacher_student_loss_backpropagation():
             model_outputs=model_outputs,
             inputs=inputs,
             is_training=True,
-            detection_training_enabled=config.detection_enabled
+            detection_training_enabled=False  # Detection training disabled - using coordinate tokens
         )
         
         print(f"✅ Loss computation successful:")

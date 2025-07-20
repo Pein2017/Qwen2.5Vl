@@ -46,6 +46,9 @@ from .global_config import (
     reset_config,
 )
 
+# Import logger for configuration messages
+from src.logger_utils import get_config_logger
+
 
 class ConfigAccessor:
     """
@@ -54,6 +57,9 @@ class ConfigAccessor:
     Provides seamless backward compatibility while enabling migration to
     the new domain-specific configuration approach.
     """
+
+    def __init__(self):
+        self.logger = get_config_logger()
 
     def __getattr__(self, name):
         # Try new config manager first
@@ -89,11 +95,11 @@ class ConfigAccessor:
                 break
 
         if config_path:
-            print(f"🔧 Auto-initializing config from: {config_path}")
+            self.logger.info(f"Auto-initializing config from: {config_path}")
             init_config(config_path)
         else:
             # Create minimal config for testing
-            print("🔧 Auto-initializing with minimal test config")
+            self.logger.info("Auto-initializing with minimal test config")
             self._create_minimal_config()
 
     def _create_minimal_config(self):
@@ -145,30 +151,12 @@ class ConfigAccessor:
             save_strategy="no",
             save_steps=500,
             save_total_limit=1,
-            # Logging settings
+            # Logging settings - simplified with rank-aware logging
             logging_steps=10,
             logging_dir="logs",
             log_level="INFO",
             report_to="none",
-            verbose=False,
             disable_tqdm=False,
-            # Detection settings
-            detection_enabled=True,
-            detection_num_queries=100,
-            detection_max_caption_length=50,
-            detection_decoder_dim_feedforward_factor=4.0,
-            detection_decoder_num_layers=3,
-            detection_caption_decoder_dim_feedforward_factor=4.0,
-            detection_caption_decoder_num_layers=3,
-            detection_head_dropout=0.1,
-            detection_adapter_bottleneck_ratio=4,
-            detection_adapter_num_layers=2,
-            detection_bbox_weight=5.0,
-            detection_giou_weight=2.0,
-            detection_objectness_weight=1.0,
-            detection_caption_weight=1.0,
-            detection_focal_loss_gamma=2.0,
-            detection_focal_loss_alpha=0.25,
             # Model architecture
             model_hidden_size=2048,
             model_num_layers=28,
@@ -177,24 +165,11 @@ class ConfigAccessor:
             # Performance settings
             use_flash_attention=True,
             mixed_precision="bf16",
-            dataloader_num_workers=4,
-            pin_memory=True,
-            prefetch_factor=2,
-            batching_strategy="standard",
             remove_unused_columns=False,
             # Output settings
             output_dir="output",
             run_name="test_run",
             tb_dir="tensorboard",
-            # Stability settings
-            max_consecutive_nan=5,
-            max_consecutive_zero=10,
-            max_nan_ratio=0.1,
-            nan_monitoring_window=100,
-            allow_occasional_nan=True,
-            nan_recovery_enabled=True,
-            learning_rate_reduction_factor=0.5,
-            gradient_clip_reduction_factor=0.5,
             # Debug settings
             test_samples=10,
             test_forward_pass=False,

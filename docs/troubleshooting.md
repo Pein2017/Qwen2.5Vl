@@ -177,7 +177,41 @@ python data_conversion/strip_exif_orientation.py
 
 ## Training Issues
 
-### 1. Shape Mismatch Errors
+### 1. Coordinate Loss Visibility Issues
+**Symptoms:**
+- Coordinate losses show as `0.0` in trainer logs despite coordinate tokens being enabled
+- Debug logs show coordinate losses being computed correctly
+- Training appears to proceed but coordinate tokens aren't learning
+
+**Root Cause:**
+Coordinate tokens exist in `input_ids` but are set to `-100` (ignore index) in `labels`, causing them to be filtered out during loss computation.
+
+**Solution:**
+This issue has been **resolved** in the current codebase. The fix is automatically applied in `src/utils/coordinate_loss_computer.py`:
+
+```python
+# CRITICAL FIX: Handle coordinate tokens with -100 labels correctly
+if coord_tokens_with_ignore > 0:
+    # FIX: Set coordinate token labels to match input tokens
+    for batch_idx, spans in enumerate(bbox_spans):
+        for start_idx, end_idx in spans:
+            for pos in range(start_idx + 1, end_idx - 1):
+                if pos < labels.shape[1]:
+                    token_id = labels[batch_idx, pos].item()
+                    if self.manager.is_coordinate_token(token_id):
+                        labels[batch_idx, pos] = token_id
+```
+
+**Verification:**
+Look for this message in debug logs:
+```
+⚠️ FIXING: Coordinate tokens in input have -100 in labels!
+✅ FIXED: Set 248 coordinate token labels to match input tokens
+```
+
+**Reference:** See `docs/coordinate_loss_visibility_fix.md` for complete details.
+
+### 2. Shape Mismatch Errors
 **Symptoms:**
 ```
 RuntimeError: shape '[0, 4, -1]' is invalid for input of size 1280

@@ -1,0 +1,6 @@
+2025-07-17 02:58:42 - DEBUG - test - This is a DEBUG message (should only show on rank 0)
+2025-07-17 02:58:42 - INFO - test - This is an INFO message (should only show on rank 0)
+2025-07-17 02:58:42 - WARNING - test - This is a WARNING message (should show on all ranks)
+2025-07-17 02:58:42 - ERROR - test - This is an ERROR message (should show on all ranks)
+2025-07-17 02:58:42 - INFO - config - Config logger test message
+2025-07-17 02:58:42 - INFO - training - Training logger test message

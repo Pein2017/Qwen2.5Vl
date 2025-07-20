@@ -4,11 +4,6 @@ This guide provides step-by-step instructions for new contributors to get up and
 
 ## Prerequisites
 
-### System Requirements
-- **Linux environment** (tested on Ubuntu 18.04+)
-- **CUDA-compatible GPU** (24GB+ VRAM recommended for training)
-- **Python 3.8+**
-- **Conda package manager**
 
 ### Network Considerations
 - This project is designed for use in China and cannot access foreign websites like GitHub, Google, or HuggingFace directly

@@ -19,19 +19,15 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
 CONFIG_NAME="base_flat_det"                   # Config to use: base_flat_v2 | base_flat_det
-GPU_DEVICES="0,1,2,3,4,5,6,7"             # GPU devices (comma-separated)
+GPU_DEVICES="0,1,2,3"               # GPU devices (comma-separated)
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # NEW: Training system configuration
 USE_NEW_CONFIG=false                      # Use new domain-specific config system (true/false)
 
-# Debug mode configuration
-DEBUG_MODE=false                           # true: console output, false: log to run.log
-
 # Logging configuration
-LOG_LEVEL="INFO"                          # Logging level: DEBUG | INFO | WARNING | ERROR
-LOG_VERBOSE=true                          # Enable verbose logging (true/false)
-CONSOLE_LOG_LEVEL=""                      # Console log level (empty = same as LOG_LEVEL)
+LOG_LEVEL="DEBUG"                          # Logging level: INFO (production) | DEBUG (development)
+to_console=false                               # true: console output, false: log to run.log
 export TRANSFORMERS_NO_TQDM=1
 export DISABLE_TQDM=1
 # =============================================================================
@@ -62,9 +58,10 @@ setup_environment() {
     export NCCL_DEBUG=WARN
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
     
-    # BBU-specific settings
-    export BBU_EARLY_TRAINING="true"
-    export BBU_SKIP_VALIDATION="false"
+    # CUDA to_console mode for detailed error info
+    # export CUDA_LAUNCH_BLOCKING=1
+    # export TORCH_USE_CUDA_DSA=1
+    
     
     cd "$PROJECT_ROOT"
     
@@ -138,8 +135,6 @@ launch_single_gpu() {
     python scripts/train.py \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
-        --log_verbose "$LOG_VERBOSE" \
-        ${CONSOLE_LOG_LEVEL:+--console_log_level "$CONSOLE_LOG_LEVEL"} \
         $([ "$USE_NEW_CONFIG" = "true" ] && echo "--use-new-config")
 }
 
@@ -152,7 +147,7 @@ launch_deepspeed() {
     echo "   🖥️  GPUs: $NUM_GPUS devices ($GPU_DEVICES)"
     echo "   ⚙️  DeepSpeed Config: $DEEPSPEED_CONFIG"
     echo "   📄 Training Config: $CONFIG_NAME"
-    echo "   📊 Log Level: $LOG_LEVEL (Verbose: $LOG_VERBOSE)"
+    echo "   📊 Log Level: $LOG_LEVEL (rank-aware filtering enabled)"
     echo "   🔗 Master Port: $MASTER_PORT (randomly generated)"
     
     # Launch with torchrun (official approach)
@@ -162,8 +157,6 @@ launch_deepspeed() {
         scripts/train.py \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
-        --log_verbose "$LOG_VERBOSE" \
-        ${CONSOLE_LOG_LEVEL:+--console_log_level "$CONSOLE_LOG_LEVEL"} \
         $([ "$USE_NEW_CONFIG" = "true" ] && echo "--use-new-config")
 }
 
@@ -172,14 +165,15 @@ launch_deepspeed() {
 # =============================================================================
 
 main() {
-    # Redirect output based on debug mode
-    if [[ "$DEBUG_MODE" == "false" ]]; then
+    # Redirect output based on to_console mode
+    if [[ "$to_console" == "false" ]]; then
         exec > run.log 2>&1
     fi
     
     echo "🚀 BBU Training Launcher"
     echo "   📄 Config: $CONFIG_NAME | 🖥️ GPUs: $GPU_DEVICES | 📊 Log: $LOG_LEVEL"
-    if [[ "$DEBUG_MODE" == "true" ]]; then
+    echo "   🔧 Rank-aware logging: INFO/DEBUG on rank0 only, ERROR/WARNING on all ranks"
+    if [[ "$to_console" == "true" ]]; then
         echo "   🐛 DEBUG MODE: Console output enabled"
     else
         echo "   📄 Output redirected to run.log"

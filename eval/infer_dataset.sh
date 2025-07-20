@@ -7,7 +7,7 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="det_coordinates"           # e.g., "1_teacher", "no_teacher", "baseline"
+EXP_NAME="715-det_coordinates"           # e.g., "1_teacher", "no_teacher", "baseline"
 
 # Dataset to process (single dataset per run)
 DATASET="val"                  # "train" or "val"
@@ -17,7 +17,7 @@ NUM_TEACHERS=1                          # Set number of teachers manually (0 for
 TEACHER_POOL_FILE="data/teacher.jsonl"
 
 # Model configuration  
-MODEL_PATH="output-714/coordinate-det/checkpoint-150"
+MODEL_PATH="output-714/714-det/checkpoint-100"
 MODEL_NAME="qwen2_5_vl"
 CONFIG_PATH="configs/base_flat_det.yaml"  # EXPLICIT configuration file path - no fallbacks
 

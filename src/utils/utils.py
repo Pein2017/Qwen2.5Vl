@@ -16,6 +16,7 @@ import torch
 
 from src.logger_utils import get_utils_logger
 
+
 logger = get_utils_logger()
 
 # Constants

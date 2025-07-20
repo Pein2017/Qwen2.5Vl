@@ -74,13 +74,43 @@ class ChatProcessor:
         # Initialize special tokens (vision-only)
         self.tokens = SpecialTokens()
 
-        # Initialize coordinate token processor
+        # Initialize coordinate token processor (deprecated - use manager instead)
+        coordinate_enabled = kwargs.get("enable_coordinate_tokens", False)
         coordinate_config = CoordinateTokenConfig(
-            enable_coordinate_tokens=kwargs.get("enable_coordinate_tokens", False),
+            enable_coordinate_tokens=coordinate_enabled,
             max_coord_value=kwargs.get("max_coord_value", 2048),
             use_official_box_tokens=True,
         )
         self.coordinate_processor = CoordinateTokenProcessor(coordinate_config)
+        
+        logger.debug(f"🎯 COORDINATE PROCESSOR INIT: enabled={coordinate_enabled}")
+        logger.debug(f"   📋 Config: {coordinate_config}")
+        logger.debug(f"   🎯 Processor enabled: {self.coordinate_processor.enabled}")
+        
+        # Initialize coordinate token manager if enabled
+        if kwargs.get("enable_coordinate_tokens", False):
+            from src.utils.coordinate_token_manager import create_coordinate_token_manager
+            
+            # Get original vocab size from tokenizer
+            original_vocab_size = len(tokenizer.get_vocab())
+            
+            coordinate_config_dict = {
+                "enable_coordinate_tokens": True,
+                "max_coord_value": kwargs.get("max_coord_value", 2048),
+                "coordinate_loss_weight": 1.0,
+                "regular_loss_weight": 1.0,
+                "soft_expectation_temperature": 1.0,
+                "focal_loss_alpha": 0.25,
+                "focal_loss_gamma": 2.0,
+            }
+            
+            self.coordinate_manager = create_coordinate_token_manager(
+                tokenizer=tokenizer,
+                original_vocab_size=original_vocab_size,
+                coordinate_config=coordinate_config_dict,
+            )
+        else:
+            self.coordinate_manager = None
 
         # Build system prompt using global config
         self.system_prompt = self._build_system_prompt()
@@ -316,10 +346,16 @@ class ChatProcessor:
 
         # Convert to coordinate token format if enabled
         if self.coordinate_processor.enabled:
-            return self.coordinate_processor.convert_json_to_coordinate_format(
+            coordinate_response = self.coordinate_processor.convert_json_to_coordinate_format(
                 json_response
             )
+            logger.debug(f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format")
+            logger.debug(f"   📋 JSON response: {json_response}")
+            logger.debug(f"   🎯 Coordinate response: {coordinate_response}")
+            return coordinate_response
         else:
+            logger.debug(f"🎯 COORDINATE TOKENS: Disabled - returning JSON format")
+            logger.debug(f"   📋 JSON response: {json_response}")
             return json_response
 
     def _process_images_and_tokens(
@@ -662,6 +698,40 @@ class ChatProcessor:
                 end_idx = start_idx + len(content_tokens)
 
                 labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
+                
+                # STRICT VALIDATION: Check for coordinate tokens in assistant messages
+                if hasattr(self, 'coordinate_manager') and self.coordinate_manager and self.coordinate_manager.config.enable_coordinate_tokens:
+                    assistant_tokens = labels[start_idx:end_idx]
+                    coord_token_count = 0
+                    for token in assistant_tokens:
+                        if (self.coordinate_manager.coord_start_id <= token.item() < self.coordinate_manager.coord_end_id or
+                            token.item() == self.coordinate_manager.config.box_start_id or
+                            token.item() == self.coordinate_manager.config.box_end_id):
+                            coord_token_count += 1
+                    
+                    if coord_token_count > 0:
+                        logger.debug(f"   🎯 Found {coord_token_count} coordinate tokens in assistant message")
+                        logger.debug(f"   Assistant span: [{start_idx}:{end_idx}]")
+                        logger.debug(f"   Sample coordinate tokens: {assistant_tokens[:min(10, len(assistant_tokens))].tolist()}")
+                        
+                        # Verify no coordinate tokens were set to -100
+                        masked_coord_tokens = []
+                        for i, token in enumerate(assistant_tokens):
+                            if token.item() == -100:
+                                orig_token = original_ids[start_idx + i]
+                                if (self.coordinate_manager.coord_start_id <= orig_token.item() < self.coordinate_manager.coord_end_id or
+                                    orig_token.item() == self.coordinate_manager.config.box_start_id or
+                                    orig_token.item() == self.coordinate_manager.config.box_end_id):
+                                    masked_coord_tokens.append((i, orig_token.item()))
+                        
+                        if masked_coord_tokens:
+                            logger.error(f"❌ CRITICAL: Coordinate tokens set to -100 in assistant message!")
+                            logger.error(f"   Masked coordinate tokens: {masked_coord_tokens}")
+                            logger.error(f"   This will cause coordinate loss to be zero!")
+                            raise RuntimeError(
+                                f"Coordinate tokens detected in assistant message but {len(masked_coord_tokens)} "
+                                f"tokens were set to -100. This will cause coordinate loss computation to fail."
+                            )
 
                 # Track spans for teacher-student loss splitting
                 if current_assistant_idx < num_assistants:

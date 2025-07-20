@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
-from src.config import config, get_config_manager
+from src.config import config
 from src.logger_utils import get_training_logger
 from src.training.loss_manager import LossManager
 from src.training.parameter_manager import ParameterGroupManager
@@ -42,23 +42,32 @@ class TrainingCoordinator:
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
-        use_domain_config: bool = False,
+        config_obj=None,
     ):
         """
         Initialize training coordinator.
 
         Args:
-            model: The complete model (base + detection head)
+            model: The complete model
             tokenizer: Tokenizer for processing
-            use_domain_config: Whether to use new domain-specific config system
+            config_obj: Configuration object
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.use_domain_config = use_domain_config
         self.logger = get_training_logger()
 
-        # Get configuration (either legacy or new system)
-        self.config = self._get_configuration()
+        # Get configuration
+        if config_obj is None:
+            from src.config import config
+
+            self.config = config
+        else:
+            self.config = config_obj
+
+        # Check if using domain-specific configuration
+        self.use_domain_config = hasattr(self.config, "detection") and hasattr(
+            self.config, "training"
+        )
 
         # Initialize managers
         self.loss_manager = self._create_loss_manager()
@@ -71,59 +80,19 @@ class TrainingCoordinator:
         self._training_metrics = {}
 
         self.logger.info("✅ Training coordinator initialized")
-
-    def _get_configuration(self) -> Any:
-        """Get configuration using appropriate system."""
         if self.use_domain_config:
-            try:
-                manager = get_config_manager()
-                return manager
-            except RuntimeError:
-                self.logger.warning(
-                    "⚠️  Domain config manager not initialized, falling back to legacy config"
-                )
-                return config
+            self.logger.info("   Using domain-specific configuration")
         else:
-            return config
+            self.logger.info("   Using flat configuration")
 
     def _create_loss_manager(self) -> LossManager:
         """Create and configure loss manager."""
-        if self.use_domain_config and hasattr(self.config, "detection"):
-            # Use domain-specific config
-            detection_config = {
-                "bbox_weight": self.config.detection.detection_bbox_weight,
-                "giou_weight": self.config.detection.detection_giou_weight,
-                "objectness_weight": self.config.detection.detection_objectness_weight,
-                "caption_weight": self.config.detection.detection_caption_weight,
-                "focal_loss_gamma": self.config.detection.detection_focal_loss_gamma,
-                "focal_loss_alpha": self.config.detection.detection_focal_loss_alpha,
-            }
-            detection_enabled = self.config.detection.detection_enabled
-        else:
-            # Use legacy config
-            detection_config = {
-                "bbox_weight": self.config.detection_bbox_weight,
-                "giou_weight": self.config.detection_giou_weight,
-                "objectness_weight": self.config.detection_objectness_weight,
-                "caption_weight": self.config.detection_caption_weight,
-                "focal_loss_gamma": self.config.detection_focal_loss_gamma,
-                "focal_loss_alpha": self.config.detection_focal_loss_alpha,
-            }
-            detection_enabled = self.config.detection_enabled
-
-        return LossManager(
-            tokenizer=self.tokenizer,
-            detection_enabled=detection_enabled,
-            **detection_config,
-        )
+        # Legacy detection parameters (ignored - using coordinate tokens instead)
+        return LossManager(tokenizer=self.tokenizer)
 
     def _create_parameter_manager(self) -> ParameterGroupManager:
         """Create and configure parameter manager."""
-        if self.use_domain_config and hasattr(self.config, "training"):
-            weight_decay = self.config.training.weight_decay
-        else:
-            weight_decay = self.config.weight_decay
-
+        weight_decay = getattr(self.config, "weight_decay", 0.01)
         return ParameterGroupManager(model=self.model, base_weight_decay=weight_decay)
 
     def setup_training(self) -> Dict[str, Any]:
@@ -188,12 +157,90 @@ class TrainingCoordinator:
         Returns:
             Tuple of (total_loss, loss_components)
         """
-        return self.loss_manager.compute_total_loss(
+        # Validate coordinate token setup if enabled
+        if not hasattr(config, "coordinate_tokens_enabled"):
+            raise ValueError("coordinate_tokens_enabled must be explicitly configured in config")
+        coordinate_tokens_enabled = config.coordinate_tokens_enabled
+        if coordinate_tokens_enabled and is_training:
+            # Check if model outputs have coordinate loss attributes
+            has_coord_loss = hasattr(model_outputs, "_coordinate_loss")
+            has_focal_loss = hasattr(model_outputs, "_focal_loss")
+            has_regular_loss = hasattr(model_outputs, "_regular_loss")
+
+            if not (has_coord_loss or has_focal_loss or has_regular_loss):
+                self.logger.warning(
+                    "⚠️ Coordinate tokens enabled but no coordinate losses found in model outputs"
+                )
+                self.logger.warning(
+                    "   This may indicate the model wrapper is not computing coordinate losses correctly"
+                )
+            else:
+                self.logger.debug(
+                    f"✅ Coordinate losses detected in model outputs: coord={has_coord_loss}, focal={has_focal_loss}, regular={has_regular_loss}"
+                )
+
+        total_loss, loss_components = self.loss_manager.compute_total_loss(
             model_outputs=model_outputs,
             inputs=inputs,
             is_training=is_training,
             detection_training_enabled=self.detection_training_enabled,
         )
+
+        # Validate that coordinate losses are being extracted if enabled
+        if coordinate_tokens_enabled and is_training:
+            coord_loss = loss_components.get("coordinate_loss", 0.0)
+            focal_loss = loss_components.get("focal_loss", 0.0)
+            regular_loss = loss_components.get("regular_loss", 0.0)
+            l1_loss = loss_components.get("l1_loss", 0.0)
+            giou_loss = loss_components.get("giou_loss", 0.0)
+
+            if (
+                coord_loss == 0.0
+                and focal_loss == 0.0
+                and regular_loss == 0.0
+                and l1_loss == 0.0
+                and giou_loss == 0.0
+            ):
+                self.logger.debug(
+                    "📊 All coordinate losses are zero - this may be expected for some batches"
+                )
+            else:
+                self.logger.info(
+                    f"📊 Coordinate losses extracted: coord={coord_loss:.4f}, focal={focal_loss:.4f}, regular={regular_loss:.4f}, l1={l1_loss:.4f}, giou={giou_loss:.4f}"
+                )
+
+                # CRITICAL DEBUG: Log the flow from model outputs to final components
+                self.logger.info(f"🔍 DEBUGGING coordinate loss flow:")
+                self.logger.info(
+                    f"   Model outputs has _coordinate_loss: {hasattr(model_outputs, '_coordinate_loss')}"
+                )
+                self.logger.info(
+                    f"   Model outputs has _focal_loss: {hasattr(model_outputs, '_focal_loss')}"
+                )
+                self.logger.info(
+                    f"   Model outputs has _l1_loss: {hasattr(model_outputs, '_l1_loss')}"
+                )
+                self.logger.info(
+                    f"   Model outputs has _giou_loss: {hasattr(model_outputs, '_giou_loss')}"
+                )
+                if hasattr(model_outputs, "_coordinate_loss"):
+                    self.logger.info(
+                        f"   Model outputs._coordinate_loss: {model_outputs._coordinate_loss}"
+                    )
+                if hasattr(model_outputs, "_focal_loss"):
+                    self.logger.info(
+                        f"   Model outputs._focal_loss: {model_outputs._focal_loss}"
+                    )
+                if hasattr(model_outputs, "_l1_loss"):
+                    self.logger.info(
+                        f"   Model outputs._l1_loss: {model_outputs._l1_loss}"
+                    )
+                if hasattr(model_outputs, "_giou_loss"):
+                    self.logger.info(
+                        f"   Model outputs._giou_loss: {model_outputs._giou_loss}"
+                    )
+
+        return total_loss, loss_components
 
     def step_update(self, step: int, epoch: int):
         """
@@ -228,8 +275,8 @@ class TrainingCoordinator:
             self.detection_training_enabled = True
             self.logger.info(f"🔓 Detection training enabled at epoch {epoch}")
 
-            # Unfreeze detection parameters
-            self.parameter_manager.unfreeze_components(["detection"])
+            # Unfreeze coordinate token parameters
+            self.parameter_manager.unfreeze_components(["coordinate"])
 
     def _update_training_metrics(self):
         """Update training metrics for monitoring."""
@@ -244,9 +291,35 @@ class TrainingCoordinator:
             }
         )
 
+        # Enhanced coordinate loss logging
+        if self._validate_coordinate_token_config():
+            self._log_coordinate_metrics_summary(current_losses)
+
     def get_averaged_losses_and_reset(self) -> Dict[str, float]:
-        """Get averaged losses and reset accumulators."""
-        return self.loss_manager.get_averaged_losses()
+        """Get averaged losses with enhanced coordinate token support."""
+        averaged_losses = self.loss_manager.get_averaged_losses()
+        
+        # Validate and ensure coordinate token losses are properly included
+        coordinate_tokens_enabled = self._validate_coordinate_token_config()
+        
+        if coordinate_tokens_enabled:
+            # Ensure all coordinate loss components are present
+            required_coord_losses = ["coordinate_loss", "focal_loss", "regular_loss", "l1_loss", "giou_loss"]
+            missing_losses = []
+            
+            for key in required_coord_losses:
+                if key not in averaged_losses:
+                    averaged_losses[key] = 0.0
+                    missing_losses.append(key)
+            
+            if missing_losses:
+                self.logger.debug(f"🔧 Added missing coordinate losses: {missing_losses}")
+            
+            # Log coordinate loss summary
+            total_coord_loss = sum(averaged_losses.get(key, 0.0) for key in required_coord_losses)
+            self.logger.debug(f"📊 Averaged coordinate losses: total={total_coord_loss:.6f}")
+        
+        return averaged_losses
 
     def save_evaluation_state(self) -> Dict[str, Any]:
         """Save training state before evaluation."""
@@ -300,17 +373,19 @@ class TrainingCoordinator:
         param_warnings = self.parameter_manager.validate_configuration()
         warnings.extend(param_warnings)
 
-        # Validate loss configuration
-        if self.use_domain_config and hasattr(self.config, "detection"):
-            detection_enabled = self.config.detection.detection_enabled
-            detection_lr = self.config.training.detection_lr
+        # Validate coordinate token configuration
+        if self.use_domain_config and hasattr(self.config, "coordinate_config"):
+            coordinate_enabled = self.config.coordinate_config.enable_coordinate_tokens
+            coordinate_lr = self.config.coordinate_lr
         else:
-            detection_enabled = self.config.detection_enabled
-            detection_lr = self.config.detection_lr
+            coordinate_enabled = getattr(
+                self.config, "coordinate_tokens_enabled", False
+            )
+            coordinate_lr = getattr(self.config, "coordinate_lr", 0.0)
 
-        if detection_enabled and detection_lr <= 0:
+        if coordinate_enabled and coordinate_lr <= 0:
             warnings.append(
-                "Detection enabled but detection_lr is 0 - detection head will not be trained"
+                "Coordinate tokens enabled but coordinate_lr is 0 - coordinate tokens will not be trained"
             )
 
         # Validate teacher-student configuration
@@ -327,6 +402,52 @@ class TrainingCoordinator:
             )
 
         return warnings
+
+    def _validate_coordinate_token_config(self) -> bool:
+        """Validate coordinate token configuration and return if enabled."""
+        try:
+            # Check if coordinate tokens are enabled in config
+            if hasattr(self.config, "coordinate_tokens_enabled"):
+                coordinate_enabled = self.config.coordinate_tokens_enabled
+            elif hasattr(self.config, "coordinate_config") and hasattr(self.config.coordinate_config, "enable_coordinate_tokens"):
+                coordinate_enabled = self.config.coordinate_config.enable_coordinate_tokens
+            else:
+                coordinate_enabled = False
+            
+            if coordinate_enabled:
+                # Additional validation
+                if not hasattr(self.config, "coordinate_lr") or self.config.coordinate_lr <= 0:
+                    self.logger.warning("⚠️ Coordinate tokens enabled but coordinate_lr is 0 or missing")
+                    return False
+                
+                self.logger.debug("✅ Coordinate token configuration validated")
+                return True
+            else:
+                self.logger.debug("🔧 Coordinate tokens disabled in configuration")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error validating coordinate token config: {e}")
+            return False
+
+    def _log_coordinate_metrics_summary(self, current_losses: Dict[str, float]):
+        """Log summary of coordinate token metrics."""
+        try:
+            coord_loss = current_losses.get("coordinate_loss", 0.0)
+            focal_loss = current_losses.get("focal_loss", 0.0)
+            regular_loss = current_losses.get("regular_loss", 0.0)
+            l1_loss = current_losses.get("l1_loss", 0.0)
+            giou_loss = current_losses.get("giou_loss", 0.0)
+            
+            total_coord_loss = coord_loss + focal_loss + regular_loss + l1_loss + giou_loss
+            
+            if total_coord_loss > 0:
+                self.logger.info(f"📊 Coordinate metrics: coord={coord_loss:.4f}, focal={focal_loss:.4f}, regular={regular_loss:.4f}, l1={l1_loss:.4f}, giou={giou_loss:.4f}, total={total_coord_loss:.4f}")
+            else:
+                self.logger.debug("📊 All coordinate losses are zero for this step")
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error logging coordinate metrics: {e}")
 
     def get_status_summary(self) -> Dict[str, Any]:
         """Get comprehensive status summary for logging."""

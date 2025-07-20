@@ -26,8 +26,8 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "exp_det_coordinates/det_coordinates/val/inference/predictions.json"
-OUTPUT_DIR = "714-det-coordinates-val"
+INPUT_FILE = "exp_det_coordinates/715-det_coordinates/val/inference/predictions.json"
+OUTPUT_DIR = "715-det-coordinates-val"
 BASE_PATH = "."
 MAX_SAMPLES = None  # Set to a number to limit samples, or None for all
 SAMPLE_INDICES = None  # Set to list of indices [0, 1, 2, 5] or None for all

@@ -26,6 +26,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from tqdm import tqdm
 
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
@@ -42,7 +43,7 @@ def strip_exif_from_file(path: Path, dry_run: bool = False) -> None:
                 return  # nothing to do
 
             # Apply orientation from EXIF so the pixel data is stored upright.
-            img_processed: Image.Image = ImageOps.exif_transpose(img)
+            img_processed = ImageOps.exif_transpose(img)
 
             if dry_run:
                 return

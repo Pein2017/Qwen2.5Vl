@@ -22,26 +22,26 @@ from src.config import init_config, config
 
 
 def check_detection_consistency():
-    """Check detection configuration consistency."""
+    """Check detection configuration consistency (legacy - detection now uses coordinate tokens)."""
     issues = []
     
-    # Check if detection is enabled for detection data
-    if hasattr(config, 'detection_enabled'):
-        if not config.detection_enabled:
-            # Check if we have detection data
-            data_files = ["data/train.jsonl", "data/val.jsonl"]
-            for data_file in data_files:
-                if Path(data_file).exists():
-                    # Sample first line to check data format
-                    with open(data_file, 'r') as f:
-                        first_line = f.readline().strip()
-                        if first_line:
-                            try:
-                                sample = json.loads(first_line)
-                                if 'objects' in sample and sample['objects']:
-                                    issues.append(f"⚠️  CRITICAL: detection_enabled=false but {data_file} contains detection data (objects)")
-                            except json.JSONDecodeError:
-                                issues.append(f"⚠️  {data_file} has invalid JSON format")
+    # Check if we have coordinate token data
+    data_files = ["data/train.jsonl", "data/val.jsonl"]
+    for data_file in data_files:
+        if Path(data_file).exists():
+            # Sample first line to check data format
+            with open(data_file, 'r') as f:
+                first_line = f.readline().strip()
+                if first_line:
+                    try:
+                        sample = json.loads(first_line)
+                        if 'objects' in sample and sample['objects']:
+                            # Check if coordinate tokens are enabled
+                            coordinate_tokens_enabled = getattr(config, 'coordinate_tokens_enabled', False)
+                            if not coordinate_tokens_enabled:
+                                issues.append(f"⚠️  INFO: {data_file} contains detection data but coordinate tokens not enabled")
+                    except json.JSONDecodeError:
+                        issues.append(f"⚠️  {data_file} has invalid JSON format")
     
     return issues
 
@@ -88,15 +88,14 @@ def check_training_parameters():
         elif config.learning_rate > 0:
             issues.append(f"ℹ️  Using full model training (LR={config.learning_rate})")
     
-    # Check detection parameters if detection enabled
-    if hasattr(config, 'detection_enabled') and config.detection_enabled:
+    # Check coordinate token parameters if enabled
+    if getattr(config, 'coordinate_tokens_enabled', False):
         required_params = [
-            'detection_bbox_weight', 'detection_giou_weight', 
-            'detection_objectness_weight', 'detection_caption_weight'
+            'coordinate_tokens_max_coord_value', 'coordinate_tokens_temperature'
         ]
         for param in required_params:
             if not hasattr(config, param):
-                issues.append(f"❌ Missing detection parameter: {param}")
+                issues.append(f"❌ Missing coordinate token parameter: {param} (using defaults)")
             elif getattr(config, param) <= 0:
                 issues.append(f"⚠️  Detection parameter {param} = {getattr(config, param)} (should be > 0)")
     
@@ -142,7 +141,7 @@ def main():
                 print(f"\nℹ️  All issues are warnings or info messages.")
         
         print("\n📊 Configuration Summary:")
-        print(f"   Detection enabled: {getattr(config, 'detection_enabled', 'Unknown')}")
+        print(f"   Coordinate tokens enabled: {getattr(config, 'coordinate_tokens_enabled', False)}")
         print(f"   Model path: {getattr(config, 'model_path', 'Unknown')}")
         print(f"   Learning rate: {getattr(config, 'learning_rate', 'Unknown')}")
         print(f"   Adapter LR: {getattr(config, 'adapter_lr', 'Unknown')}")

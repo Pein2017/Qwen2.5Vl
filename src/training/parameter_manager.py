@@ -52,6 +52,14 @@ class ParameterGroupManager:
             model: The complete model (base + detection head)
             base_weight_decay: Base weight decay for parameter groups
         """
+        # Strict validation - fail fast
+        if model is None:
+            raise ValueError("model is required")
+        if not hasattr(model, "parameters"):
+            raise ValueError("model must have parameters method")
+        if base_weight_decay < 0:
+            raise ValueError("base_weight_decay must be non-negative")
+
         self.model = model
         self.base_weight_decay = base_weight_decay
         self.logger = get_training_logger()
@@ -85,11 +93,11 @@ class ParameterGroupManager:
                 weight_decay=self.base_weight_decay,
                 enabled=config.llm_lr > 0,
             ),
-            "detection": ParameterGroupConfig(
-                name="detection",
-                lr=config.detection_lr,
+            "coordinate": ParameterGroupConfig(
+                name="coordinate",
+                lr=config.coordinate_lr,
                 weight_decay=self.base_weight_decay,
-                enabled=config.detection_lr > 0 and config.detection_enabled,
+                enabled=config.coordinate_lr > 0,  # Coordinate tokens enabled
             ),
             "adapter": ParameterGroupConfig(
                 name="adapter",
@@ -106,7 +114,7 @@ class ParameterGroupManager:
             "vision": [],
             "merger": [],
             "llm": [],
-            "detection": [],
+            "coordinate": [],
             "adapter": [],
             "other": [],
         }
@@ -136,20 +144,18 @@ class ParameterGroupManager:
         Returns:
             Category name ("vision", "merger", "llm", "detection", "adapter", "other")
         """
-        # Detection head parameters (highest priority)
+        # Coordinate token parameters (highest priority)
         if any(
             pattern in param_name
             for pattern in [
-                "detection_head",
-                "object_queries",
-                "bbox_head",
-                "objectness_head",
-                "caption_head",
-                "caption_decoder",
-                "detection_adapter",
+                "extended_embeddings",
+                "extended_lm_head",
+                "coordinate_tokens",
+                "coord_tokens",
+                "coordinate_head",
             ]
         ):
-            return "detection"
+            return "coordinate"
 
         # Adapter parameters
         if any(pattern in param_name for pattern in ["adapter", "lora", "bottleneck"]):
@@ -236,12 +242,14 @@ class ParameterGroupManager:
         # Handle any "other" parameters if they exist
         other_params = [param for _, param in self.parameter_groups["other"]]
         if other_params:
-            fallback_lr = (
-                config.learning_rate if hasattr(config, "learning_rate") else 1e-5
-            )
+            if not hasattr(config, "learning_rate"):
+                raise ValueError(
+                    "learning_rate must be explicitly configured in config for 'other' parameters. "
+                    f"Found {len(other_params)} uncategorized parameters requiring learning rate."
+                )
             group = {
                 "params": other_params,
-                "lr": fallback_lr,
+                "lr": config.learning_rate,
                 "weight_decay": self.base_weight_decay,
                 "name": "other",
             }
@@ -249,7 +257,7 @@ class ParameterGroupManager:
 
             self.logger.warning(
                 f"⚠️  Uncategorized parameters found: {len(other_params)} params "
-                f"assigned to fallback group with lr={fallback_lr:.2e}"
+                f"assigned to fallback group with lr={config.learning_rate:.2e}"
             )
 
         return optimizer_groups
@@ -372,14 +380,13 @@ class ParameterGroupManager:
                     f"{max_lr / min_lr:.1f}x"
                 )
 
-        # Check for detection components
+        # Check for coordinate token components
         if (
-            config.detection_enabled
-            and self.group_configs["detection"].enabled
-            and self.group_configs["detection"].param_count == 0
+            self.group_configs["coordinate"].enabled
+            and self.group_configs["coordinate"].param_count == 0
         ):
             warnings.append(
-                "Detection enabled in config but no detection parameters found in model"
+                "Coordinate token group enabled but no coordinate parameters found"
             )
 
         return warnings

@@ -199,8 +199,50 @@ class BBUTrainer(Trainer):
             # Detection is now handled via coordinate tokens
             self.detection_loss = None
 
+            # Initialize coordinate token loss accumulators if coordinate tokens are enabled
+            if not hasattr(self.config, "coordinate_tokens_enabled"):
+                raise ValueError(
+                    "coordinate_tokens_enabled must be explicitly configured in config"
+                )
+            coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
+            if coordinate_tokens_enabled:
+                self.logger.info("🎯 Initializing coordinate token loss tracking")
+                self._current_coordinate_loss: float = 0.0
+                self._current_focal_loss: float = 0.0
+                self._current_regular_loss: float = 0.0
+                self._current_coord_l1_loss: float = 0.0
+                self._current_coord_giou_loss: float = 0.0
+                self._accumulated_coordinate_loss: float = 0.0
+                self._accumulated_focal_loss: float = 0.0
+                self._accumulated_regular_loss: float = 0.0
+                self._accumulated_coord_l1_loss: float = 0.0
+                self._accumulated_coord_giou_loss: float = 0.0
+
         # Cache for per-step weight / grad norms (populated in training_step)
         self._norm_cache: Dict[str, float] = {}
+        
+        # CRITICAL: Ensure tokenizer has correct padding_side for Flash Attention
+        self._fix_tokenizer_padding_side()
+
+    def _fix_tokenizer_padding_side(self):
+        """Ensure all tokenizer references have correct padding_side for Flash Attention."""
+        tokenizers_to_fix = []
+        
+        # Collect all possible tokenizer references
+        if hasattr(self, 'tokenizer_ref') and hasattr(self.tokenizer_ref, 'padding_side'):
+            tokenizers_to_fix.append(('tokenizer_ref', self.tokenizer_ref))
+        if hasattr(self, 'tokenizer') and hasattr(self.tokenizer, 'padding_side'):
+            tokenizers_to_fix.append(('tokenizer', self.tokenizer))
+        if hasattr(self, 'data_collator') and hasattr(self.data_collator, 'tokenizer') and hasattr(self.data_collator.tokenizer, 'padding_side'):
+            tokenizers_to_fix.append(('data_collator.tokenizer', self.data_collator.tokenizer))
+            
+        # Fix padding_side for all found tokenizers
+        for name, tokenizer in tokenizers_to_fix:
+            if tokenizer.padding_side != 'left':
+                self.logger.warning(f"🔧 Fixing {name} padding_side: {tokenizer.padding_side} -> left")
+                tokenizer.padding_side = 'left'
+            else:
+                self.logger.debug(f"✅ {name} padding_side already correct: {tokenizer.padding_side}")
 
     @property
     def tokenizer(self):
@@ -258,7 +300,8 @@ class BBUTrainer(Trainer):
         # CRITICAL FIX: Save the full model, not just base_model
         # For Qwen2.5-VL, visual tower is part of the main model, not base_model
         if (
-            not getattr(self.model, "coordinate_tokens_enabled", False)
+            not hasattr(self.model, "coordinate_tokens_enabled")
+            or not self.model.coordinate_tokens_enabled
         ):
             # For coordinate tokens disabled, save the full Qwen2.5-VL model
             self.logger.info(
@@ -449,28 +492,38 @@ class BBUTrainer(Trainer):
         total_keys = 0
 
         with safe_open(first_file, framework="pt", device="cpu") as f:
-            all_keys = f.keys()
-            total_keys = len(list(all_keys))
+            all_keys = list(f.keys())
+            total_keys = len(all_keys)
 
-            # Re-open to iterate (safe_open keys() is a generator)
-            with safe_open(first_file, framework="pt", device="cpu") as f2:
-                for key in f2.keys():
-                    if "visual" in key:
-                        visual_keys.append(key)
+            # Check for visual parameters
+            for key in all_keys:
+                if "visual" in key:
+                    visual_keys.append(key)
 
         self.logger.info(f"   ✅ Total parameters saved: {total_keys}")
 
-        # FAIL FAST: Vision tower must be present for vision-language model
+        # SAFE FALLBACK: Vision tower check for wrapped models
         if not visual_keys:
-            raise RuntimeError(
-                "No visual tower parameters found in checkpoint! "
-                "This indicates the model saving failed to include vision components. "
-                "Vision-language models require visual tower weights for proper inference."
-            )
+            # Check if we're dealing with a wrapped model that stores visual components differently
+            wrapped_visual_keys = [
+                key
+                for key in all_keys
+                if "base_model" in key and "visual" in key.lower()
+            ]
+            if wrapped_visual_keys:
+                self.logger.info(
+                    f"   ✅ Found visual parameters in wrapped model: {len(wrapped_visual_keys)}"
+                )
+                visual_keys = wrapped_visual_keys
+            else:
+                self.logger.warning(
+                    "⚠️ No visual tower parameters found in checkpoint! "
+                    "This may indicate the model is wrapped or uses a different structure. "
+                    "Proceeding with caution - verify model loads correctly."
+                )
 
         self.logger.info(f"   ✅ Visual tower parameters found: {len(visual_keys)}")
         self.logger.info(f"      Examples: {visual_keys[:3]}...")
-
 
     def init_param_groups(self) -> None:
         """
@@ -489,6 +542,7 @@ class BBUTrainer(Trainer):
             "vision": [],
             "merger": [],
             "llm": [],
+            "coordinate": [],  # For coordinate token parameters
             "others": [],  # For uncategorized parameters
         }
 
@@ -498,8 +552,20 @@ class BBUTrainer(Trainer):
 
             # Correct parameter name matching based on the model's structure.
             # The order is critical: check for the most specific names first.
+            # Check for coordinate token parameters first (highest priority)
+            if any(
+                pattern in name
+                for pattern in [
+                    "extended_embeddings",
+                    "extended_lm_head",
+                    "coordinate_tokens",
+                    "coord_tokens",
+                    "coordinate_head",
+                ]
+            ):
+                param_groups_with_names["coordinate"].append((name, param))
             # "merger" is part of the vision tower, so check for it *before* "visual".
-            if "merger" in name:
+            elif "merger" in name:
                 param_groups_with_names["merger"].append((name, param))
             elif "visual" in name:
                 param_groups_with_names["vision"].append((name, param))
@@ -570,6 +636,7 @@ class BBUTrainer(Trainer):
             "vision": self.config.vision_lr,
             "merger": self.config.merger_lr,
             "llm": self.config.llm_lr,
+            "coordinate": self.config.coordinate_lr,
         }
 
         optimizer_grouped_parameters = []
@@ -660,10 +727,9 @@ class BBUTrainer(Trainer):
 
         norms: Dict[str, float] = {}
 
+        # Detection head removed - using coordinate tokens instead
         module_map = {
-            "vision_adapter": "detection_head.vision_adapter",
-            "lang_adapter": "detection_head.adapter",
-            "bbox_head": "detection_head.bbox_head",
+            # Legacy detection head modules removed
         }
 
         # Build a quick lookup for named_modules once to avoid O(N²) search
@@ -849,6 +915,7 @@ class BBUTrainer(Trainer):
         This method delegates complex loss computation to the coordinator
         while maintaining the same interface as the legacy compute_loss.
         """
+        
         # Ensure we get hidden states for detection
         model_inputs = inputs.copy()
         model_inputs["output_hidden_states"] = True
@@ -862,9 +929,12 @@ class BBUTrainer(Trainer):
         )
 
         # Update current loss attributes for compatibility with legacy logging
-        self._current_lm_loss = loss_components["lm_loss"]
+        # Note: lm_loss removed - use teacher + student components instead
         self._current_teacher_lm_loss = loss_components["teacher_lm_loss"]
         self._current_student_lm_loss = loss_components["student_lm_loss"]
+        self._current_lm_loss = (
+            self._current_teacher_lm_loss + self._current_student_lm_loss
+        )  # For legacy compatibility
         self._current_bbox_l1_loss = loss_components["bbox_l1_loss"]
         self._current_bbox_giou_loss = loss_components["bbox_giou_loss"]
         self._current_caption_loss = loss_components["caption_loss"]
@@ -872,14 +942,47 @@ class BBUTrainer(Trainer):
         self._current_bbox_loss = (
             self._current_bbox_l1_loss + self._current_bbox_giou_loss
         )
+        # Add coordinate token loss components with new naming - NO DEFAULTS, FAIL FAST
+        if (
+            hasattr(config, "coordinate_tokens_enabled")
+            and config.coordinate_tokens_enabled
+        ):
+            required_loss_components = ["regular_loss"]
+            optional_coord_components = [
+                "coord_focal_loss",
+                "coord_l1_loss",
+                "coord_giou_loss",
+            ]
+            missing_components = []
 
-        # Update coordinator state
-        self.training_coordinator.step_update(
-            step=self.state.global_step if hasattr(self, "state") else 0,
-            epoch=int(self.state.epoch)
-            if hasattr(self, "state") and self.state.epoch
-            else 0,
-        )
+            # Check required components
+            for component in required_loss_components:
+                if component not in loss_components:
+                    missing_components.append(component)
+
+            if missing_components:
+                raise RuntimeError(
+                    f"Coordinate tokens enabled but training coordinator missing required loss components: {missing_components}. "
+                    f"This indicates training coordinator is not properly computing coordinate losses."
+                )
+
+            # Extract with strict validation - regular_loss is always present
+            self._current_regular_loss = loss_components["regular_loss"]
+
+            # Extract coordinate losses (may be zero for teacher samples)
+            self._current_coord_focal_loss = loss_components.get(
+                "coord_focal_loss", 0.0
+            )
+            self._current_coord_l1_loss = loss_components.get("coord_l1_loss", 0.0)
+            self._current_coord_giou_loss = loss_components.get("coord_giou_loss", 0.0)
+        else:
+            # Coordinate tokens disabled - set to zero
+            self._current_regular_loss = 0.0
+            self._current_coord_focal_loss = 0.0
+            self._current_coord_l1_loss = 0.0
+            self._current_coord_giou_loss = 0.0
+
+        # Coordinator system handles all loss extraction and accumulation
 
         # Return in same format as legacy method
         if return_outputs:
@@ -909,6 +1012,7 @@ class BBUTrainer(Trainer):
         # ------------------------------------------------------------------
         # LEGACY: Original loss computation logic
         # ------------------------------------------------------------------
+        
 
         # Increment *micro-batch* counter **before** any early returns so that
         # every forward pass is accounted for. We only count batches during
@@ -939,8 +1043,51 @@ class BBUTrainer(Trainer):
 
         outputs = model(**model_inputs)
 
+        # ------------------------------------------------------------------
+        # NEW: Extract coordinate token loss components directly from model
+        # outputs (attached by Wrapper) when using legacy Trainer path.
+        # ------------------------------------------------------------------
+        # The model wrapper attaches _coordinate_loss, _focal_loss, _regular_loss,
+        # _l1_loss, and _giou_loss attributes to the output object so that the
+        # trainer can pick them up. In the coordinator path this extraction is
+        # handled upstream, but in the legacy path we need to do it here.
+        coordinate_components = {
+            "coordinate_loss": getattr(outputs, "_coordinate_loss", 0.0),
+            "focal_loss": getattr(outputs, "_focal_loss", 0.0),
+            "regular_loss": getattr(outputs, "_regular_loss", 0.0),
+            "l1_loss": getattr(outputs, "_l1_loss", 0.0),
+            "giou_loss": getattr(outputs, "_giou_loss", 0.0),
+        }
+
+        # Store as current losses so downstream accumulation and logging work.
+        self._current_coordinate_loss = float(coordinate_components["coordinate_loss"])
+        self._current_focal_loss = float(coordinate_components["focal_loss"])
+        self._current_regular_loss = float(coordinate_components["regular_loss"])
+        self._current_coord_l1_loss = float(coordinate_components["l1_loss"])
+        self._current_coord_giou_loss = float(coordinate_components["giou_loss"])
+
+        # ------------------------------------------------------------------
+        # IMMEDIATE ERROR CHECK: Verify outputs.loss is tensor
+        if hasattr(outputs, "loss") and isinstance(outputs.loss, dict):
+            self.logger.error(
+                f"❌ TRAINER: outputs.loss is dict instead of tensor: {outputs.loss}"
+            )
+            raise RuntimeError(
+                f"outputs.loss should be tensor, got dict: {outputs.loss}"
+            )
+
         # Debug: catch NaN LM loss and log sample information
         lm_loss = outputs.loss
+
+        # CRITICAL DEBUG: Check loss type before tensor operations
+        self.logger.debug(f"🔍 Loss type check: {type(lm_loss)}")
+        if isinstance(lm_loss, dict):
+            self.logger.error(f"❌ outputs.loss is a dict instead of tensor: {lm_loss}")
+            raise RuntimeError(f"outputs.loss should be a tensor, got dict: {lm_loss}")
+        elif not isinstance(lm_loss, torch.Tensor):
+            self.logger.error(f"❌ outputs.loss is not a tensor: {type(lm_loss)}")
+            raise RuntimeError(f"outputs.loss should be a tensor, got {type(lm_loss)}")
+
         if torch.isnan(lm_loss):
             # Count valid labels (not IGNORE_INDEX = -100)
             labels = inputs["labels"]
@@ -985,6 +1132,20 @@ class BBUTrainer(Trainer):
         self._accumulated_teacher_lm_loss += self._current_teacher_lm_loss
         self._accumulated_student_lm_loss += self._current_student_lm_loss
 
+        # Accumulate coordinate token losses if using coordinator (they're already set)
+        if hasattr(self, "_current_coordinate_loss"):
+            if not hasattr(self, "_accumulated_coordinate_loss"):
+                self._accumulated_coordinate_loss = 0.0
+                self._accumulated_focal_loss = 0.0
+                self._accumulated_regular_loss = 0.0
+                self._accumulated_coord_l1_loss = 0.0
+                self._accumulated_coord_giou_loss = 0.0
+            self._accumulated_coordinate_loss += self._current_coordinate_loss
+            self._accumulated_focal_loss += self._current_focal_loss
+            self._accumulated_regular_loss += self._current_regular_loss
+            self._accumulated_coord_l1_loss += self._current_coord_l1_loss
+            self._accumulated_coord_giou_loss += self._current_coord_giou_loss
+
         # Detection loss computation
         total_detection_loss = 0.0
 
@@ -996,7 +1157,11 @@ class BBUTrainer(Trainer):
         # Legacy detection head training disabled - using coordinate tokens
         detection_training_enabled = False
 
-        if False:  # Detection head training disabled
+        if (
+            detection_training_enabled
+            and hasattr(self, "detection_loss")
+            and self.detection_loss is not None
+        ):
             # Prepare full list of LLM hidden states for detection
             hidden_states_list = list(
                 outputs.hidden_states
@@ -1151,12 +1316,50 @@ class BBUTrainer(Trainer):
                     tid for tid, lab in zip(sample_ids, sample_labels) if lab != -100
                 ]
                 if tgt_ids:
-                    target_text = self.tokenizer_ref.decode(
-                        tgt_ids, skip_special_tokens=False
+                    # Debug: Check if we're missing initial tokens due to IGNORE_INDEX
+                    first_non_ignore_idx = next(
+                        (i for i, lab in enumerate(sample_labels) if lab != -100), 0
+                    )
+                    if first_non_ignore_idx > 0:
+                        missed_tokens = sample_ids[:first_non_ignore_idx]
+                        missed_text = (
+                            self.tokenizer_ref.decode(
+                                missed_tokens, skip_special_tokens=False
+                            )
+                            if missed_tokens
+                            else ""
+                        )
+                        self.logger.debug(
+                            f"Skipped {first_non_ignore_idx} tokens due to IGNORE_INDEX: '{missed_text}'"
+                        )
+
+                    # For better logging, include some context tokens even if they're ignored
+                    # This gives a more complete view of what the model is generating
+                    context_start = max(
+                        0, first_non_ignore_idx - 2
+                    )  # Include 2 tokens before first non-ignored
+                    context_ids = sample_ids[context_start:]
+                    context_text = self.tokenizer_ref.decode(
+                        context_ids, skip_special_tokens=False
                     )
 
-                    # Apply the same <|endoftext|> compression to target_text
-                    target_text = re.sub(eot_pattern, _compress_eot, target_text)
+                    # Use context text for logging if it's more complete
+                    if context_text and len(context_text) > len(
+                        self.tokenizer_ref.decode(tgt_ids, skip_special_tokens=False)
+                    ):
+                        target_text = f"[Context] {context_text}"
+                    else:
+                        target_text = self.tokenizer_ref.decode(
+                            tgt_ids, skip_special_tokens=False
+                        )
+
+                    # Apply the same compression patterns to target_text
+                    target_text = re.sub(
+                        pad_pattern, _compress_pad, target_text
+                    )  # Image pad compression
+                    target_text = re.sub(
+                        eot_pattern, _compress_eot, target_text
+                    )  # Endoftext compression
 
                     # Insert a newline before every assistant turn for
                     # readability.  We know the literal marker in the chat
@@ -1200,6 +1403,64 @@ class BBUTrainer(Trainer):
                     self.training_coordinator.get_averaged_losses_and_reset()
                 )
                 total_avg_loss = component_logs.get("total_loss", 0.0)
+
+                # CRITICAL FIX: Ensure coordinate losses are always included in coordinator logs
+                # Even if they come from the coordinator, we need to validate they're present
+                if not hasattr(config, "coordinate_tokens_enabled"):
+                    raise ValueError(
+                        "coordinate_tokens_enabled must be explicitly configured in config"
+                    )
+                coordinate_tokens_enabled = config.coordinate_tokens_enabled
+                if coordinate_tokens_enabled:
+                    # NO DEFAULTS - FAIL FAST if coordinate losses are missing from coordinator
+                    required_coord_losses = [
+                        "coordinate_loss",
+                        "focal_loss",
+                        "regular_loss",
+                        "l1_loss",
+                        "giou_loss",
+                    ]
+                    missing_coord_losses = []
+
+                    for key in required_coord_losses:
+                        if key not in component_logs:
+                            missing_coord_losses.append(key)
+
+                    if missing_coord_losses:
+                        raise RuntimeError(
+                            f"Coordinate tokens enabled but coordinator missing required losses: {missing_coord_losses}. "
+                            f"This indicates training coordinator is not properly computing coordinate losses."
+                        )
+
+                    # Log coordinate loss values for debugging
+                    total_coord_loss = sum(
+                        component_logs[key] for key in required_coord_losses
+                    )
+                    self.logger.debug(f"🔍 TRAINER: Coordinator coordinate losses:")
+                    self.logger.debug(
+                        f"   coordinate_loss: {component_logs['coordinate_loss']}"
+                    )
+                    self.logger.debug(f"   focal_loss: {component_logs['focal_loss']}")
+                    self.logger.debug(
+                        f"   regular_loss: {component_logs['regular_loss']}"
+                    )
+                    self.logger.debug(f"   l1_loss: {component_logs['l1_loss']}")
+                    self.logger.debug(f"   giou_loss: {component_logs['giou_loss']}")
+                    self.logger.debug(f"   total_coord_loss: {total_coord_loss}")
+
+                    # STRICT VALIDATION: Raise error if coordinate losses are unexpectedly zero
+                    if total_coord_loss == 0.0:
+                        self.logger.error(
+                            "❌ TRAINER: Coordinate losses are zero in coordinator logs!"
+                        )
+                        self.logger.error(
+                            "   This indicates coordinate token processing is not working correctly."
+                        )
+                        # NO TRAINING MODE CHECK - Always fail if coordinate tokens are enabled but zero
+                        raise RuntimeError(
+                            "Coordinate tokens enabled but all coordinate losses are zero. "
+                            "This indicates coordinate token processing failed."
+                        )
             else:
                 # LEGACY: Original loss averaging logic
                 # The `tr_loss` from the Trainer is an accumulated value.
@@ -1226,8 +1487,60 @@ class BBUTrainer(Trainer):
                     "student_lm_loss": avg_student_lm_loss,
                 }
 
-            if False:  # Detection disabled - using coordinate tokens
-                # LEGACY: Only compute detection averages if not using coordinator
+                # Add coordinate token losses if available (new detection system)
+                # ALWAYS log coordinate losses when coordinate tokens are enabled, even if zero
+                if not hasattr(config, "coordinate_tokens_enabled"):
+                    raise ValueError(
+                        "coordinate_tokens_enabled must be explicitly configured in config"
+                    )
+                coordinate_tokens_enabled = config.coordinate_tokens_enabled
+                if coordinate_tokens_enabled:
+                    # NO DEFAULTS - FAIL FAST if coordinate accumulators are missing
+                    required_accumulators = [
+                        "_accumulated_coordinate_loss",
+                        "_accumulated_focal_loss",
+                        "_accumulated_regular_loss",
+                        "_accumulated_coord_l1_loss",
+                        "_accumulated_coord_giou_loss",
+                    ]
+
+                    missing_accumulators = []
+                    for attr in required_accumulators:
+                        if not hasattr(self, attr):
+                            missing_accumulators.append(attr)
+
+                    if missing_accumulators:
+                        raise RuntimeError(
+                            f"Coordinate tokens enabled but trainer missing required accumulators: {missing_accumulators}. "
+                            f"This indicates coordinate loss accumulation is not working correctly."
+                        )
+
+                    # Extract with clean naming - NO duplicates or unused losses
+                    component_logs["regular_loss"] = (
+                        self._accumulated_regular_loss / num_micro_batches
+                    )
+
+                    # Only add coordinate losses if they're non-zero (student samples)
+                    if self._accumulated_focal_loss > 0:
+                        component_logs["coord_focal_loss"] = (
+                            self._accumulated_focal_loss / num_micro_batches
+                        )
+                    if self._accumulated_coord_l1_loss > 0:
+                        component_logs["coord_l1_loss"] = (
+                            self._accumulated_coord_l1_loss / num_micro_batches
+                        )
+                    if self._accumulated_coord_giou_loss > 0:
+                        component_logs["coord_giou_loss"] = (
+                            self._accumulated_coord_giou_loss / num_micro_batches
+                        )
+                    # Clean coordinate loss logging - only essential info
+
+            # Add bbox-related losses for detection (coordinate tokens or legacy)
+            if (
+                self._accumulated_bbox_l1_loss > 0
+                or self._accumulated_bbox_giou_loss > 0
+            ):
+                # Compute detection loss averages for logging
                 avg_bbox_l1_loss = self._accumulated_bbox_l1_loss / num_micro_batches
                 avg_bbox_giou_loss = (
                     self._accumulated_bbox_giou_loss / num_micro_batches
@@ -1237,25 +1550,29 @@ class BBUTrainer(Trainer):
                     self._accumulated_objectness_loss / num_micro_batches
                 )
 
-                component_logs["bbox_l1_loss"] = avg_bbox_l1_loss
-                component_logs["bbox_giou_loss"] = avg_bbox_giou_loss
-                component_logs["caption_loss"] = avg_caption_loss
-                component_logs["objectness_loss"] = avg_objectness_loss
+                # Add detection loss components to logs
+                if avg_bbox_l1_loss > 0:
+                    component_logs["bbox_l1_loss"] = avg_bbox_l1_loss
+                if avg_bbox_giou_loss > 0:
+                    component_logs["bbox_giou_loss"] = avg_bbox_giou_loss
+                if avg_caption_loss > 0:
+                    component_logs["caption_loss"] = avg_caption_loss
+                if avg_objectness_loss > 0:
+                    component_logs["objectness_loss"] = avg_objectness_loss
 
-                # Reconstruct the total detection loss from its averaged, weighted components.
-                # This ensures the final logged 'loss' accurately reflects the value used for backprop.
-                # NOTE: This assumes the accumulated components are WEIGHTED. If they are not,
-                # this sum will not match the true loss.
-
-                # The `loss` passed to compute_loss is lm_loss + weighted detection loss
-                # The total loss for logging should be calculated from averaged components.
-                # Here we assume the logged components are the primary ones.
-                total_avg_loss += (
-                    avg_bbox_l1_loss
-                    + avg_bbox_giou_loss
-                    + avg_caption_loss
-                    + avg_objectness_loss
-                )
+                # Add detection losses to total loss if they exist
+                if (
+                    avg_bbox_l1_loss > 0
+                    or avg_bbox_giou_loss > 0
+                    or avg_caption_loss > 0
+                    or avg_objectness_loss > 0
+                ):
+                    total_avg_loss += (
+                        avg_bbox_l1_loss
+                        + avg_bbox_giou_loss
+                        + avg_caption_loss
+                        + avg_objectness_loss
+                    )
 
             # Define logging order: 'loss', 'grad_norm', then components
             logs: Dict[str, float] = {}
@@ -1281,10 +1598,9 @@ class BBUTrainer(Trainer):
                 # Clear after use so we don't accidentally reuse stale values.
                 self._norm_cache = {}
             else:
+                # Detection head removed - using coordinate tokens instead
                 module_names = {
-                    "vision_adapter": "detection_head.vision_adapter",
-                    "lang_adapter": "detection_head.adapter",
-                    "bbox_head": "detection_head.bbox_head",
+                    # Legacy detection head modules removed
                 }
 
                 for log_key, module_path in module_names.items():
@@ -1346,6 +1662,13 @@ class BBUTrainer(Trainer):
                 self._accumulated_objectness_loss = 0.0
                 self._accumulated_bbox_l1_loss = 0.0
                 self._accumulated_bbox_giou_loss = 0.0
+                # Reset coordinate token loss accumulators if they exist
+                if hasattr(self, "_accumulated_coordinate_loss"):
+                    self._accumulated_coordinate_loss = 0.0
+                    self._accumulated_focal_loss = 0.0
+                    self._accumulated_regular_loss = 0.0
+                    self._accumulated_coord_l1_loss = 0.0
+                    self._accumulated_coord_giou_loss = 0.0
 
                 # Also reset the micro-batch counter so the next logging window
                 # starts fresh.
@@ -1465,6 +1788,23 @@ class BBUTrainer(Trainer):
 
         # Use the same compute_loss logic but with eval prefix
         with torch.no_grad():
+            # Fix Flash Attention padding issue during evaluation
+            original_padding_side = None
+            tokenizer_to_fix = None
+            
+            # Try multiple tokenizer references
+            if hasattr(self, 'tokenizer_ref') and hasattr(self.tokenizer_ref, 'padding_side'):
+                tokenizer_to_fix = self.tokenizer_ref
+            elif hasattr(self, 'tokenizer') and hasattr(self.tokenizer, 'padding_side'):
+                tokenizer_to_fix = self.tokenizer
+            elif hasattr(self, 'data_collator') and hasattr(self.data_collator, 'tokenizer') and hasattr(self.data_collator.tokenizer, 'padding_side'):
+                tokenizer_to_fix = self.data_collator.tokenizer
+                
+            if tokenizer_to_fix is not None:
+                original_padding_side = tokenizer_to_fix.padding_side
+                tokenizer_to_fix.padding_side = 'left'
+                self.logger.debug(f"🔧 Fixed tokenizer padding_side for evaluation: {original_padding_side} -> left")
+            
             # Temporarily modify the loss info prefix for evaluation
             old_prefix = getattr(self, "_loss_prefix", "")
             self._loss_prefix = "eval"
@@ -1501,6 +1841,11 @@ class BBUTrainer(Trainer):
                     return (loss, logits, labels)
 
             finally:
+                # Restore original padding side if it was changed
+                if original_padding_side is not None and tokenizer_to_fix is not None:
+                    tokenizer_to_fix.padding_side = original_padding_side
+                    self.logger.debug(f"🔧 Restored tokenizer padding_side: left -> {original_padding_side}")
+                
                 # Restore original prefix and training state
                 self._loss_prefix = old_prefix
                 model.train(original_training)
@@ -1516,6 +1861,9 @@ class BBUTrainer(Trainer):
             "bbox_giou": self._accumulated_bbox_giou_loss,
             "caption": self._accumulated_caption_loss,
             "objectness": self._accumulated_objectness_loss,
+            "coordinate": getattr(self, "_accumulated_coordinate_loss", 0.0),
+            "focal": getattr(self, "_accumulated_focal_loss", 0.0),
+            "regular": getattr(self, "_accumulated_regular_loss", 0.0),
         }
 
         # Reset accumulators before evaluation
@@ -1524,6 +1872,18 @@ class BBUTrainer(Trainer):
         self._accumulated_student_lm_loss = 0.0
         self._accumulated_caption_loss = 0.0
         self._accumulated_objectness_loss = 0.0
+        # Add coordinate token loss accumulators (ensure they exist)
+        if not hasattr(self, "_accumulated_coordinate_loss"):
+            self._accumulated_coordinate_loss = 0.0
+        if not hasattr(self, "_accumulated_focal_loss"):
+            self._accumulated_focal_loss = 0.0
+        if not hasattr(self, "_accumulated_regular_loss"):
+            self._accumulated_regular_loss = 0.0
+
+        # Reset coordinate token loss accumulators
+        self._accumulated_coordinate_loss = 0.0
+        self._accumulated_focal_loss = 0.0
+        self._accumulated_regular_loss = 0.0
 
         # Run base evaluation. This will call compute_loss and populate our accumulators.
         metrics = super().evaluate(
@@ -1537,25 +1897,56 @@ class BBUTrainer(Trainer):
         num_batches = len(eval_loader)
 
         if num_batches > 0:
+            # Always log LM loss components
             metrics[f"{metric_key_prefix}_lm_loss"] = round(
                 self._accumulated_lm_loss / num_batches, 4
             )
-            metrics[f"{metric_key_prefix}_lm_teacher_loss"] = round(
+
+            # Always log teacher and student losses during evaluation
+            metrics[f"{metric_key_prefix}_teacher_lm_loss"] = round(
                 self._accumulated_teacher_lm_loss / num_batches, 4
             )
-            metrics[f"{metric_key_prefix}_lm_student_loss"] = round(
+            metrics[f"{metric_key_prefix}_student_lm_loss"] = round(
                 self._accumulated_student_lm_loss / num_batches, 4
             )
-            if False:  # Detection metrics disabled
+
+            # Add coordinate token loss metrics (new detection system)
+            if (
+                hasattr(self, "_accumulated_coordinate_loss")
+                and self._accumulated_coordinate_loss > 0
+            ):
+                metrics[f"{metric_key_prefix}_coordinate_loss"] = round(
+                    self._accumulated_coordinate_loss / num_batches, 4
+                )
+            if (
+                hasattr(self, "_accumulated_focal_loss")
+                and self._accumulated_focal_loss > 0
+            ):
+                metrics[f"{metric_key_prefix}_focal_loss"] = round(
+                    self._accumulated_focal_loss / num_batches, 4
+                )
+            if (
+                hasattr(self, "_accumulated_regular_loss")
+                and self._accumulated_regular_loss > 0
+            ):
+                metrics[f"{metric_key_prefix}_regular_loss"] = round(
+                    self._accumulated_regular_loss / num_batches, 4
+                )
+
+            # Legacy detection metrics (maintain for backward compatibility)
+            if self._accumulated_bbox_l1_loss > 0:
                 metrics[f"{metric_key_prefix}_bbox_l1_loss"] = round(
                     self._accumulated_bbox_l1_loss / num_batches, 4
                 )
+            if self._accumulated_bbox_giou_loss > 0:
                 metrics[f"{metric_key_prefix}_bbox_giou_loss"] = round(
                     self._accumulated_bbox_giou_loss / num_batches, 4
                 )
+            if self._accumulated_caption_loss > 0:
                 metrics[f"{metric_key_prefix}_caption_loss"] = round(
                     self._accumulated_caption_loss / num_batches, 4
                 )
+            if self._accumulated_objectness_loss > 0:
                 metrics[f"{metric_key_prefix}_objectness_loss"] = round(
                     self._accumulated_objectness_loss / num_batches, 4
                 )
@@ -1566,9 +1957,13 @@ class BBUTrainer(Trainer):
         self._accumulated_student_lm_loss = saved_accumulators["student_lm"]
         self._accumulated_caption_loss = saved_accumulators["caption"]
         self._accumulated_objectness_loss = saved_accumulators["objectness"]
+        self._accumulated_coordinate_loss = saved_accumulators["coordinate"]
+        self._accumulated_focal_loss = saved_accumulators["focal"]
+        if hasattr(self, "_accumulated_regular_loss"):
+            self._accumulated_regular_loss = saved_accumulators.get("regular", 0.0)
 
-        # Log extended metrics
-        self.log(metrics)
+        # Note: metrics are already logged by super().evaluate() call above
+        # No need to log again to avoid duplication
         return metrics
 
     # ------------------------------------------------------------------
@@ -1693,8 +2088,11 @@ def set_model_training_params(model):
     based on learning-rate flags and the global `detection_enabled` option.
     """
     logger = get_training_logger()
-    has_detection_head = hasattr(model, "detection_head")
-    base_model = model.base_model if has_detection_head else model
+    # Check if we're using the detection wrapper
+    has_detection_wrapper = hasattr(model, "base_model") and hasattr(
+        model, "coordinate_tokens_enabled"
+    )
+    base_model = model.base_model if has_detection_wrapper else model
 
     # Helper to toggle trainability via LR -------------------------------------------------
     def _toggle(module_iter, lr_value: float, module_name: str):
@@ -1766,6 +2164,28 @@ def setup_model_and_tokenizer() -> Tuple[
         use_fast=False,
         max_pixels=MAX_PIXELS,
     )
+
+    # Extract tokenizer from processor and fix padding_side
+    tokenizer = processor.tokenizer
+    if tokenizer.padding_side != "left":
+        logger.warning(
+            f"🔧 [LEGACY PATH] Fixing tokenizer padding_side: {tokenizer.padding_side} -> left"
+        )
+        tokenizer.padding_side = "left"
+    logger.info(f"[LEGACY PATH] Tokenizer padding side: {tokenizer.padding_side}")
+
+    # Load model using unified loader for consistency
+    logger.info("🔧 Loading model using unified mechanism...")
+    try:
+        from src.models.model_loader import load_model_and_processor_unified
+
+        model, _, _ = load_model_and_processor_unified(
+            model_path=config.model_path,
+            for_inference=False,  # Training mode
+        )
+    except Exception as model_load_error:
+        logger.error(f"❌ Failed to load model via unified loader: {model_load_error}")
+        raise RuntimeError(f"Legacy path model loading failed: {model_load_error}")
 
     # Set image processor params from config
     # The image processor is already pre-scaled to the correct resolution
@@ -1859,6 +2279,14 @@ def setup_data_module(
     use_consistent_prompts = getattr(config, "use_consistent_prompts", True)
     training_prompt_style = getattr(config, "training_prompt_style", True)
 
+    # Get coordinate token configuration
+    if not hasattr(config, "coordinate_tokens_enabled"):
+        raise ValueError(
+            "coordinate_tokens_enabled must be explicitly configured in config"
+        )
+    coordinate_tokens_enabled = config.coordinate_tokens_enabled
+    max_coord_value = getattr(config, "coordinate_config_max_coord_value", 2048)
+
     # Training chat processor
     train_chat_processor = ChatProcessor(
         tokenizer=tokenizer,
@@ -1867,6 +2295,8 @@ def setup_data_module(
         max_length=config.max_total_length,
         use_training_prompts=training_prompt_style,
         language="chinese",
+        enable_coordinate_tokens=coordinate_tokens_enabled,
+        max_coord_value=max_coord_value,
     )
 
     # Evaluation chat processor - use same prompt style unless explicitly overridden
@@ -1878,7 +2308,16 @@ def setup_data_module(
         max_length=config.max_total_length,
         use_training_prompts=eval_prompt_style,
         language="chinese",
+        enable_coordinate_tokens=coordinate_tokens_enabled,
+        max_coord_value=max_coord_value,
     )
+
+    if coordinate_tokens_enabled:
+        logger.info(
+            f"✅ Chat processors created with coordinate tokens enabled (max_coord_value: {max_coord_value})"
+        )
+    else:
+        logger.info("✅ Chat processors created (coordinate tokens disabled)")
 
     # Create teacher pool manager if teacher_ratio > 0
     teacher_pool_manager = None

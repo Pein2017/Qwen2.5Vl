@@ -14,10 +14,10 @@
 !configs/
 !important_demo/
 !vis_tools/
+!temporal/
 
 # Un-ignore top-level folders
 !scripts/**
-!ongoing_task/**
 !configs/**
 !important_demo/**
 !docs/**
@@ -25,6 +25,7 @@
 !data_analysis/**
 !eval/**
 !vis_tools/**
+!temporal/**
 
 # Un-ignore everything inside those folders
 !src/**

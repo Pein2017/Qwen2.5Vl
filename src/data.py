@@ -29,10 +29,11 @@ from src.config import config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
-from src.utils.schema import ChatProcessorOutput, assert_collated_batch
 from src.teacher_pool import TeacherPoolManager, create_teacher_pool_manager
+from src.utils.schema import ChatProcessorOutput, assert_collated_batch
 from src.utils.tokens import SpecialTokens
 from src.utils.utils import IGNORE_INDEX
+
 
 logger = get_data_logger()
 
@@ -105,12 +106,12 @@ class BBUDataset(Dataset):
         # Calculate sequence lengths for optimization
         self._sequence_lengths = None
         # Note: calculate_lengths feature removed for simplicity
-        
+
         # Initialize teacher assignment tracking
         self._teacher_assignment_stats = {
-            'total_samples': 0,
-            'samples_with_teacher': 0,
-            'samples_without_teacher': 0
+            "total_samples": 0,
+            "samples_with_teacher": 0,
+            "samples_without_teacher": 0,
         }
 
         # ---------------- Dynamic teacher sampling ----------------
@@ -124,7 +125,7 @@ class BBUDataset(Dataset):
         # Use consistent teacher sampling for both train and validation
         # This prevents train/val data distribution mismatch
         self.teacher_ratio = getattr(config, "teacher_ratio", 0.7)
-        
+
         # Allow override for validation datasets if zero-shot evaluation is explicitly requested
         if "val" in self.data_path.lower() and getattr(config, "val_zero_shot", False):
             logger.info(
@@ -133,7 +134,9 @@ class BBUDataset(Dataset):
             self._num_teachers = 0
             self.teacher_ratio = 0.0
         else:
-            logger.info(f"Dataset {self.data_path}: teacher ratio set to {self.teacher_ratio}")
+            logger.info(
+                f"Dataset {self.data_path}: teacher ratio set to {self.teacher_ratio}"
+            )
 
         # Initialize teacher pool manager only if not provided
         if self._num_teachers > 0 and teacher_pool_manager is None:
@@ -427,25 +430,25 @@ class BBUDataset(Dataset):
 
         # Decide whether to use teachers based on teacher ratio
         use_teachers = random.random() < self.teacher_ratio
-        
+
         # Track teacher assignment statistics
-        self._teacher_assignment_stats['total_samples'] += 1
+        self._teacher_assignment_stats["total_samples"] += 1
         if use_teachers:
-            self._teacher_assignment_stats['samples_with_teacher'] += 1
+            self._teacher_assignment_stats["samples_with_teacher"] += 1
         else:
-            self._teacher_assignment_stats['samples_without_teacher'] += 1
-        
+            self._teacher_assignment_stats["samples_without_teacher"] += 1
+
         # Log statistics periodically (every 100 samples)
-        if self._teacher_assignment_stats['total_samples'] % 100 == 0:
-            total = self._teacher_assignment_stats['total_samples']
-            with_teacher = self._teacher_assignment_stats['samples_with_teacher']
+        if self._teacher_assignment_stats["total_samples"] % 100 == 0:
+            total = self._teacher_assignment_stats["total_samples"]
+            with_teacher = self._teacher_assignment_stats["samples_with_teacher"]
             actual_ratio = with_teacher / total if total > 0 else 0.0
-            logger.info(
+            logger.debug(
                 f"📊 Teacher Assignment Stats (sample {idx}): "
                 f"{with_teacher}/{total} samples with teacher "
                 f"(actual ratio: {actual_ratio:.3f}, configured: {self.teacher_ratio:.3f})"
             )
-        
+
         if not use_teachers:
             return []
 
@@ -471,21 +474,23 @@ class BBUDataset(Dataset):
             f"Sample {idx}: Sampled {len(teachers)} teachers (seed={epoch_seed})"
         )
         return teachers
-    
+
     def get_teacher_assignment_summary(self) -> Dict[str, Any]:
         """Get summary of teacher assignment statistics."""
         stats = self._teacher_assignment_stats
-        total = stats['total_samples']
-        with_teacher = stats['samples_with_teacher']
-        without_teacher = stats['samples_without_teacher']
-        
+        total = stats["total_samples"]
+        with_teacher = stats["samples_with_teacher"]
+        without_teacher = stats["samples_without_teacher"]
+
         return {
-            'total_samples_processed': total,
-            'samples_with_teacher': with_teacher,
-            'samples_without_teacher': without_teacher,
-            'actual_teacher_ratio': with_teacher / total if total > 0 else 0.0,
-            'configured_teacher_ratio': self.teacher_ratio,
-            'ratio_accuracy': abs((with_teacher / total) - self.teacher_ratio) if total > 0 else 0.0
+            "total_samples_processed": total,
+            "samples_with_teacher": with_teacher,
+            "samples_without_teacher": without_teacher,
+            "actual_teacher_ratio": with_teacher / total if total > 0 else 0.0,
+            "configured_teacher_ratio": self.teacher_ratio,
+            "ratio_accuracy": abs((with_teacher / total) - self.teacher_ratio)
+            if total > 0
+            else 0.0,
         }
 
     def _load_data(self) -> List[Dict]:
@@ -546,7 +551,7 @@ class StandardDataCollator:
     Standard data collator optimized for Flash Attention and memory efficiency.
 
     Uses LEFT padding to batch max length for full Flash Attention compatibility.
-    
+
     CRITICAL: This collator now uses LEFT padding (padding_side='left') which is
     required for Qwen2.5-VL Flash Attention. Make sure tokenizer.padding_side='left'
     is set when creating the tokenizer.
@@ -573,7 +578,7 @@ class StandardDataCollator:
         student_spans_batch: list[list[tuple[int, int]]] = []
 
         for instance in instances:
-            # Extract spans from each instance
+            # Extract spans from each instance - defaults to empty list for samples without teachers
             teacher_spans = instance.get("teacher_assistant_spans", [])
             student_spans = instance.get("student_assistant_spans", [])
 
@@ -829,7 +834,7 @@ class PackedDataCollator:
         student_spans_batch: list[list[tuple[int, int]]] = []
 
         for instance in instances:
-            # Extract spans from each instance
+            # Extract spans from each instance - defaults to empty list for samples without teachers
             teacher_spans = instance.get("teacher_assistant_spans", [])
             student_spans = instance.get("student_assistant_spans", [])
 

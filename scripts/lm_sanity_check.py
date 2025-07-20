@@ -11,6 +11,7 @@ language model is still coherent.
 
 import sys
 
+
 # Allow "python scripts/..." to be run from repo root or elsewhere
 PROJECT_ROOT = "/data4/Qwen2.5-VL-main"
 if PROJECT_ROOT not in sys.path:
@@ -57,6 +58,7 @@ from src.models.patches import (
     apply_comprehensive_qwen25_fixes,
     verify_qwen25_patches,
 )
+
 
 if not apply_comprehensive_qwen25_fixes():
     raise RuntimeError("Failed to apply Qwen2.5-VL patches – cannot proceed.")

@@ -20,6 +20,8 @@ from pathlib import Path
 
 # Apply compatibility patches early (before any torch/flash_attn imports)
 from src.models.patches import patch_torch_library_wrap_triton
+
+
 patch_torch_library_wrap_triton()
 
 # Suppress the specific deprecation warning about Trainer.tokenizer
@@ -28,19 +30,10 @@ warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 from src.config import config, init_config
-from src.config.config_manager import ConfigManager
 from src.logger_utils import (
     configure_global_logging,
     get_training_logger,
 )
-
-
-def rank0_print(*args):
-    """Print only on rank 0 for distributed training."""
-    import torch
-
-    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
-        print(*args)
 
 
 def parse_args():
@@ -60,17 +53,15 @@ def parse_args():
         "--print-config", action="store_true", help="Print config and exit"
     )
     parser.add_argument(
-        "--use-new-config", action="store_true", 
-        help="Use new domain-specific configuration system (experimental)"
+        "--use-new-config",
+        action="store_true",
+        help="Use new domain-specific configuration system (experimental)",
     )
 
-    # Logging configuration
+    # Logging configuration - simplified with rank-aware logging
     parser.add_argument(
-        "--log_level", required=True, choices=["DEBUG", "INFO", "WARNING", "ERROR"]
-    )
-    parser.add_argument("--log_verbose", required=True, choices=["true", "false"])
-    parser.add_argument(
-        "--console_log_level", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+        "--log_level", required=True, choices=["DEBUG", "INFO"], 
+        help="Logging level: INFO (production) | DEBUG (development)"
     )
 
     return parser.parse_args()
@@ -80,7 +71,7 @@ def create_training_arguments_with_deepspeed():
     """Create TrainingArguments with DeepSpeed configuration using direct config access."""
     import os
 
-    from transformers import TrainingArguments
+    from transformers.training_args import TrainingArguments
 
     # Check if DeepSpeed is enabled via environment variable
     deepspeed_enabled = os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower() == "true"
@@ -118,7 +109,9 @@ def create_training_arguments_with_deepspeed():
         # Performance settings
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_pin_memory=config.pin_memory,
-        dataloader_prefetch_factor=config.prefetch_factor if config.dataloader_num_workers > 0 else None,
+        dataloader_prefetch_factor=config.prefetch_factor
+        if config.dataloader_num_workers > 0
+        else None,
         remove_unused_columns=config.remove_unused_columns,
         # DeepSpeed configuration
         deepspeed=deepspeed_config if deepspeed_enabled else None,
@@ -130,43 +123,45 @@ def create_training_arguments_with_deepspeed():
 def main():
     """Main training function using direct configuration system."""
     args = parse_args()
+    
+    # Get logger early (will be rank-aware after logging configuration)
+    logger = get_training_logger()
 
     try:
         # =====================================================================
         # CONFIGURATION LOADING
         # =====================================================================
-        rank0_print("📄 Loading configuration...")
+        logger.info("Loading configuration...")
 
         # Initialize config system
         config_source_path = f"configs/{args.config}.yaml"
-        
+
         if args.use_new_config:
-            rank0_print("🔧 Using new domain-specific configuration system")
-            from src.config import init_config_manager
-            config_manager = init_config_manager(config_source_path)
-            rank0_print(f"✅ New config system loaded: {config_source_path}")
+            logger.info("Using new domain-specific configuration system")
+
+            logger.info(f"New config system loaded: {config_source_path}")
         else:
-            rank0_print("📄 Using legacy configuration system")
+            logger.info("Using legacy configuration system")
             init_config(config_source_path)
-            rank0_print(f"✅ Legacy config loaded: {config_source_path}")
+            logger.info(f"Legacy config loaded: {config_source_path}")
 
         # Print config if requested
         if args.print_config:
             if args.use_new_config:
                 manager = config.manager
-                rank0_print(f"Model: {manager.model.model_path}")
-                rank0_print(
+                logger.info(f"Model: {manager.model.model_path}")
+                logger.info(
                     f"LR: {manager.training.learning_rate}, Epochs: {manager.training.num_train_epochs}"
                 )
-                rank0_print(
+                logger.info(
                     f"Batch: {manager.training.per_device_train_batch_size}, Output: {manager.infrastructure.run_output_dir}"
                 )
             else:
-                rank0_print(f"Model: {config.model_path}")
-                rank0_print(
+                logger.info(f"Model: {config.model_path}")
+                logger.info(
                     f"LR: {config.learning_rate}, Epochs: {config.num_train_epochs}"
                 )
-                rank0_print(
+                logger.info(
                     f"Batch: {config.per_device_train_batch_size}, Output: {config.run_output_dir}"
                 )
             return 0
@@ -174,28 +169,16 @@ def main():
         # =====================================================================
         # LOGGING SETUP
         # =====================================================================
-        log_verbose = args.log_verbose.lower() == "true"
-        console_log_level = (
-            args.console_log_level if args.console_log_level else args.log_level
-        )
-
-        rank0_print(
-            f"📊 Configuring logging: Level={args.log_level}, Verbose={log_verbose}, Console={console_log_level}"
-        )
+        print(f"📊 Configuring rank-aware logging: Level={args.log_level}")
         configure_global_logging(
             log_dir=config.log_file_dir,
             log_level=args.log_level,
-            verbose=log_verbose,
-            is_training=True,
-            console_level=console_log_level,
         )
 
         logger = get_training_logger()
-        logger.info("🚀 BBU Training Started - Direct Configuration System")
+        logger.info("🚀 BBU Training Started - Rank-Aware Logging System")
         logger.info(f"📄 Config: {args.config}")
-        logger.info(
-            f"📊 Logging: Level={args.log_level}, Verbose={log_verbose}, Console={console_log_level}"
-        )
+        logger.info(f"📊 Logging: Level={args.log_level} (rank-aware filtering enabled)")
         logger.info("🌍 Environment: All variables handled by launcher script")
 
         # =====================================================================
@@ -214,12 +197,12 @@ def main():
         # attempts that previously caused the "Config not initialised" error.
         # ---------------------------------------------------------------------
 
+        from src.training.trainer import (
+            create_trainer,
+        )  # noqa: E402
         from src.training.trainer_factory import (
             create_trainer_with_coordinator,
             safe_save_model_for_hf_trainer,
-        )  # noqa: E402
-        from src.training.trainer import (
-            create_trainer,
         )  # noqa: E402
 
         # =====================================================================
@@ -229,11 +212,18 @@ def main():
         training_args = create_training_arguments_with_deepspeed()
 
         # Create output directory
-        pathlib.Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
+        if training_args.output_dir is not None:
+            pathlib.Path(training_args.output_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            raise ValueError(
+                "output_dir cannot be None. Please check your configuration."
+            )
 
         logger.info("🏋️ Creating unified BBU trainer...")
         if args.use_new_config:
-            trainer = create_trainer_with_coordinator(training_args=training_args, use_new_config=True)
+            trainer = create_trainer_with_coordinator(
+                training_args=training_args, use_new_config=True
+            )
         else:
             trainer = create_trainer(training_args=training_args)
 
@@ -262,7 +252,7 @@ def main():
         # Save image processor - following official approach
         if hasattr(trainer, "processing_class"):
             # Get image processor from the trainer's model setup
-            from transformers import AutoProcessor
+            from transformers.models.auto.processing_auto import AutoProcessor
 
             processor = AutoProcessor.from_pretrained(config.model_path)
             processor.image_processor.save_pretrained(training_args.output_dir)
@@ -279,7 +269,7 @@ def main():
         return 0
 
     except Exception as e:
-        rank0_print(f"❌ Training failed: {e}")
+        logger.error(f"Training failed: {e}")
         import traceback
 
         traceback.print_exc()
