@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set, Union
 
+
 # Set UTF-8 encoding for stdout/stderr
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")

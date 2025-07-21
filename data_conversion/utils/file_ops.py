@@ -140,17 +140,6 @@ class FileOperations:
         
         logger.info(f"Written {len(samples)} samples to {output_path}")
     
-    @staticmethod
-    def load_token_map(token_map_path: Path) -> Dict[str, str]:
-        """Load token mapping from JSON file."""
-        if not token_map_path.exists():
-            raise FileNotFoundError(f"Token map file not found: {token_map_path}")
-        
-        with open(token_map_path, "r", encoding="utf-8") as f:
-            token_map = json.load(f)
-        
-        logger.info(f"Loaded {len(token_map)} token mappings from {token_map_path}")
-        return token_map
     
     @staticmethod
     def load_label_hierarchy(hierarchy_path: Path) -> Dict[str, List[str]]:

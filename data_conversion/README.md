@@ -1,303 +1,562 @@
-# Qwen2.5-VL Data Conversion Pipeline
+# Qwen2.5-VL Data Conversion Pipeline - Comprehensive Guide
 
-> **Completely Refactored – July 2025**
+> **Advanced Multi-Geometry Architecture – July 2025**
 >
-> This pipeline has been completely refactored for improved maintainability, reliability, 
-> and functionality. The new architecture eliminates redundancy, provides better error 
-> handling, and offers a more intuitive API while maintaining full backward compatibility.
+> This pipeline features a sophisticated multi-geometry processing system with flexible
+> taxonomy-based classification. It handles complex V2 annotations with bbox_2d, square,
+> and line geometries while maintaining full backward compatibility.
 
 ---
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Quick Start](#quick-start)
-4. [Advanced Usage](#advanced-usage)
-5. [Pipeline Internals](#pipeline-internals)
-6. [Directory Structure](#directory-structure)
-7. [Cleanup History](#cleanup-history)
-8. [Testing & Validation](#testing--validation)
-9. [Troubleshooting & FAQ](#troubleshooting--faq)
-10. [License](#license)
+2. [Quick Start Guide](#quick-start-guide)
+3. [Complete Pipeline Flow](#complete-pipeline-flow)
+4. [Configuration System](#configuration-system)
+5. [Architecture & Components](#architecture--components)
+6. [Output Format & Structure](#output-format--structure)
+7. [Advanced Features](#advanced-features)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
-<a name="overview"></a>
-## 1 · Overview
-The completely refactored pipeline converts **raw JSON annotations + images** into four
-ready-to-train JSONL files in **one command** with enhanced reliability and maintainability.
+## Overview
+
+The advanced pipeline converts **V2 JSON annotations + images** into training-ready format with comprehensive geometry support:
 
 ```
-raw JSON/images  ──►  train.jsonl  val.jsonl  teacher.jsonl  all_samples.jsonl
+ds_v2/ (V2 JSON/images) → output/ds_v2/ (train.jsonl, val.jsonl, teacher.jsonl + processed images)
 ```
 
-### 🚀 **New Features**
-* **Unified Architecture** – Single pipeline manager orchestrates all steps
-* **Type-Safe Configuration** – Structured config with automatic validation
-* **Comprehensive Testing** – Full test suite with 100% pass rate
-* **Enhanced Error Handling** – Fail-fast with clear error messages
-* **Edge Case Support** – Robust handling of small datasets and unusual inputs
+### 🎯 Key Features
 
-### ✨ **Key Characteristics**
-* **Modular** – Clean separation of concerns with focused modules
-* **Fail-Fast** – All validations raise immediately; no silent failures
-* **Language Aware** – Supports `chinese` ✧ `english` via `--language` flag
-* **Reproducible** – Fixed RNG seed propagates to splitting & selection
-* **EXIF-Safe** – Built-in EXIF orientation handling and coordinate scaling
+* **Multi-Geometry Support** – bbox_2d, square (四边形), line (LineString) coordinates
+* **Flexible Taxonomy System** – Attribute-based classification using `attribute_taxonomy.json`
+* **Advanced Coordinate Processing** – EXIF orientation, dimension rescaling, smart resize
+* **Comprehensive V2 Coverage** – Handles markResult features and dataList formats
+* **Teacher Sample Selection** – Intelligent diversity-based teacher pool creation
+* **Smart Image Processing** – Automatic resizing with MAX_PIXELS constraints
+
+### ⚡ Core Components
+
+1. **UnifiedProcessor** – Main orchestrator with integrated sample extraction
+2. **CoordinateManager** – Unified geometry transformation pipeline
+3. **FlexibleTaxonomyProcessor** – Attribute-based hierarchical classification
+4. **TeacherSelector** – Diversity-based teacher sample selection
+5. **ImageProcessor** – Smart image processing with EXIF handling
 
 ---
 
-<a name="prerequisites"></a>
-## 2 · Prerequisites
+## Quick Start Guide
+
+### 1. Configure the Pipeline
+
+Edit `/data3/Qwen2.5-VL-main/data_conversion/convert_dataset.sh`:
+
 ```bash
-# 1.  Activate environment (China mirror-friendly)
-conda activate ms
-
-# 2.  Project root must be on PYTHONPATH
-export PYTHONPATH=/data4/Qwen2.5-VL-main:$PYTHONPATH
-
-# 3.  Optional: set local ModelScope cache
-export MODELSCOPE_CACHE=/data4/swift/modelscope/hub
+# Essential Configuration - EDIT THESE VALUES
+INPUT_DIR="ds_v2"                    # Your V2 data directory
+OUTPUT_DIR="output"                  # Base output directory (creates output/ds_v2/)
+DATASET_NAME="ds_v2"                 # Dataset identifier
+LANGUAGE="chinese"                   # "chinese" or "english"
+RESPONSE_TYPES="object_type property extra_info"  # Description components
+VAL_RATIO="0.1"                     # 10% validation split
+MAX_TEACHERS="10"                   # Teacher samples for few-shot learning
+RESIZE="true"                       # Enable smart image resizing (MAX_PIXELS=512*28*28)
 ```
-*Python ≥3.8, Pillow, torch, torchvision* are required; all are included in the
-`ms` conda env.
 
----
+### 2. Run the Pipeline
 
-<a name="quick-start"></a>
-## 3 · Quick Start
-
-### Option 1: New Python Pipeline (Recommended)
 ```bash
-python data_conversion/pipeline_manager.py --input_dir ds --output_dir data --language chinese
+cd /data3/Qwen2.5-VL-main/data_conversion
+./convert_dataset.sh
 ```
 
-### Option 2: Backward-Compatible Bash Script
+### 3. Check Results
+
 ```bash
-bash data_conversion/convert_dataset.sh
+ls output/ds_v2/
+# Expected output:
+# train.jsonl           - Training samples (187 samples)
+# val.jsonl             - Validation samples (~21 samples)
+# teacher.jsonl         - Teacher samples for few-shot learning (10 samples)
+# all_samples.jsonl     - Combined samples (209 total)
+# label_vocabulary.json - Complete label statistics (241 unique labels)
+# images/               - Processed images (if RESIZE=true)
 ```
-
-The pipeline will:
-1. **Clean raw JSON** – Remove unnecessary metadata, preserve essential structure
-2. **Apply token mapping** – Standardize field names for the target language
-3. **Process samples** – Extract objects, validate data, resize images, scale coordinates
-4. **Select teachers** – Choose diverse teacher samples for guidance
-5. **Split data** – Create train/validation sets with proper randomization
-6. **Validate outputs** – Comprehensive validation of all generated files
 
 ---
 
-<a name="advanced-usage"></a>
-## 4 · Advanced Usage
+## Complete Pipeline Flow
 
-### Full Configuration Example
+### Entry Point: `convert_dataset.sh`
+
+The shell script orchestrates the entire pipeline:
+
 ```bash
-python data_conversion/pipeline_manager.py \
-  --input_dir custom_input \
-  --output_dir custom_output \
-  --output_image_dir ds_output \
-  --language chinese \
-  --resize \
-  --val_ratio 0.15 \
-  --max_teachers 5 \
-  --seed 123 \
-  --token_map_path data_conversion/token_map_zh.json \
-  --hierarchy_path data_conversion/label_hierarchy.json \
-  --response_types object_type property \
-  --log_level DEBUG
+convert_dataset.sh
+├── Environment setup (UTF-8 locale, Python paths)
+├── Configuration validation (INPUT_DIR existence)
+├── Auto-detect DATASET_NAME if not provided
+└── Executes: /root/miniconda3/envs/ms/bin/python data_conversion/processor.py
+    ├── Creates: DataConversionConfig from arguments
+    ├── Initializes: UnifiedProcessor with config
+    └── Runs: complete processing pipeline
 ```
 
-### Environment Variables (Backward Compatibility)
+### Detailed Pipeline Execution Flow
+
+```
+🚀 COMPLETE PIPELINE EXECUTION FLOW
+
+1. 📋 INITIALIZATION & CONFIGURATION
+   ├── Load DataConversionConfig from command line arguments
+   ├── Setup logging (INFO/DEBUG/WARNING/ERROR levels)
+   ├── Initialize UnifiedProcessor with:
+   │   ├── TokenMapper (if token_map_path provided)
+   │   ├── Label hierarchy (from hierarchy_path or default)
+   │   ├── HierarchicalProcessor (compatibility layer)
+   │   ├── ImageProcessor (with smart resize settings)
+   │   ├── TeacherSelector (diversity-based selection)
+   │   └── DataSplitter (train/val splitting)
+
+2. 📁 SAMPLE PROCESSING (process_all_samples)
+   ├── Find all JSON files in INPUT_DIR using FileOperations.find_json_files()
+   ├── For each JSON file (process_single_sample):
+   │   ├── Load JSON data with structure validation
+   │   ├── Find corresponding image file (.jpeg/.jpg)
+   │   ├── Extract image dimensions (with EXIF handling)
+   │   ├── Process annotation data:
+   │   │   ├── dataList format → extract_objects_from_datalist()
+   │   │   └── markResult format → extract_objects_from_markresult()
+   │   │       └── Uses HierarchicalProcessor → FlexibleTaxonomyProcessor
+   │   │           ├── Process V2 features with attribute taxonomy
+   │   │           ├── Handle geometry: bbox_2d, square, line
+   │   │           ├── Extract hierarchical attributes by groups
+   │   │           └── Generate descriptions: "object_type/property/extra_info"
+   │   ├── Apply unified coordinate transformation pipeline:
+   │   │   ├── EXIF orientation compensation
+   │   │   ├── Dimension rescaling (JSON vs actual image)
+   │   │   └── Smart resize scaling (MAX_PIXELS=512*28*28)
+   │   ├── Process images (ImageProcessor):
+   │   │   ├── Copy/resize images to output/ds_v2/images/
+   │   │   └── Apply EXIF orientation and smart resize
+   │   ├── Sort objects by position (top-left to bottom-right)
+   │   └── Create training sample with relative image paths
+   └── Returns: List[processed_samples] with validation
+
+3. 🎯 DATASET SPLITTING (split_into_sets)
+   ├── TeacherSelector.select_teachers():
+   │   ├── Analyze geometry diversity (bbox_2d/square/line)
+   │   ├── Ensure label coverage across all object types
+   │   ├── Consider spatial distribution and object density
+   │   └── Select up to MAX_TEACHERS diverse samples
+   ├── Remove teacher samples from student pool
+   └── DataSplitter.split():
+       ├── Shuffle remaining samples with fixed seed
+       └── Split into train/val with VAL_RATIO
+
+4. 💾 OUTPUT GENERATION (write_outputs)
+   ├── Write JSONL files:
+   │   ├── train.jsonl (training samples)
+   │   ├── val.jsonl (validation samples)
+   │   ├── teacher.jsonl (teacher samples)
+   │   └── all_samples.jsonl (combined samples)
+   ├── Generate label_vocabulary.json:
+   │   ├── Extract all unique labels from descriptions
+   │   ├── Categorize: object_types, properties, full_descriptions
+   │   ├── Generate statistics and metadata
+   │   └── Include usage notes for training
+   └── Final validation and cleanup
+```
+
+### Sample Output Format
+
+Training samples support multiple geometry formats:
+
+```json
+{
+  "images": ["images/QC-20230217-0000279_19621.jpeg"],
+  "objects": [
+    {
+      "bbox_2d": [264, 144, 326, 201],
+      "desc": "螺丝、光纤插头/显示完整/BBU安装螺丝/符合要求",
+      "geometry": {
+        "coordinates": [[263.67, 143.83], [326.26, 143.83], [326.26, 200.71], [263.67, 200.71], [263.67, 143.83]],
+        "type": "ExtentPolygon"
+      }
+    },
+    {
+      "bbox_2d": [248, 184, 367, 244],
+      "desc": "标签/4G-RRU3-光纤",
+      "square": [704, 487, 670, 554, 973, 644, 993, 590],
+      "geometry": {
+        "lineType": ["LLLLL"],
+        "coordinates": [[[260.02, 184.49], [247.71, 210.19], [359.36, 244.32], [366.75, 223.67], [260.02, 184.49]]],
+        "type": "Square"
+      }
+    },
+    {
+      "bbox_2d": [2, 568, 288, 828],
+      "desc": "电线/有遮挡，捆扎整齐",
+      "line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721],
+      "geometry": {
+        "lineMode": 1,
+        "lineType": "LLLLLL",
+        "coordinates": [[288.22, 611.86], [233.92, 567.51], [196.72, 585.04], [131.35, 615.98], [54.93, 700.54], [1.63, 828.42]],
+        "type": "LineString"
+      }
+    }
+  ],
+  "width": 532,
+  "height": 728
+}
+```
+
+---
+
+## Configuration System
+
+### 🔧 Essential Configuration (Required)
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `INPUT_DIR` | `"ds_v2"` | Directory containing V2 JSON/image files |
+| `OUTPUT_DIR` | `"output"` | Base output directory (creates output/dataset_name/) |
+| `LANGUAGE` | `"chinese"` | Language mode: `chinese` or `english` |
+| `RESPONSE_TYPES` | `"object_type property extra_info"` | Description components to include |
+| `VAL_RATIO` | `"0.1"` | Validation split ratio (10% = 0.1) |
+| `MAX_TEACHERS` | `"10"` | Maximum teacher samples for few-shot learning |
+| `RESIZE` | `"true"` | Enable smart image resizing (MAX_PIXELS=512*28*28) |
+
+### ⚙️ Optional Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATASET_NAME` | Auto-detect from INPUT_DIR | Dataset identifier for output folder |
+| `HIERARCHY_FILE` | Built-in default | Custom label hierarchy file path |
+| `TOKEN_MAP_PATH` | None | Token mapping file (required for English mode) |
+| `LOG_LEVEL` | `"INFO"` | Logging verbosity: DEBUG/INFO/WARNING/ERROR |
+| `SEED` | `"17"` | Random seed for reproducible splits |
+
+### 🎛️ Advanced Processing Options
+
+Advanced options are configured in the Python code:
+
+```python
+# In DataConversionConfig class:
+geometry_diversity_weight: float = 4.0    # Weight for geometry diversity in teacher selection
+fail_fast: bool = True                     # Stop on first error vs continue processing
+
+# In vision_process.py constants:
+IMAGE_FACTOR = 28                          # Image dimension factor for smart resize
+MIN_PIXELS = 4 * 28 * 28                  # Minimum image pixels (3,136)
+MAX_PIXELS = 512 * 28 * 28                # Maximum image pixels (401,408)
+MAX_RATIO = 200                           # Maximum aspect ratio allowed
+```
+
+---
+
+## Architecture & Components
+
+### Advanced Multi-Geometry Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           UnifiedProcessor                                  │
+│  (Main orchestrator with integrated sample extraction)                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • DataConversionConfig management                                           │
+│ • Content field extraction (Chinese/English with token mapping)            │
+│ • Object filtering via flexible label hierarchy                            │
+│ • Sample processing orchestration                                          │
+│ • Output generation & comprehensive statistics                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────┐
+        │                              │                              │
+┌─────────────────┐    ┌─────────────────────────┐    ┌─────────────────────┐
+│ CoordinateManager│    │  FlexibleTaxonomy      │    │   ImageProcessor    │
+│ (Multi-Geometry) │    │  Processor             │    │  (Smart Processing) │
+├─────────────────┤    ├─────────────────────────┤    ├─────────────────────┤
+│ • EXIF transform│    │ • Attribute taxonomy    │    │ • EXIF orientation  │
+│ • Dimension scale│    │ • V2 feature processing│    │ • Smart resize      │
+│ • Smart resize   │    │ • Multi-geometry support│    │ • Path management   │
+│ • bbox/square/line│    │ • Hierarchical desc.   │    │ • RGB conversion    │
+│ • Validation     │    │ • Content extraction    │    │ • Output copying    │
+└─────────────────┘    └─────────────────────────┘    └─────────────────────┘
+        │                              │                              │
+┌─────────────────┐    ┌─────────────────────────┐    ┌─────────────────────┐
+│ TeacherSelector │    │ HierarchicalProcessor  │    │   DataSplitter      │
+│ (Diversity)     │    │ (Compatibility Layer)  │    │  (Train/Val Split)  │
+├─────────────────┤    ├─────────────────────────┤    ├─────────────────────┤
+│ • Geometry div. │    │ • Backward compatibility│    │ • Reproducible      │
+│ • Label coverage│    │ • V2 format bridge      │    │ • Configurable ratio│
+│ • Spatial dist. │    │ • Legacy support        │    │ • Validation        │
+│ • Density analysis│   │ • Format conversion     │    │ • Shuffling         │
+└─────────────────┘    └─────────────────────────┘    └─────────────────────┘
+```
+
+### Key Architecture Features
+
+1. **Multi-Geometry Support**: Native handling of bbox_2d, square (四边形), line (LineString)
+2. **Flexible Taxonomy System**: Attribute-based classification using `attribute_taxonomy.json`
+3. **Advanced Coordinate Processing**: Complete transformation pipeline with EXIF, scaling, resize
+4. **Intelligent Teacher Selection**: Diversity-based selection considering geometry and spatial distribution
+5. **Comprehensive Output**: Detailed statistics, label vocabulary, and training-ready formats
+
+### Flexible Taxonomy System
+
+The system uses comprehensive attribute-based classification from `attribute_taxonomy.json`:
+
+```json
+{
+  "object_types": {
+    "bbu": {
+      "chinese_label": "BBU设备",
+      "geometry_types": ["bbox_2d", "square"],
+      "content_key": "bbu"
+    },
+    "fiber": {
+      "chinese_label": "光纤",
+      "geometry_types": ["line"],
+      "content_key": "fiber"
+    }
+  },
+  "attribute_groups": {
+    "physical_properties": {
+      "attributes": {
+        "visibility_completeness": {
+          "chinese_questions": ["这个BBU设备是否显示完整"],
+          "content_mapping": {"bbu": "bbu_stituation"},
+          "values": {
+            "显示完整": ["bbu_stituation_complete"],
+            "只显示部分": ["bbu_stituation_part"]
+          }
+        },
+        "brand_identification": {
+          "chinese_questions": ["这个BBU设备是什么品牌"],
+          "content_mapping": {"bbu": "bbu_brand"},
+          "values": {"华为": "huawei", "中兴": "zhongxing"}
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Output Format & Structure
+
+### Complete Output Structure
+
+The pipeline generates a comprehensive output structure:
+
+```
+output/ds_v2/
+├── train.jsonl              # Training samples (187 samples)
+├── val.jsonl                # Validation samples (~21 samples)
+├── teacher.jsonl            # Teacher samples (10 samples)
+├── all_samples.jsonl        # Combined samples (209 total)
+├── label_vocabulary.json    # Comprehensive label statistics
+└── images/                  # Processed images (if RESIZE=true)
+    ├── QC-20230217-0000279_19621.jpeg
+    ├── QC-20230323-0001285_216052.jpeg
+    └── ... (all processed images)
+```
+
+### Label Vocabulary Structure
+
+The `label_vocabulary.json` provides comprehensive statistics:
+
+```json
+{
+  "metadata": {
+    "total_samples": 209,
+    "total_objects": 2102,
+    "language": "chinese",
+    "extraction_date": "2025-07-21T12:57:12.745934"
+  },
+  "statistics": {
+    "unique_labels_count": 241,
+    "object_types_count": 6,
+    "properties_count": 188,
+    "full_descriptions_count": 249
+  },
+  "vocabulary": {
+    "all_unique_labels": ["4G-BBU-接地线", "BBU设备", "华为", "显示完整", ...],
+    "object_types": ["BBU设备", "光纤", "电线", "标签", "螺丝、光纤插头", "挡风板"],
+    "properties": ["华为", "显示完整", "只显示部分", "符合要求", ...],
+    "full_descriptions": ["BBU设备/华为，显示完整/机柜空间充足，需要安装", ...]
+  },
+  "usage_notes": {
+    "training_prompts": "Use 'all_unique_labels' for comprehensive label-aware training",
+    "object_detection": "Use 'object_types' for class-specific detection tasks"
+  }
+}
+```
+
+---
+
+## Advanced Features
+
+### Custom Processing Pipeline
+
+You can use the UnifiedProcessor directly in Python:
+
+```python
+from data_conversion.unified_processor import UnifiedProcessor
+from data_conversion.config import DataConversionConfig
+
+# Create configuration
+config = DataConversionConfig(
+    input_dir="ds_v2",
+    output_dir="output",
+    language="chinese",
+    response_types=["object_type", "property", "extra_info"],
+    resize=True,
+    val_ratio=0.1,
+    max_teachers=10,
+    seed=42
+)
+
+# Run pipeline
+processor = UnifiedProcessor(config)
+results = processor.process()
+
+print(f"Processed {results['total_processed']} samples")
+print(f"Train: {results['train']}, Val: {results['val']}, Teachers: {results['teacher']}")
+```
+
+### Custom Attribute Taxonomy
+
+Create your own attribute taxonomy file:
+
+```json
+{
+  "object_types": {
+    "custom_equipment": {
+      "chinese_label": "自定义设备",
+      "geometry_types": ["bbox_2d"],
+      "content_key": "custom"
+    }
+  },
+  "attribute_groups": {
+    "custom_properties": {
+      "attributes": {
+        "custom_attribute": {
+          "chinese_questions": ["自定义问题"],
+          "content_mapping": {"custom_equipment": "custom_field"},
+          "values": {"值1": "value1", "值2": "value2"}
+        }
+      }
+    }
+  }
+}
+```
+
+Then use it:
 ```bash
-export INPUT_DIR="ds"
-export OUTPUT_DIR="data"
-export LANGUAGE="chinese"
-export RESIZE="true"
-python data_conversion/pipeline_manager.py --from_env
+HIERARCHY_FILE="data_conversion/custom_taxonomy.json"
 ```
 
-### Configuration Options
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--input_dir` | "ds" | Input directory with JSON/image files |
-| `--output_dir` | "data" | Output directory for JSONL files |
-| `--output_image_dir` | None | Directory for processed images |
-| `--language` | "chinese" | Language mode ("chinese" or "english") |
-| `--resize` | False | Enable smart image resizing |
-| `--val_ratio` | 0.1 | Validation split ratio |
-| `--max_teachers` | 10 | Maximum teacher samples |
-| `--seed` | 42 | Random seed for reproducibility |
+### Batch Processing Multiple Datasets
 
-All arguments are documented via `--help` on each script.
-
----
-
-<a name="pipeline-internals"></a>
-## 5 · Pipeline Internals
-
-### New Refactored Architecture
-| Step | Module | Responsibility |
-|------|--------|----------------|
-| 1    | `pipeline_manager.py` | Orchestrates all pipeline steps with comprehensive error handling |
-| 2    | `config.py` | Type-safe configuration management with validation |
-| 3    | `unified_processor.py` | Core processing logic combining all sample operations |
-| 4    | `image_processor.py` | Image processing with EXIF handling and smart resizing |
-| 5    | `teacher_selector.py` | Diverse teacher pool selection algorithm |
-| 6    | `data_splitter.py` | Reproducible train/validation split |
-| 7    | `utils/` | Focused utility modules for file ops, validation, transformations |
-
-### Processing Flow
-```
-Raw Data → Clean JSON → Token Mapping → Sample Processing → Teacher Selection → Data Split → Validation → Output
-```
-
-### Key Improvements
-- **Unified Architecture**: Single entry point with clear module boundaries
-- **Fail-Fast Validation**: Comprehensive validation at each step
-- **Edge Case Handling**: Robust handling of small datasets and unusual inputs
-- **Type Safety**: Full type annotations and structured configuration
-- **Comprehensive Testing**: 100% automated test coverage
-
-> Legacy files are preserved in `legacy_backup/` for reference but are **no longer used**.
-
----
-
-<a name="directory-structure"></a>
-## 6 · Directory Structure (Refactored)
-```
-data_conversion/
-├── convert_dataset.sh        # Backward-compatible entry script
-├── pipeline_manager.py       # Main pipeline orchestrator (NEW)
-├── processor.py              # Unified processor entry point (REFACTORED)
-├── unified_processor.py      # Core processing logic (NEW)
-├── image_processor.py        # Image handling with EXIF support (NEW)
-├── config.py                 # Type-safe configuration (NEW)
-├── teacher_selector.py       # Teacher pool selection algorithm
-├── data_splitter.py          # Train/validation split utility
-├── data_loader.py            # JSON & image I/O operations
-├── label_hierarchy.json      # Object type hierarchy definition
-├── utils/                    # Utility modules (NEW)
-│   ├── __init__.py
-│   ├── file_ops.py          # File operations and JSON handling
-│   ├── validators.py        # Data structure validation
-│   └── transformations.py   # Coordinate and token transformations
-└── legacy_backup/            # Original files preserved for reference
-    ├── convert_dataset_old.sh
-    ├── processor_old.py
-    ├── sample_processor_old.py
-    ├── vision_process_old.py
-    └── ...
-```
-
-### Testing Infrastructure
-```
-temporal/                     # Test environment (temporary)
-├── test_refactored_pipeline.py      # Comprehensive test suite
-├── debug_sample_extraction.py       # Debug utilities
-└── debug_pipeline_issue.py          # Pipeline debugging tools
-```
-
----
-
-<a name="cleanup-history"></a>
-## 7 · Cleanup History
-The 2025 refactor removed **5 old scripts** and **2 temporary artifacts**,
-reducing active files from 20 → 15. Deleted/migrated assets live in
-`legacy_backup/`.
-
-| Old File                    | Replacement |
-|-----------------------------|-------------|
-| `convert_pure_json.py`      | `sample_processor.py` |
-| `create_teacher_pool.py`    | `teacher_selector.py` |
-| `split_train_val.py`        | `data_splitter.py` |
-| `extract_candidates.py`     | *obsolete* |
-| `qwen_converter_unified.py` | `processor.py` |
-
-**Benefits Achieved**
-1. Clear single-responsibility modules.
-2. Zero redundant I/O – one pass from raw → final.
-3. Strong type & schema validation throughout.
-4. 100 % unit tests pass (`test_pipeline.py`).
-
----
-
-<a name="testing--validation"></a>
-## 8 · Testing & Validation
-
-### Comprehensive Test Suite
 ```bash
-# Run the full refactored pipeline test suite
-python temporal/test_refactored_pipeline.py
-
-# Run individual debug utilities
-python temporal/debug_sample_extraction.py
-python temporal/debug_pipeline_issue.py
-```
-
-### Test Coverage
-The refactored pipeline includes comprehensive tests for:
-- ✅ Configuration management and validation
-- ✅ File operations and JSON handling
-- ✅ Data validation and structure checking
-- ✅ Image processing and coordinate transformations
-- ✅ Complete pipeline execution
-- ✅ Backward compatibility
-- ✅ Error handling and edge cases
-- ✅ Performance characteristics
-
-### Manual Validation
-```bash
-# Validate output JSONL files
-python data_conversion/simple_validate.py data/train.jsonl data/val.jsonl data/teacher.jsonl
-
-# Check pipeline summary
-cat data/pipeline_summary.json
+# Process multiple datasets with same configuration
+for dataset in ds_v2 ds_v3 ds_experimental; do
+    INPUT_DIR="$dataset"
+    DATASET_NAME="$dataset"
+    OUTPUT_DIR="output"
+    ./convert_dataset.sh
+done
 ```
 
 ---
 
-<a name="troubleshooting--faq"></a>
-## 9 · Troubleshooting & FAQ
+## Troubleshooting
 
-### Common Issues and Solutions
+### Common Issues & Solutions
 
-**Q1: `FileNotFoundError: token_map_path`**  
-Supply `--token_map_path` when using `--language english`.
+#### 1. Configuration Errors
+```
+ValueError: Unsupported language: english
+```
+**Solution**: Ensure `TOKEN_MAP_PATH` is provided for English mode. Chinese mode works without token mapping.
 
-**Q2: `ValueError: Dimension mismatch`**  
-The new pipeline automatically handles EXIF orientation. If issues persist, check your input image files.
+#### 2. Geometry Processing Issues
+```
+Dimension mismatch: JSON says 1920x1080 but image is 1080x1920
+```
+**Solution**: This is normal for EXIF-rotated images. The CoordinateManager handles this automatically with proper coordinate transformation.
 
-**Q3: `Cannot split empty sample list`**  
-Check that your label hierarchy includes the object types in your data. Enable debug logging with `--log_level DEBUG`.
+#### 3. Empty Output
+```
+No valid samples were processed
+```
+**Solution**: Check that:
+- Input directory contains valid JSON files with `.json` extension
+- JSON files have corresponding `.jpeg` or `.jpg` images
+- JSON structure contains either `dataList` or `markResult.features`
+- Objects pass the label hierarchy filtering
 
-**Q4: `No valid objects found`**  
-Verify that your JSON annotation format matches the expected structure. Check the label hierarchy file.
+#### 4. Memory Issues
+```
+Out of memory during processing
+```
+**Solution**:
+- Set `RESIZE="false"` to disable image processing
+- Process smaller batches
+- Set `LOG_LEVEL="WARNING"` to reduce memory usage
 
-**Q5: `Permission denied` errors**  
-Ensure write permissions for output directories and that the conda environment is properly activated.
+### Performance Optimization
+
+1. **Large Datasets**: Set `LOG_LEVEL="WARNING"` to reduce log output
+2. **Memory Usage**: Disable resizing for datasets with pre-sized images
+3. **Speed**: Use SSD storage for input/output directories
+4. **Parallel Processing**: Process multiple datasets in parallel
 
 ### Debug Mode
+
 Enable detailed debugging:
 ```bash
-python data_conversion/pipeline_manager.py --log_level DEBUG [other args...]
+LOG_LEVEL="DEBUG"
+./convert_dataset.sh
 ```
 
-### Migration from Legacy Pipeline
-The refactored pipeline is fully backward compatible. To migrate:
-1. **Immediate**: Use existing bash script (automatically uses new backend)
-2. **Recommended**: Switch to `pipeline_manager.py` for better error handling
-3. **Advanced**: Use configuration files for complex setups
+This shows:
+- Detailed coordinate transformations with EXIF handling
+- Geometry processing steps for bbox_2d/square/line
+- Sample filtering decisions based on taxonomy
+- File I/O operations and image processing
+- Teacher selection diversity analysis
 
-### Performance Notes
-- The refactored pipeline maintains comparable performance
-- Better memory efficiency through streaming processing
-- Enhanced error recovery and resumption capabilities
-- Comprehensive progress tracking and logging
+### Validation Commands
 
----
+Test the pipeline components:
 
-<a name="license"></a>
-## 10 · License
-Copyright © 2025, Alibaba DAMO-Vision.
+```bash
+# Test complete pipeline
+cd /data3/Qwen2.5-VL-main/data_conversion
+/root/miniconda3/envs/ms/bin/python -c "
+from unified_processor import UnifiedProcessor
+from config import DataConversionConfig
+print('✅ All imports successful')
+"
 
-Released under the Apache-2.0 license.
+# Test coordinate processing
+/root/miniconda3/envs/ms/bin/python -c "
+from coordinate_manager import CoordinateManager
+print('✅ Coordinate processing ready')
+"
+
+# Test taxonomy system
+/root/miniconda3/envs/ms/bin/python -c "
+from flexible_taxonomy_processor import FlexibleTaxonomyProcessor
+processor = FlexibleTaxonomyProcessor()
+print('✅ Taxonomy system loaded')
+"
+```
+
+The advanced multi-geometry system provides comprehensive V2 data processing with flexible taxonomy-based classification and intelligent coordinate transformations.

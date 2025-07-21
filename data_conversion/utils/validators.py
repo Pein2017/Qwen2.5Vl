@@ -52,9 +52,10 @@ class DataValidator:
             y_min, y_max = y_max, y_min
             bbox = [x_min, y_min, x_max, y_max]
         
-        if x_min >= x_max or y_min >= y_max:
+        # Allow zero-width or zero-height bboxes (for lines)
+        if x_min > x_max or y_min > y_max:
             raise ValueError(
-                f"Invalid bbox: x_min < x_max and y_min < y_max required, got: {bbox}"
+                f"Invalid bbox: x_min <= x_max and y_min <= y_max required, got: {bbox}"
             )
         
         if x_min < 0 or y_min < 0 or x_max < 0 or y_max < 0:
@@ -65,6 +66,30 @@ class DataValidator:
                 raise ValueError(
                     f"Bbox {bbox} exceeds image dimensions ({image_width}x{image_height})"
                 )
+        
+        return True
+    
+    @staticmethod
+    def validate_square(square) -> bool:
+        """Validate square format [x1, y1, x2, y2, x3, y3, x4, y4]."""
+        if not isinstance(square, list) or len(square) != 8:
+            raise ValueError(f"Square must be list of 8 numbers, got {square}")
+        
+        for i, coord in enumerate(square):
+            if not isinstance(coord, (int, float)):
+                raise ValueError(f"Square coordinate {i} must be number, got {type(coord)}")
+        
+        return True
+    
+    @staticmethod 
+    def validate_line(line) -> bool:
+        """Validate line format [x1, y1, x2, y2, ..., xn, yn]."""
+        if not isinstance(line, list) or len(line) < 4 or len(line) % 2 != 0:
+            raise ValueError(f"Line must be list of even number of coordinates (>=4), got {line}")
+        
+        for i, coord in enumerate(line):
+            if not isinstance(coord, (int, float)):
+                raise ValueError(f"Line coordinate {i} must be number, got {type(coord)}")
         
         return True
     
@@ -92,11 +117,22 @@ class DataValidator:
             if not isinstance(obj, dict):
                 raise ValueError(f"Object {i} must be a dictionary")
             
-            if "bbox_2d" not in obj or "desc" not in obj:
-                raise ValueError(f"Object {i} missing 'bbox_2d' or 'desc'")
+            # Check for required desc field
+            if "desc" not in obj:
+                raise ValueError(f"Object {i} missing 'desc'")
             
-            # Validate bbox format
-            DataValidator.validate_bbox(obj["bbox_2d"])
+            # Check for at least one geometry type
+            geometry_types = ["bbox_2d", "square", "line"]
+            if not any(geom_type in obj for geom_type in geometry_types):
+                raise ValueError(f"Object {i} missing geometry type (bbox_2d, square, or line)")
+            
+            # Validate geometry coordinates
+            if "bbox_2d" in obj:
+                DataValidator.validate_bbox(obj["bbox_2d"])
+            elif "square" in obj:
+                DataValidator.validate_square(obj["square"])
+            elif "line" in obj:
+                DataValidator.validate_line(obj["line"])
             
             # Validate description
             desc = obj["desc"]

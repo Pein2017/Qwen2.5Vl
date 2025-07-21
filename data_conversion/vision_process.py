@@ -22,6 +22,7 @@ from PIL import Image
 from torchvision import io, transforms
 from torchvision.transforms import InterpolationMode
 
+
 logger = logging.getLogger(__name__)
 
 IMAGE_FACTOR = 28
@@ -377,7 +378,7 @@ def is_torchcodec_available() -> bool:
 
         if importlib.util.find_spec("torchcodec") is None:
             return False
-        from torchcodec.decoders import VideoDecoder
+        from torchcodec.decoders import VideoDecoder  # noqa
 
         return True
     except (ImportError, AttributeError, Exception):

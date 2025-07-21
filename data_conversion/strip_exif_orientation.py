@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+
 # Configure logging to file
 LOG_FILE = Path(__file__).parent / "convert.log"
 
