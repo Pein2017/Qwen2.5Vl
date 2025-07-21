@@ -18,7 +18,7 @@ def clean_annotation_file(input_path, output_path, lang="both"):
 
     # Start with the original data structure
     cleaned_data = {}
-    
+
     # Preserve essential metadata sections that are needed by the pipeline
     essential_keys = ["info", "tagInfo", "version"]
     for key in essential_keys:
@@ -51,7 +51,7 @@ def clean_annotation_file(input_path, output_path, lang="both"):
     if "markResult" in data:
         cleaned_data["markResult"] = {
             "features": cleaned_features,
-            "type": data["markResult"].get("type", "FeatureCollection")
+            "type": data["markResult"].get("type", "FeatureCollection"),
         }
         # Preserve other markResult fields if they exist
         for key in data["markResult"]:

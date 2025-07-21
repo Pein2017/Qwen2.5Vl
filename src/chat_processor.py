@@ -12,11 +12,10 @@ from typeguard import typechecked
 
 from src.config import get_config
 from src.logger_utils import get_chat_logger
+
 # Legacy coordinate processor removed - using unified coordinate manager
 from src.utils.prompt import (
-    CHINESE_CANDIDATES_SECTION,
     CHINESE_FEW_SHOT_SECTION,
-    ENGLISH_CANDIDATES_SECTION,
     ENGLISH_FEW_SHOT_SECTION,
     get_system_prompt,
 )
@@ -75,11 +74,13 @@ class ChatProcessor:
         # Initialize unified coordinate token manager
         coordinate_enabled = kwargs.get("enable_coordinate_tokens", False)
         if coordinate_enabled:
-            from src.utils.coordinate_token_manager import create_coordinate_token_manager
-            
+            from src.utils.coordinate_token_manager import (
+                create_coordinate_token_manager,
+            )
+
             # Get original vocab size from tokenizer
             original_vocab_size = len(tokenizer.get_vocab())
-            
+
             coordinate_config_dict = {
                 "enable_coordinate_tokens": True,
                 "max_coord_value": kwargs.get("max_coord_value", 2048),
@@ -89,7 +90,7 @@ class ChatProcessor:
                 "focal_loss_alpha": 0.25,
                 "focal_loss_gamma": 2.0,
             }
-            
+
             self.coordinate_manager = create_coordinate_token_manager(
                 tokenizer=tokenizer,
                 original_vocab_size=original_vocab_size,
@@ -107,7 +108,6 @@ class ChatProcessor:
         logger.info(f"   Language: {self.language}")
         logger.info(f"   Data root: {config.data_root}")
         logger.info(f"   Model max length: {config.max_total_length}")
-        logger.info(f"   Use candidates: {config.use_candidates}")
         logger.info(f"   Output format: Pure JSON (Qwen2.5-VL compatible)")
 
         # Log a sample of the system prompt
@@ -121,44 +121,19 @@ class ChatProcessor:
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
-        
-        # Get config for this method
-        config = get_config()
 
         # Use the proper prompt selection function
         base_prompt = get_system_prompt(
             use_training_prompt=self.use_training_prompts, language=self.language
         )
 
-        # Get candidates template
+        # Get few shot section based on language
         if self.language == "chinese":
-            candidates_template = CHINESE_CANDIDATES_SECTION
             few_shot_section = CHINESE_FEW_SHOT_SECTION
         else:  # English
-            candidates_template = ENGLISH_CANDIDATES_SECTION
             few_shot_section = ENGLISH_FEW_SHOT_SECTION
 
-        # Add candidate phrases if provided
-        if config.use_candidates and config.candidates_file:
-            candidates_path = Path(config.candidates_file)
-            if candidates_path.exists():
-                with open(candidates_path, "r", encoding="utf-8") as f:
-                    candidates_data = json.load(f)
-
-                phrase_list = candidates_data.get("phrase_list", [])
-
-                # Format as numbered list for better readability
-                formatted_phrases = "\n".join(
-                    [f"{i + 1}) {phrase}" for i, phrase in enumerate(phrase_list)]
-                )
-
-                # Format the template with the phrases
-                candidates_section = candidates_template.format(
-                    formatted_phrases=formatted_phrases
-                )
-                base_prompt += candidates_section
-            else:
-                logger.warning(f"Candidates file not found: {config.candidates_file}")
+        # Candidates system removed - no longer needed
 
         return base_prompt + few_shot_section
 
@@ -688,7 +663,7 @@ class ChatProcessor:
                 end_idx = start_idx + len(content_tokens)
 
                 labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
-                
+
                 # STRICT VALIDATION: Check for coordinate tokens in assistant messages
                 if hasattr(self, 'coordinate_manager') and self.coordinate_manager and self.coordinate_manager.config.enable_coordinate_tokens:
                     assistant_tokens = labels[start_idx:end_idx]
@@ -698,12 +673,12 @@ class ChatProcessor:
                             token.item() == self.coordinate_manager.config.box_start_id or
                             token.item() == self.coordinate_manager.config.box_end_id):
                             coord_token_count += 1
-                    
+
                     if coord_token_count > 0:
                         logger.debug(f"   🎯 Found {coord_token_count} coordinate tokens in assistant message")
                         logger.debug(f"   Assistant span: [{start_idx}:{end_idx}]")
                         logger.debug(f"   Sample coordinate tokens: {assistant_tokens[:min(10, len(assistant_tokens))].tolist()}")
-                        
+
                         # Verify no coordinate tokens were set to -100
                         masked_coord_tokens = []
                         for i, token in enumerate(assistant_tokens):
@@ -713,7 +688,7 @@ class ChatProcessor:
                                     orig_token.item() == self.coordinate_manager.config.box_start_id or
                                     orig_token.item() == self.coordinate_manager.config.box_end_id):
                                     masked_coord_tokens.append((i, orig_token.item()))
-                        
+
                         if masked_coord_tokens:
                             logger.error(f"❌ CRITICAL: Coordinate tokens set to -100 in assistant message!")
                             logger.error(f"   Masked coordinate tokens: {masked_coord_tokens}")
@@ -952,8 +927,6 @@ def create_chat_processor(
     image_processor,
     data_root: str = "./",
     model_max_length: int = 8192,
-    use_candidates: bool = False,
-    candidates_file: Optional[str] = None,
 ) -> ChatProcessor:
     """
     Factory function to create ChatProcessor.
@@ -963,8 +936,6 @@ def create_chat_processor(
         image_processor: Qwen2.5-VL image processor
         data_root: Root directory for image paths
         model_max_length: Maximum sequence length
-        use_candidates: Whether to use candidate phrases
-        candidates_file: Path to candidate phrases JSON
 
     Returns:
         Configured ChatProcessor instance
@@ -974,6 +945,4 @@ def create_chat_processor(
         image_processor=image_processor,
         data_root=data_root,
         model_max_length=model_max_length,
-        use_candidates=use_candidates,
-        candidates_file=candidates_file,
     )

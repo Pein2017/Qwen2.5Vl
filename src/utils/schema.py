@@ -543,7 +543,7 @@ class ModelOutput:
     rope_deltas: Optional[torch.Tensor] = None
 
     def __post_init__(self):
-        B, S, V = self.logits.shape
+        B, S, _ = self.logits.shape
         if self.hidden_states is not None:
             for h in self.hidden_states:
                 if h.shape[:2] != (B, S):

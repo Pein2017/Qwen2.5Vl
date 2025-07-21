@@ -123,7 +123,7 @@ def load_model_and_processor_unified(
             tokenizer.pad_token = tokenizer.eos_token
             logger.info("✅ Pad token set to EOS token")
         logger.info(f"[PADDING_SIDE_CHECK] Tokenizer padding side after load: {tokenizer.padding_side}")
-        
+
         # CRITICAL FIX: Ensure padding_side is ALWAYS 'left' regardless of how tokenizer was created
         if tokenizer.padding_side != 'left':
             logger.warning(f"🔧 Fixing tokenizer padding_side: {tokenizer.padding_side} -> left")
@@ -275,7 +275,7 @@ def load_model_and_processor_unified(
                     if deepspeed_enabled
                     else "auto",  # Let DeepSpeed handle if enabled
                     trust_remote_code=True,
-                    use_cache=True,
+                    use_cache=config.use_cache_inference if for_inference else config.use_cache,
                 )
 
                 # CRITICAL: Move to GPU for inference only if NOT using DeepSpeed

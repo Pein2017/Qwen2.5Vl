@@ -6,12 +6,11 @@ Provides structured, type-safe configuration with validation.
 Replaces environment variables and complex command-line arguments.
 """
 
-import json
 import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")

@@ -24,9 +24,10 @@ from .global_config import (
     reset_config,
 )
 
+
 __all__ = [
     "DirectConfig",
-    "config", 
+    "config",
     "get_config",
     "init_config",
     "reset_config",

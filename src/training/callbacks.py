@@ -2,19 +2,19 @@ import os
 import shutil
 
 import torch
-from transformers import (
+from transformers.trainer_callback import (
     TrainerCallback,
     TrainerControl,
     TrainerState,
-    TrainingArguments,
 )
+from transformers.training_args import TrainingArguments
 
 
 class BestCheckpointCallback(TrainerCallback):
     """
     Custom callback that creates and maintains best checkpoint copies.
 
-    This callback tracks evaluation metrics and creates separate "best-{step}-{metric}" 
+    This callback tracks evaluation metrics and creates separate "best-{step}-{metric}"
     checkpoint copies that are independent of the trainer's regular checkpoint management.
     """
 
@@ -80,7 +80,7 @@ class BestCheckpointCallback(TrainerCallback):
 
         # Check if this qualifies as a best checkpoint
         is_best = self._is_best_checkpoint(current_metric)
-        
+
         if is_best:
             # Create best checkpoint copy
             trainer = kwargs.get("trainer")
@@ -88,50 +88,50 @@ class BestCheckpointCallback(TrainerCallback):
                 best_checkpoint_path = self._create_best_checkpoint(
                     trainer, args, state, current_metric
                 )
-                
+
                 if best_checkpoint_path:
                     # Add to our tracking list
                     self.best_checkpoints.append((current_metric, best_checkpoint_path))
-                    
+
                     # Sort and maintain limit
                     self._maintain_best_checkpoints()
 
         # Log current best checkpoints
         self._log_best_checkpoints(state)
-        
+
     def _is_best_checkpoint(self, current_metric: float) -> bool:
         """Check if current metric qualifies as a best checkpoint."""
         if len(self.best_checkpoints) < self.save_total_limit:
             return True
-            
+
         # Check if better than worst current best
         worst_metric = max(self.best_checkpoints, key=lambda x: x[0])[0] if not self.greater_is_better else min(self.best_checkpoints, key=lambda x: x[0])[0]
-        
+
         if self.greater_is_better:
             return current_metric > worst_metric
         else:
             return current_metric < worst_metric
-    
+
     def _create_best_checkpoint(self, trainer, args: TrainingArguments, state: TrainerState, metric_value: float) -> str:
         """Create a best checkpoint copy with proper naming."""
         # Format metric value for filename (avoid dots in filenames)
         metric_str = f"{metric_value:.6f}".replace(".", "_")
         best_checkpoint_name = f"best-{state.global_step}-{metric_str}"
         best_checkpoint_path = os.path.join(args.output_dir, best_checkpoint_name)
-        
+
         try:
             self.logger.info(f"💾 Creating best checkpoint: {best_checkpoint_name}")
-            
+
             # Use trainer's save_model method to ensure all components are saved
             trainer.save_model(best_checkpoint_path)
-            
+
             self.logger.info(f"✅ Best checkpoint saved: {best_checkpoint_name}")
             return best_checkpoint_path
-            
+
         except Exception as e:
             self.logger.error(f"❌ Failed to create best checkpoint {best_checkpoint_name}: {e}")
             return None
-    
+
     def _maintain_best_checkpoints(self):
         """Sort and maintain the best checkpoints limit."""
         # Sort checkpoints by metric (best first)
@@ -139,21 +139,21 @@ class BestCheckpointCallback(TrainerCallback):
             self.best_checkpoints.sort(key=lambda x: x[0], reverse=True)
         else:
             self.best_checkpoints.sort(key=lambda x: x[0])
-        
+
         # Remove excess checkpoints
         if len(self.best_checkpoints) > self.save_total_limit:
             checkpoints_to_remove = self.best_checkpoints[self.save_total_limit:]
             self.best_checkpoints = self.best_checkpoints[:self.save_total_limit]
-            
+
             # Delete excess best checkpoints
             for metric_value, checkpoint_path in checkpoints_to_remove:
                 self._safe_delete_checkpoint(checkpoint_path, metric_value)
-    
+
     def _log_best_checkpoints(self, state: TrainerState):
         """Log current best checkpoints status."""
         if not self.best_checkpoints:
             return
-            
+
         self.logger.info(f"🏆 Best {len(self.best_checkpoints)} checkpoints:")
         for i, (metric_value, checkpoint_path) in enumerate(self.best_checkpoints):
             rank = i + 1
@@ -161,7 +161,7 @@ class BestCheckpointCallback(TrainerCallback):
             self.logger.info(
                 f"   #{rank}: {checkpoint_name} ({self.metric_name}={metric_value:.6f})"
             )
-        
+
         # Update trainer state with best checkpoint info
         best_metric, best_checkpoint_path = self.best_checkpoints[0]
         state.best_metric = best_metric
@@ -179,7 +179,7 @@ class BestCheckpointCallback(TrainerCallback):
             metric_value: Metric value for logging
         """
         checkpoint_name = os.path.basename(checkpoint_path)
-        
+
         if not os.path.exists(checkpoint_path):
             self.logger.info(
                 f"📁 Best checkpoint {checkpoint_name} already removed"

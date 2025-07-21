@@ -27,7 +27,13 @@ from typing import List, Optional, Union
 
 from ...feature_extraction_utils import BatchFeature
 from ...image_utils import ImageInput, VideoInput
-from ...processing_utils import ImagesKwargs, ProcessingKwargs, ProcessorMixin, Unpack, VideosKwargs
+from ...processing_utils import (
+    ImagesKwargs,
+    ProcessingKwargs,
+    ProcessorMixin,
+    Unpack,
+    VideosKwargs,
+)
 from ...tokenization_utils_base import PreTokenizedInput, TextInput
 
 

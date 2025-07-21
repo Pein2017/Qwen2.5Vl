@@ -45,12 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
-from transformers import (
-    AutoProcessor,
-    PreTrainedTokenizerBase,
-    Trainer,
-)
+from transformers.models.auto.processing_auto import AutoProcessor
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+from transformers.trainer import Trainer
 
 from src.config.global_config import DirectConfig
 from src.data import BBUDataset, create_data_collator
@@ -146,41 +144,29 @@ class BBUTrainer(Trainer):
         self.training_coordinator = training_coordinator
         self._use_coordinator = training_coordinator is not None
 
+        # Initialize loss tracking variables (shared between coordinator and legacy)
+        self._current_lm_loss: float = 0.0
+        self._current_teacher_lm_loss: float = 0.0
+        self._current_student_lm_loss: float = 0.0
+        self._current_bbox_loss: float = 0.0
+        self._current_objectness_loss: float = 0.0
+
+        # ACCUMULATORS for per-step average logging with gradient accumulation
+        self._accumulated_lm_loss: float = 0.0
+        self._accumulated_teacher_lm_loss: float = 0.0
+        self._accumulated_student_lm_loss: float = 0.0
+        self._accumulated_objectness_loss: float = 0.0
+
+        # Counter for the number of *micro-batches* processed since the last log.
+        # This is needed for both coordinator and legacy systems
+        self._micro_batch_count: int = 0
+
         if self._use_coordinator:
             self.logger.info("🎯 Using new training coordinator system")
-            # When using coordinator, loss management is delegated
-            self._current_lm_loss: float = 0.0
-            self._current_teacher_lm_loss: float = 0.0
-            self._current_student_lm_loss: float = 0.0
-            self._current_bbox_loss: float = 0.0
-            self._current_objectness_loss: float = 0.0
-
-            # Coordinator handles accumulators, but keep for compatibility
-            self._accumulated_lm_loss: float = 0.0
-            self._accumulated_teacher_lm_loss: float = 0.0
-            self._accumulated_student_lm_loss: float = 0.0
-            self._accumulated_objectness_loss: float = 0.0
-            self._micro_batch_count: int = 0
-
-            # Detection loss is handled by coordinator
-            # Detection is now handled via coordinate tokens
+            # Detection loss is handled by coordinator via coordinate tokens
         else:
             self.logger.info("📄 Using legacy training system")
             # Legacy system: manual loss tracking
-            self._current_lm_loss: float = 0.0
-            self._current_teacher_lm_loss: float = 0.0
-            self._current_student_lm_loss: float = 0.0
-            self._current_bbox_loss: float = 0.0
-            self._current_objectness_loss: float = 0.0
-
-            # ACCUMULATORS for per-step average logging with gradient accumulation
-            self._accumulated_lm_loss: float = 0.0
-            self._accumulated_teacher_lm_loss: float = 0.0
-            self._accumulated_student_lm_loss: float = 0.0
-            self._accumulated_objectness_loss: float = 0.0
-
-            # Counter for the number of *micro-batches* processed since the last log.
-            self._micro_batch_count: int = 0
 
             # Detection is now handled via coordinate tokens
             self.detection_loss = None
@@ -244,9 +230,9 @@ class BBUTrainer(Trainer):
         return self.tokenizer_ref
 
     @tokenizer.setter
-    def tokenizer(self, value):
+    def tokenizer(self, processing_class):
         """Backward compatibility setter for tokenizer."""
-        self.tokenizer_ref = value
+        self.tokenizer_ref = processing_class
 
         # After initialization, we can safely access the tokenizer
         # and add our special tokens. This is a critical step.
@@ -937,11 +923,7 @@ class BBUTrainer(Trainer):
             and self.config.coordinate_tokens_enabled
         ):
             required_loss_components = ["llm_loss"]  # Only require clean llm_loss
-            optional_coord_components = [
-                "focal_loss",
-                "l1_loss",
-                "giou_loss",
-            ]
+            # Optional coordinate components: focal_loss, l1_loss, giou_loss
             missing_components = []
 
             # Check required components
@@ -1617,7 +1599,7 @@ class BBUTrainer(Trainer):
                 self.args, self.state, self.control
             )
 
-    def log(self, logs: Dict[str, float]) -> None:
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Log `logs` on the various objects watching training.
         This method is overridden to support logging of differential learning rates.
@@ -1632,7 +1614,7 @@ class BBUTrainer(Trainer):
                 group_name = self._param_names[i]
                 logs[f"lr/{group_name}"] = group_lr
 
-        super().log(logs)
+        super().log(logs, start_time)
 
     def _extract_ground_truth_objects(self, inputs):
         """Extracts ground truth objects from inputs if they exist."""
@@ -2008,6 +1990,9 @@ def set_model_training_params(model):
     Enable or disable training on model submodules (vision, mlp, llm, detection)
     based on learning-rate flags and the global `detection_enabled` option.
     """
+    from src.config import get_config
+
+    config = get_config()
     logger = get_training_logger()
     # Check if we're using the detection wrapper
     has_detection_wrapper = hasattr(model, "base_model") and hasattr(
@@ -2055,6 +2040,7 @@ def setup_model_and_tokenizer() -> Tuple[
     """
     logger = get_training_logger()
     logger.info("🔧 Setting up model with UNIFIED loading mechanism...")
+    from src.config import config
 
     try:
         from src.models.model_loader import load_model_and_processor_unified

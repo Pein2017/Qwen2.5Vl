@@ -5,11 +5,28 @@
 # --- Core Training Settings ---
 run_name: "719-det"
 output_dir: "output-719"
-run_output_dir: "output-719"
 num_train_epochs: 30
-per_device_train_batch_size: 6
-per_device_eval_batch_size: 6
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
 gradient_accumulation_steps: 4
+
+# --- Evaluation & Saving ---
+eval_strategy: "steps"
+eval_steps: 1
+save_strategy: "no"
+save_steps: 1
+save_total_limit: 2
+
+# --- Logging ---
+logging_steps: 1
+logging_dir: "logs"
+tensorboard_dir: "logs"
+log_level: "INFO"
+report_to: "tensorboard"
+tb_dir: "tb"
+disable_tqdm: true
+verbose: false
+
 
 # --- Precision Settings ---
 bf16: true
@@ -19,12 +36,11 @@ torch_dtype: "bfloat16"
 
 # --- Differential Learning Rates (0 = frozen) ---
 learning_rate: 5e-6        # Base learning rate
-vision_lr: 5e-7            # Vision encoder
-merger_lr: 1e-5            # Vision-language connector
-llm_lr: 5e-6               # Language model
-coordinate_lr: 1e-4        # Coordinate token components
-adapter_lr: 5e-3           # Adapter layers
-detection_lr: 1e-4         # Legacy detection head (unused)
+vision_lr: 5e-7            # Vision encoder (base_model.visual.*)
+merger_lr: 0               # No explicit merger in Qwen2.5-VL (fusion via attention)
+llm_lr: 5e-6               # Language model (base_model.model.*, base_model.lm_head.*)
+coordinate_lr: 5e-6           # Coordinate token embeddings (not extended yet)
+adapter_lr: 0              # Adapter layers (not used in current setup)
 
 # --- Coordinate Token System ---
 coordinate_tokens_enabled: true
@@ -41,7 +57,8 @@ attn_implementation: "flash_attention_2"
 torch_dtype: "bfloat16"
 mixed_precision: "bf16"
 use_flash_attention: true
-use_cache: false
+use_cache: false                # Training: false to save memory
+use_cache_inference: true       # Post-training: true for inference performance
 gradient_checkpointing: true
 
 # --- Vision Processing ---
@@ -66,8 +83,6 @@ max_examples: 1
 language: "chinese"
 teacher_ratio: 0.7
 num_teacher_samples: 1
-use_candidates: false
-candidates_file: null
 
 
 # --- Coordinate Token Configuration (Flattened for DirectConfig compatibility) ---
@@ -86,39 +101,6 @@ chat_processor_enable_coordinate_tokens: true
 chat_processor_max_coord_value: 2048
 chat_processor_use_official_box_tokens: true
 
-# --- Legacy Coordinate Token Configuration (Nested for domain configs) ---
-coordinate_config:
-  enable_coordinate_tokens: true
-  max_coord_value: 2048
-  coord_token_init_std: 0.01
-  coordinate_loss_weight: 1.0
-  regular_loss_weight: 1.0
-  soft_expectation_temperature: 1.0
-  focal_loss_alpha: 0.25
-  focal_loss_gamma: 2.0
-  use_official_box_tokens: true
-
-chat_processor:
-  enable_coordinate_tokens: true
-  max_coord_value: 2048
-  use_official_box_tokens: true
-
-# --- Evaluation & Saving ---
-eval_strategy: "steps"
-eval_steps: 1
-save_strategy: "no"
-save_steps: 50
-save_total_limit: 2
-
-# --- Logging ---
-logging_steps: 1
-logging_dir: "logs"
-tensorboard_dir: "logs"
-log_level: "INFO"
-report_to: "tensorboard"
-tb_dir: "tb"
-disable_tqdm: true
-verbose: false
 
 # --- Essential Settings ---
 remove_unused_columns: false
@@ -128,30 +110,13 @@ dataloader_num_workers: 4
 pin_memory: true
 prefetch_factor: 2
 
-# --- Testing ---
-test_samples: 1
-test_forward_pass: false
 
 # --- Teacher-Student Learning ---
 teacher_loss_weight: 0.3
 student_loss_weight: 1.0
-teacher_performance_log_interval: 50
-teacher_assignment_log_interval: 100
-student_performance_tracking_enabled: true
 
 # --- Training Control ---
 use_differential_lr: true
 use_consistent_prompts: true
 training_prompt_style: true
-val_zero_shot: false
-auto_scale_lr: false
-lr_reference_batch_size: 0
-
-# --- Loss Configuration ---
-coordinate_token_focal_loss_weight: 0.1
-nan_loss_replacement_value: 1e-6
-
-
-
-
 

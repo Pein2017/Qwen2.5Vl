@@ -15,6 +15,7 @@
 !important_demo/
 !vis_tools/
 !temporal/
+!ds_v2_clean/
 
 # Un-ignore top-level folders
 !scripts/**
@@ -26,6 +27,7 @@
 !eval/**
 !vis_tools/**
 !temporal/**
+!ds_v2_clean/**
 
 # Un-ignore everything inside those folders
 !src/**

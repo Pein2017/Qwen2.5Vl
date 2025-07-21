@@ -1023,9 +1023,7 @@ class InferenceEngine:
                             )
 
                         # Process each response in the batch
-                        for i, (sample, response, sample_idx) in enumerate(
-                            zip(batch_samples, responses, batch_indices)
-                        ):
+                        for sample, response, sample_idx in zip(batch_samples, responses, batch_indices):
                             # Extract metadata
                             target = sample
                             target_images = target.get("images", [])

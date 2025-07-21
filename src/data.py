@@ -17,12 +17,11 @@ Key Features:
 import json
 import random
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 from torch.utils.data import Dataset
-from transformers import PreTrainedTokenizerBase
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src.chat_processor import ChatProcessor
 from src.config import get_config
@@ -67,7 +66,7 @@ class BBUDataset(Dataset):
         """
         # Get config for this instance
         config = get_config()
-        
+
         self.data_path = data_path
         self.chat_processor = chat_processor
         self.teacher_pool_manager = teacher_pool_manager
@@ -98,10 +97,7 @@ class BBUDataset(Dataset):
         if teacher_pool_manager:
             logger.info(f"Teacher pool size: {len(teacher_pool_manager)}")
 
-        # Load candidates if enabled
-        self.candidates = None
-        if config.use_candidates and config.candidates_file:
-            self.candidates = self._load_candidates()
+        # Candidates system removed - no longer needed
 
         # Initialize special tokens first (needed for validation)
         self.tokens = SpecialTokens()
@@ -161,22 +157,13 @@ class BBUDataset(Dataset):
     @property
     def data_root(self) -> str:
         """Get data root from global config."""
-        return config.data_root
+        return get_config().data_root
 
     @property
     def model_max_length(self) -> int:
         """Get model max length from global config."""
-        return config.max_total_length
+        return get_config().max_total_length
 
-    @property
-    def use_candidates(self) -> bool:
-        """Get use candidates flag from global config."""
-        return config.use_candidates
-
-    @property
-    def candidates_file(self) -> str:
-        """Get candidates file path from global config."""
-        return config.candidates_file
 
     def _validate_and_filter_samples(
         self, raw_data: List[Dict[str, Any]]
@@ -508,30 +495,6 @@ class BBUDataset(Dataset):
 
         return validated_data
 
-    def _load_candidates(self) -> Optional[Dict]:
-        """Load candidate phrases if available."""
-        if not self.candidates_file:
-            return None
-
-        import json
-
-        if not Path(self.candidates_file).exists():
-            raise FileNotFoundError(
-                f"Candidates file not found: {self.candidates_file}. Failing fast as per project policy."
-            )
-
-        try:
-            with open(self.candidates_file, "r", encoding="utf-8") as f:
-                candidates = json.load(f)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Candidates file {self.candidates_file} is not valid JSON: {e}"
-            ) from e
-
-        logger.debug(
-            f"📊 Loaded {len(candidates)} candidate phrases from {self.candidates_file}"
-        )
-        return candidates
 
 
 def extract_ground_truth_from_sample(

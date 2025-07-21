@@ -114,13 +114,13 @@ class Qwen25VLWithDetection(nn.Module):
 
         # Coordinate loss tracking for logging - comprehensive initialization
         self._initialize_loss_tracking_components()
-        
+
         # Ensure tracking components are always available
         self._ensure_loss_tracking_initialized()
 
         # Get config for model creation
         config = get_config()
-        
+
         # Determine effective attention implementation
         effective_attn_impl = (
             attn_implementation
@@ -143,7 +143,7 @@ class Qwen25VLWithDetection(nn.Module):
         # CRITICAL: Move base model to GPU only if NOT using DeepSpeed
         import os
         deepspeed_enabled = os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower() == "true"
-        
+
         if torch.cuda.is_available() and not deepspeed_enabled:
             self.base_model = self.base_model.to("cuda:0")
         elif deepspeed_enabled:
@@ -309,7 +309,7 @@ class Qwen25VLWithDetection(nn.Module):
         # Add coordinate tokens to the end
         all_additional_tokens = existing_tokens + coordinate_tokens
 
-        num_added = self.tokenizer.add_special_tokens(
+        _ = self.tokenizer.add_special_tokens(
             {"additional_special_tokens": all_additional_tokens}
         )
 
@@ -518,7 +518,7 @@ class Qwen25VLWithDetection(nn.Module):
 
         # Attach zero coordinate loss components for logging consistency
         self._attach_coordinate_losses_to_outputs(result)
-        
+
         return result
 
     def _forward_with_coordinate_tokens(
@@ -573,7 +573,7 @@ class Qwen25VLWithDetection(nn.Module):
             self.logger.debug(f"🔍 DEBUGGING: Starting coordinate loss computation")
             self.logger.debug(f"   Labels shape: {labels.shape}")
             self.logger.debug(f"   Logits shape: {logits.shape}")
-            
+
             if self.coordinate_manager is not None:
                 self.logger.debug(f"   Using unified coordinate manager")
                 # Detect bbox spans for coordinate loss computation
@@ -581,12 +581,12 @@ class Qwen25VLWithDetection(nn.Module):
                 coordinate_losses = self.coordinate_manager.compute_coordinate_losses(
                     logits, labels, bbox_spans
                 )
-                
+
                 # Compute regular LLM loss for non-coordinate tokens
                 regular_loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100
                 )
-                
+
                 # Combine losses
                 if coordinate_losses:
                     coordinate_loss = coordinate_losses.get("coordinate_loss", torch.tensor(0.0))
@@ -596,10 +596,10 @@ class Qwen25VLWithDetection(nn.Module):
                         self.coordinate_manager.config.regular_loss_weight * regular_loss +
                         focal_loss
                     )
-                    
+
                     # Extract all losses from coordinate manager
                     giou_loss = coordinate_losses.get("giou_loss", torch.tensor(0.0, device=logits.device))
-                    
+
                     loss_components = {
                         "coordinate_loss": coordinate_loss,
                         "focal_loss": focal_loss,
@@ -618,7 +618,7 @@ class Qwen25VLWithDetection(nn.Module):
                         "l1_loss": torch.tensor(0.0),
                         "giou_loss": torch.tensor(0.0),
                     }
-                
+
                 loss = loss_components["total_loss"]
 
                 # Log the computed loss components
@@ -627,19 +627,19 @@ class Qwen25VLWithDetection(nn.Module):
 
                 # Update loss tracking from components with validation
                 self._update_loss_components_with_validation(loss_components)
-                
+
                 # IMMEDIATE VALIDATION: Ensure coordinate losses are non-zero when they should be
                 focal_loss_val = loss_components.get("focal_loss", torch.tensor(0.0))
                 l1_loss_val = loss_components.get("l1_loss", torch.tensor(0.0))
                 giou_loss_val = loss_components.get("giou_loss", torch.tensor(0.0))
-                
+
                 # Convert tensors to float for comparison
                 focal_val = focal_loss_val.item() if hasattr(focal_loss_val, 'item') else focal_loss_val
                 l1_val = l1_loss_val.item() if hasattr(l1_loss_val, 'item') else l1_loss_val
                 giou_val = giou_loss_val.item() if hasattr(giou_loss_val, 'item') else giou_loss_val
-                
+
                 total_coord_loss = focal_val + l1_val + giou_val
-                
+
                 if total_coord_loss == 0.0:
                     self.logger.error("❌ MODEL_WRAPPER: Coordinate loss computer returned zero losses!")
                     self.logger.error(f"   loss_components: {loss_components}")
@@ -650,11 +650,11 @@ class Qwen25VLWithDetection(nn.Module):
                     )
                 else:
                     self.logger.debug(f"✅ MODEL_WRAPPER: Coordinate loss computer returned non-zero losses: {total_coord_loss}")
-                
+
                 # IMMEDIATE VALIDATION: Ensure internal tracking is updated correctly
-                internal_total = (self._last_coordinate_loss + self._last_focal_loss + 
+                internal_total = (self._last_coordinate_loss + self._last_focal_loss +
                                 self._last_l1_loss + self._last_giou_loss)
-                
+
                 if internal_total == 0.0:
                     self.logger.error("❌ MODEL_WRAPPER: Internal loss tracking failed!")
                     self.logger.error(f"   _last_coordinate_loss: {self._last_coordinate_loss}")
@@ -685,7 +685,7 @@ class Qwen25VLWithDetection(nn.Module):
 
         # ALWAYS attach loss components to outputs for loss manager extraction
         self._attach_coordinate_losses_to_outputs(outputs)
-        
+
         # Validate loss attachment was successful
         self._validate_loss_attachment(outputs)
 
@@ -716,27 +716,27 @@ class Qwen25VLWithDetection(nn.Module):
         # CRITICAL FIX: Attach coordinate losses to the NEW output object
         # This was the root cause - losses were attached to old outputs but new outputs was returned
         self._attach_coordinate_losses_to_outputs(new_outputs)
-        
+
         # IMMEDIATE VALIDATION: Ensure coordinate losses are properly attached to new output
         config = get_config()
         if hasattr(config, "coordinate_tokens_enabled") and config.coordinate_tokens_enabled:
             required_attrs = ["_coordinate_loss", "_focal_loss", "_l1_loss", "_giou_loss"]
             missing_attrs = []
-            
+
             for attr in required_attrs:
                 if not hasattr(new_outputs, attr):
                     missing_attrs.append(attr)
-            
+
             if missing_attrs:
                 raise RuntimeError(
                     f"CRITICAL: New output object missing coordinate loss attributes: {missing_attrs}. "
                     f"This indicates loss attachment to new output object failed."
                 )
-            
+
             # Validate the attached losses are non-zero
-            attached_total = (new_outputs._coordinate_loss + new_outputs._focal_loss + 
+            attached_total = (new_outputs._coordinate_loss + new_outputs._focal_loss +
                             new_outputs._l1_loss + new_outputs._giou_loss)
-            
+
             if attached_total == 0.0:
                 self.logger.error("❌ MODEL_WRAPPER: Coordinate losses attached to new output are zero!")
                 self.logger.error(f"   new_outputs._coordinate_loss: {new_outputs._coordinate_loss}")
@@ -761,22 +761,22 @@ class Qwen25VLWithDetection(nn.Module):
     def _update_loss_components_with_validation(self, loss_components: Dict[str, float]):
         """Update loss tracking components with enhanced validation."""
         self._ensure_loss_tracking_initialized()
-        
+
         # Validate that all required loss components are present
         required_components = [
             "coordinate_loss", "focal_loss", "regular_loss", "l1_loss", "giou_loss"
         ]
-        
+
         missing_components = []
         for component in required_components:
             if component not in loss_components:
                 missing_components.append(component)
-        
+
         if missing_components:
             self.logger.warning(
                 f"⚠️ Missing loss components: {missing_components}. Using defaults."
             )
-        
+
         # Update components with validation and defaults
         self._last_coordinate_loss = self._validate_loss_value(
             loss_components.get("coordinate_loss", 0.0), "coordinate_loss"
@@ -793,7 +793,7 @@ class Qwen25VLWithDetection(nn.Module):
         self._last_giou_loss = self._validate_loss_value(
             loss_components.get("giou_loss", 0.0), "giou_loss"
         )
-        
+
         # Enhanced tracking metrics with validation
         self._last_detection_loss = self._validate_loss_value(
             loss_components.get("detection_loss", 0.0), "detection_loss"
@@ -801,7 +801,7 @@ class Qwen25VLWithDetection(nn.Module):
         self._last_total_tokens = max(0, int(loss_components.get("total_tokens", 0)))
         self._last_coordinate_tokens = max(0, int(loss_components.get("coordinate_tokens", 0)))
         self._last_regular_tokens = max(0, int(loss_components.get("regular_tokens", 0)))
-        
+
         # Validate token counts consistency
         expected_total = self._last_coordinate_tokens + self._last_regular_tokens
         if self._last_total_tokens > 0 and expected_total > 0:
@@ -810,9 +810,9 @@ class Qwen25VLWithDetection(nn.Module):
                     f"⚠️ Token count mismatch: total={self._last_total_tokens}, "
                     f"coord+regular={expected_total}"
                 )
-        
+
         self.logger.debug(f"✅ Updated loss components from coordinate loss computer")
-    
+
     def _validate_loss_value(self, value: float, component_name: str) -> float:
         """Validate and sanitize a loss value - handles tensors and scalars."""
         # Handle PyTorch tensors by extracting scalar value
@@ -827,19 +827,19 @@ class Qwen25VLWithDetection(nn.Module):
         else:
             self.logger.warning(f"⚠️ Invalid {component_name} type: {type(value)}, using 0.0")
             return 0.0
-        
+
         # Check for NaN or infinite values
         if torch.isnan(torch.tensor(scalar_value)) or torch.isinf(torch.tensor(scalar_value)):
             self.logger.warning(f"⚠️ Invalid {component_name} value: {scalar_value}, using 0.0")
             return 0.0
-        
+
         # Clamp to reasonable bounds to prevent extreme values
         if abs(scalar_value) > 1000.0:
             self.logger.warning(f"⚠️ Extreme {component_name} value: {scalar_value}, clamping")
             return max(-1000.0, min(1000.0, scalar_value))
-        
+
         return scalar_value
-    
+
     def _update_loss_components(self, loss_components: Dict[str, float]):
         """Legacy method - redirect to enhanced validation version."""
         self._update_loss_components_with_validation(loss_components)
@@ -1256,7 +1256,7 @@ class Qwen25VLWithDetection(nn.Module):
 
         except (ValueError, IndexError):
             return None
-    
+
     def _initialize_loss_tracking_components(self):
         """Initialize all loss tracking components to ensure they always exist."""
         # Primary coordinate loss components
@@ -1265,15 +1265,15 @@ class Qwen25VLWithDetection(nn.Module):
         self._last_regular_loss = 0.0
         self._last_l1_loss = 0.0
         self._last_giou_loss = 0.0
-        
+
         # Enhanced tracking attributes
         self._last_detection_loss = 0.0
         self._last_total_tokens = 0
         self._last_coordinate_tokens = 0
         self._last_regular_tokens = 0
-        
+
         self.logger.debug(f"⚙️ Initialized loss tracking components")
-    
+
     def _ensure_loss_tracking_initialized(self):
         """Ensure all loss tracking components exist with defensive programming."""
         # Defensive initialization - ensure all attributes exist
@@ -1295,11 +1295,11 @@ class Qwen25VLWithDetection(nn.Module):
             self._last_coordinate_tokens = 0
         if not hasattr(self, '_last_regular_tokens'):
             self._last_regular_tokens = 0
-    
+
     def _reset_loss_components_for_forward_pass(self):
         """Reset loss components at the start of each forward pass."""
         self._ensure_loss_tracking_initialized()
-        
+
         # Reset to defaults for new forward pass
         self._last_coordinate_loss = 0.0
         self._last_focal_loss = 0.0
@@ -1310,13 +1310,13 @@ class Qwen25VLWithDetection(nn.Module):
         self._last_total_tokens = 0
         self._last_coordinate_tokens = 0
         self._last_regular_tokens = 0
-        
+
         self.logger.debug(f"🔄 Reset loss components for forward pass")
-    
+
     def _reset_loss_components_to_zero(self):
         """Reset all loss components to zero for standard LLM mode."""
         self._ensure_loss_tracking_initialized()
-        
+
         # Set all to zero for standard mode
         self._last_coordinate_loss = 0.0
         self._last_focal_loss = 0.0
@@ -1327,46 +1327,46 @@ class Qwen25VLWithDetection(nn.Module):
         self._last_total_tokens = 0
         self._last_coordinate_tokens = 0
         self._last_regular_tokens = 0
-        
+
         self.logger.debug(f"📄 Reset loss components to zero (standard LLM mode)")
-    
+
     def _attach_coordinate_losses_to_outputs(self, outputs):
         """Attach all coordinate loss components to model outputs for loss manager extraction."""
         self._ensure_loss_tracking_initialized()
-        
+
         # Attach individual loss components
         outputs._coordinate_loss = self._last_coordinate_loss
         outputs._focal_loss = self._last_focal_loss
         outputs._regular_loss = self._last_regular_loss
         outputs._l1_loss = self._last_l1_loss
         outputs._giou_loss = self._last_giou_loss
-        
+
         # Enhanced metrics
         outputs._detection_loss = self._last_detection_loss
         outputs._total_tokens = self._last_total_tokens
         outputs._coordinate_tokens = self._last_coordinate_tokens
         outputs._regular_tokens = self._last_regular_tokens
-        
+
         self.logger.debug(f"🔗 Attached coordinate losses to outputs")
-    
+
     def _validate_loss_attachment(self, outputs):
         """Validate that all loss components were properly attached to outputs."""
         required_loss_attrs = [
-            '_focal_loss', '_regular_loss', 
+            '_focal_loss', '_regular_loss',
             '_l1_loss', '_giou_loss', '_detection_loss',
             '_total_tokens', '_coordinate_tokens', '_regular_tokens'
         ]
-        
+
         missing_attrs = []
         for attr in required_loss_attrs:
             if not hasattr(outputs, attr):
                 missing_attrs.append(attr)
-        
+
         if missing_attrs:
             raise RuntimeError(
                 f"Failed to attach loss components to outputs: missing {missing_attrs}"
             )
-        
+
         # Log validation summary
         self.logger.debug(f"✅ Loss attachment validated: {len(required_loss_attrs)} components attached")
         self.logger.debug(f"   focal_loss: {self._last_focal_loss:.6f}")

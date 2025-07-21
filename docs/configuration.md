@@ -1,48 +1,495 @@
-# Configuration Reference (New System)
+# Configuration Guide
 
-> **Purpose:** Summarize the domain-specific YAML parameters validated by the new `ConfigManager`.
+Comprehensive configuration reference for the Qwen2.5-VL BBU fine-tuning system.
 
----
+## 📋 Configuration Overview
 
-## 1. New Configuration System
-The new system uses a `ConfigManager` that loads and validates domain-specific configurations from a YAML file (e.g., `configs/base_flat_v2.yaml`). This provides better organization and validation than the old flat `DirectConfig`.
+The system uses a YAML configuration structure with domain-specific sections that are automatically validated and type-checked.
 
-The system is enabled with the `--use-new-config` flag.
+### Loading and Access
+```python
+# Initialize once at startup
+from src.config.global_config import init_config
+config = init_config("configs/base_flat_det.yaml")
 
-## 2. Domain-Specific Configurations
-Configurations are now split into logical domains:
-
-### ModelConfig (`src/config/domain_configs.py`)
-| Name | Type | Example | Notes |
-|------|------|---------|-------|
-| `model_path` | str | `/path/to/model` | Path to model directory |
-| `model_max_length` | int | 12000 | Maximum sequence length |
-| `attn_implementation`| str | `flash_attention_2`| Use `flash_attention_2` for speed. Compatibility patch auto-applied for PyTorch 2.5.1 |
-
-### TrainingConfig (`src/config/domain_configs.py`)
-| Name | Type | Example |
-|------|------|---------|
-| `num_train_epochs` | int | 30 |
-| `per_device_train_batch_size` | int | 4 |
-| `learning_rate` | float | 5e-6 |
-| `vision_lr` | float | 5e-7 |
-| `llm_lr` | float | 5e-6 |
-| `detection_lr` | float | 1e-5 |
-
-### DataConfig (`src/config/domain_configs.py`)
-| Name | Type | Example | Notes |
-|------|------|---------|-------|
-| `collator_type` | str | `packed` | `packed` for Flash-Attention 2. Requires compatibility patch for PyTorch 2.5.1. |
-| `teacher_ratio` | float | 0.7 | Fraction of teacher batches. |
-| `language` | str | `chinese` | Affects prompt selection. |
-
-## 3. Parameter Group Management
-Parameter groups and their learning rates are now managed by the `ParameterGroupManager`, which is configured via the `TrainingConfig`. The manager assigns parameters to groups based on their names (e.g., `visual`, `llm`, `detection_head`).
+# Access anywhere in codebase
+from src.config.global_config import config
+learning_rate = config.learning_rate
+model_path = config.model_path
+```
 
 ---
 
-### Related source files
-* `src/config/config_manager.py`
-* `src/config/domain_configs.py`
-* `src/training/parameter_manager.py`
-* `configs/base_flat_v2.yaml` 
+## 🎯 Quick Start Templates
+
+### 1. Coordinate Token Training (Recommended)
+```yaml
+# configs/coordinate_training.yaml
+model_path: "/path/to/qwen2.5-vl-7b-instruct"
+train_data_path: "data/train.jsonl"
+val_data_path: "data/val.jsonl"
+
+# Coordinate Token Settings
+coordinate_tokens_enabled: true
+coordinate_config_max_coord_value: 2048
+coordinate_lr: 1e-4
+coordinate_loss_weight: 1.0
+regular_loss_weight: 1.0
+soft_expectation_temperature: 1.0
+
+# Focal Loss (for coordinate tokens)
+focal_loss_alpha: 0.25
+focal_loss_gamma: 2.0
+
+# Training Settings
+learning_rate: 1e-5
+num_train_epochs: 3
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+warmup_ratio: 0.1
+lr_scheduler_type: "cosine"
+
+# Model Settings
+model_max_length: 8192
+torch_dtype: "bfloat16"
+attn_implementation: "flash_attention_2"
+
+# Optimization
+weight_decay: 0.01
+dataloader_num_workers: 4
+fp16: false
+bf16: true
+
+# Checkpointing
+save_strategy: "steps"
+save_steps: 500
+eval_strategy: "steps"
+eval_steps: 500
+save_total_limit: 3
+```
+
+### 2. Standard Detection Training
+```yaml
+# configs/standard_detection.yaml
+model_path: "/path/to/qwen2.5-vl-7b-instruct"
+train_data_path: "data/train.jsonl"
+val_data_path: "data/val.jsonl"
+
+# Detection Settings
+detection_enabled: true
+num_queries: 100
+detection_lr: 1e-5
+
+# Training Settings
+learning_rate: 5e-6
+num_train_epochs: 30
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 2
+
+# Model Settings
+model_max_length: 12000
+torch_dtype: "bfloat16"
+attn_implementation: "flash_attention_2"
+```
+
+### 3. Memory-Optimized Training
+```yaml
+# configs/memory_optimized.yaml
+# For systems with limited GPU memory
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+model_max_length: 4096
+torch_dtype: "float16"
+gradient_checkpointing: true
+dataloader_num_workers: 2
+```
+
+---
+
+## 🤖 Model Configuration
+
+### Core Model Settings
+```yaml
+# Model path and variant
+model_path: "/path/to/Qwen2.5-VL-3B-Instruct"  # REQUIRED
+model_size: "3B"                               # REQUIRED: Model size identifier
+model_max_length: 32768                        # REQUIRED: Maximum sequence length
+attn_implementation: "flash_attention_2"       # REQUIRED: "flash_attention_2" | "eager"
+torch_dtype: "bfloat16"                        # REQUIRED: "bfloat16" | "float16" | "float32"
+use_cache: false                               # REQUIRED: Enable/disable KV cache
+```
+
+### Model Architecture Parameters
+```yaml
+# Architecture specifications (must match actual model)
+model_hidden_size: 2048                       # REQUIRED: Hidden dimension size
+model_num_layers: 27                          # REQUIRED: Number of transformer layers  
+model_num_attention_heads: 16                 # REQUIRED: Number of attention heads
+model_vocab_size: 151936                      # REQUIRED: Vocabulary size (before extension)
+```
+
+**Validation Rules:**
+- `model_path` must exist and contain valid model files
+- `attn_implementation` must be compatible with hardware
+- `torch_dtype` affects memory usage and training stability
+
+---
+
+## 🎓 Training Configuration
+
+### Learning Rate Settings
+```yaml
+# Base learning rates
+learning_rate: 5e-6                           # REQUIRED: Base learning rate
+vision_lr: 5e-7                               # REQUIRED: Vision encoder learning rate
+llm_lr: 5e-6                                  # REQUIRED: Language model learning rate
+detection_lr: 1e-5                            # REQUIRED: Detection head learning rate
+coordinate_lr: 1e-4                           # OPTIONAL: Coordinate token learning rate
+
+# Learning rate scheduling
+lr_scheduler_type: "cosine"                   # REQUIRED: "linear" | "cosine" | "constant"
+warmup_ratio: 0.1                             # REQUIRED: Warmup ratio (0.0-1.0)
+warmup_steps: 0                               # OPTIONAL: Alternative to warmup_ratio
+```
+
+### Training Parameters
+```yaml
+# Training duration
+num_train_epochs: 30                          # REQUIRED: Number of training epochs
+max_steps: -1                                 # OPTIONAL: Max steps (overrides epochs)
+
+# Batch settings
+per_device_train_batch_size: 4                # REQUIRED: Batch size per device
+per_device_eval_batch_size: 4                 # REQUIRED: Eval batch size per device
+gradient_accumulation_steps: 1                # REQUIRED: Gradient accumulation steps
+
+# Optimization
+weight_decay: 0.01                            # REQUIRED: Weight decay coefficient
+max_grad_norm: 1.0                            # REQUIRED: Gradient clipping norm
+adam_beta1: 0.9                               # OPTIONAL: Adam beta1
+adam_beta2: 0.999                             # OPTIONAL: Adam beta2
+adam_epsilon: 1e-8                            # OPTIONAL: Adam epsilon
+```
+
+### Mixed Precision Settings
+```yaml
+# Precision configuration
+fp16: false                                   # REQUIRED: Enable FP16 training
+bf16: true                                    # REQUIRED: Enable BF16 training (recommended)
+fp16_opt_level: "O1"                          # OPTIONAL: FP16 optimization level
+fp16_full_eval: false                         # OPTIONAL: Use FP16 for evaluation
+```
+
+**Validation Rules:**
+- Only one of `fp16` or `bf16` should be true
+- `gradient_accumulation_steps` must be positive integer
+- Learning rates must be positive floats
+
+---
+
+## 📊 Data Configuration
+
+### Data Paths
+```yaml
+# Dataset paths
+train_data_path: "data/train.jsonl"          # REQUIRED: Training data path
+val_data_path: "data/val.jsonl"              # REQUIRED: Validation data path
+teacher_data_path: "data/teacher.jsonl"      # OPTIONAL: Teacher examples path
+
+# Data processing
+max_train_samples: null                       # OPTIONAL: Limit training samples
+max_eval_samples: null                        # OPTIONAL: Limit evaluation samples
+```
+
+### Data Loading Settings
+```yaml
+# DataLoader configuration
+dataloader_num_workers: 4                    # REQUIRED: Number of data loading workers
+dataloader_pin_memory: true                  # REQUIRED: Pin memory for GPU transfer
+remove_unused_columns: false                 # REQUIRED: Keep all data columns
+
+# Collation settings
+collator_type: "packed"                      # REQUIRED: "packed" | "standard"
+teacher_ratio: 0.7                           # REQUIRED: Fraction of teacher batches (0.0-1.0)
+language: "chinese"                          # REQUIRED: "chinese" | "english"
+```
+
+**Validation Rules:**
+- Data paths must exist and be readable
+- `teacher_ratio` must be between 0.0 and 1.0
+- `dataloader_num_workers` should match CPU cores
+
+---
+
+## 🎯 Coordinate Token Configuration
+
+### Core Coordinate Settings
+```yaml
+# Coordinate token system
+coordinate_tokens_enabled: true              # REQUIRED: Enable coordinate tokens
+coordinate_config_max_coord_value: 2048      # REQUIRED: Maximum coordinate value
+coordinate_lr: 1e-4                          # REQUIRED: Coordinate token learning rate
+
+# Loss weights
+coordinate_loss_weight: 1.0                  # REQUIRED: Weight for coordinate loss
+regular_loss_weight: 1.0                     # REQUIRED: Weight for regular tokens
+focal_loss_weight: 0.1                       # OPTIONAL: Weight for focal loss
+l1_loss_weight: 0.1                          # OPTIONAL: Weight for L1 loss
+giou_loss_weight: 0.1                        # OPTIONAL: Weight for GIoU loss
+
+# Loss parameters
+soft_expectation_temperature: 1.0            # REQUIRED: Softmax temperature
+focal_loss_alpha: 0.25                       # OPTIONAL: Focal loss alpha
+focal_loss_gamma: 2.0                        # OPTIONAL: Focal loss gamma
+```
+
+**Validation Rules:**
+- `coordinate_config_max_coord_value` must be power of 2
+- All loss weights must be non-negative
+- `soft_expectation_temperature` must be positive
+
+---
+
+## 🔍 Detection Configuration
+
+### Detection Head Settings
+```yaml
+# Detection system
+detection_enabled: true                       # REQUIRED: Enable detection head
+num_queries: 100                             # REQUIRED: Number of detection queries
+max_caption_length: 50                       # REQUIRED: Maximum caption length
+
+# Detection loss weights
+detection_loss_weight: 1.0                   # REQUIRED: Overall detection loss weight
+bbox_loss_weight: 5.0                        # REQUIRED: Bounding box loss weight
+objectness_loss_weight: 1.0                  # REQUIRED: Objectness loss weight
+caption_loss_weight: 1.0                     # REQUIRED: Caption loss weight
+
+# Hungarian matching
+hungarian_cost_class: 1.0                    # REQUIRED: Classification cost
+hungarian_cost_bbox: 5.0                     # REQUIRED: Bounding box cost
+hungarian_cost_giou: 2.0                     # REQUIRED: GIoU cost
+```
+
+**Validation Rules:**
+- `num_queries` must be positive integer
+- All loss weights must be non-negative
+- Hungarian costs must be positive
+
+---
+
+## 💾 Checkpointing & Logging
+
+### Checkpoint Settings
+```yaml
+# Checkpointing strategy
+save_strategy: "steps"                       # REQUIRED: "steps" | "epoch" | "no"
+save_steps: 500                              # REQUIRED: Save every N steps
+save_total_limit: 3                          # REQUIRED: Maximum checkpoints to keep
+load_best_model_at_end: true                 # REQUIRED: Load best model after training
+
+# Evaluation strategy
+eval_strategy: "steps"                       # REQUIRED: "steps" | "epoch" | "no"
+eval_steps: 500                              # REQUIRED: Evaluate every N steps
+evaluation_strategy: "steps"                 # DEPRECATED: Use eval_strategy
+metric_for_best_model: "eval_loss"           # REQUIRED: Metric for best model selection
+greater_is_better: false                     # REQUIRED: Whether higher metric is better
+```
+
+### Logging Configuration
+```yaml
+# Logging settings
+logging_dir: "logs"                          # REQUIRED: Logging directory
+logging_strategy: "steps"                    # REQUIRED: "steps" | "epoch"
+logging_steps: 50                            # REQUIRED: Log every N steps
+log_level: "info"                            # REQUIRED: "debug" | "info" | "warning" | "error"
+
+# Reporting
+report_to: ["tensorboard"]                   # OPTIONAL: ["tensorboard", "wandb", "none"]
+run_name: null                               # OPTIONAL: Run name for logging
+```
+
+**Validation Rules:**
+- Save and eval strategies must be compatible
+- Logging steps should be less than save steps
+- Output directories must be writable
+
+---
+
+## ⚙️ System Configuration
+
+### Hardware Settings
+```yaml
+# GPU configuration
+local_rank: -1                               # REQUIRED: Local rank for distributed training
+device: "auto"                               # REQUIRED: Device selection
+no_cuda: false                               # REQUIRED: Disable CUDA
+
+# Memory management
+gradient_checkpointing: false                # REQUIRED: Enable gradient checkpointing
+dataloader_drop_last: false                  # REQUIRED: Drop last incomplete batch
+group_by_length: false                       # REQUIRED: Group samples by length
+```
+
+### Performance Settings
+```yaml
+# Optimization flags
+tf32: true                                   # REQUIRED: Enable TF32 on Ampere GPUs
+jit_mode_eval: false                         # OPTIONAL: JIT compilation for eval
+use_legacy_prediction_loop: false            # OPTIONAL: Use legacy prediction loop
+
+# Distributed training
+ddp_backend: "nccl"                          # OPTIONAL: DDP backend
+ddp_bucket_cap_mb: 25                        # OPTIONAL: DDP bucket size
+ddp_find_unused_parameters: false            # OPTIONAL: Find unused parameters
+```
+
+**Validation Rules:**
+- Hardware settings must match available resources
+- Distributed settings must be consistent across nodes
+
+---
+
+## ✅ Configuration Validation
+
+### Validation Checklist
+```python
+# Use this checklist to validate your configuration
+def validate_configuration(config_path):
+    """Comprehensive configuration validation"""
+    
+    # 1. File existence
+    assert os.path.exists(config_path), f"Config file not found: {config_path}"
+    
+    # 2. YAML syntax
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    
+    # 3. Required parameters
+    required_params = [
+        'model_path', 'train_data_path', 'val_data_path',
+        'learning_rate', 'num_train_epochs', 'per_device_train_batch_size'
+    ]
+    for param in required_params:
+        assert param in config, f"Missing required parameter: {param}"
+    
+    # 4. Parameter types and ranges
+    assert isinstance(config['learning_rate'], float), "learning_rate must be float"
+    assert 0 < config['learning_rate'] < 1, "learning_rate must be in (0, 1)"
+    
+    # 5. Path validation
+    assert os.path.exists(config['model_path']), f"Model path not found: {config['model_path']}"
+    assert os.path.exists(config['train_data_path']), f"Train data not found: {config['train_data_path']}"
+    
+    # 6. Hardware compatibility
+    if config.get('attn_implementation') == 'flash_attention_2':
+        assert torch.cuda.is_available(), "Flash Attention requires CUDA"
+    
+    print("✅ Configuration validation passed")
+```
+
+### Common Configuration Errors
+| **Error** | **Cause** | **Fix** |
+|-----------|-----------|---------|
+| `FileNotFoundError: model_path` | Invalid model path | Check path exists and is accessible |
+| `ValueError: learning_rate` | Learning rate out of range | Use values between 1e-6 and 1e-3 |
+| `TypeError: per_device_train_batch_size` | Batch size not integer | Use integer values only |
+| `ConfigValidationError: coordinate_tokens` | Missing coordinate config | Add coordinate token parameters |
+| `MemoryError: batch_size too large` | Insufficient GPU memory | Reduce batch size or enable gradient checkpointing |
+
+### Configuration Testing
+```bash
+# Test configuration before training
+/root/miniconda3/envs/ms/bin/python -c "
+from src.config.global_config import init_config
+config = init_config('configs/your_config.yaml')
+print('Configuration loaded successfully')
+print(f'Model path: {config.model_path}')
+print(f'Learning rate: {config.learning_rate}')
+print(f'Coordinate tokens: {config.coordinate_tokens_enabled}')
+"
+```
+
+---
+
+## 🔧 Advanced Configuration
+
+### Parameter Group Management
+The system automatically manages parameter groups with different learning rates:
+
+```python
+# Parameter groups are created automatically based on parameter names
+parameter_groups = {
+    'visual': config.vision_lr,           # Vision encoder parameters
+    'llm': config.llm_lr,                # Language model parameters  
+    'detection_head': config.detection_lr, # Detection head parameters
+    'coordinate_tokens': config.coordinate_lr # Coordinate token embeddings
+}
+```
+
+### Environment Variable Integration
+```yaml
+# Use environment variables in configuration
+model_path: "${HF_HOME}/qwen2.5-vl-7b-instruct"
+output_dir: "${EXPERIMENT_DIR}/checkpoints"
+logging_dir: "${EXPERIMENT_DIR}/logs"
+```
+
+### Configuration Inheritance
+```yaml
+# Base configuration (base_config.yaml)
+_base_: "base_config.yaml"
+
+# Override specific parameters
+learning_rate: 1e-4
+coordinate_tokens_enabled: true
+```
+
+---
+
+## 📚 Configuration Examples
+
+### Development Configuration
+```yaml
+# configs/development.yaml - Fast iteration
+max_train_samples: 100
+max_eval_samples: 50
+num_train_epochs: 1
+save_steps: 10
+eval_steps: 10
+logging_steps: 5
+per_device_train_batch_size: 1
+```
+
+### Production Configuration
+```yaml
+# configs/production.yaml - Full training
+num_train_epochs: 30
+save_steps: 1000
+eval_steps: 1000
+logging_steps: 100
+per_device_train_batch_size: 8
+gradient_accumulation_steps: 2
+save_total_limit: 5
+load_best_model_at_end: true
+```
+
+### Debugging Configuration
+```yaml
+# configs/debug.yaml - Debugging issues
+log_level: "debug"
+logging_steps: 1
+max_train_samples: 10
+max_eval_samples: 5
+num_train_epochs: 1
+gradient_checkpointing: false
+dataloader_num_workers: 0
+```
+
+---
+
+**Related Files:**
+- `src/config/config_manager.py` - Configuration loading and validation
+- `src/config/domain_configs.py` - Domain-specific configuration classes
+- `src/training/parameter_manager.py` - Parameter group management
+- `configs/base_flat_v2.yaml` - Main configuration template

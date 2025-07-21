@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel
+from transformers.modeling_utils import PreTrainedModel
 
 from src.config import get_config
 from src.logger_utils import get_training_logger
@@ -75,7 +75,7 @@ class ParameterGroupManager:
     def _initialize_group_configs(self):
         """Initialize parameter group configurations from global config."""
         config = get_config()
-        
+
         self.group_configs = {
             "vision": ParameterGroupConfig(
                 name="vision",
@@ -186,7 +186,7 @@ class ParameterGroupManager:
             ]
         ):
             return "llm"
-            
+
         # Qwen2.5-VL has no explicit merger - vision-language fusion happens in attention
         # So merger parameters will be empty, which is expected
 
@@ -227,6 +227,7 @@ class ParameterGroupManager:
         # Handle any "other" parameters if they exist
         other_params = [param for _, param in self.parameter_groups["other"]]
         if other_params:
+            config = get_config()
             if not hasattr(config, "learning_rate"):
                 raise ValueError(
                     "learning_rate must be explicitly configured in config for 'other' parameters. "
@@ -261,7 +262,7 @@ class ParameterGroupManager:
                 )
                 continue
 
-            for name, param in self.parameter_groups[component]:
+            for _, param in self.parameter_groups[component]:
                 param.requires_grad = False
 
             # Update config to reflect frozen state
@@ -287,7 +288,7 @@ class ParameterGroupManager:
                 )
                 continue
 
-            for name, param in self.parameter_groups[component]:
+            for _, param in self.parameter_groups[component]:
                 param.requires_grad = True
 
             # Update config to reflect unfrozen state

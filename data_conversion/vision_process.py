@@ -229,7 +229,7 @@ def smart_nframes(
 
 def _read_video_torchvision(
     ele: dict,
-) -> (torch.Tensor, float):
+) -> tuple[torch.Tensor, float]:
     """read video using torchvision.io.read_video
 
     Args:
@@ -250,7 +250,7 @@ def _read_video_torchvision(
         if "file://" in video_path:
             video_path = video_path[7:]
     st = time.time()
-    video, audio, info = io.read_video(
+    video, _, info = io.read_video(
         video_path,
         start_pts=ele.get("video_start", 0.0),
         end_pts=ele.get("video_end", None),
@@ -336,7 +336,7 @@ def calculate_video_frame_range(
 
 def _read_video_decord(
     ele: dict,
-) -> (torch.Tensor, float):
+) -> tuple[torch.Tensor, float]:
     """read video using decord.VideoReader
 
     Args:
@@ -386,7 +386,7 @@ def is_torchcodec_available() -> bool:
 
 def _read_video_torchcodec(
     ele: dict,
-) -> (torch.Tensor, float):
+) -> tuple[torch.Tensor, float]:
     """read video using torchcodec.decoders.VideoDecoder
 
     Args:

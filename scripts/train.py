@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-from src.config import config, init_config
+from src.config import get_config, init_config
 from src.logger_utils import (
     configure_global_logging,
     get_training_logger,
@@ -52,16 +52,14 @@ def parse_args():
     parser.add_argument(
         "--print-config", action="store_true", help="Print config and exit"
     )
-    parser.add_argument(
-        "--use-new-config",
-        action="store_true",
-        help="Use new domain-specific configuration system (experimental)",
-    )
+    # Removed --use-new-config flag - using single config system
 
     # Logging configuration - simplified with rank-aware logging
     parser.add_argument(
-        "--log_level", required=True, choices=["DEBUG", "INFO"], 
-        help="Logging level: INFO (production) | DEBUG (development)"
+        "--log_level",
+        required=True,
+        choices=["DEBUG", "INFO"],
+        help="Logging level: INFO (production) | DEBUG (development)",
     )
 
     return parser.parse_args()
@@ -70,6 +68,8 @@ def parse_args():
 def create_training_arguments_with_deepspeed():
     """Create TrainingArguments with DeepSpeed configuration using direct config access."""
     import os
+
+    config = get_config()
 
     from transformers.training_args import TrainingArguments
 
@@ -123,7 +123,7 @@ def create_training_arguments_with_deepspeed():
 def main():
     """Main training function using direct configuration system."""
     args = parse_args()
-    
+
     # Get logger early (will be rank-aware after logging configuration)
     logger = get_training_logger()
 
@@ -134,36 +134,23 @@ def main():
         logger.info("Loading configuration...")
 
         # Initialize config system
-        config_source_path = f"configs/{args.config}.yaml"
+        config_name: str = args.config
+        config_source_path = f"configs/{config_name}.yaml"
+        logger.info("Loading configuration system...")
+        init_config(config_source_path)
+        logger.info(f"Configuration loaded: {config_source_path}")
 
-        if args.use_new_config:
-            logger.info("Using new domain-specific configuration system")
-
-            logger.info(f"New config system loaded: {config_source_path}")
-        else:
-            logger.info("Using legacy configuration system")
-            init_config(config_source_path)
-            logger.info(f"Legacy config loaded: {config_source_path}")
+        config = get_config()
 
         # Print config if requested
         if args.print_config:
-            if args.use_new_config:
-                manager = config.manager
-                logger.info(f"Model: {manager.model.model_path}")
-                logger.info(
-                    f"LR: {manager.training.learning_rate}, Epochs: {manager.training.num_train_epochs}"
-                )
-                logger.info(
-                    f"Batch: {manager.training.per_device_train_batch_size}, Output: {manager.infrastructure.run_output_dir}"
-                )
-            else:
-                logger.info(f"Model: {config.model_path}")
-                logger.info(
-                    f"LR: {config.learning_rate}, Epochs: {config.num_train_epochs}"
-                )
-                logger.info(
-                    f"Batch: {config.per_device_train_batch_size}, Output: {config.run_output_dir}"
-                )
+            logger.info(f"Model: {config.model_path}")
+            logger.info(
+                f"LR: {config.learning_rate}, Epochs: {config.num_train_epochs}"
+            )
+            logger.info(
+                f"Batch: {config.per_device_train_batch_size}, Output: {config.run_output_dir}"
+            )
             return 0
 
         # =====================================================================
@@ -177,8 +164,10 @@ def main():
 
         logger = get_training_logger()
         logger.info("🚀 BBU Training Started - Rank-Aware Logging System")
-        logger.info(f"📄 Config: {args.config}")
-        logger.info(f"📊 Logging: Level={args.log_level} (rank-aware filtering enabled)")
+        logger.info(f"📄 Config: {config_name}")
+        logger.info(
+            f"📊 Logging: Level={args.log_level} (rank-aware filtering enabled)"
+        )
         logger.info("🌍 Environment: All variables handled by launcher script")
 
         # =====================================================================
@@ -197,9 +186,6 @@ def main():
         # attempts that previously caused the "Config not initialised" error.
         # ---------------------------------------------------------------------
 
-        from src.training.trainer import (
-            create_trainer,
-        )  # noqa: E402
         from src.training.trainer_factory import (
             create_trainer_with_coordinator,
             safe_save_model_for_hf_trainer,
@@ -220,15 +206,10 @@ def main():
             )
 
         logger.info("🏋️ Creating unified BBU trainer...")
-        if args.use_new_config:
-            trainer = create_trainer_with_coordinator(
-                training_args=training_args, use_new_config=True
-            )
-        else:
-            trainer = create_trainer(training_args=training_args)
+        trainer = create_trainer_with_coordinator(training_args=training_args)
 
         # Save configuration for reproducibility by copying the original file
-        config_dest_path = pathlib.Path(config.run_output_dir) / f"{args.config}.yaml"
+        config_dest_path = pathlib.Path(config.run_output_dir) / f"{config_name}.yaml"
         shutil.copy(config_source_path, config_dest_path)
         logger.info(f"💾 Configuration saved to: {config_dest_path}")
 
@@ -251,15 +232,23 @@ def main():
 
         # Save image processor - following official approach
         if hasattr(trainer, "processing_class"):
-            # Get image processor from the trainer's model setup
-            from transformers.models.auto.processing_auto import AutoProcessor
+            try:
+                # Get image processor from the trainer's model setup
+                from transformers.models.auto.processing_auto import AutoProcessor
 
-            processor = AutoProcessor.from_pretrained(config.model_path)
-            processor.image_processor.save_pretrained(training_args.output_dir)
-            logger.info(f"💾 Image processor saved to: {training_args.output_dir}")
+                processor = AutoProcessor.from_pretrained(config.model_path)
+                
+                # Check if image processor exists and is not None
+                if hasattr(processor, 'image_processor') and processor.image_processor is not None:
+                    processor.image_processor.save_pretrained(training_args.output_dir)
+                    logger.info(f"💾 Image processor saved to: {training_args.output_dir}")
+                else:
+                    logger.warning("⚠️  Image processor is None, skipping save")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to save image processor: {e}")
 
-        # Re-enable cache after training - following official approach
-        trainer.model.config.use_cache = True
+        # Re-enable cache after training - using configured value
+        trainer.model.config.use_cache = config.use_cache_inference
 
         # Safe model saving - following official approach
         safe_save_model_for_hf_trainer(trainer, training_args.output_dir)

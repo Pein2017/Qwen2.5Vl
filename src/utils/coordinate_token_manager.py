@@ -676,25 +676,25 @@ class CoordinateTokenManager:
         # Group coordinates into bounding boxes (x1, y1, x2, y2)
         pred_boxes = []
         target_boxes = []
-        
+
         coord_idx = 0
         for batch_spans in bbox_spans:
-            for start_idx, end_idx in batch_spans:
+            for _, _ in batch_spans:
                 # Each bbox span contains 4 coordinates (x1, y1, x2, y2)
                 expected_coords = 4
                 if coord_idx + expected_coords <= pred_coords.numel():
                     # Extract 4 coordinates for this bbox
                     pred_box = pred_coords[coord_idx:coord_idx + expected_coords]
                     target_box = target_coords[coord_idx:coord_idx + expected_coords]
-                    
+
                     # Normalize to [0, 1] range for GIoU computation
                     max_coord = float(self.config.max_coord_value - 1)
                     pred_box_norm = pred_box / max_coord
                     target_box_norm = target_box / max_coord
-                    
+
                     pred_boxes.append(pred_box_norm)
                     target_boxes.append(target_box_norm)
-                    
+
                     coord_idx += expected_coords
 
         if not pred_boxes:
@@ -706,10 +706,10 @@ class CoordinateTokenManager:
 
         # Compute GIoU loss
         giou = self._compute_giou(pred_boxes, target_boxes)
-        
+
         # GIoU loss: 1 - GIoU (since GIoU ranges from -1 to 1)
         giou_loss = 1.0 - giou.mean()
-        
+
         return giou_loss
 
     def _compute_giou(

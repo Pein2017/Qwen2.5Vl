@@ -6,10 +6,11 @@ This package contains the essential components for BBU training:
 - CheckpointManager: Model saving and loading utilities
 """
 
-from .data_processor import DataProcessor
 from .checkpoint_manager import CheckpointManager
+from .data_processor import DataProcessor
+
 
 __all__ = [
-    'DataProcessor', 
+    'DataProcessor',
     'CheckpointManager'
 ]

@@ -19,14 +19,13 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
 CONFIG_NAME="base_flat_det"                   # Config to use: base_flat_v2 | base_flat_det
-GPU_DEVICES="0,1,2,3"               # GPU devices (comma-separated)
+GPU_DEVICES="0,1,2,3,4,5,6,7"               # GPU devices (comma-separated)
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
-# NEW: Training system configuration
-USE_NEW_CONFIG=false                      # Use new domain-specific config system (true/false)
+# Simplified: Single configuration system
 
 # Logging configuration
-LOG_LEVEL="DEBUG"                          # Logging level: INFO (production) | DEBUG (development)
+LOG_LEVEL="INFO"                          # Logging level: INFO (production) | DEBUG (development)
 to_console=false                               # true: console output, false: log to run.log
 export TRANSFORMERS_NO_TQDM=1
 export DISABLE_TQDM=1
@@ -134,8 +133,7 @@ launch_single_gpu() {
     
     python scripts/train.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL" \
-        $([ "$USE_NEW_CONFIG" = "true" ] && echo "--use-new-config")
+        --log_level "$LOG_LEVEL"
 }
 
 launch_deepspeed() {
@@ -156,8 +154,7 @@ launch_deepspeed() {
         --nproc_per_node="$NUM_GPUS" \
         scripts/train.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL" \
-        $([ "$USE_NEW_CONFIG" = "true" ] && echo "--use-new-config")
+        --log_level "$LOG_LEVEL"
 }
 
 # =============================================================================

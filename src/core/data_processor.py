@@ -53,7 +53,7 @@ class DataProcessor:
         if not hasattr(self.config, "coordinate_tokens_enabled"):
             raise ValueError("coordinate_tokens_enabled must be explicitly configured in config")
         coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-        
+
         # Get max_coord_value from flattened config
         max_coord_value = getattr(self.config, "coordinate_config_max_coord_value", 2048)
         if max_coord_value == 2048 and not hasattr(self.config, "coordinate_config_max_coord_value"):

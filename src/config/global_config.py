@@ -41,7 +41,8 @@ class DirectConfig:
     model_max_length: int
     attn_implementation: str
     torch_dtype: str
-    use_cache: bool
+    use_cache: bool  # For training (typically False to save memory)
+    use_cache_inference: bool  # For inference/post-training
     model_hidden_size: int
     model_num_layers: int
     model_num_attention_heads: int
@@ -73,7 +74,6 @@ class DirectConfig:
     val_data_path: str
     data_root: str
     max_total_length: int
-    use_candidates: bool
     teacher_pool_file: str
     num_teacher_samples: int
     collator_type: str
@@ -124,17 +124,11 @@ class DirectConfig:
     run_name: str
     tb_dir: str
 
-    # Test settings
-    test_samples: int
-    test_forward_pass: bool
 
     # Teacher-Student Loss Weights
     teacher_loss_weight: float
     student_loss_weight: float
 
-    # Learning Rate Auto-Scaling
-    auto_scale_lr: bool
-    lr_reference_batch_size: int
 
     # Vision processing parameters
     patch_size: int
@@ -142,9 +136,6 @@ class DirectConfig:
     temporal_patch_size: int
 
     # === OPTIONAL FIELDS (with defaults) ===
-
-    # Optional candidates file
-    candidates_file: Optional[str] = None
 
     # Runtime properties (added dynamically during initialization)
     run_output_dir: str = ""
@@ -317,7 +308,7 @@ def _validate_config(config: DirectConfig) -> None:
 
     if config.coordinate_lr < 0:
         raise ValueError("coordinate_lr must be non-negative")
-    
+
     # Coordinate token validation
     if config.coordinate_tokens_enabled:
         if not hasattr(config, 'coordinate_config_max_coord_value'):

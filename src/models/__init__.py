@@ -31,6 +31,7 @@ from .patches import (
 )
 from .wrapper import Qwen25VLWithDetection
 
+
 __all__ = [
     "Qwen25VLWithDetection",
     "apply_comprehensive_qwen25_fixes",

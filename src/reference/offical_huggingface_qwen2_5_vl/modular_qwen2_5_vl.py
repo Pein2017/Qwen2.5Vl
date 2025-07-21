@@ -27,7 +27,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.nn import CrossEntropyLoss
-
 from transformers.models.qwen2_vl.configuration_qwen2_vl import Qwen2VLConfig
 from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     PatchEmbed,
@@ -41,7 +40,10 @@ from transformers.models.qwen2_vl.modeling_qwen2_vl import (
     VisionRotaryEmbedding,
     VisionSdpaAttention,
 )
-from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLImagesKwargs, Qwen2VLProcessor
+from transformers.models.qwen2_vl.processing_qwen2_vl import (
+    Qwen2VLImagesKwargs,
+    Qwen2VLProcessor,
+)
 
 from ...activations import ACT2FN
 from ...configuration_utils import PretrainedConfig

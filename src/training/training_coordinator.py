@@ -21,9 +21,9 @@ Key Features:
 from typing import Any, Dict, List, Tuple
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
+from transformers.modeling_utils import PreTrainedModel
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src.config import config
 from src.logger_utils import get_training_logger
 from src.training.loss_manager import LossManager
 from src.training.parameter_manager import ParameterGroupManager
@@ -215,32 +215,32 @@ class TrainingCoordinator:
     def get_averaged_losses_and_reset(self) -> Dict[str, float]:
         """Get averaged losses with enhanced coordinate token support."""
         averaged_losses = self.loss_manager.get_averaged_losses()
-        
+
         # Validate and ensure coordinate token losses are properly included
         coordinate_tokens_enabled = self._validate_coordinate_token_config()
-        
+
         if coordinate_tokens_enabled:
             # Ensure all coordinate loss components are present
             required_coord_losses = ["focal_loss", "l1_loss", "giou_loss"]
             missing_losses = []
-            
+
             for key in required_coord_losses:
                 if key not in averaged_losses:
                     averaged_losses[key] = 0.0
                     missing_losses.append(key)
-            
+
             if missing_losses:
                 self.logger.debug(f"🔧 Added missing coordinate losses: {missing_losses}")
-            
+
             # Log coordinate loss summary
             total_coord_loss = sum(averaged_losses.get(key, 0.0) for key in required_coord_losses)
             self.logger.debug(f"📊 Averaged coordinate losses: total={total_coord_loss:.6f}")
-        
+
         # Add the main 'loss' field that the trainer expects
         llm_loss = averaged_losses.get("llm_loss", 0.0)
         coord_loss = sum(averaged_losses.get(key, 0.0) for key in ["focal_loss", "l1_loss", "giou_loss"])
         averaged_losses["loss"] = llm_loss + coord_loss
-        
+
         return averaged_losses
 
     def save_evaluation_state(self) -> Dict[str, Any]:
@@ -322,20 +322,20 @@ class TrainingCoordinator:
         try:
             # Check if coordinate tokens are enabled in flat config
             coordinate_enabled = getattr(self.config, "coordinate_tokens_enabled", False)
-            
+
             if coordinate_enabled:
                 # Additional validation
                 coordinate_lr = getattr(self.config, "coordinate_lr", 0)
                 if coordinate_lr <= 0:
                     self.logger.warning("⚠️ Coordinate tokens enabled but coordinate_lr is 0 or missing")
                     return False
-                
+
                 self.logger.debug("✅ Coordinate token configuration validated")
                 return True
             else:
                 self.logger.debug("🔧 Coordinate tokens disabled in configuration")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"❌ Error validating coordinate token config: {e}")
             return False
@@ -348,14 +348,14 @@ class TrainingCoordinator:
             regular_loss = current_losses.get("regular_loss", 0.0)
             l1_loss = current_losses.get("l1_loss", 0.0)
             giou_loss = current_losses.get("giou_loss", 0.0)
-            
+
             total_coord_loss = coord_loss + focal_loss + regular_loss + l1_loss + giou_loss
-            
+
             if total_coord_loss > 0:
                 self.logger.info(f"📊 Coordinate metrics: coord={coord_loss:.4f}, focal={focal_loss:.4f}, regular={regular_loss:.4f}, l1={l1_loss:.4f}, giou={giou_loss:.4f}, total={total_coord_loss:.4f}")
             else:
                 self.logger.debug("📊 All coordinate losses are zero for this step")
-                
+
         except Exception as e:
             self.logger.error(f"❌ Error logging coordinate metrics: {e}")
 

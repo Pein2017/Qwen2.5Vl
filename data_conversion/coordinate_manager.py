@@ -8,7 +8,7 @@ including EXIF orientation, dimension rescaling, and smart resize operations.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)

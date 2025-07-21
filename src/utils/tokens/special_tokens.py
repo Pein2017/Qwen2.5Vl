@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from src.logger_utils import get_tokens_logger
 
+
 logger = get_tokens_logger()
 
 IGNORE_INDEX = -100

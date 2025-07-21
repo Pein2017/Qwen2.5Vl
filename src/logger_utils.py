@@ -45,7 +45,7 @@ def _detect_current_rank() -> tuple[int, bool]:
 
     # Fallback: check environment variables set by torchrun
     rank = int(os.environ.get("RANK", "0"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    _ = int(os.environ.get("LOCAL_RANK", "0"))  # local_rank not used
 
     # For single GPU training, both should be 0
     is_main = rank == 0

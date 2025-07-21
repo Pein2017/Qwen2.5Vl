@@ -55,7 +55,7 @@ val_data_path: "data/val.jsonl"
 teacher_pool_file: "data/teacher.jsonl"
 data_root: "./"
 max_total_length: 12000
-use_candidates: true
+use_candidates: false
 collator_type: "standard"
 max_examples: 1
 language: "chinese"

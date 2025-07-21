@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 import torch
 from PIL import Image
 
+
 IGNORE_INDEX = -100
 
 
