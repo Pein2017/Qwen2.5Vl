@@ -11,10 +11,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from data_conversion.coordinate_manager import CoordinateManager
 from PIL import Image, ImageOps
 
 from data_conversion.config import DataConversionConfig
+from data_conversion.coordinate_manager import CoordinateManager
 from data_conversion.utils.file_ops import FileOperations
 
 

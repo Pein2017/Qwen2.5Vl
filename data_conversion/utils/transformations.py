@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 class CoordinateTransformer:
-    """Handles coordinate transformations and scaling operations."""
+    """
+    DEPRECATED: Use coordinate_manager.CoordinateManager instead.
+    
+    This class provides basic utilities that are now integrated into CoordinateManager
+    for unified coordinate transformation handling.
+    """
     
     @staticmethod
     def round_by_factor(number: int, factor: int) -> int:

@@ -11,16 +11,16 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from data_conversion.coordinate_manager import CoordinateManager
-from data_conversion.data_splitter import DataSplitter  
-from data_conversion.hierarchical_processor_compat import HierarchicalProcessor
-from data_conversion.image_processor import ImageProcessor
-from data_conversion.teacher_selector import TeacherSelector
+from coordinate_manager import CoordinateManager
+from data_splitter import DataSplitter  
+from hierarchical_processor_compat import HierarchicalProcessor
+from image_processor import ImageProcessor
+from teacher_selector import TeacherSelector
 
-from data_conversion.config import DataConversionConfig
-from data_conversion.utils.file_ops import FileOperations
-from data_conversion.utils.transformations import FormatConverter
-from data_conversion.utils.validators import DataValidator, StructureValidator
+from config import DataConversionConfig
+from utils.file_ops import FileOperations
+from utils.transformations import FormatConverter
+from utils.validators import DataValidator, StructureValidator
 
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -160,7 +160,7 @@ class UnifiedProcessor:
             x2, y2 = coords[1]
             bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
             # Clean bbox coordinates for VLM training
-            from data_conversion.utils.transformations import CoordinateTransformer
+            from utils.transformations import CoordinateTransformer
 
             bbox = CoordinateTransformer.clean_bbox_coordinates(bbox)
 
@@ -503,7 +503,7 @@ class UnifiedProcessor:
                     full_descriptions.add(desc)
 
                     # Parse description to extract components
-                    from data_conversion.utils.transformations import FormatConverter
+                    from utils.transformations import FormatConverter
 
                     components = FormatConverter.parse_description_string(desc)
 

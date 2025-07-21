@@ -17,7 +17,8 @@ from unified_processor import UnifiedProcessor
 
 from config import DataConversionConfig, setup_logging, validate_config
 from utils.file_ops import FileOperations
-from utils.transformations import FormatConverter, TokenMapper
+from utils.transformations import FormatConverter
+from core_modules import TokenMapper
 
 
 sys.stdout.reconfigure(encoding="utf-8")

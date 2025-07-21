@@ -45,11 +45,21 @@ DEFAULT_RESPONSE_TYPES = {"object_type", "property", "extra_info"}
 
 
 class TokenMapper:
-    """Handles token mapping and field standardization."""
+    """
+    Handles token mapping and field standardization.
+    
+    DEPRECATED: Chinese-only mode no longer requires token mapping.
+    This class is kept for backward compatibility only.
+    """
 
     def __init__(self, token_map_path: Union[str, Path]):
         """Initialize with token map file."""
-        self.token_map = self._load_token_map(token_map_path)
+        if token_map_path and Path(token_map_path).exists():
+            self.token_map = self._load_token_map(token_map_path)
+        else:
+            # Default empty mapping for Chinese-only mode
+            self.token_map = {}
+            logger.info("No token mapping loaded - using Chinese-only mode")
         self.missing_tokens: Set[str] = set()
 
     def _load_token_map(self, map_file_path: Union[str, Path]) -> Dict[str, str]:

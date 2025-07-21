@@ -1,43 +1,27 @@
-# Ignore everything
-*
+# ignore everything at root
+/*
 
-# Do not ignore the .gitignore file itself
-!.gitignore
+# keep the .gitignore itself
+!/.gitignore
 
-!src/
-!data_conversion/
-!data_analysis/
-!eval/
-!scripts/
-!docs/
-!ongoing_task/
-!configs/
-!important_demo/
-!vis_tools/
-!temporal/
-!ds_v2_clean/
+# allow these top-level dirs and everything under them
+!/src/
+!/data_conversion/
+!/data_analysis/
+!/eval/
+!/scripts/
+!/docs/
+!/ongoing_task/
+!/configs/
+!/important_demo/
+!/vis_tools/
+!/temporal/
+!/ds_v2_clean/
+!/ds_*/
 
-# Un-ignore top-level folders
-!scripts/**
-!configs/**
-!important_demo/**
-!docs/**
-!data_conversion/**
-!data_analysis/**
-!eval/**
-!vis_tools/**
-!temporal/**
-!ds_v2_clean/**
+# allow logs & markdown at root
+!/*.log
+!/*.md
 
-# Un-ignore everything inside those folders
-!src/**
-!data_conversion/*
-!data_analysis/**
-!eval/**
-
-
-!*.log
-!*.md
-
-
-**/__pycache__
+# drop all __pycache__ dirs
+**/__pycache__/

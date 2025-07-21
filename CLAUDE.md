@@ -32,5 +32,7 @@ The project requires:
 - Reference documentation for migration:
   * `@docs/raw_data_v2.md`
   * `@docs/raw_data_template_数据堂.md`
+- Updated data structure to follow new V2 format as specified in referenced documentation
 
-[Rest of the file remains unchanged...]
+### Error Handling
+- Don't use `try-except` unless necessary. Need every error to be exposed immediately
