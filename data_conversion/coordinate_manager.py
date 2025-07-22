@@ -8,7 +8,7 @@ including EXIF orientation, dimension rescaling, and smart resize operations.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image, ImageOps
 
@@ -662,18 +662,6 @@ class CoordinateManager:
 
         return result_geometry
 
-    @classmethod
-    def validate_geometry_bounds(
-        cls, geometry_input: Union[List, Dict], width: int, height: int
-    ) -> bool:
-        """
-        Validate that geometry coordinates are within image bounds.
-
-        Unified replacement for validate_bbox_bounds that works with any geometry type.
-        """
-        return CoordinateManager.validate_geometry_bounds(
-            geometry_input, width, height, tolerance=0.1
-        )
 
     # ============================================================================
     # GEOMETRY PROCESSING METHODS (merged from GeometryProcessor)
@@ -1012,7 +1000,7 @@ class CoordinateManager:
 
         # Extract first 4 points for square format
         square_coords = []
-        for i, point in enumerate(points[:4]):  # Take first 4 points
+        for _, point in enumerate(points[:4]):  # Take first 4 points
             if isinstance(point, list) and len(point) >= 2:
                 square_coords.extend(
                     [int(round(float(point[0]))), int(round(float(point[1])))]
@@ -1026,3 +1014,278 @@ class CoordinateManager:
                 f"Invalid square coordinates: expected 8 values, got {len(square_coords)}"
             )
             return []
+
+
+# Merged from utils/transformations.py - FormatConverter class
+class FormatConverter:
+    """Handles conversion between different data formats."""
+
+    @staticmethod
+    def format_description(
+        content_dict: Dict[str, str],
+        response_types: List[str],
+        language: str = "chinese",
+    ) -> str:
+        """Format content dictionary to Chinese description string."""
+        parts = []
+        for resp_type in response_types:
+            value = content_dict.get(resp_type, "")
+            if value:
+                parts.append(value)
+
+        if not parts:
+            return ""
+
+        # Use compact format for Chinese
+        result = "/".join(parts)
+        return result.replace(", ", "/").replace(",", "/")
+
+    @staticmethod
+    def parse_description_string(description: str) -> Dict[str, str]:
+        """Parse Chinese description string back into components."""
+        components = {"object_type": "", "property": "", "extra_info": ""}
+
+        if not description:
+            return components
+
+        # Parse compact format (Chinese)
+        parts = description.split("/")
+        if len(parts) >= 1:
+            components["object_type"] = parts[0].strip()
+        if len(parts) >= 2:
+            components["property"] = parts[1].strip()
+        if len(parts) >= 3:
+            components["extra_info"] = "/".join(parts[2:]).strip()
+
+        return components
+
+    @staticmethod
+    def clean_annotation_content(data: Dict) -> Dict:
+        """Clean annotation content preserving essential Chinese structure only."""
+        cleaned_data = {}
+
+        # Preserve essential metadata
+        essential_keys = ["info", "tagInfo", "version"]
+        for key in essential_keys:
+            if key in data:
+                cleaned_data[key] = data[key]
+
+        # Clean features in markResult - Chinese only
+        if "markResult" in data and "features" in data["markResult"]:
+            cleaned_features = []
+
+            for feature in data["markResult"]["features"]:
+                properties = {}
+                original_properties = feature.get("properties", {})
+
+                # Keep only Chinese content
+                properties["contentZh"] = original_properties.get("contentZh", {})
+
+                cleaned_features.append(
+                    {
+                        "type": feature.get("type", "Feature"),
+                        "geometry": feature.get("geometry", {}),
+                        "properties": properties,
+                    }
+                )
+
+            cleaned_data["markResult"] = {
+                "features": cleaned_features,
+                "type": data["markResult"].get("type", "FeatureCollection"),
+            }
+
+            # Preserve other markResult fields
+            for key in data["markResult"]:
+                if key not in ["features", "type"]:
+                    cleaned_data["markResult"][key] = data["markResult"][key]
+
+        return cleaned_data
+
+
+# Merged from utils/validators.py - DataValidator and StructureValidator classes
+class DataValidator:
+    """Validates data structures and content."""
+    
+    @staticmethod
+    def validate_bbox(
+        bbox: List[float], 
+        image_width: Optional[int] = None, 
+        image_height: Optional[int] = None
+    ) -> bool:
+        """
+        Validate a single bounding box with enhanced checks.
+        
+        Args:
+            bbox: A list of 4 numbers [x_min, y_min, x_max, y_max]
+            image_width: Optional width to check bounds
+            image_height: Optional height to check bounds
+            
+        Raises:
+            ValueError: If the bounding box is invalid
+        """
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"Bbox must be a list of 4 elements, got: {bbox}")
+        
+        if not all(isinstance(coord, (int, float)) for coord in bbox):
+            raise ValueError(f"Bbox coordinates must be numbers, got: {bbox}")
+        
+        x_min, y_min, x_max, y_max = bbox
+        
+        # Ensure correct ordering
+        if x_min > x_max:
+            x_min, x_max = x_max, x_min
+            bbox = [x_min, y_min, x_max, y_max]
+        if y_min > y_max:
+            y_min, y_max = y_max, y_min
+            bbox = [x_min, y_min, x_max, y_max]
+        
+        # Allow zero-width or zero-height bboxes (for lines)
+        if x_min > x_max or y_min > y_max:
+            raise ValueError(
+                f"Invalid bbox: x_min <= x_max and y_min <= y_max required, got: {bbox}"
+            )
+        
+        if x_min < 0 or y_min < 0 or x_max < 0 or y_max < 0:
+            raise ValueError(f"Bbox coordinates cannot be negative, got: {bbox}")
+        
+        if image_width is not None and image_height is not None:
+            if x_max > image_width or y_max > image_height:
+                raise ValueError(
+                    f"Bbox {bbox} exceeds image dimensions ({image_width}x{image_height})"
+                )
+        
+        return True
+    
+    @staticmethod
+    def validate_square(square) -> bool:
+        """Validate square format [x1, y1, x2, y2, x3, y3, x4, y4]."""
+        if not isinstance(square, list) or len(square) != 8:
+            raise ValueError(f"Square must be list of 8 numbers, got {square}")
+        
+        for i, coord in enumerate(square):
+            if not isinstance(coord, (int, float)):
+                raise ValueError(f"Square coordinate {i} must be number, got {type(coord)}")
+        
+        return True
+    
+    @staticmethod 
+    def validate_line(line) -> bool:
+        """Validate line format [x1, y1, x2, y2, ..., xn, yn]."""
+        if not isinstance(line, list) or len(line) < 4 or len(line) % 2 != 0:
+            raise ValueError(f"Line must be list of even number of coordinates (>=4), got {line}")
+        
+        for i, coord in enumerate(line):
+            if not isinstance(coord, (int, float)):
+                raise ValueError(f"Line coordinate {i} must be number, got {type(coord)}")
+        
+        return True
+    
+    @staticmethod
+    def validate_sample_structure(sample: Dict[str, Any]) -> bool:
+        """Validate basic sample structure for training data."""
+        required_fields = ["images", "objects"]
+        
+        for field in required_fields:
+            if field not in sample:
+                raise ValueError(f"Missing required field: {field}")
+        
+        # Validate images field
+        images = sample.get("images")
+        if not isinstance(images, list) or len(images) == 0:
+            raise ValueError("Field 'images' must be a non-empty list")
+        
+        # Validate objects field
+        objects = sample.get("objects")
+        if not isinstance(objects, list):
+            raise ValueError("Field 'objects' must be a list")
+        
+        # Validate each object
+        for i, obj in enumerate(objects):
+            if not isinstance(obj, dict):
+                raise ValueError(f"Object {i} must be a dictionary")
+            
+            # Check for required desc field
+            if "desc" not in obj:
+                raise ValueError(f"Object {i} missing 'desc'")
+            
+            # Check for at least one geometry type
+            geometry_types = ["bbox_2d", "square", "line"]
+            if not any(geom_type in obj for geom_type in geometry_types):
+                raise ValueError(f"Object {i} missing geometry type (bbox_2d, square, or line)")
+            
+            # Validate geometry coordinates
+            if "bbox_2d" in obj:
+                DataValidator.validate_bbox(obj["bbox_2d"])
+            elif "square" in obj:
+                DataValidator.validate_square(obj["square"])
+            elif "line" in obj:
+                DataValidator.validate_line(obj["line"])
+            
+            # Validate description
+            desc = obj["desc"]
+            if not isinstance(desc, str) or not desc.strip():
+                raise ValueError(f"Object {i} 'desc' must be non-empty string")
+        
+        return True
+
+
+class StructureValidator:
+    """Validates pipeline structures and outputs."""
+    
+    @staticmethod
+    def validate_pipeline_output(
+        train_samples: List[Dict], 
+        val_samples: List[Dict], 
+        teacher_samples: List[Dict]
+    ) -> bool:
+        """Validate complete pipeline output."""
+        if not train_samples:
+            raise ValueError("Training samples cannot be empty")
+        
+        # For small datasets, validation samples can be empty
+        if not val_samples and len(train_samples) > 1:
+            raise ValueError("Validation samples cannot be empty when multiple training samples exist")
+        
+        # For very small datasets, teacher samples can be empty
+        if not teacher_samples and len(train_samples) + len(val_samples) > 2:
+            raise ValueError("Teacher samples cannot be empty when sufficient samples exist")
+        
+        # Validate sample structures
+        for i, sample in enumerate(train_samples):
+            try:
+                DataValidator.validate_sample_structure(sample)
+            except ValueError as e:
+                raise ValueError(f"Train sample {i}: {e}")
+        
+        for i, sample in enumerate(val_samples):
+            try:
+                DataValidator.validate_sample_structure(sample)
+            except ValueError as e:
+                raise ValueError(f"Validation sample {i}: {e}")
+        
+        for i, sample in enumerate(teacher_samples):
+            try:
+                DataValidator.validate_sample_structure(sample)
+            except ValueError as e:
+                raise ValueError(f"Teacher sample {i}: {e}")
+        
+        # Check for overlap between sets
+        train_images = {sample["images"][0] for sample in train_samples}
+        val_images = {sample["images"][0] for sample in val_samples}
+        teacher_images = {sample["images"][0] for sample in teacher_samples}
+        
+        if train_images & val_images:
+            raise ValueError("Training and validation sets have overlapping images")
+        
+        if train_images & teacher_images:
+            raise ValueError("Training and teacher sets have overlapping images")
+        
+        if val_images & teacher_images:
+            raise ValueError("Validation and teacher sets have overlapping images")
+        
+        logger.info(
+            f"Pipeline output validation passed: "
+            f"{len(train_samples)} train, {len(val_samples)} val, {len(teacher_samples)} teacher"
+        )
+        
+        return True

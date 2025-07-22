@@ -47,7 +47,7 @@ DEFAULT_RESPONSE_TYPES = {"object_type", "property", "extra_info"}
 class TokenMapper:
     """
     Handles token mapping and field standardization.
-    
+
     DEPRECATED: Chinese-only mode no longer requires token mapping.
     This class is kept for backward compatibility only.
     """

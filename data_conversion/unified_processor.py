@@ -7,20 +7,19 @@ Merged SampleExtractor directly into UnifiedProcessor to eliminate redundancy.
 """
 
 import logging
+import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from coordinate_manager import CoordinateManager
-from data_splitter import DataSplitter  
-from hierarchical_processor_compat import HierarchicalProcessor
-from image_processor import ImageProcessor
-from teacher_selector import TeacherSelector
+from data_conversion.coordinate_manager import CoordinateManager, FormatConverter, DataValidator, StructureValidator
+from data_conversion.data_splitter import DataSplitter
+from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
+from data_conversion.vision_process import ImageProcessor
+# TeacherSelector now integrated as nested class
 
-from config import DataConversionConfig
-from utils.file_ops import FileOperations
-from utils.transformations import FormatConverter
-from utils.validators import DataValidator, StructureValidator
+from data_conversion.config import DataConversionConfig
+from data_conversion.utils.file_ops import FileOperations
 
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -58,7 +57,7 @@ class UnifiedProcessor:
 
         # Initialize hierarchical processor for v2 data support (Chinese only)
         self.hierarchical_processor = HierarchicalProcessor(
-            response_types=set(config.response_types),
+            object_types=set(config.object_types),
             label_hierarchy=self.label_hierarchy,
         )
 
@@ -117,7 +116,6 @@ class UnifiedProcessor:
             "property": property_value,
             "extra_info": extra_info,
         }
-
 
     def is_allowed_object(self, content_dict: Dict[str, str]) -> bool:
         """Check if object passes label hierarchy filtering."""
@@ -210,7 +208,7 @@ class UnifiedProcessor:
                 )
 
             # Keep JSON dimensions for coordinate transformation pipeline
-            original_width, original_height = json_width, json_height
+            _, _ = json_width, json_height
 
             # Extract objects from JSON data
             objects = []
@@ -245,7 +243,7 @@ class UnifiedProcessor:
                 elif "line" in obj:
                     return (obj["line"][1], obj["line"][0])  # y, x of first point
                 return (0, 0)  # fallback
-            
+
             objects.sort(key=get_sort_key)
 
             # Process image (copy/resize) to match coordinate transformations
@@ -322,13 +320,23 @@ class UnifiedProcessor:
             square = first_obj["square"]
             x_coords = [square[i] for i in range(0, len(square), 2)]
             y_coords = [square[i] for i in range(1, len(square), 2)]
-            geometry_input = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+            geometry_input = [
+                min(x_coords),
+                min(y_coords),
+                max(x_coords),
+                max(y_coords),
+            ]
         elif "line" in first_obj:
             # Create bbox from line for dimension calculation
             line = first_obj["line"]
             x_coords = [line[i] for i in range(0, len(line), 2)]
             y_coords = [line[i] for i in range(1, len(line), 2)]
-            geometry_input = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+            geometry_input = [
+                min(x_coords),
+                min(y_coords),
+                max(x_coords),
+                max(y_coords),
+            ]
         else:
             raise ValueError(f"No supported geometry type in first object: {first_obj}")
 
@@ -344,40 +352,64 @@ class UnifiedProcessor:
         for obj in sample_data["objects"]:
             # Transform coordinates based on geometry type
             updated_obj = obj.copy()
-            
+
             if "bbox_2d" in obj:
                 # Transform bbox coordinates
                 transformed_coords = self._transform_coordinates(
-                    obj["bbox_2d"], image_path, json_width, json_height, enable_smart_resize
+                    obj["bbox_2d"],
+                    image_path,
+                    json_width,
+                    json_height,
+                    enable_smart_resize,
                 )
                 updated_obj["bbox_2d"] = [int(round(c)) for c in transformed_coords]
-            
+
             elif "square" in obj:
                 # Transform square coordinates (8 coordinates: x1,y1,x2,y2,x3,y3,x4,y4)
                 coords = obj["square"]
                 transformed_coords = []
                 for i in range(0, len(coords), 2):
                     if i + 1 < len(coords):
-                        point = [coords[i], coords[i+1]]
+                        point = [coords[i], coords[i + 1]]
                         transformed_point = self._transform_coordinates(
-                            point, image_path, json_width, json_height, enable_smart_resize, is_point=True
+                            point,
+                            image_path,
+                            json_width,
+                            json_height,
+                            enable_smart_resize,
+                            is_point=True,
                         )
-                        transformed_coords.extend([int(round(transformed_point[0])), int(round(transformed_point[1]))])
+                        transformed_coords.extend(
+                            [
+                                int(round(transformed_point[0])),
+                                int(round(transformed_point[1])),
+                            ]
+                        )
                 updated_obj["square"] = transformed_coords
-            
+
             elif "line" in obj:
                 # Transform line coordinates (sequence of x,y pairs)
                 coords = obj["line"]
                 transformed_coords = []
                 for i in range(0, len(coords), 2):
                     if i + 1 < len(coords):
-                        point = [coords[i], coords[i+1]]
+                        point = [coords[i], coords[i + 1]]
                         transformed_point = self._transform_coordinates(
-                            point, image_path, json_width, json_height, enable_smart_resize, is_point=True
+                            point,
+                            image_path,
+                            json_width,
+                            json_height,
+                            enable_smart_resize,
+                            is_point=True,
                         )
-                        transformed_coords.extend([int(round(transformed_point[0])), int(round(transformed_point[1]))])
+                        transformed_coords.extend(
+                            [
+                                int(round(transformed_point[0])),
+                                int(round(transformed_point[1])),
+                            ]
+                        )
                 updated_obj["line"] = transformed_coords
-            
+
             updated_objects.append(updated_obj)
 
         updated_sample = sample_data.copy()
@@ -385,7 +417,15 @@ class UnifiedProcessor:
 
         return updated_sample, final_width, final_height
 
-    def _transform_coordinates(self, coords, image_path, json_width, json_height, enable_smart_resize, is_point=False):
+    def _transform_coordinates(
+        self,
+        coords,
+        image_path,
+        json_width,
+        json_height,
+        enable_smart_resize,
+        is_point=False,
+    ):
         """Simple coordinate transformation for any coordinate format."""
         # Use CoordinateManager for the transformation
         if is_point:
@@ -503,7 +543,7 @@ class UnifiedProcessor:
                     full_descriptions.add(desc)
 
                     # Parse description to extract components
-                    from utils.transformations import FormatConverter
+                    from data_conversion.coordinate_manager import FormatConverter
 
                     components = FormatConverter.parse_description_string(desc)
 
@@ -612,3 +652,294 @@ class UnifiedProcessor:
         )
 
         return result
+
+
+class TeacherSelector:
+    """Selects diverse teacher samples covering all labels and scene types."""
+
+    def __init__(
+        self,
+        label_hierarchy: Dict[str, List[str]],
+        max_teachers: int = 10,
+        seed: int = 42,
+    ):
+        self.label_hierarchy = label_hierarchy
+        self.max_teachers = max_teachers
+        self.seed = seed
+
+        # Extract all possible labels from hierarchy
+        self.all_labels = set()
+        for obj_type, props in label_hierarchy.items():
+            self.all_labels.add(obj_type)
+            self.all_labels.update(props)
+
+        logger.info(
+            f"Initialized TeacherSelector with {len(self.all_labels)} labels, max_teachers={max_teachers}"
+        )
+
+    def _extract_sample_labels(self, sample: Dict) -> Set[str]:
+        """Extract all labels present in a sample."""
+        labels_in_sample = set()
+        objects = sample.get("objects", [])
+
+        for obj in objects:
+            desc = obj.get("desc", "")
+            if not desc:
+                continue
+
+            # Parse Chinese compact format: "螺丝、光纤插头/显示完整/BBU安装螺丝"
+            parts = desc.split("/")
+            for part in parts:
+                clean_part = part.strip()
+                if clean_part:
+                    labels_in_sample.add(clean_part)
+
+        return labels_in_sample
+
+    def _calculate_object_density(self, sample: Dict) -> str:
+        """Calculate object density category."""
+        object_count = len(sample.get("objects", []))
+
+        if object_count <= 3:
+            return "sparse"
+        elif object_count <= 8:
+            return "medium"
+        else:
+            return "dense"
+
+    def _calculate_spatial_coverage(self, sample: Dict) -> float:
+        """Calculate how much of the image space is covered by objects."""
+        objects = sample.get("objects", [])
+        if not objects:
+            return 0.0
+
+        width = sample.get("width", 1)
+        height = sample.get("height", 1)
+        total_area = width * height
+
+        covered_area = 0
+        for obj in objects:
+            if "bbox_2d" in obj:
+                bbox = obj["bbox_2d"]
+                if len(bbox) >= 4:
+                    x_min, y_min, x_max, y_max = bbox[:4]
+                    area = max(0, x_max - x_min) * max(0, y_max - y_min)
+                    covered_area += area
+
+        return min(1.0, covered_area / total_area)
+
+    def _calculate_geometry_diversity(self, sample: Dict) -> int:
+        """Calculate geometry type diversity (bbox_2d, square, line)."""
+        geometry_types = set()
+        objects = sample.get("objects", [])
+
+        for obj in objects:
+            if "bbox_2d" in obj:
+                geometry_types.add("bbox_2d")
+            elif "square" in obj:
+                geometry_types.add("square")
+            elif "line" in obj:
+                geometry_types.add("line")
+
+        return len(geometry_types)
+
+    def select_teachers(self, samples: List[Dict]) -> Tuple[List[Dict], List[int]]:
+        """
+        Select diverse teacher samples using label coverage and scene diversity.
+
+        Returns:
+            Tuple of (teacher_samples, selected_indices)
+        """
+        if not samples:
+            logger.warning("No samples provided for teacher selection")
+            return [], []
+
+        if len(samples) <= self.max_teachers:
+            logger.info(f"Using all {len(samples)} samples as teachers (below max_teachers)")
+            return samples, list(range(len(samples)))
+
+        # Set random seed for reproducibility
+        random.seed(self.seed)
+
+        # Pre-calculate metadata for all samples
+        metadata_list = []
+        for i, sample in enumerate(samples):
+            labels = self._extract_sample_labels(sample)
+            density = self._calculate_object_density(sample)
+            spatial_coverage = self._calculate_spatial_coverage(sample)
+            geometry_diversity = self._calculate_geometry_diversity(sample)
+
+            metadata_list.append({
+                "index": i,
+                "labels": labels,
+                "density": density,
+                "spatial_coverage": spatial_coverage,
+                "geometry_diversity": geometry_diversity,
+                "label_count": len(labels),
+            })
+
+        logger.debug(f"Calculated metadata for {len(metadata_list)} samples")
+
+        # Greedy selection for label coverage + diversity
+        selected_indices = []
+        covered_labels = set()
+        density_counts = {"sparse": 0, "medium": 0, "dense": 0}
+
+        # Priority 1: Ensure each object type is covered
+        object_types_needed = set(self.label_hierarchy.keys())
+        for metadata in sorted(metadata_list, key=lambda x: -x["label_count"]):
+            if len(selected_indices) >= self.max_teachers:
+                break
+
+            sample_object_types = metadata["labels"] & object_types_needed
+            if sample_object_types:
+                selected_indices.append(metadata["index"])
+                covered_labels.update(metadata["labels"])
+                object_types_needed -= sample_object_types
+                density_counts[metadata["density"]] += 1
+                logger.debug(f"Selected sample {metadata['index']} for object types: {sample_object_types}")
+
+        # Priority 2: Fill remaining slots with diverse samples
+        remaining_metadata = [m for m in metadata_list if m["index"] not in selected_indices]
+
+        # Score remaining samples by uncovered labels + diversity factors
+        for metadata in remaining_metadata:
+            if len(selected_indices) >= self.max_teachers:
+                break
+
+            uncovered_labels = metadata["labels"] - covered_labels
+            uncovered_score = len(uncovered_labels)
+
+            # Density diversity bonus (prefer underrepresented density types)
+            min_density_count = min(density_counts.values())
+            density_bonus = 2 if density_counts[metadata["density"]] == min_density_count else 0
+
+            # Geometry diversity bonus
+            geometry_bonus = metadata["geometry_diversity"] * 1.5
+
+            # Spatial coverage bonus
+            spatial_bonus = metadata["spatial_coverage"] * 1.0
+
+            total_score = uncovered_score + density_bonus + geometry_bonus + spatial_bonus
+
+            metadata["diversity_score"] = total_score
+
+        # Select remaining by diversity score
+        remaining_sorted = sorted(
+            remaining_metadata, key=lambda x: -x.get("diversity_score", 0)
+        )
+
+        for metadata in remaining_sorted:
+            if len(selected_indices) >= self.max_teachers:
+                break
+
+            selected_indices.append(metadata["index"])
+            covered_labels.update(metadata["labels"])
+            density_counts[metadata["density"]] += 1
+
+        # Extract selected teacher samples
+        teacher_samples = [samples[i] for i in selected_indices]
+
+        logger.info(f"Selected {len(teacher_samples)} teacher samples")
+        logger.info(f"Density distribution: {density_counts}")
+
+        # Log selection statistics
+        total_labels_covered = set()
+        for idx in selected_indices:
+            total_labels_covered.update(metadata_list[idx]["labels"])
+
+        logger.info(
+            f"Teacher pool covers {len(total_labels_covered)}/{len(self.all_labels)} labels"
+        )
+
+        return teacher_samples, selected_indices
+
+
+def main():
+    """Main entry point with CLI argument parsing."""
+    import argparse
+    from config import setup_logging, validate_config
+    
+    parser = argparse.ArgumentParser(description="Data Processor for Qwen2.5-VL")
+
+    # Required arguments
+    parser.add_argument(
+        "--input_dir", required=True, help="Input directory with JSON/image files"
+    )
+    parser.add_argument(
+        "--output_dir", required=True, help="Output directory for JSONL files"
+    )
+    parser.add_argument(
+        "--language",
+        choices=["chinese", "english"],
+        required=True,
+        help="Language mode",
+    )
+    parser.add_argument(
+        "--dataset_name",
+        help="Dataset name for organized output (auto-detected from input_dir if not provided)",
+    )
+
+    # Processing arguments - REQUIRED
+    parser.add_argument(
+        "--object_types",
+        nargs="+",
+        required=True,
+        help="Object types to include (e.g., bbu label fiber connect_point)",
+    )
+    parser.add_argument(
+        "--val_ratio",
+        type=float,
+        required=True,
+        help="Validation split ratio (e.g., 0.1)",
+    )
+    parser.add_argument(
+        "--max_teachers",
+        type=int,
+        required=True,
+        help="Maximum teacher samples (e.g., 10)",
+    )
+    parser.add_argument(
+        "--seed", type=int, required=True, help="Random seed (e.g., 42)"
+    )
+
+    # Processing options - OPTIONAL
+    parser.add_argument("--token_map_path", help="Path to token mapping file")
+    parser.add_argument("--hierarchy_path", help="Path to label hierarchy file")
+    parser.add_argument("--resize", action="store_true", help="Enable image resizing")
+    parser.add_argument(
+        "--log_level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level",
+    )
+
+    # Advanced processing options
+    parser.add_argument(
+        "--geometry_diversity_weight",
+        type=float,
+        default=4.0,
+        help="Weight for geometry diversity in teacher selection",
+    )
+
+    args = parser.parse_args()
+
+    # Create configuration from arguments
+    config = DataConversionConfig.from_args(args)
+
+    # Setup logging
+    setup_logging(config)
+
+    # Validate configuration
+    validate_config(config)
+
+    # Create and run unified processor
+    processor = UnifiedProcessor(config)
+    result = processor.process()
+
+    # Print result for compatibility
+    print(f"\n✅ Processing complete: {result}")
+
+
+if __name__ == "__main__":
+    main()

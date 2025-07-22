@@ -30,7 +30,7 @@ class DataConversionConfig:
     # Required fields (no defaults)
     input_dir: str
     output_dir: str
-    response_types: List[str]  # e.g., ["object_type", "property"] - REQUIRED
+    object_types: List[str]  # e.g., ["bbu", "label"] or ["fiber", "wire"] - REQUIRED, arbitrary combinations
     resize: bool  # True or False - REQUIRED
     val_ratio: float  # e.g., 0.1 for 10% validation - REQUIRED
     max_teachers: int  # e.g., 10 - REQUIRED
@@ -86,13 +86,18 @@ class DataConversionConfig:
                 f"max_teachers must be non-negative, got {self.max_teachers}"
             )
 
-        if not self.response_types:
-            raise ValueError("response_types cannot be empty")
+        if not self.object_types:
+            raise ValueError("object_types cannot be empty")
 
-        valid_response_types = {"object_type", "property", "extra_info"}
-        for resp_type in self.response_types:
-            if resp_type not in valid_response_types:
-                raise ValueError(f"Invalid response type: {resp_type}")
+        # Handle 'full' keyword for all object types
+        if len(self.object_types) == 1 and self.object_types[0] == "full":
+            self.object_types = ["bbu", "bbu_shield", "label", "fiber", "wire", "connect_point"]
+            logger.info("Using 'full' object types: all 6 object types will be processed")
+        else:
+            valid_object_types = {"bbu", "bbu_shield", "label", "fiber", "wire", "connect_point"}
+            for obj_type in self.object_types:
+                if obj_type not in valid_object_types:
+                    raise ValueError(f"Invalid object type: {obj_type}. Valid types: {valid_object_types} or 'full'")
 
 
     def get_dataset_output_dir(self) -> Path:
@@ -108,7 +113,7 @@ class DataConversionConfig:
         return {
             "input_dir": self.input_dir,
             "output_dir": self.output_dir,
-            "response_types": self.response_types,
+            "object_types": self.object_types,
             "resize": self.resize,
             "val_ratio": self.val_ratio,
             "max_teachers": self.max_teachers,
@@ -127,7 +132,7 @@ class DataConversionConfig:
             "input_dir": "input_dir",
             "output_dir": "output_dir",
             "dataset_name": "dataset_name",
-            "response_types": "response_types",
+            "object_types": "object_types",
             "resize": "resize",
             "val_ratio": "val_ratio",
             "max_teachers": "max_teachers",
@@ -165,7 +170,7 @@ class DataConversionConfig:
                     config_dict[field] = float(value)
                 elif field in ("max_teachers", "seed"):
                     config_dict[field] = int(value)
-                elif field == "response_types":
+                elif field == "object_types":
                     config_dict[field] = value.split()
                 else:
                     config_dict[field] = value
@@ -196,6 +201,6 @@ def validate_config(config: DataConversionConfig) -> None:
     logger.info("Configuration Summary:")
     logger.info(f"  Input: {config.input_dir} → Output: {config.output_dir}")
     logger.info(f"  Language: Chinese (default)")
-    logger.info(f"  Response Types: {config.response_types}")
+    logger.info(f"  Object Types: {config.object_types}")
     logger.info(f"  Image Resize: {'Enabled' if config.resize else 'Disabled'}")
     logger.info(f"  Teachers: {config.max_teachers}, Val Ratio: {config.val_ratio}")

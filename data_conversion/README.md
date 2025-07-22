@@ -1,216 +1,237 @@
-# Qwen2.5-VL Data Conversion Pipeline - Streamlined Architecture
+# Qwen2.5-VL Data Conversion Pipeline - Object-Oriented Training System
 
-> **Refactored & Optimized – July 2025**
+> **Hierarchical Object-Oriented Architecture – July 2025**
 >
-> This pipeline features a streamlined, Chinese-focused architecture with reduced redundancy
-> and improved maintainability. The refactored system eliminates duplicate code while
-> maintaining full multi-geometry support for BBU equipment detection training.
+> This pipeline features a hierarchical object-oriented training system with precise Chinese BBU equipment 
+> annotation processing. The system supports flexible object type combinations for progressive multi-task 
+> learning with exact hierarchical description formatting.
 
 ---
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Quick Start Guide](#quick-start-guide)
-3. [Complete Pipeline Flow](#complete-pipeline-flow)
-4. [Configuration System](#configuration-system)
-5. [Streamlined Architecture](#streamlined-architecture)
-6. [Output Format & Structure](#output-format--structure)
-7. [Advanced Features](#advanced-features)
+2. [Object-Oriented Training](#object-oriented-training)
+3. [Quick Start Guide](#quick-start-guide)
+4. [Hierarchical Description System](#hierarchical-description-system)
+5. [Configuration System](#configuration-system)
+6. [Advanced Training Combinations](#advanced-training-combinations)
+7. [Output Format & Structure](#output-format--structure)
 8. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-The streamlined pipeline converts **V2 JSON annotations + images** into training-ready format optimized for Chinese BBU equipment detection:
+The object-oriented pipeline converts **V2 JSON annotations + images** into training-ready format optimized for hierarchical BBU equipment detection:
 
 ```
-ds_v2/ (V2 JSON/images) → data/ds_v2/ (train.jsonl, val.jsonl, teacher.jsonl + processed images)
+ds_v2/ (V2 JSON/images) → data/{dataset_name}/ (train.jsonl, val.jsonl, teacher.jsonl + processed images)
 ```
 
 ### 🎯 Key Features
 
-* **Chinese-Only Optimization** – Streamlined for BBU equipment detection without multilingual overhead
-* **Multi-Geometry Support** – bbox_2d, square (四边形), line (LineString) coordinates  
-* **Unified Processing** – Single `UnifiedProcessor` eliminates duplicate code paths
-* **Fail-Fast Design** – Immediate error exposure per CLAUDE.local.md guidelines
-* **Smart Coordinate Pipeline** – EXIF orientation, dimension rescaling, smart resize
-* **Comprehensive Output** – Training splits, teacher samples, label vocabulary
+* **Object-Oriented Training** – Flexible combinations of 6 equipment types for progressive learning
+* **Hierarchical Descriptions** – Precise comma/slash separated attribute formatting
+* **Geometry Constraints** – Line objects (fiber/wire) vs Square/BBox objects (equipment/labels)
+* **Multi-Task Learning** – Train individual object types, then combine for joint training
+* **Chinese BBU Optimization** – Streamlined for telecommunications equipment detection
+* **Exact Key Matching** – Uses precise Chinese question keys for attribute extraction
 
-### ⚡ Core Components (Refactored)
+### 📊 Supported Object Types
 
-1. **UnifiedProcessor** – Single entry point with integrated processing logic
-2. **CoordinateManager** – Unified geometry transformation (consolidated from multiple sources)
-3. **FileOperations** – Centralized file handling (merged from data_loader)
-4. **HierarchicalProcessor** – V2-compatible Chinese processing
-5. **ImageProcessor** – Smart image processing with EXIF handling
+| Object Type | Chinese Label | Geometry | Sample Count | Training Focus |
+|-------------|---------------|----------|--------------|----------------|
+| `bbu` | BBU设备 | square/bbox | ~187 | Equipment detection, brand recognition |
+| `bbu_shield` | 挡风板 | square/bbox | ~62 | Windshield detection, installation assessment |
+| `connect_point` | 螺丝、光纤插头 | square/bbox | ~769 | Connection hardware, compliance checking |
+| `label` | 标签 | square/bbox | ~608 | Text recognition, content extraction |
+| `fiber` | 光纤 | line | ~272 | Fiber cable routing, protection assessment |
+| `wire` | 电线 | line | ~204 | Wire management, organization checking |
 
-### 📊 Refactoring Benefits
+---
 
-- **~518 lines eliminated** - Removed redundant `sample_processor.py` and `data_loader.py`
-- **Unified architecture** - Single processing pipeline instead of fragmented modules
-- **Improved maintainability** - Consolidated coordinate transformations and file operations
-- **Better error handling** - Consistent fail-fast approach throughout
+## Object-Oriented Training
+
+### Training Strategy
+
+The system supports **progressive multi-task learning** through flexible object type combinations:
+
+#### 1. **Individual Object Training** (Foundation)
+```bash
+# Train BBU equipment detection only
+OBJECT_TYPES="bbu bbu_shield"     # ~249 samples - Equipment focus
+
+# Train connection infrastructure only  
+OBJECT_TYPES="connect_point"      # ~769 samples - Hardware focus
+
+# Train text recognition only
+OBJECT_TYPES="label"              # ~608 samples - OCR focus
+
+# Train cable systems only
+OBJECT_TYPES="fiber wire"         # ~476 samples - Line geometry focus
+```
+
+#### 2. **Combined Object Training** (Integration)
+```bash
+# Train equipment + text recognition
+OBJECT_TYPES="bbu bbu_shield label"
+
+# Train all hardware components
+OBJECT_TYPES="bbu bbu_shield connect_point"
+
+# Train all cable systems
+OBJECT_TYPES="fiber wire"
+
+# Train complete system (no filtering)
+OBJECT_TYPES="full"               # All ~2102 objects
+```
+
+#### 3. **Progressive Learning Pipeline**
+```bash
+# Step 1: Train individual components
+OBJECT_TYPES="bbu"           → model_bbu.pth
+OBJECT_TYPES="connect_point" → model_connections.pth  
+OBJECT_TYPES="fiber"         → model_cables.pth
+OBJECT_TYPES="label"         → model_text.pth
+
+# Step 2: Train combined systems
+OBJECT_TYPES="bbu connect_point" → model_equipment.pth
+OBJECT_TYPES="fiber wire"        → model_cables.pth
+
+# Step 3: Joint training
+OBJECT_TYPES="full"              → model_complete.pth
+```
+
+### Geometry-Aware Training
+
+Objects are automatically grouped by geometry type for specialized training:
+
+- **Line Objects** (`fiber`, `wire`): Complex multi-point coordinate prediction
+- **Square/BBox Objects** (`bbu`, `bbu_shield`, `connect_point`, `label`): Rectangular boundary detection
 
 ---
 
 ## Quick Start Guide
 
-### 1. Configure the Pipeline
+### 1. Configure Object-Oriented Training
 
 Edit `/data3/Qwen2.5-VL-main/data_conversion/convert_dataset.sh`:
 
 ```bash
 # Essential Configuration - EDIT THESE VALUES
 INPUT_DIR="ds_v2"                    # Your V2 data directory
-OUTPUT_DIR="data"                    # Base output directory (creates data/ds_v2/)
-DATASET_NAME="ds_v2"                 # Dataset identifier
-RESPONSE_TYPES="object_type property extra_info"  # Description components
+OUTPUT_DIR="data"                    # Base output directory
+DATASET_NAME="ds_v2_bbu"            # Dataset identifier
+OBJECT_TYPES="bbu bbu_shield"       # Object types to train (or "full" for all)
 VAL_RATIO="0.1"                     # 10% validation split
 MAX_TEACHERS="10"                   # Teacher samples for few-shot learning
 RESIZE="true"                       # Enable smart image resizing
 SEED="17"                          # Reproducible random seed
 ```
 
-### 2. Run the Pipeline
+### 2. Run Object-Oriented Processing
 
 ```bash
 cd /data3/Qwen2.5-VL-main
 ./data_conversion/convert_dataset.sh
 ```
 
-### 3. Verify Success
+### 3. Verify Object-Oriented Output
 
 ```bash
-ls data/ds_v2/
+ls data/ds_v2_bbu/
 # Expected output:
-# train.jsonl           - Training samples (180 samples)
-# val.jsonl             - Validation samples (19 samples)  
-# teacher.jsonl         - Teacher samples (10 samples)
-# all_samples.jsonl     - Combined samples (209 total)
-# label_vocabulary.json - Complete label statistics (244 unique labels)
+# train.jsonl           - Training samples (filtered by object types)
+# val.jsonl             - Validation samples
+# teacher.jsonl         - Teacher samples
+# all_samples.jsonl     - Combined samples
+# label_vocabulary.json - Object type statistics
 # images/               - Processed images (if RESIZE=true)
 ```
 
 **Success Indicators:**
 ```bash
-✅ Dataset ds_v2 processed successfully!
-📁 Output: data/ds_v2/
+✅ Dataset ds_v2_bbu processed successfully!
+📁 Output: data/ds_v2_bbu/
 🚀 Ready for training!
 
-Final Results:
-- Training: 180 samples → train.jsonl
-- Validation: 19 samples → val.jsonl  
-- Teacher: 10 samples → teacher.jsonl
-- Total: 209 samples processed
-- Labels: 244 unique, 6 object types, 184 properties
+Object-Oriented Results:
+- Training: 138 samples → train.jsonl
+- Validation: 15 samples → val.jsonl  
+- Teacher: 5 samples → teacher.jsonl
+- Total: 158 BBU samples processed (filtered from 2102 total objects)
+- Object Types: 2 (bbu, bbu_shield)
 ```
 
 ---
 
-## Complete Pipeline Flow
+## Hierarchical Description System
 
-### Entry Point: `convert_dataset.sh`
+### Description Format Rules
 
-The shell script orchestrates the streamlined pipeline:
+The system generates **exact hierarchical descriptions** using precise separator logic:
 
-```bash
-convert_dataset.sh
-├── Environment setup (UTF-8 locale, Python paths)
-├── Configuration validation (INPUT_DIR existence)
-├── Auto-detect DATASET_NAME if not provided
-└── Executes: /root/miniconda3/envs/ms/bin/python data_conversion/processor.py
-    ├── Creates: DataConversionConfig from arguments
-    ├── Initializes: UnifiedProcessor (single entry point)
-    └── Runs: streamlined processing pipeline
+- **`,` (comma)** → Separates attributes at the **same hierarchical level**
+- **`/` (slash)** → Separates **different attribute levels** or conditional sub-attributes
+
+### Example Hierarchical Descriptions
+
+#### **BBU Equipment:**
+```
+BBU设备/华为,显示完整,无需安装
+BBU设备/中兴,只显示部分,机柜空间充足需要安装/这个BBU设备按要求配备了挡风板
+```
+- Level 0: `BBU设备` (object type)
+- Level 1: `华为,显示完整,无需安装` (basic attributes, comma-separated)
+- Level 2: `这个BBU设备按要求配备了挡风板` (conditional sub-attribute)
+
+#### **Connection Hardware:**
+```
+螺丝、光纤插头/BBU安装螺丝,显示完整,符合要求
+螺丝、光纤插头/机柜处接地螺丝,只显示部分,不符合要求/未拧紧,露铜
+```
+- Level 1: `BBU安装螺丝,显示完整,符合要求` (type, completeness, compliance)
+- Level 2: `未拧紧,露铜` (specific issues when non-compliant)
+
+#### **Fiber Cables:**
+```
+光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管
+光纤/无遮挡,无保护措施,弯曲半径不合理（弯曲半径<4cm或者成环）
+```
+- Level 1: `有遮挡,有保护措施,弯曲半径合理` (obstruction, protection, radius)
+- Level 2: `蛇形管` (protection details when protected)
+
+#### **Text Labels:**
+```
+标签/5G-BBU-接地线
+标签/NR900-RRU1-光纤
+标签/不能
 ```
 
-### Streamlined Pipeline Execution Flow
+### Attribute Hierarchy Mapping
 
-```
-🚀 STREAMLINED PIPELINE EXECUTION FLOW
+The system uses **exact Chinese question keys** for precise attribute extraction:
 
-1. 📋 INITIALIZATION (Unified Configuration)
-   ├── Load DataConversionConfig from command line arguments
-   ├── Setup logging with fail-fast error handling
-   ├── Initialize UnifiedProcessor with:
-   │   ├── Built-in label hierarchy (Chinese BBU equipment)
-   │   ├── HierarchicalProcessor (V2 compatibility)
-   │   ├── ImageProcessor (smart resize + EXIF)
-   │   ├── TeacherSelector (diversity-based selection)  
-   │   └── DataSplitter (reproducible train/val splitting)
-
-2. 📁 UNIFIED SAMPLE PROCESSING (Single Code Path)
-   ├── Find all JSON files using centralized FileOperations
-   ├── For each JSON file (process_single_sample):
-   │   ├── Load JSON + find image with validation
-   │   ├── Extract V2 annotation data:
-   │   │   ├── dataList format → direct bbox extraction
-   │   │   └── markResult format → HierarchicalProcessor
-   │   │       └── Multi-geometry: bbox_2d, square, line
-   │   ├── Unified coordinate transformation pipeline:
-   │   │   ├── EXIF orientation compensation
-   │   │   ├── Dimension rescaling (JSON vs actual)
-   │   │   └── Smart resize (MAX_PIXELS=401,408)
-   │   ├── Process images with EXIF handling
-   │   ├── Sort objects by position (top→bottom, left→right)
-   │   └── Generate training sample with relative paths
-   └── Returns: Validated samples list (fail-fast on errors)
-
-3. 🎯 INTELLIGENT DATASET SPLITTING
-   ├── TeacherSelector: diversity-based selection
-   │   ├── Ensure label coverage across object types
-   │   ├── Consider geometry diversity and spatial distribution
-   │   └── Select up to MAX_TEACHERS diverse samples
-   ├── Remove teachers from student pool (no overlap)
-   └── DataSplitter: reproducible train/val split with seed
-
-4. 💾 COMPREHENSIVE OUTPUT GENERATION  
-   ├── Write JSONL files (train/val/teacher/all_samples)
-   ├── Generate detailed label_vocabulary.json:
-   │   ├── Extract all unique labels with statistics
-   │   ├── Categorize: object_types, properties, descriptions
-   │   └── Include training usage recommendations
-   └── Final validation (ensure no overlapping samples)
-```
-
-### Sample Output Format
-
-Training samples support native multi-geometry:
-
-```json
-{
-  "images": ["images/QC-20230217-0000279_19621.jpeg"],
-  "objects": [
-    {
-      "bbox_2d": [264, 144, 326, 201],
-      "desc": "螺丝、光纤插头/显示完整/BBU安装螺丝"
-    },
-    {
-      "square": [704, 487, 670, 554, 973, 644, 993, 590],
-      "desc": "标签/4G-RRU3-光纤"
-    },
-    {
-      "line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721],
-      "desc": "电线/有遮挡，捆扎整齐"
-    }
-  ],
-  "width": 532,
-  "height": 728
-}
-```
+| Object | Level 1 Attributes | Level 2 Conditionals |
+|--------|-------------------|---------------------|
+| **BBU设备** | 品牌,显示完整性,挡风板需求 | 挡风板配备符合性,特殊情况 |
+| **挡风板** | 品牌,显示完整性,遮挡情况,安装方向 | 特殊情况 |
+| **螺丝、光纤插头** | 种类,显示完整性,符合要求 | 具体问题,特殊情况 |
+| **光纤** | 遮挡情况,保护措施,弯曲半径 | 保护措施详情,特殊情况 |
+| **电线** | 遮挡情况,捆扎整齐 | 特殊情况 |
+| **标签** | 文字内容 | - |
 
 ---
 
 ## Configuration System
 
-### 🔧 Essential Configuration (Required)
+### 🔧 Object-Oriented Configuration (Required)
 
 | Variable | Example | Description |
 |----------|---------|-------------|
 | `INPUT_DIR` | `"ds_v2"` | Directory containing V2 JSON/image files |
-| `OUTPUT_DIR` | `"data"` | Base output directory (creates data/dataset_name/) |
-| `RESPONSE_TYPES` | `"object_type property extra_info"` | Description components to include |
+| `OUTPUT_DIR` | `"data"` | Base output directory |
+| `OBJECT_TYPES` | `"bbu label"` or `"full"` | Object types to include (space-separated or "full") |
 | `VAL_RATIO` | `"0.1"` | Validation split ratio (10% = 0.1) |
 | `MAX_TEACHERS` | `"10"` | Maximum teacher samples for few-shot learning |
 | `RESIZE` | `"true"` | Enable smart image resizing |
@@ -220,263 +241,240 @@ Training samples support native multi-geometry:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATASET_NAME` | Auto-detect from INPUT_DIR | Dataset identifier for output folder |
-| `HIERARCHY_FILE` | Built-in BBU hierarchy | Custom label hierarchy file path |
+| `HIERARCHY_FILE` | Built-in hierarchical mapping | Custom attribute hierarchy file path |
 | `LOG_LEVEL` | `"INFO"` | Logging verbosity: DEBUG/INFO/WARNING/ERROR |
 | `SEED` | `"17"` | Random seed for reproducible splits |
 
-### 🎛️ Advanced Processing Constants
+### 🎯 Object Type Combinations
 
-Advanced options are configured in the code:
+```bash
+# Individual object types
+OBJECT_TYPES="bbu"                    # BBU equipment only
+OBJECT_TYPES="connect_point"          # Connection hardware only
+OBJECT_TYPES="fiber"                  # Fiber cables only
+OBJECT_TYPES="label"                  # Text labels only
 
-```python
-# Smart resize parameters (in vision_process.py)
-IMAGE_FACTOR = 28                          # Image dimension factor
-MIN_PIXELS = 4 * 28 * 28                  # Minimum pixels (3,136)
-MAX_PIXELS = 512 * 28 * 28                # Maximum pixels (401,408)
-MAX_RATIO = 200                           # Maximum aspect ratio
+# Combined training
+OBJECT_TYPES="bbu bbu_shield"         # All equipment
+OBJECT_TYPES="fiber wire"             # All cables
+OBJECT_TYPES="connect_point label"    # Hardware + text
 
-# Processing behavior
-fail_fast: bool = True                     # Stop on first error (CLAUDE.local.md)
-geometry_diversity_weight: float = 4.0    # Teacher selection diversity weight
+# Complete training
+OBJECT_TYPES="full"                   # All object types (no filtering)
 ```
 
 ---
 
-## Streamlined Architecture
+## Advanced Training Combinations
 
-### Refactored Architecture Overview
+### Progressive Training Examples
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    UnifiedProcessor (Single Entry Point)                   │
-│                    Consolidated Processing Logic                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ • Streamlined configuration management                                     │
-│ • Chinese-only content extraction (no token mapping overhead)             │  
-│ • Integrated object filtering with built-in BBU hierarchy                 │
-│ • Unified sample processing (eliminated SampleProcessor redundancy)       │
-│ • Comprehensive output generation with statistics                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       │
-        ┌──────────────────────────────┼──────────────────────────────┐
-        │                              │                              │
-┌─────────────────┐    ┌─────────────────────────┐    ┌─────────────────────┐
-│ CoordinateManager│    │ HierarchicalProcessor  │    │  FileOperations     │
-│ (Consolidated)   │    │ (V2 Compatibility)     │    │  (Centralized I/O)  │
-├─────────────────┤    ├─────────────────────────┤    ├─────────────────────┤
-│ • Unified geometry  │    │ • V2 feature processing │    │ • JSON loading/saving │
-│ • EXIF + scaling │    │ • Multi-geometry support │    │ • Image discovery    │
-│ • Smart resize   │    │ • Chinese description   │    │ • Path management    │
-│ • Validation     │    │ • Content extraction    │    │ • Dimension handling │
-└─────────────────┘    └─────────────────────────┘    └─────────────────────┘
-        │                              │                              │
-┌─────────────────┐    ┌─────────────────────────┐    ┌─────────────────────┐
-│ TeacherSelector │    │   ImageProcessor        │    │   DataSplitter      │
-│ (Diversity)     │    │  (Smart Processing)     │    │  (Train/Val Split)  │
-├─────────────────┤    ├─────────────────────────┤    ├─────────────────────┤
-│ • Label coverage│    │ • EXIF orientation      │    │ • Reproducible      │
-│ • Geometry div. │    │ • Smart resize          │    │ • Configurable ratio│
-│ • Spatial dist. │    │ • Path management       │    │ • Validation        │
-│ • BBU-optimized │    │ • RGB conversion        │    │ • Shuffling         │
-└─────────────────┘    └─────────────────────────┘    └─────────────────────┘
+#### **Equipment Detection Pipeline**
+```bash
+# Phase 1: Individual equipment training
+./convert_dataset.sh  # OBJECT_TYPES="bbu"
+./convert_dataset.sh  # OBJECT_TYPES="bbu_shield"
+
+# Phase 2: Combined equipment training  
+./convert_dataset.sh  # OBJECT_TYPES="bbu bbu_shield"
+
+# Phase 3: Equipment + infrastructure
+./convert_dataset.sh  # OBJECT_TYPES="bbu bbu_shield connect_point"
 ```
 
-### Refactoring Improvements
+#### **Cable System Pipeline**
+```bash
+# Phase 1: Individual cable training
+./convert_dataset.sh  # OBJECT_TYPES="fiber"
+./convert_dataset.sh  # OBJECT_TYPES="wire"
 
-**Before**: Fragmented architecture with duplicate logic
-- `SampleProcessor` (393 lines) + `UnifiedProcessor` overlap
-- `data_loader.py` (125 lines) + `FileOperations` duplication  
-- Multiple coordinate transformation implementations
-- Inconsistent error handling approaches
-
-**After**: Streamlined architecture with single responsibility
-- ✅ **Single `UnifiedProcessor`** handles all sample processing
-- ✅ **Centralized `FileOperations`** for all I/O operations
-- ✅ **Unified `CoordinateManager`** for all geometry transformations
-- ✅ **Consistent fail-fast** error handling throughout
-- ✅ **Chinese-only optimization** removes multilingual complexity
-
----
-
-## Output Format & Structure
-
-### Complete Output Structure
-
-```
-data/ds_v2/
-├── train.jsonl              # Training samples (180 samples)
-├── val.jsonl                # Validation samples (19 samples)  
-├── teacher.jsonl            # Teacher samples (10 samples)
-├── all_samples.jsonl        # Combined samples (209 total)
-├── label_vocabulary.json    # Comprehensive label statistics
-└── images/                  # Processed images (if RESIZE=true)
-    ├── QC-20230217-0000279_19621.jpeg
-    ├── QC-20230323-0001285_216052.jpeg
-    └── ... (209 processed images)
+# Phase 2: Combined cable training
+./convert_dataset.sh  # OBJECT_TYPES="fiber wire"
 ```
 
-### Label Vocabulary Structure
+#### **Complete System Pipeline**
+```bash
+# Phase 1: Specialized training
+./convert_dataset.sh  # OBJECT_TYPES="bbu bbu_shield"      → Equipment model
+./convert_dataset.sh  # OBJECT_TYPES="connect_point"       → Hardware model  
+./convert_dataset.sh  # OBJECT_TYPES="fiber wire"          → Cable model
+./convert_dataset.sh  # OBJECT_TYPES="label"               → Text model
 
-The `label_vocabulary.json` provides comprehensive BBU equipment statistics:
-
-```json
-{
-  "metadata": {
-    "total_samples": 209,
-    "total_objects": 2102,
-    "language": "chinese", 
-    "extraction_date": "2025-07-21T14:32:41.152268"
-  },
-  "statistics": {
-    "unique_labels_count": 244,
-    "object_types_count": 6,
-    "properties_count": 184,
-    "full_descriptions_count": 255
-  },
-  "vocabulary": {
-    "object_types": ["螺丝、光纤插头", "标签", "BBU设备", "光纤", "电线", "挡风板"],
-    "all_unique_labels": ["4G-BBU-接地线", "4G-BBU-电源线1", "华为", "显示完整", ...],
-    "properties": ["华为", "显示完整", "只显示部分", "符合要求", "有遮挡", ...],
-    "full_descriptions": ["螺丝、光纤插头/显示完整/BBU安装螺丝", ...]
-  },
-  "usage_notes": {
-    "training_prompts": "Use 'all_unique_labels' for comprehensive label-aware training",
-    "object_detection": "Use 'object_types' for class-specific detection tasks"
-  }
-}
+# Phase 2: Joint training
+./convert_dataset.sh  # OBJECT_TYPES="full"                → Complete model
 ```
-
----
-
-## Advanced Features
 
 ### Direct Python Usage
-
-Use the streamlined processor directly:
 
 ```python
 from data_conversion.unified_processor import UnifiedProcessor
 from data_conversion.config import DataConversionConfig
 
-# Create configuration
+# Object-oriented configuration
 config = DataConversionConfig(
     input_dir="ds_v2",
     output_dir="data", 
-    response_types=["object_type", "property", "extra_info"],
+    object_types=["bbu", "label"],     # Specific object types
     resize=True,
     val_ratio=0.1,
     max_teachers=10,
     seed=17
 )
 
-# Run streamlined pipeline
+# Run object-oriented pipeline
 processor = UnifiedProcessor(config)
 results = processor.process()
 
 print(f"✅ Processed {results['total_processed']} samples")
-print(f"📊 Train: {results['train']}, Val: {results['val']}, Teachers: {results['teacher']}")
+print(f"📊 Object types: {config.object_types}")
 ```
 
-### Custom Label Hierarchy
+---
 
-Override the built-in BBU hierarchy:
+## Output Format & Structure
+
+### Object-Oriented Sample Format
+
+Training samples use **native multi-geometry** with **hierarchical descriptions**:
 
 ```json
 {
-  "螺丝、光纤插头": ["BBU安装螺丝", "BBU端光纤插头"],
-  "标签": [],
-  "BBU设备": ["华为", "中兴"],
-  "光纤": [],
-  "电线": [],
-  "挡风板": ["华为"]
+  "images": ["images/QC-20230217-0000279_19621.jpeg"],
+  "objects": [
+    {
+      "bbox_2d": [264, 144, 326, 201],
+      "desc": "螺丝、光纤插头/BBU安装螺丝,显示完整,符合要求"
+    },
+    {
+      "square": [704, 487, 670, 554, 973, 644, 993, 590],
+      "desc": "标签/4G-RRU3-光纤"
+    },
+    {
+      "line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721],
+      "desc": "光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管"
+    }
+  ],
+  "width": 532,
+  "height": 728
 }
 ```
 
-Then use it:
-```bash
-HIERARCHY_FILE="data_conversion/custom_hierarchy.json"
+### Object-Oriented Output Structure
+
+```
+data/ds_v2_bbu/                    # Object-type specific dataset
+├── train.jsonl                   # Training samples (filtered by object types)
+├── val.jsonl                     # Validation samples
+├── teacher.jsonl                 # Teacher samples  
+├── all_samples.jsonl             # Combined samples
+├── label_vocabulary.json         # Object type statistics
+└── images/                       # Processed images (if RESIZE=true)
+    ├── QC-20230217-0000279_19621.jpeg
+    └── ... (filtered image set)
 ```
 
-### Batch Processing Multiple Datasets
+### Object Type Statistics
 
-```bash
-# Process multiple BBU datasets
-for dataset in ds_v2 ds_v3 ds_production; do
-    INPUT_DIR="$dataset"
-    DATASET_NAME="$dataset"
-    OUTPUT_DIR="data"
-    ./convert_dataset.sh
-    echo "✅ Completed $dataset"
-done
+The `label_vocabulary.json` provides **object-oriented statistics**:
+
+```json
+{
+  "metadata": {
+    "total_samples": 158,
+    "total_objects": 249,
+    "object_types_included": ["bbu", "bbu_shield"],
+    "object_types_filtered": ["connect_point", "label", "fiber", "wire"],
+    "language": "chinese"
+  },
+  "statistics": {
+    "unique_labels_count": 15,
+    "object_types_count": 2,
+    "properties_count": 3,
+    "full_descriptions_count": 20
+  },
+  "object_distribution": {
+    "bbu": 187,
+    "bbu_shield": 62
+  },
+  "vocabulary": {
+    "object_types": ["BBU设备", "挡风板"],
+    "hierarchical_descriptions": [
+      "BBU设备/华为,显示完整,无需安装",
+      "BBU设备/华为,只显示部分,机柜空间充足需要安装/这个BBU设备按要求配备了挡风板",
+      "挡风板/华为,显示完整,挡风板无遮挡,安装方向正确"
+    ]
+  }
+}
 ```
 
 ---
 
 ## Troubleshooting
 
-### Common Issues & Solutions
+### Object-Oriented Training Issues
 
-#### 1. Pipeline Execution Errors
+#### 1. **No Samples After Object Filtering**
 ```
-No valid samples were processed
+✅ Sample processing complete: 0 processed, 209 skipped
 ```
 **Solution**: 
-- Verify JSON files contain `markResult.features` or `dataList`
-- Check corresponding `.jpeg/.jpg` images exist
-- Ensure objects pass label hierarchy filtering
+- Check if specified object types exist in your dataset
+- Use `OBJECT_TYPES="full"` to process all objects
+- Verify object type names: `bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`
 
-#### 2. Geometry Processing Issues
+#### 2. **Geometry Constraint Violations**
 ```
-Dimension mismatch: JSON says 1920x1080 but image is 1080x1920
+Geometry constraint violation: fiber with square
 ```
-**Solution**: Normal for EXIF-rotated images. The unified `CoordinateManager` handles this automatically.
+**Solution**: Normal behavior - fiber/wire objects require line geometry, others use square/bbox
 
-#### 3. Memory Issues
+#### 3. **Hierarchical Description Issues**
 ```
-Out of memory during processing
+Missing required attribute brand for bbu
 ```
-**Solution**:
-- Set `RESIZE="false"` to disable image processing
-- Set `LOG_LEVEL="WARNING"` to reduce output
-- Process smaller input directories
+**Solution**: 
+- Check if source data contains the expected Chinese question keys
+- Verify attribute mapping in `hierarchical_attribute_mapping.json`
+- Use `LOG_LEVEL="DEBUG"` for detailed attribute extraction info
 
-#### 4. Configuration Errors
+#### 4. **Object Type Configuration Errors**
 ```
-Configuration validation failed
+Invalid object type: equipment. Valid types: {bbu, bbu_shield, label, fiber, wire, connect_point}
 ```
-**Solution**: Ensure all required parameters are set in `convert_dataset.sh`:
-- `INPUT_DIR`, `OUTPUT_DIR`, `VAL_RATIO`, `MAX_TEACHERS`, `SEED`
+**Solution**: Use exact object type names from the supported list
 
 ### Performance Optimization
 
-1. **Large Datasets**: Use `LOG_LEVEL="WARNING"` for reduced output
-2. **Memory**: Disable resizing if images are pre-sized
-3. **Speed**: Use SSD storage for faster I/O
-4. **Debug**: Use `LOG_LEVEL="DEBUG"` for detailed processing info
+1. **Large Datasets**: Use specific object types instead of `"full"` for faster processing
+2. **Memory**: Use line objects (`fiber wire`) for smaller memory footprint
+3. **Speed**: Use square/bbox objects (`bbu label`) for faster coordinate processing
+4. **Debug**: Use `LOG_LEVEL="DEBUG"` for hierarchical description debugging
 
 ### Validation Commands
 
-Test the streamlined architecture:
+Test object-oriented functionality:
 
 ```bash
-# Test unified processor
-cd /data3/Qwen2.5-VL-main/data_conversion
+# Test object type filtering
 /root/miniconda3/envs/ms/bin/python -c "
-from unified_processor import UnifiedProcessor
-from config import DataConversionConfig
-print('✅ Streamlined architecture ready')
+from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
+processor = HierarchicalProcessor(object_types={'bbu', 'label'})
+print(f'✅ Object filtering ready: {processor.object_types}')
 "
 
-# Test coordinate manager
+# Test hierarchical descriptions
 /root/miniconda3/envs/ms/bin/python -c "
-from coordinate_manager import CoordinateManager  
-print('✅ Unified coordinate processing ready')
+from data_conversion.flexible_taxonomy_processor import FlexibleTaxonomyProcessor
+processor = FlexibleTaxonomyProcessor()
+print('✅ Hierarchical descriptions ready')
 "
 
-# Test file operations
+# Test geometry constraints
 /root/miniconda3/envs/ms/bin/python -c "
-from utils.file_ops import FileOperations
-print('✅ Centralized file operations ready')
+from data_conversion.flexible_taxonomy_processor import FlexibleTaxonomyProcessor
+processor = FlexibleTaxonomyProcessor()
+print(f'BBU with square: {processor._validate_geometry_constraint(\"bbu\", \"square\")}')
+print(f'Fiber with line: {processor._validate_geometry_constraint(\"fiber\", \"line\")}')
 "
 ```
 
@@ -484,19 +482,18 @@ print('✅ Centralized file operations ready')
 
 ## Migration from Previous Versions
 
-### Key Changes in Refactored Version
+### Key Changes in Object-Oriented Version
 
-1. **Removed Files**: `sample_processor.py`, `data_loader.py` (functionality merged)
-2. **Unified Processing**: Single `UnifiedProcessor` entry point  
-3. **Chinese-Only**: Optimized for BBU equipment detection (no multilingual overhead)
-4. **Fail-Fast**: Consistent error handling throughout pipeline
-5. **Centralized I/O**: All file operations through `FileOperations`
+1. **Object Type Filtering**: Replaced `response_types` with `object_types` for training focus
+2. **Hierarchical Descriptions**: Comma/slash separator logic for precise attribute formatting
+3. **Geometry Constraints**: Automatic validation of line vs square/bbox objects
+4. **Progressive Training**: Support for individual → combined → joint training pipelines
 
 ### Backward Compatibility
 
-- **Shell script**: Same interface (`convert_dataset.sh`)
-- **Output format**: Identical JSONL structure
-- **Configuration**: Same environment variables
-- **Python API**: Same `UnifiedProcessor` class
+- **Shell script**: Same interface (`convert_dataset.sh`) with new `OBJECT_TYPES` parameter
+- **Output format**: Enhanced JSONL structure with hierarchical descriptions
+- **Python API**: Extended `UnifiedProcessor` with object type filtering
+- **Configuration**: New object-oriented parameters while maintaining existing options
 
-The streamlined architecture provides the same functionality with improved maintainability and reduced codebase size.
+The object-oriented architecture enables **precise multi-task learning** for BBU equipment detection with hierarchical understanding.

@@ -31,7 +31,7 @@ export MODELSCOPE_CACHE="/data3/Qwen2.5-VL-main/modelscope/hub"
 # Required paths - YOU MUST SET THESE
 INPUT_DIR="ds_v2"                    # e.g., "ds_v2" or "my_dataset"
 OUTPUT_DIR="data"                   # e.g., "data" or "/path/to/output"
-DATASET_NAME="ds_v2"                 # e.g., "experiment_1" or leave empty to auto-detect
+DATASET_NAME="ds_v2_full"                 # e.g., "experiment_1" or leave empty to auto-detect
 
 # Optional configuration files - SET THESE IF YOU HAVE THEM
 HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" or leave empty
@@ -40,7 +40,7 @@ HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" o
 VAL_RATIO="0.1"                    # e.g., "0.1" for 10% validation split
 MAX_TEACHERS="10"                 # e.g., "10" for max teacher samples
 RESIZE="true"                       # "true" or "false" for image resizing
-RESPONSE_TYPES="object_type property extra_info"               # e.g., "object_type property" (space-separated)
+OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
 
 # Optional settings
 LOG_LEVEL="INFO"                    # e.g., "INFO", "DEBUG", "WARNING", "ERROR" or leave empty
@@ -82,13 +82,13 @@ echo "   Hierarchy File: ${HIERARCHY_FILE:-'(not set)'}"
 echo "   Val Ratio: $VAL_RATIO"
 echo "   Max Teachers: $MAX_TEACHERS"
 echo "   Smart Resize: $RESIZE"
-echo "   Response Types: $RESPONSE_TYPES"
+echo "   Object Types: $OBJECT_TYPES"
 echo "   Log Level: $LOG_LEVEL"
 echo "   Seed: $SEED"
 echo ""
 
 # Build command arguments
-PYTHON_CMD="/root/miniconda3/envs/ms/bin/python data_conversion/processor.py"
+PYTHON_CMD="/root/miniconda3/envs/ms/bin/python data_conversion/unified_processor.py"
 ARGS="--input_dir \"$INPUT_DIR\""
 ARGS="$ARGS --output_dir \"$OUTPUT_DIR\""
 ARGS="$ARGS --language chinese"
@@ -97,7 +97,7 @@ ARGS="$ARGS --val_ratio \"$VAL_RATIO\""
 ARGS="$ARGS --max_teachers \"$MAX_TEACHERS\""
 ARGS="$ARGS --seed \"$SEED\""
 ARGS="$ARGS --log_level \"$LOG_LEVEL\""
-ARGS="$ARGS --response_types $RESPONSE_TYPES"
+ARGS="$ARGS --object_types $OBJECT_TYPES"
 
 # Add optional arguments if provided
 if [ -n "$HIERARCHY_FILE" ]; then

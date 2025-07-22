@@ -1,5 +1,13 @@
 """
-Use for convert_pure_json.py
+Unified Vision Processing Module
+
+Core vision processing functionality for Qwen2.5-VL including:
+- Image processing, resizing, and format conversion
+- Video processing and frame extraction
+- EXIF orientation handling
+- Data conversion pipeline image processing
+
+Includes ImageProcessor class for data conversion pipeline.
 """
 
 import base64
@@ -12,13 +20,14 @@ import time
 import warnings
 from functools import lru_cache
 from io import BytesIO
-from typing import Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import requests
 import torch
 import torchvision
 from packaging import version
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import io, transforms
 from torchvision.transforms import InterpolationMode
 
@@ -563,3 +572,173 @@ def process_vision_info(
     if return_video_kwargs:
         return image_inputs, video_inputs, {"fps": video_sample_fps_list}
     return image_inputs, video_inputs
+
+
+# Data Conversion Pipeline Image Processor
+class ImageProcessor:
+    """Unified image processing for the data conversion pipeline."""
+
+    def __init__(self, config):
+        """Initialize with configuration."""
+        from data_conversion.config import DataConversionConfig
+        from data_conversion.utils.file_ops import FileOperations
+        from data_conversion.coordinate_manager import CoordinateManager
+        
+        self.config = config
+        self.input_dir = Path(config.input_dir)
+        self.output_dir = config.get_dataset_output_dir()
+        self.output_image_dir = config.get_dataset_image_dir()
+
+        logger.info(f"ImageProcessor initialized: resize={config.resize}")
+
+    def to_rgb(self, pil_image: Image) -> Image:
+        """
+        Convert PIL image to RGB with proper EXIF orientation handling.
+
+        Applies EXIF orientation transformation to ensure image display
+        matches annotation space, then converts to RGB with white background
+        for transparency handling.
+        """
+        # Apply EXIF orientation transformation
+        pil_image = ImageOps.exif_transpose(pil_image)
+
+        if pil_image.mode == "RGBA":
+            white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
+            white_background.paste(pil_image, mask=pil_image.split()[3])
+            return white_background
+
+        return pil_image.convert("RGB")
+
+    def process_image(
+        self,
+        image_path: Path,
+        width: int,
+        height: int,
+        output_base_dir: Optional[Path] = None,
+    ) -> Tuple[Path, int, int]:
+        """
+        Process a single image: copy or resize with coordinate scaling.
+
+        Returns:
+            Tuple of (output_image_path, final_width, final_height)
+        """
+        from data_conversion.utils.file_ops import FileOperations
+        
+        if not self.output_image_dir:
+            # No processing needed, return original
+            return image_path, width, height
+
+        # Calculate output path
+        try:
+            rel_path = image_path.relative_to(self.input_dir)
+        except ValueError:
+            # image_path is not relative to input_dir, it might already be in output_dir
+            rel_path = image_path.name
+
+        output_path = self.output_image_dir / rel_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check if image already exists and has been processed
+        if output_path.exists() and output_path != image_path:
+            existing_width, existing_height = FileOperations.get_image_dimensions(
+                output_path
+            )
+            logger.debug(
+                f"Using existing processed image: {output_path} ({existing_width}x{existing_height})"
+            )
+            return output_path, existing_width, existing_height
+
+        if self.config.resize:
+            # Smart resize using the smart_resize function from this module
+            new_height, new_width = smart_resize(
+                height=height,
+                width=width,
+                factor=IMAGE_FACTOR,
+                min_pixels=MIN_PIXELS,
+                max_pixels=MAX_PIXELS,
+            )
+
+            with Image.open(image_path) as img:
+                # Apply EXIF orientation and convert to RGB
+                processed_img = self.to_rgb(img)
+
+                # Resize image
+                resized_img = processed_img.resize(
+                    (new_width, new_height), Image.Resampling.LANCZOS
+                )
+                resized_img.save(output_path)
+
+            logger.debug(
+                f"Resized {image_path.name}: {width}x{height} → {new_width}x{new_height} (MAX_PIXELS={MAX_PIXELS})"
+            )
+            return output_path, new_width, new_height
+
+        else:
+            # Copy with EXIF orientation handling
+            if not output_path.exists():
+                with Image.open(image_path) as img:
+                    processed_img = self.to_rgb(img)
+                    processed_img.save(output_path)
+
+            logger.debug(f"Copied {image_path.name} with EXIF orientation applied")
+            return output_path, width, height
+
+    def get_relative_image_path(self, absolute_image_path: Path) -> str:
+        """Get relative image path for use in JSONL files."""
+        try:
+            # Make path relative to dataset output directory
+            rel_path = absolute_image_path.relative_to(self.output_dir)
+            return str(rel_path)
+        except ValueError:
+            # If path is not relative to output_dir, just return the name under images/
+            return f"images/{absolute_image_path.name}"
+
+    def scale_object_coordinates(
+        self,
+        objects: List[Dict],
+        original_width: int,
+        original_height: int,
+        new_width: int,
+        new_height: int,
+    ) -> None:
+        """Scale bounding box coordinates in-place for resized images."""
+        from data_conversion.coordinate_manager import CoordinateManager
+        
+        if original_width == new_width and original_height == new_height:
+            return  # No scaling needed
+
+        for obj in objects:
+            bbox = obj["bbox_2d"]
+            try:
+                scaled_bbox = CoordinateManager.apply_smart_resize_scaling(
+                    bbox, original_width, original_height, new_width, new_height
+                )
+                obj["bbox_2d"] = scaled_bbox
+            except ValueError as e:
+                logger.error(f"Error scaling bbox {bbox}: {e}")
+                if self.config.fail_fast:
+                    raise
+
+    def get_processing_summary(self) -> Dict[str, any]:
+        """Get summary of image processing operations."""
+        summary = {
+            "resize": self.config.resize,
+            "input_dir": str(self.input_dir),
+            "output_image_dir": str(self.output_image_dir)
+            if self.output_image_dir
+            else None,
+        }
+
+        if self.output_image_dir and self.output_image_dir.exists():
+            # Count processed files
+            image_files = list(self.output_image_dir.glob("*.{jpeg,jpg}"))
+            json_files = list(self.output_image_dir.glob("*.json"))
+
+            summary.update(
+                {
+                    "processed_images": len(image_files),
+                    "processed_jsons": len(json_files),
+                }
+            )
+
+        return summary
