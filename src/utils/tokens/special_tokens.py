@@ -248,8 +248,16 @@ class UnifiedTokenManager:
         # Convert coordinates to coordinate tokens
         coord_tokens = []
         for coord in coords:
-            # Clamp to valid range
-            coord_int = max(0, min(int(coord), self.max_coord_value - 1))
+            # Scale normalized coordinates [0,1] to coordinate token range [0, max_coord_value)
+            # Assume input coordinates are normalized to [0,1] range
+            if isinstance(coord, (int, float)) and 0 <= coord <= 1:
+                # Scale to coordinate token range
+                coord_scaled = coord * (self.max_coord_value - 1)
+                coord_int = max(0, min(int(coord_scaled), self.max_coord_value - 1))
+            else:
+                # Handle absolute coordinates or out-of-range values
+                coord_int = max(0, min(int(coord), self.max_coord_value - 1))
+            
             coord_tokens.append(f"<coord_{coord_int}>")
 
         # Join without spaces (coordinate tokens are contiguous)
@@ -296,23 +304,28 @@ class UnifiedTokenManager:
     def compute_coordinate_losses(self, logits, labels, bbox_spans=None):
         """
         Compute coordinate losses for training.
-        
+
         Args:
             logits: Model logits tensor
             labels: Label tensor
             bbox_spans: List of bounding box spans (optional)
-            
+
         Returns:
             Dictionary with coordinate loss information
         """
         import torch
-        
+
         # For now, return empty losses since coordinate token training is complex
         # This is a placeholder implementation to allow training to proceed
         logger.debug("🎯 Computing coordinate losses (placeholder implementation)")
-        
+
         return {
-            "total_coordinate_loss": torch.tensor(0.0, device=logits.device, requires_grad=True),
+            "coordinate_loss": torch.tensor(
+                0.0, device=logits.device, requires_grad=True
+            ),  # Expected by wrapper
+            "total_coordinate_loss": torch.tensor(
+                0.0, device=logits.device, requires_grad=True
+            ),
             "coordinate_l1_loss": torch.tensor(0.0, device=logits.device),
             "coordinate_spans_found": 0,
             "total_coordinate_tokens": 0,
@@ -371,55 +384,63 @@ class SimpleCoordinateManager:
     Simple coordinate manager that works without model embedding resizing.
     Used during ChatProcessor initialization when model is not available.
     """
-    
+
     def __init__(self, tokenizer: PreTrainedTokenizer, max_coord_value: int = 2048):
         """
         Initialize simple coordinate manager.
-        
+
         Args:
             tokenizer: The tokenizer to work with
             max_coord_value: Maximum coordinate value
         """
         self.tokenizer = tokenizer
         self.max_coord_value = max_coord_value
-        
+
         # Configuration for compatibility
-        self.config = type('Config', (), {
-            'enable_coordinate_tokens': True,
-            'max_coord_value': max_coord_value,
-            'box_start_id': None,
-            'box_end_id': None,
-        })()
-        
+        self.config = type(
+            "Config",
+            (),
+            {
+                "enable_coordinate_tokens": True,
+                "max_coord_value": max_coord_value,
+                "box_start_id": None,
+                "box_end_id": None,
+            },
+        )()
+
         # Token range placeholders - will be updated when coordinate tokens are found
         self.coord_start_id = None
         self.coord_end_id = None
-        
+
         # Initialize token ranges
         self._update_token_ranges()
-        
+
     def _update_token_ranges(self):
         """Update coordinate token ranges from current tokenizer vocabulary."""
         vocab = self.tokenizer.get_vocab()
-        
+
         # Look for box tokens
         box_start_token = "<|box_start|>"
         box_end_token = "<|box_end|>"
-        
+
         if box_start_token in vocab:
             self.config.box_start_id = vocab[box_start_token]
         if box_end_token in vocab:
             self.config.box_end_id = vocab[box_end_token]
-            
+
         # Look for coordinate tokens
         coord_0_token = "<coord_0>"
         if coord_0_token in vocab:
             self.coord_start_id = vocab[coord_0_token]
             self.coord_end_id = self.coord_start_id + self.max_coord_value
-            logger.info(f"🎯 Found coordinate tokens: range [{self.coord_start_id}, {self.coord_end_id})")
+            logger.info(
+                f"🎯 Found coordinate tokens: range [{self.coord_start_id}, {self.coord_end_id})"
+            )
         else:
-            logger.warning("⚠️ Coordinate tokens not found in vocabulary - coordinate features disabled")
-    
+            logger.warning(
+                "⚠️ Coordinate tokens not found in vocabulary - coordinate features disabled"
+            )
+
     def convert_json_to_coordinate_format(self, json_string: str) -> str:
         """
         Convert JSON format to coordinate token format.
@@ -428,11 +449,38 @@ class SimpleCoordinateManager:
         if self.coord_start_id is None:
             logger.debug("🎯 Coordinate tokens not available, returning JSON format")
             return json_string
+
+        try:
+            import json
+            # Parse the JSON string to extract objects
+            objects = json.loads(json_string)
             
-        # For now, return JSON format as fallback
-        # Full coordinate conversion would require parsing JSON and converting to tokens
-        logger.debug("🎯 Coordinate conversion not implemented, returning JSON format")
-        return json_string
+            if not isinstance(objects, list):
+                logger.debug("🎯 JSON is not a list, returning original format")
+                return json_string
+            
+            # Convert each object to coordinate token format
+            coordinate_formatted_objects = []
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    continue
+                    
+                try:
+                    formatted_obj = self.format_object(obj)
+                    coordinate_formatted_objects.append(formatted_obj)
+                except (ValueError, KeyError) as e:
+                    logger.debug(f"🎯 Failed to format object {obj}: {e}, keeping as JSON")
+                    # If formatting fails, keep the object in JSON format
+                    coordinate_formatted_objects.append(json.dumps(obj))
+            
+            # Join all formatted objects with spaces
+            result = " ".join(coordinate_formatted_objects)
+            logger.debug(f"🎯 Successfully converted JSON to coordinate format: {len(coordinate_formatted_objects)} objects")
+            return result
+            
+        except (json.JSONDecodeError, Exception) as e:
+            logger.debug(f"🎯 Failed to parse JSON or convert to coordinate format: {e}, returning original")
+            return json_string
 
 
 class TokenFormatter:
