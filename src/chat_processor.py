@@ -55,9 +55,14 @@ class ChatProcessor:
         self.tokenizer = tokenizer
         self.image_processor = image_processor
 
-        # Store data root from global config
-        config = get_config()
-        self.data_root = Path(config.data_root)
+        # Store data root from passed config
+        if "config" in kwargs and kwargs["config"] is not None:
+            config = kwargs["config"]
+            self.data_root = Path(config.data_root)
+        else:
+            # Fallback to global config if no config passed
+            config = get_config()
+            self.data_root = Path(config.data_root)
 
         # ---------------- Optional kwargs ----------------
         # Many call-sites (trainer / inference) pass extra kwargs such as
@@ -72,49 +77,68 @@ class ChatProcessor:
         self.tokens = SpecialTokens()
 
         # Initialize unified coordinate token manager
-        coordinate_enabled = kwargs.get("enable_coordinate_tokens", False)
+        coordinate_enabled = kwargs.get("coordinate_tokens_enabled", None)
+        if coordinate_enabled is None:
+            raise ValueError("coordinate_tokens_enabled must be set in the config file")
+
         if coordinate_enabled:
-            from src.utils.coordinate_token_manager import (
-                create_coordinate_token_manager,
-            )
+            # EXPLICIT CONFIG: No fallback - max_coord_value must be provided
+            if "max_coord_value" not in kwargs:
+                raise ValueError(
+                    "max_coord_value must be provided when coordinate tokens are enabled. "
+                    "Ensure this field is explicitly set in your configuration."
+                )
 
-            # Get original vocab size from tokenizer
-            original_vocab_size = len(tokenizer.get_vocab())
-
-            coordinate_config_dict = {
+            # Store coordinate configuration for later initialization
+            self.coordinate_config = {
                 "enable_coordinate_tokens": True,
-                "max_coord_value": kwargs.get("max_coord_value", 2048),
+                "max_coord_value": kwargs["max_coord_value"],
                 "coordinate_loss_weight": 1.0,
                 "regular_loss_weight": 1.0,
                 "soft_expectation_temperature": 1.0,
-                "focal_loss_alpha": 0.25,
-                "focal_loss_gamma": 2.0,
             }
 
-            self.coordinate_manager = create_coordinate_token_manager(
-                tokenizer=tokenizer,
-                original_vocab_size=original_vocab_size,
-                coordinate_config=coordinate_config_dict,
+            # Initialize placeholders - will be set up later when model is available
+            self.token_manager = None
+            self.coordinate_manager = None
+
+            logger.debug(
+                f"🎯 Coordinate tokens configuration stored: max_coord={self.coordinate_config['max_coord_value']}"
             )
-            logger.debug(f"🎯 Coordinate manager initialized: max_coord={coordinate_config_dict['max_coord_value']}")
         else:
             self.coordinate_manager = None
+            self.coordinate_config = None
 
         # Build system prompt using global config
         self.system_prompt = self._build_system_prompt()
 
-        # Log configuration
-        logger.info(f"✅ ChatProcessor initialized:")
-        logger.info(f"   Language: {self.language}")
-        logger.info(f"   Data root: {config.data_root}")
-        logger.info(f"   Model max length: {config.max_total_length}")
-        logger.info(f"   Output format: Pure JSON (Qwen2.5-VL compatible)")
+    def _update_coordinate_token_ranges(self):
+        """Initialize coordinate manager and update token ranges after tokenizer extension."""
+        if not hasattr(self, "coordinate_config") or not self.coordinate_config:
+            logger.debug(
+                "🎯 No coordinate configuration - skipping coordinate manager setup"
+            )
+            return
 
-        # Log a sample of the system prompt
-        logger.info(f"📄 System prompt sample (first 500 chars):")
-        logger.info(f"   {repr(self.system_prompt[:500])}")
-        logger.info(f"📄 System prompt sample (last 200 chars):")
-        logger.info(f"   {repr(self.system_prompt[-200:])}")
+        # Initialize UnifiedTokenManager now that we have the tokenizer set up
+        # Note: We still don't have a model, but we can initialize without resizing embeddings
+        logger.info("🎯 Initializing coordinate manager with current tokenizer...")
+
+        # Create a simple coordinate manager without model resizing
+        from src.utils.tokens.special_tokens import SimpleCoordinateManager
+
+        self.coordinate_manager = SimpleCoordinateManager(
+            tokenizer=self.tokenizer,
+            max_coord_value=self.coordinate_config["max_coord_value"],
+        )
+
+        # Set token manager for backward compatibility
+        self.token_manager = self.coordinate_manager
+
+        logger.info("✅ Coordinate manager initialized successfully")
+        logger.info(f"   max_coord_value: {self.coordinate_config['max_coord_value']}")
+        logger.info(f"   Language: {self.language}")
+        logger.info(f"   Output format: Coordinate tokens + JSON fallback")
 
         # Default context
         self._current_context: str = "training"
@@ -297,11 +321,26 @@ class ChatProcessor:
 
         json_objects = []
         for obj in objects:
-            box = obj.get("bbox_2d", [0, 0, 0, 0])
-            desc = obj.get("desc", "unknown")
+            # Extract geometry data - support multiple formats
+            if "bbox_2d" in obj:
+                json_obj = {
+                    "bbox_2d": obj["bbox_2d"],
+                    "label": obj.get("desc", "unknown"),
+                }
+            elif "square" in obj:
+                json_obj = {
+                    "square": obj["square"],
+                    "label": obj.get("desc", "unknown"),
+                }
+            elif "line" in obj:
+                json_obj = {"line": obj["line"], "label": obj.get("desc", "unknown")}
+            else:
+                # Fallback - create empty bbox
+                json_obj = {
+                    "bbox_2d": [0, 0, 0, 0],
+                    "label": obj.get("desc", "unknown"),
+                }
 
-            # Create JSON object
-            json_obj = {"bbox_2d": box, "label": desc}
             json_objects.append(json_obj)
 
         # Format as JSON first
@@ -310,11 +349,16 @@ class ChatProcessor:
         )
 
         # Convert to coordinate token format if enabled
-        if self.coordinate_manager and self.coordinate_manager.config.enable_coordinate_tokens:
-            coordinate_response = self.coordinate_manager.convert_json_to_coordinate_format(
-                json_response
+        if (
+            self.coordinate_manager
+            and self.coordinate_manager.config.enable_coordinate_tokens
+        ):
+            coordinate_response = (
+                self.coordinate_manager.convert_json_to_coordinate_format(json_response)
             )
-            logger.debug(f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format")
+            logger.debug(
+                f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format"
+            )
             logger.debug(f"   📋 JSON response: {json_response}")
             logger.debug(f"   🎯 Coordinate response: {coordinate_response}")
             return coordinate_response
@@ -419,22 +463,77 @@ class ChatProcessor:
 
         normalized_objects: list[GroundTruthObject] = []
         for obj in student_objects:
-            box = obj.get("bbox_2d")
+            # Extract geometry coordinates - support multiple formats
+            box = None
+            if "bbox_2d" in obj:
+                box = obj["bbox_2d"]
+                geometry_type = "bbox"
+            elif "square" in obj:
+                # Convert square (polygon) to bounding box
+                square_coords = obj["square"]
+                if len(square_coords) >= 4:
+                    # Extract min/max coordinates from polygon
+                    x_coords = [
+                        square_coords[i] for i in range(0, len(square_coords), 2)
+                    ]
+                    y_coords = [
+                        square_coords[i] for i in range(1, len(square_coords), 2)
+                    ]
+                    box = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+                    geometry_type = "square"
+            elif "line" in obj:
+                # Convert line to bounding box
+                line_coords = obj["line"]
+                if len(line_coords) >= 4:
+                    x_coords = [line_coords[i] for i in range(0, len(line_coords), 2)]
+                    y_coords = [line_coords[i] for i in range(1, len(line_coords), 2)]
+                    box = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
+                    geometry_type = "line"
+
             desc = obj.get("desc")
 
             if box is None or desc is None:
-                raise ValueError(f"Invalid object: {obj}")
+                logger.error(f"Invalid object - missing geometry or description: {obj}")
+                continue  # Skip invalid objects instead of crashing
 
             # Validate box format and coordinates
-            if not (isinstance(box, list) and len(box) == 4) or not (
-                0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height
+            if not (isinstance(box, list) and len(box) == 4):
+                logger.error(f"Invalid box format: {box} for object: {obj}")
+                continue
+
+            # Ensure coordinates are within image bounds
+            x1, y1, x2, y2 = box
+
+            # Check for degenerate boxes (zero width or height)
+            if x1 > x2 or y1 > y2:
+                logger.warning(
+                    f"Degenerate box with zero area: {box} for image size {width}x{height}. "
+                    f"Adjusting to minimum valid size."
+                )
+                # Ensure minimum 1-pixel box
+                if x1 >= x2:
+                    x2 = min(x1 + 1, width)
+                if y1 >= y2:
+                    y2 = min(y1 + 1, height)
+
+            # Check for out-of-bounds coordinates
+            if not (
+                0 <= x1 < width
+                and 0 <= y1 < height
+                and 0 < x2 <= width
+                and 0 < y2 <= height
             ):
-                logger.error(
-                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}."
+                logger.warning(
+                    f"Out-of-bounds box: {box} for image size {width}x{height}. "
+                    f"Clamping to image bounds."
                 )
-                raise RuntimeError(
-                    f"Invalid or out-of-bounds box: {box} for image size {width}x{height}."
-                )
+                # Clamp coordinates to image bounds
+                x1 = max(0, min(x1, width - 1))
+                y1 = max(0, min(y1, height - 1))
+                x2 = max(x1 + 1, min(x2, width))
+                y2 = max(y1 + 1, min(y2, height))
+
+            box = [x1, y1, x2, y2]
 
             normalized_box = [
                 box[0] / width,
@@ -665,34 +764,59 @@ class ChatProcessor:
                 labels[start_idx:end_idx] = original_ids[start_idx:end_idx]
 
                 # STRICT VALIDATION: Check for coordinate tokens in assistant messages
-                if hasattr(self, 'coordinate_manager') and self.coordinate_manager and self.coordinate_manager.config.enable_coordinate_tokens:
+                if (
+                    hasattr(self, "coordinate_manager")
+                    and self.coordinate_manager
+                    and self.coordinate_manager.config.enable_coordinate_tokens
+                ):
                     assistant_tokens = labels[start_idx:end_idx]
                     coord_token_count = 0
                     for token in assistant_tokens:
-                        if (self.coordinate_manager.coord_start_id <= token.item() < self.coordinate_manager.coord_end_id or
-                            token.item() == self.coordinate_manager.config.box_start_id or
-                            token.item() == self.coordinate_manager.config.box_end_id):
+                        if (
+                            self.coordinate_manager.coord_start_id
+                            <= token.item()
+                            < self.coordinate_manager.coord_end_id
+                            or token.item()
+                            == self.coordinate_manager.config.box_start_id
+                            or token.item() == self.coordinate_manager.config.box_end_id
+                        ):
                             coord_token_count += 1
 
                     if coord_token_count > 0:
-                        logger.debug(f"   🎯 Found {coord_token_count} coordinate tokens in assistant message")
+                        logger.debug(
+                            f"   🎯 Found {coord_token_count} coordinate tokens in assistant message"
+                        )
                         logger.debug(f"   Assistant span: [{start_idx}:{end_idx}]")
-                        logger.debug(f"   Sample coordinate tokens: {assistant_tokens[:min(10, len(assistant_tokens))].tolist()}")
+                        logger.debug(
+                            f"   Sample coordinate tokens: {assistant_tokens[: min(10, len(assistant_tokens))].tolist()}"
+                        )
 
                         # Verify no coordinate tokens were set to -100
                         masked_coord_tokens = []
                         for i, token in enumerate(assistant_tokens):
                             if token.item() == -100:
                                 orig_token = original_ids[start_idx + i]
-                                if (self.coordinate_manager.coord_start_id <= orig_token.item() < self.coordinate_manager.coord_end_id or
-                                    orig_token.item() == self.coordinate_manager.config.box_start_id or
-                                    orig_token.item() == self.coordinate_manager.config.box_end_id):
+                                if (
+                                    self.coordinate_manager.coord_start_id
+                                    <= orig_token.item()
+                                    < self.coordinate_manager.coord_end_id
+                                    or orig_token.item()
+                                    == self.coordinate_manager.config.box_start_id
+                                    or orig_token.item()
+                                    == self.coordinate_manager.config.box_end_id
+                                ):
                                     masked_coord_tokens.append((i, orig_token.item()))
 
                         if masked_coord_tokens:
-                            logger.error(f"❌ CRITICAL: Coordinate tokens set to -100 in assistant message!")
-                            logger.error(f"   Masked coordinate tokens: {masked_coord_tokens}")
-                            logger.error(f"   This will cause coordinate loss to be zero!")
+                            logger.error(
+                                f"❌ CRITICAL: Coordinate tokens set to -100 in assistant message!"
+                            )
+                            logger.error(
+                                f"   Masked coordinate tokens: {masked_coord_tokens}"
+                            )
+                            logger.error(
+                                f"   This will cause coordinate loss to be zero!"
+                            )
                             raise RuntimeError(
                                 f"Coordinate tokens detected in assistant message but {len(masked_coord_tokens)} "
                                 f"tokens were set to -100. This will cause coordinate loss computation to fail."

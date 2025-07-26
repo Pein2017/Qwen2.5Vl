@@ -16,8 +16,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Configure UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +41,7 @@ class AnnotationSample:
     coordinates: List[float]
     grouped_attributes: Dict[str, Dict[str, str]]  # group -> attribute -> value
     description: str
-    original_geometry: Dict = None
+    original_geometry: Optional[Dict] = None
 
     def to_training_format(self) -> Dict:
         """Convert to training format with native geometry type."""
@@ -41,11 +51,17 @@ class AnnotationSample:
 class FlexibleTaxonomyProcessor:
     """Process V2 annotations using flexible attribute taxonomy."""
 
-    def __init__(self, taxonomy_path: Optional[str] = None, hierarchical_mapping_path: Optional[str] = None):
+    def __init__(
+        self,
+        taxonomy_path: Optional[str] = None,
+        hierarchical_mapping_path: Optional[str] = None,
+    ):
         if taxonomy_path is None:
-            taxonomy_path = Path(__file__).parent / "attribute_taxonomy.json"
+            taxonomy_path = str(Path(__file__).parent / "attribute_taxonomy.json")
         if hierarchical_mapping_path is None:
-            hierarchical_mapping_path = Path(__file__).parent / "hierarchical_attribute_mapping.json"
+            hierarchical_mapping_path = str(
+                Path(__file__).parent / "hierarchical_attribute_mapping.json"
+            )
 
         self.taxonomy = self._load_taxonomy(taxonomy_path)
         self.hierarchical_mapping = self._load_taxonomy(hierarchical_mapping_path)
@@ -89,17 +105,21 @@ class FlexibleTaxonomyProcessor:
 
         # Process geometry with constraint validation
         geometry_format, coordinates = self._process_geometry(geometry, object_type)
-        
+
         # Validate geometry constraints
         if not self._validate_geometry_constraint(object_type, geometry_format):
-            logger.warning(f"Geometry constraint violation: {object_type} with {geometry_format}")
+            logger.warning(
+                f"Geometry constraint violation: {object_type} with {geometry_format}"
+            )
             return None
 
         # Group attributes by taxonomy
         grouped_attributes = self._group_attributes(content, content_zh, object_type)
 
         # Create hierarchical description using new method
-        description = self._create_hierarchical_description(object_type, content_zh, content)
+        description = self._create_hierarchical_description(
+            object_type, content_zh, content
+        )
 
         return AnnotationSample(
             object_type=object_type,
@@ -137,10 +157,6 @@ class FlexibleTaxonomyProcessor:
         geometry_type = geometry.get("type", "")
         coordinates = geometry.get("coordinates", [])
 
-        # Determine target format based on object type preferences
-        obj_info = self.object_types[object_type]
-        preferred_formats = obj_info["geometry_types"]
-
         # Extract bbox for all cases
         bbox = CoordinateManager.extract_bbox_from_geometry(geometry)
 
@@ -158,7 +174,7 @@ class FlexibleTaxonomyProcessor:
             if coordinates and isinstance(coordinates[0], list):
                 points = coordinates[0]
                 square_coords = []
-                for i, point in enumerate(points[:4]):
+                for point in points[:4]:
                     if isinstance(point, list) and len(point) >= 2:
                         square_coords.extend(
                             [int(round(point[0])), int(round(point[1]))]
@@ -230,49 +246,58 @@ class FlexibleTaxonomyProcessor:
         self, object_type: str, content_zh: Dict, content: Dict
     ) -> str:
         """Create hierarchical description with correct separators: comma for same-level, slash for different levels."""
-        
+
         # Get hierarchical mapping for this object type
         if object_type not in self.hierarchical_object_types:
-            logger.warning(f"No hierarchical mapping found for object type: {object_type}")
-            return self.hierarchical_object_types.get(object_type, {}).get("chinese_label", object_type)
-        
+            logger.warning(
+                f"No hierarchical mapping found for object type: {object_type}"
+            )
+            return self.hierarchical_object_types.get(object_type, {}).get(
+                "chinese_label", object_type
+            )
+
         obj_mapping = self.hierarchical_object_types[object_type]
-        
+
         # Process attributes and group by level
         attributes = obj_mapping["attributes"]
         attributes_by_level = sorted(attributes, key=lambda x: x["level"])
-        
+
         # Track values for conditional logic and group by level
         extracted_values = {}
         values_by_level = {}  # level -> [values]
-        
+
         # Start with object type at level 0
         values_by_level[0] = [obj_mapping["chinese_label"]]
-        
+
         for attr in attributes_by_level:
             attr_name = attr["name"]
             level = attr["level"]
-            
+
             # Check if this is a conditional attribute
             if attr.get("conditional"):
                 condition = attr["conditional"]
                 parent_attr = condition["parent_attribute"]
                 required_parent_value = condition["parent_value"]
-                
+
                 # Skip if parent condition not met
-                if parent_attr not in extracted_values or extracted_values[parent_attr] != required_parent_value:
+                if (
+                    parent_attr not in extracted_values
+                    or extracted_values[parent_attr] != required_parent_value
+                ):
                     continue
-            
+
             # Extract value for this attribute
-            attr_value = self._extract_hierarchical_attribute_value(attr, content_zh, content)
-            
+            attr_value = self._extract_hierarchical_attribute_value(
+                attr, content_zh, content
+            )
+
             if attr_value:
                 extracted_values[attr_name] = attr_value
-                
+
                 # Group values by level
                 if level not in values_by_level:
                     values_by_level[level] = []
-                
+
                 # Handle multiple values with separator (for specific issues like "未拧紧,生锈")
                 if attr.get("multiple_values_separator") and "," in attr_value:
                     values_by_level[level].append(attr_value)  # Keep internal commas
@@ -280,8 +305,10 @@ class FlexibleTaxonomyProcessor:
                     values_by_level[level].append(attr_value)
             elif attr.get("required", False):
                 # For required attributes, we might want to log missing values
-                logger.debug(f"Missing required attribute {attr_name} for {object_type}")
-        
+                logger.debug(
+                    f"Missing required attribute {attr_name} for {object_type}"
+                )
+
         # Combine levels with proper separators
         level_parts = []
         for level in sorted(values_by_level.keys()):
@@ -290,16 +317,18 @@ class FlexibleTaxonomyProcessor:
                 # Join same-level values with comma
                 level_part = ",".join(level_values)
                 level_parts.append(level_part)
-        
+
         # Join different levels with slash
         return "/".join(level_parts)
-    
-    def _extract_hierarchical_attribute_value(self, attr: Dict, content_zh: Dict, content: Dict) -> Optional[str]:
+
+    def _extract_hierarchical_attribute_value(
+        self, attr: Dict, content_zh: Dict, content: Dict
+    ) -> Optional[str]:
         """Extract attribute value according to hierarchical mapping."""
         content_mapping = attr.get("content_mapping")
         if not content_mapping:
             return None
-        
+
         # Handle free text attributes
         if attr.get("is_free_text", False):
             # For labels, extract from multiple possible fields
@@ -310,9 +339,14 @@ class FlexibleTaxonomyProcessor:
                         value = content_zh[question]
                         if isinstance(value, list) and value:
                             value = value[0]
-                        if value and str(value).strip() and str(value).strip() not in ["能", "不能", " ", "  ", "   "]:
+                        if (
+                            value
+                            and str(value).strip()
+                            and str(value).strip()
+                            not in ["能", "不能", " ", "  ", "   "]
+                        ):
                             return str(value).strip()
-                
+
                 # Fallback to content mapping
                 if content_mapping in content_zh:
                     value = content_zh[content_mapping]
@@ -320,7 +354,7 @@ class FlexibleTaxonomyProcessor:
                         value = value[0]
                     if value and str(value).strip():
                         return str(value).strip()
-            
+
             # For special circumstances
             elif attr["name"] == "special_circumstances":
                 if content_mapping in content_zh:
@@ -330,62 +364,60 @@ class FlexibleTaxonomyProcessor:
                     if value and str(value).strip():
                         return str(value).strip()
             return None
-        
+
         # Handle structured attributes with defined values
         attr_values = attr.get("values", {})
-        
+
         # Check in content_zh first
         for question in attr["chinese_questions"]:
             if question in content_zh:
                 raw_value = content_zh[question]
                 if isinstance(raw_value, list) and raw_value:
                     raw_value = raw_value[0]
-                
+
                 raw_value_str = str(raw_value).strip() if raw_value else ""
-                
+
                 # Try exact match first
                 for key, mapped_value in attr_values.items():
                     if raw_value_str == key:
                         return mapped_value
-                
+
                 # Try partial match for complex values
                 for key, mapped_value in attr_values.items():
                     if key in raw_value_str or raw_value_str in key:
                         return mapped_value
-        
+
         # Check content mapping directly
         if content_mapping in content_zh:
             raw_value = content_zh[content_mapping]
             if isinstance(raw_value, list) and raw_value:
                 raw_value = raw_value[0]
-            
+
             raw_value_str = str(raw_value).strip() if raw_value else ""
-            
+
             # Try to map the value
             for key, mapped_value in attr_values.items():
                 if raw_value_str == key or key in raw_value_str or raw_value_str in key:
                     return mapped_value
-        
+
         return None
-    
-    def _validate_geometry_constraint(self, object_type: str, geometry_format: str) -> bool:
+
+    def _validate_geometry_constraint(
+        self, object_type: str, geometry_format: str
+    ) -> bool:
         """Validate that object type matches allowed geometry constraints."""
         if object_type not in self.hierarchical_object_types:
             return True  # Allow unknown types
-        
+
         obj_mapping = self.hierarchical_object_types[object_type]
         allowed_geometries = obj_mapping.get("geometry_types", [])
-        
+
         if not allowed_geometries:
             return True  # No constraints defined
-        
+
         # Map geometry formats to constraint names
-        geometry_mapping = {
-            "line": "line",
-            "bbox_2d": "bbox_2d", 
-            "square": "square"
-        }
-        
+        geometry_mapping = {"line": "line", "bbox_2d": "bbox_2d", "square": "square"}
+
         constraint_name = geometry_mapping.get(geometry_format, geometry_format)
         return constraint_name in allowed_geometries
 
@@ -394,7 +426,9 @@ class FlexibleTaxonomyProcessor:
     ) -> str:
         """Legacy method - kept for compatibility. Use _create_hierarchical_description instead."""
         # Fallback to hierarchical description if possible
-        return self.hierarchical_object_types.get(object_type, {}).get("chinese_label", object_type)
+        return self.hierarchical_object_types.get(object_type, {}).get(
+            "chinese_label", object_type
+        )
 
     def process_v2_file(self, file_path: str) -> List[AnnotationSample]:
         """Process entire V2 JSON file."""
@@ -464,49 +498,50 @@ class FlexibleTaxonomyProcessor:
         return stats
 
 
-
 # Compatibility Layer - HierarchicalProcessor
 class HierarchicalProcessor:
     """Clean processor for V2 data with native geometry output and object type filtering."""
-    
-    def __init__(self, object_types = None, label_hierarchy: Dict = None):
+
+    def __init__(self, object_types=None, label_hierarchy: Optional[Dict] = None):
         """Initialize processor for Chinese-only processing with object type filtering."""
         self.object_types = object_types or {"bbu", "label", "fiber", "connect_point"}
         self.label_hierarchy = label_hierarchy or {}
-        
+
         # Create flexible processor
         self.flexible_processor = FlexibleTaxonomyProcessor()
-        
-        logger.info(f"Initialized HierarchicalProcessor for Chinese-only processing with object types: {self.object_types}")
-    
+
+        logger.info(
+            f"Initialized HierarchicalProcessor for Chinese-only processing with object types: {self.object_types}"
+        )
+
     def extract_objects_from_markresult(self, features: List[Dict]) -> List[Dict]:
         """
         Extract objects from markResult features with native geometry types.
         Filters by specified object types for training subject separation.
-        
+
         Returns objects in format:
         [
-            {'bbox_2d': [x1,y1,x2,y2], 'desc': '...'}, 
+            {'bbox_2d': [x1,y1,x2,y2], 'desc': '...'},
             {'square': [x1,y1,x2,y2,x3,y3,x4,y4], 'desc': '...'},
             {'line': [x1,y1,x2,y2,...], 'desc': '...'}
         ]
         """
         objects = []
-        
+
         for feature in features:
             # Process with flexible processor
             sample = self.flexible_processor.process_v2_feature(feature)
             if not sample:
                 continue
-            
+
             # Filter by object type - only include objects matching specified types
             if sample.object_type not in self.object_types:
                 continue
-            
+
             # Convert to clean training format (native geometry only)
             training_obj = sample.to_training_format()
             objects.append(training_obj)
-        
+
         return objects
 
 
@@ -521,7 +556,7 @@ if __name__ == "__main__":
     processor = FlexibleTaxonomyProcessor()
 
     # Test single file
-    test_file = "/data3/Qwen2.5-VL-main/ds_v2/QC-20230216-0000244_377872.json"
+    test_file = "ds_v2/QC-20230216-0000244_377872.json"
     samples = processor.process_v2_file(test_file)
 
     print(f"Processed {len(samples)} samples")

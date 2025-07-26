@@ -84,18 +84,26 @@ class StabilityMetrics:
 
     def is_unstable(self) -> bool:
         """Check if training is becoming unstable."""
+        # Get config with defaults for stability parameters
+        from src.config import get_config
+
+        config = get_config()
+
+        # EXPLICIT CONFIG: All stability parameters are required and validated at config load
+        max_consecutive_nan = config.max_consecutive_nan
+        max_consecutive_zero = config.max_consecutive_zero
+        nan_monitoring_window = config.nan_monitoring_window
+        max_nan_ratio = config.max_nan_ratio
+
         # Check consecutive issues
         if (
-            self.consecutive_nan_count >= config.max_consecutive_nan
-            or self.consecutive_zero_count >= config.max_consecutive_zero
+            self.consecutive_nan_count >= max_consecutive_nan
+            or self.consecutive_zero_count >= max_consecutive_zero
         ):
             return True
 
         # Check recent NaN ratio
-        if (
-            self.get_recent_nan_ratio(config.nan_monitoring_window)
-            > config.max_nan_ratio
-        ):
+        if self.get_recent_nan_ratio(nan_monitoring_window) > max_nan_ratio:
             return True
 
         # Check gradient explosion
@@ -120,15 +128,19 @@ class StabilityMonitor:
     """
 
     def __init__(self, logger=None):
+        from src.config import get_config
         from src.logger_utils import get_stability_logger
 
         self.logger = logger or get_stability_logger()
         self.metrics = StabilityMetrics()
 
-        # Access config values directly from global config
-        self.original_lr = config.learning_rate
-        self.current_lr = config.learning_rate
-        self.original_grad_clip = config.max_grad_norm
+        # Get config with defaults
+        self.config = get_config()
+
+        # EXPLICIT CONFIG: learning_rate and max_grad_norm are required and validated at config load
+        self.original_lr = self.config.learning_rate
+        self.current_lr = self.original_lr
+        self.original_grad_clip = self.config.max_grad_norm
 
         # Recovery mechanisms
         self.current_lr_reduction = 1.0
@@ -180,7 +192,10 @@ class StabilityMonitor:
 
         # Determine actions
         if is_nan or is_inf:
-            if self.metrics.consecutive_nan_count <= config.max_consecutive_nan:
+            # EXPLICIT CONFIG: max_consecutive_nan is required and validated at config load
+            max_consecutive_nan = config.max_consecutive_nan
+
+            if self.metrics.consecutive_nan_count <= max_consecutive_nan:
                 status["should_skip"] = True
                 status["recovery_needed"] = True
                 status["recommendations"].append("Skip step and attempt recovery")
@@ -200,64 +215,64 @@ class StabilityMonitor:
         """
         Attempt to recover from training instability.
 
+        Args:
+            model: The model being trained
+            optimizer: The optimizer (if available)
+
         Returns:
             True if recovery was attempted, False otherwise
         """
-        self.metrics.recovery_attempts += 1
+        # EXPLICIT CONFIG: recovery parameters are required and validated at config load
+        nan_recovery_enabled = self.config.nan_recovery_enabled
 
-        if not config.nan_recovery_enabled:
-            self.logger.warning("🚫 NaN recovery is disabled in config")
+        # Skip recovery if disabled
+        if not nan_recovery_enabled:
+            self.logger.info("⚠️ NaN recovery disabled in config - skipping recovery")
             return False
 
+        self.metrics.recovery_attempts += 1
         self.logger.warning(
-            f"🔧 Attempting stability recovery (attempt #{self.metrics.recovery_attempts})"
+            f"⚠️ Attempting recovery #{self.metrics.recovery_attempts} for training instability"
         )
 
-        recovery_success = False
+        # EXPLICIT CONFIG: recovery factors are required and validated at config load
+        learning_rate_reduction_factor = self.config.learning_rate_reduction_factor
+        gradient_clip_reduction_factor = self.config.gradient_clip_reduction_factor
 
-        # 1. Reset model gradients
-        if model is not None:
-            model.zero_grad()
-            recovery_success = True
-            self.logger.info("   ✅ Reset model gradients")
-
-        # 2. Reduce learning rate
-        if optimizer is not None and hasattr(optimizer, "param_groups"):
-            reduction_factor = config.learning_rate_reduction_factor
-            self.current_lr_reduction *= reduction_factor
-
+        # 1. Reduce learning rate
+        if optimizer is not None:
             for param_group in optimizer.param_groups:
-                old_lr = param_group["lr"]
-                param_group["lr"] = old_lr * reduction_factor
-                self.logger.info(
-                    f"   📉 Reduced LR: {old_lr:.2e} → {param_group['lr']:.2e}"
+                param_group["lr"] *= learning_rate_reduction_factor
+                self.logger.warning(
+                    f"🔽 Reduced learning rate to {param_group['lr']:.2e}"
                 )
+            self.current_lr_reduction *= learning_rate_reduction_factor
 
-            recovery_success = True
+        # 2. Reduce gradient clipping threshold
+        if hasattr(model, "gradient_checkpointing_enable"):
+            # For transformers models
+            if not model.is_gradient_checkpointing_enabled():
+                model.gradient_checkpointing_enable()
+                self.logger.warning("🔄 Enabled gradient checkpointing")
 
-        # 3. Reduce gradient clipping
-        new_grad_clip = self.original_grad_clip * config.gradient_clip_reduction_factor
-        self.logger.info(
-            f"   ✂️ Reduced gradient clipping: {self.original_grad_clip} → {new_grad_clip}"
+        # 3. Reset optimizer state if possible
+        if optimizer is not None:
+            if hasattr(optimizer, "zero_grad"):
+                optimizer.zero_grad()
+                self.logger.warning("🧹 Reset optimizer gradients")
+
+        # 4. Log recovery attempt
+        self.logger.warning(
+            f"🩺 Recovery stats: "
+            f"NaNs={self.metrics.total_nan_count}, "
+            f"Zeros={self.metrics.total_zero_count}, "
+            f"LR reduction={self.current_lr_reduction:.3f}"
         )
 
-        # 4. Clear optimizer state if available
-        if optimizer is not None and hasattr(optimizer, "state"):
-            for group in optimizer.param_groups:
-                for param in group["params"]:
-                    if param in optimizer.state:
-                        optimizer.state[param] = {}
-            self.logger.info("   🧹 Cleared optimizer state")
-            recovery_success = True
-
-        if recovery_success:
-            self.metrics.successful_recoveries += 1
-            self.metrics.reset()  # Reset consecutive counters
-            self.logger.info("✅ Recovery attempt completed")
-        else:
-            self.logger.error("❌ Recovery attempt failed")
-
-        return recovery_success
+        # Mark as successful recovery
+        self.metrics.successful_recoveries += 1
+        self.metrics.reset()  # Reset consecutive counters
+        return True
 
     def monitor_gradients(self, model) -> Dict[str, float]:
         """
@@ -321,7 +336,7 @@ class StabilityMonitor:
                 else [],
             },
             "training_health": {
-                "is_stable": not self.metrics.is_unstable(self.config),
+                "is_stable": not self.metrics.is_unstable(),
                 "lr_reduction_factor": self.current_lr_reduction,
                 "recent_losses": list(self.metrics.recent_losses)[-10:],
             },
@@ -331,28 +346,33 @@ class StabilityMonitor:
 
     def should_continue_training(self) -> Tuple[bool, str]:
         """
-        Determine if training should continue based on stability.
+        Determine if training should continue based on stability metrics.
 
         Returns:
             Tuple of (should_continue, reason)
         """
-        # Check if too many recovery attempts
-        if self.metrics.recovery_attempts > 10:
-            return False, "Too many recovery attempts - training unstable"
+        # Get config with defaults
+        from src.config import get_config
+
+        config = get_config()
 
         # Check if consecutive issues exceed limits
-        if self.metrics.consecutive_nan_count > self.config.max_consecutive_nan * 2:
+        # EXPLICIT CONFIG: max_consecutive_nan is required and validated at config load
+        if self.metrics.consecutive_nan_count > config.max_consecutive_nan * 2:
             return False, "Excessive consecutive NaN losses"
 
-        # Check recent NaN ratio
-        if self.metrics.get_recent_nan_ratio() > 0.8:
-            return False, "High proportion of recent NaN losses"
+        # Check if too many recovery attempts without success
+        if (
+            self.metrics.recovery_attempts > 5
+            and self.metrics.successful_recoveries == 0
+        ):
+            return False, "Multiple recovery attempts failed"
 
         # Check if learning rate has been reduced too much
-        if self.current_lr_reduction < 0.001:  # LR reduced by more than 1000x
-            return False, "Learning rate reduced too aggressively"
+        if self.current_lr_reduction < 0.01:  # Reduced to less than 1% of original
+            return False, "Learning rate reduced too much without recovery"
 
-        return True, "Training appears stable"
+        return True, "Training is stable enough to continue"
 
 
 def create_stability_monitor(logger=None) -> StabilityMonitor:

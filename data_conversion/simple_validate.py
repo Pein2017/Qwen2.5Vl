@@ -14,9 +14,18 @@ import sys
 from pathlib import Path
 
 
-# Set UTF-8 encoding for stdout/stderr
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Configure UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 
 def validate_sample(sample: dict, line_num: int) -> bool:

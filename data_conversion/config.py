@@ -8,13 +8,23 @@ Replaces environment variables and complex command-line arguments.
 
 import logging
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Configure UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +40,9 @@ class DataConversionConfig:
     # Required fields (no defaults)
     input_dir: str
     output_dir: str
-    object_types: List[str]  # e.g., ["bbu", "label"] or ["fiber", "wire"] - REQUIRED, arbitrary combinations
+    object_types: List[
+        str
+    ]  # e.g., ["bbu", "label"] or ["fiber", "wire"] - REQUIRED, arbitrary combinations
     resize: bool  # True or False - REQUIRED
     val_ratio: float  # e.g., 0.1 for 10% validation - REQUIRED
     max_teachers: int  # e.g., 10 - REQUIRED
@@ -38,6 +50,12 @@ class DataConversionConfig:
 
     # Optional fields (with defaults)
     dataset_name: Optional[str] = None  # Auto-detected from input_dir if not provided
+    language: str = "chinese"  # Language for processing (chinese/english)
+    response_types: List[str] = field(
+        default_factory=list
+    )  # Response types for processing
+    output_image_dir: Optional[str] = None  # Output directory for images
+    token_map_path: Optional[str] = None  # Path to token mapping file
 
     # Label hierarchy - OPTIONAL
     hierarchy_path: Optional[str] = None
@@ -46,8 +64,10 @@ class DataConversionConfig:
     log_level: str = "INFO"
     fail_fast: bool = True
 
-    # Advanced processing options - OPTIONAL WITH DEFAULTS  
-    geometry_diversity_weight: float = 4.0  # Weight for geometry diversity in teacher selection
+    # Advanced processing options - OPTIONAL WITH DEFAULTS
+    geometry_diversity_weight: float = (
+        4.0  # Weight for geometry diversity in teacher selection
+    )
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -91,17 +111,38 @@ class DataConversionConfig:
 
         # Handle 'full' keyword for all object types
         if len(self.object_types) == 1 and self.object_types[0] == "full":
-            self.object_types = ["bbu", "bbu_shield", "label", "fiber", "wire", "connect_point"]
-            logger.info("Using 'full' object types: all 6 object types will be processed")
+            self.object_types = [
+                "bbu",
+                "bbu_shield",
+                "label",
+                "fiber",
+                "wire",
+                "connect_point",
+            ]
+            logger.info(
+                "Using 'full' object types: all 6 object types will be processed"
+            )
         else:
-            valid_object_types = {"bbu", "bbu_shield", "label", "fiber", "wire", "connect_point"}
+            valid_object_types = {
+                "bbu",
+                "bbu_shield",
+                "label",
+                "fiber",
+                "wire",
+                "connect_point",
+            }
             for obj_type in self.object_types:
                 if obj_type not in valid_object_types:
-                    raise ValueError(f"Invalid object type: {obj_type}. Valid types: {valid_object_types} or 'full'")
-
+                    raise ValueError(
+                        f"Invalid object type: {obj_type}. Valid types: {valid_object_types} or 'full'"
+                    )
 
     def get_dataset_output_dir(self) -> Path:
         """Get the dataset-specific output directory path."""
+        if self.dataset_name is None:
+            raise ValueError(
+                "dataset_name must be set before getting dataset output directory"
+            )
         return Path(self.output_dir) / self.dataset_name
 
     def get_dataset_image_dir(self) -> Path:
@@ -159,7 +200,7 @@ class DataConversionConfig:
 
         # Map environment variables to config fields
         # Direct 1:1 mapping - no conversion needed
-        for field in cls.__dataclass_fields__:
+        for _ in cls.__dataclass_fields__:
             env_var = field.upper()
             value = os.environ.get(env_var)
             if value is not None:

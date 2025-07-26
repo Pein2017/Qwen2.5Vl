@@ -32,13 +32,19 @@ class TeacherPoolManager:
     random teacher assignment for student samples.
     """
 
-    def __init__(self, teacher_pool_file: str):
+    def __init__(self, teacher_pool_file: str, data_root: str = None):
         """Initialize the teacher pool manager.
 
         Args:
             teacher_pool_file: Path to ``teacher_pool.jsonl`` containing teacher samples.
+            data_root: Root directory for data files (optional)
+
+        Raises:
+            FileNotFoundError: If the teacher pool file doesn't exist
+            ValueError: If the teacher pool file is empty or contains invalid data
         """
         self.teacher_pool_file = Path(teacher_pool_file)
+        self.data_root = Path(data_root) if data_root else None
 
         # Load teacher samples from teacher_pool.jsonl (already clean format)
         self.teacher_samples = self._load_teacher_samples_from_jsonl()
@@ -50,11 +56,19 @@ class TeacherPoolManager:
 
         logger.info("✅ TeacherPoolManager initialized:")
         logger.info(f"   Teacher pool file: {teacher_pool_file}")
+        logger.info(f"   Data root: {data_root}")
         logger.info(f"   Number of teacher images: {len(self.teacher_image_paths)}")
         logger.info(f"   Number of teacher samples: {len(self.teacher_samples)}")
 
     def _load_teacher_samples_from_jsonl(self) -> List[Dict[str, Any]]:
-        """Load teacher samples directly from teacher_pool.jsonl (clean format)."""
+        """
+        Load teacher samples directly from JSONL file using flat sample format.
+
+        Raises:
+            FileNotFoundError: If the teacher pool file doesn't exist
+            ValueError: If the teacher pool contains invalid samples
+            json.JSONDecodeError: If a line contains invalid JSON
+        """
         if not self.teacher_pool_file.exists():
             raise FileNotFoundError(
                 f"Teacher pool file not found: {self.teacher_pool_file}"
@@ -62,77 +76,47 @@ class TeacherPoolManager:
 
         teacher_samples: List[Dict[str, Any]] = []
         with open(self.teacher_pool_file, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
-                sample = json.loads(line)
+
+                try:
+                    sample = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise json.JSONDecodeError(
+                        f"Invalid JSON in teacher pool at line {line_num}: {e.msg}",
+                        e.doc,
+                        e.pos,
+                    )
+
+                # Validate flat sample format with fail-fast approach
+                if not isinstance(sample, dict):
+                    raise ValueError(f"Line {line_num}: Sample is not a dictionary")
+
                 if "images" not in sample or "objects" not in sample:
                     raise ValueError(
-                        "Each teacher sample must contain 'images' and 'objects'"
+                        f"Line {line_num}: Missing required fields 'images' or 'objects'"
                     )
+
+                if not isinstance(sample["images"], list) or len(sample["images"]) == 0:
+                    raise ValueError(
+                        f"Line {line_num}: 'images' field is empty or not a list"
+                    )
+
+                if not isinstance(sample["objects"], list):
+                    raise ValueError(f"Line {line_num}: 'objects' field is not a list")
+
+                # Add validated sample
                 teacher_samples.append(sample)
 
         if not teacher_samples:
-            raise ValueError("No teacher samples found in teacher pool file")
+            raise ValueError(f"No valid samples found in {self.teacher_pool_file}")
 
+        logger.info(
+            f"Loaded {len(teacher_samples)} teacher samples from {self.teacher_pool_file}"
+        )
         return teacher_samples
-
-    def _convert_to_clean_format(
-        self, intermediate_sample: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Convert intermediate JSONL format to clean semantic format."""
-        if "images" not in intermediate_sample:
-            raise KeyError("Sample missing required 'images' key")
-        if "objects" not in intermediate_sample:
-            raise KeyError("Sample missing required 'objects' key")
-
-        images = intermediate_sample["images"]
-        objects_data = intermediate_sample["objects"]
-
-        # Extract ref and bbox lists
-        if "ref" not in objects_data:
-            raise KeyError("Objects data missing required 'ref' key")
-        if "bbox" not in objects_data:
-            raise KeyError("Objects data missing required 'bbox' key")
-
-        ref_list = objects_data["ref"]
-        bbox_list = objects_data["bbox"]
-
-        # Convert to clean format
-        clean_objects = []
-        for ref_desc, bbox in zip(ref_list, bbox_list):
-            # Filter description based on response types (same logic as converter)
-            clean_desc = self._filter_description(ref_desc)
-            clean_objects.append({"bbox_2d": bbox, "desc": clean_desc})
-
-        return {"images": images, "objects": clean_objects}
-
-    def _filter_description(self, description: str) -> str:
-        """Filter description based on response types (simplified version)."""
-        # For Chinese descriptions, keep as-is since they're already clean
-        if ";" not in description:
-            return description
-
-        # For English verbose format, convert to compact
-        # This is a simplified version - in practice you'd use ResponseFormatter
-        parts = description.split(";")
-        clean_parts = []
-
-        for part in parts:
-            if ":" in part:
-                key, value = part.split(":", 1)
-                key = key.strip()
-                value = value.strip()
-
-                if key in ["object_type", "property"] and value != "none":
-                    clean_parts.append(value)
-
-        if not clean_parts:
-            raise ValueError(
-                f"Could not extract meaningful description from: {description}"
-            )
-        return "/".join(clean_parts)
 
     def get_random_teacher(self, seed: Optional[int]) -> Dict[str, Any]:
         """
@@ -186,6 +170,9 @@ class TeacherPoolManager:
 
         Returns:
             Multi-chat sample with teachers and student structure
+
+        Raises:
+            ValueError: If num_teachers is <= 0
         """
         if num_teachers <= 0:
             raise ValueError(f"num_teachers must be > 0, got {num_teachers}")
@@ -200,27 +187,33 @@ class TeacherPoolManager:
         return len(self.teacher_samples)
 
 
-def create_teacher_pool_manager() -> TeacherPoolManager:
+def create_teacher_pool_manager(config=None) -> TeacherPoolManager:
     """
-    Create teacher pool manager from global config.
+    Factory function to create teacher pool manager.
+
+    Args:
+        config: Configuration object (explicit config or global config)
 
     Returns:
         TeacherPoolManager instance
 
     Raises:
-        AttributeError: If teacher_pool_file not configured
-        FileNotFoundError: If required files not found
-        ValueError: If configuration is invalid
+        ValueError: If teacher_pool_file is not specified in config
+        Various exceptions from TeacherPoolManager initialization
     """
-    # Get config
-    config = get_config()
+    if config is None:
+        config = get_config()
 
-    # Fail fast if not configured
-    if not hasattr(config, "teacher_pool_file"):
-        raise AttributeError("teacher_pool_file not configured in config")
+    # Get teacher pool file path from config
+    if not hasattr(config, "teacher_pool_file") or not config.teacher_pool_file:
+        raise ValueError("No teacher_pool_file specified in config")
 
-    if not config.teacher_pool_file:
-        raise ValueError("teacher_pool_file is empty in config")
-
-    # Create manager (let it fail if file invalid)
-    return TeacherPoolManager(teacher_pool_file=config.teacher_pool_file)
+    # Create teacher pool manager
+    teacher_pool_manager = TeacherPoolManager(
+        teacher_pool_file=config.teacher_pool_file,
+        data_root=config.data_root,
+    )
+    logger.info(
+        f"Created teacher pool manager with {len(teacher_pool_manager)} samples"
+    )
+    return teacher_pool_manager

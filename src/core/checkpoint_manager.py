@@ -8,7 +8,7 @@ Key Features:
 - Safe model saving with HuggingFace compatibility
 - Checkpoint validation and metadata
 - Model configuration preservation
-- Error handling and fallback mechanisms
+- Error handling with fail-fast approach
 - Support for both training and inference checkpoints
 """
 
@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 import torch
 from transformers.models.auto.processing_auto import AutoProcessor
 
-from src.config.global_config import get_config
+from src.config.explicit_config import get_explicit_config
 from src.logger_utils import get_training_logger
 
 
@@ -31,10 +31,12 @@ class CheckpointManager:
         Initialize checkpoint manager.
         """
         self.logger = get_training_logger()
-        self.config = get_config()
+        self.config = get_explicit_config()
         self.logger.info("📄 CheckpointManager using unified configuration system")
 
-    def save_model_safely(self, trainer: Any, output_dir: str, model_path: str = None) -> bool:
+    def save_model_safely(
+        self, trainer: Any, output_dir: str, model_path: Optional[str] = None
+    ) -> bool:
         """
         Safely save model with proper HuggingFace compatibility.
 
@@ -64,76 +66,61 @@ class CheckpointManager:
             return True
 
         except Exception as e:
+            # FAIL FAST: Save failures should stop training immediately
             self.logger.error(f"❌ Failed to save model: {e}")
-            return self._fallback_save_model(trainer, output_dir, model_path)
+            self.logger.error(
+                "🚨 FAIL FAST: Model save failed - stopping training to prevent data loss"
+            )
+            raise RuntimeError(f"Model save failed: {e}") from e
 
-    def _fallback_save_model(self, trainer: Any, output_dir: str, model_path: str = None) -> bool:
-        """
-        Fallback method for saving model when standard approach fails.
+    # REMOVED: _fallback_save_model method - FAIL FAST approach
+    # Save failures should stop training immediately
 
-        Args:
-            trainer: The trainer instance
-            output_dir: Directory to save the model
-            model_path: Path to the original model (optional)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        self.logger.warning("🔄 Attempting fallback save method...")
-
-        try:
-            output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            # Save model state dict
-            torch.save(trainer.model.state_dict(), output_path / "pytorch_model.bin")
-
-            # Save config
-            trainer.model.config.save_pretrained(output_dir)
-
-            # Save additional metadata
-            self._save_checkpoint_metadata(output_dir, model_path)
-
-            self.logger.info(f"✅ Model saved via fallback method to {output_dir}")
-            return True
-
-        except Exception as fallback_error:
-            self.logger.error(f"❌ Fallback save also failed: {fallback_error}")
-            return False
-
-    def _save_image_processor(self, output_dir: str, model_path: str = None) -> None:
+    def _save_image_processor(
+        self, output_dir: str, model_path: Optional[str] = None
+    ) -> None:
         """Save image processor to output directory."""
         try:
             # Use provided model_path or fall back to config
-            if model_path is None:
+            source_path = model_path
+            if source_path is None:
                 if self.config is None:
-                    self.logger.warning("⚠️  Config is None, skipping image processor save")
+                    self.logger.warning(
+                        "⚠️  Config is None, skipping image processor save"
+                    )
                     return
-                model_path = self.config.model_path
+                source_path = self.config.model_path
 
-            processor = AutoProcessor.from_pretrained(model_path)
-            
+            processor = AutoProcessor.from_pretrained(source_path)
+
             # Check if image processor exists and is not None
-            if not hasattr(processor, 'image_processor') or processor.image_processor is None:
+            if (
+                not hasattr(processor, "image_processor")
+                or processor.image_processor is None
+            ):
                 self.logger.warning("⚠️  Image processor is None, skipping save")
                 return
-                
+
             processor.image_processor.save_pretrained(output_dir)
             self.logger.info(f"💾 Image processor saved to: {output_dir}")
 
         except Exception as e:
             self.logger.warning(f"⚠️  Failed to save image processor: {e}")
 
-    def _save_checkpoint_metadata(self, output_dir: str, model_path: str = None) -> None:
+    def _save_checkpoint_metadata(
+        self, output_dir: str, model_path: Optional[str] = None
+    ) -> None:
         """Save checkpoint metadata for tracking."""
         try:
             # Use provided model_path or fall back to config
             if model_path is None:
                 if self.config is None:
-                    self.logger.warning("⚠️  Config is None, skipping checkpoint metadata save")
+                    self.logger.warning(
+                        "⚠️  Config is None, skipping checkpoint metadata save"
+                    )
                     return
                 model_path = self.config.model_path
-            
+
             metadata = {
                 "checkpoint_type": "bbu_training",
                 "config_system": "unified",
@@ -143,9 +130,7 @@ class CheckpointManager:
                     torch.cuda.Event().query() if torch.cuda.is_available() else "cpu"
                 ),
                 "model_path": model_path,
-                "coordinate_tokens_enabled": getattr(
-                    self.config, "coordinate_tokens_enabled", False
-                ),
+                "coordinate_tokens_enabled": self.config.coordinate_tokens_enabled,
             }
 
             metadata_path = Path(output_dir) / "checkpoint_metadata.json"

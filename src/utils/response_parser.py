@@ -4,7 +4,6 @@ import warnings
 from typing import Any, Dict, List
 
 import torch
-from sentence_transformers import SentenceTransformer
 
 from src.logger_utils import get_logger
 
@@ -43,9 +42,13 @@ class ResponseParser:
         """Initialize SentenceTransformer for semantic similarity."""
         if SENTENCE_TRANSFORMER_AVAILABLE:
             try:
-                self.sentence_transformer = SentenceTransformer(
-                    "/data4/Qwen2.5-VL-main/model_cache/sentence-transformers/all-MiniLM-L6-v2/"
-                )
+                # Try local cache first, fallback to downloading
+                model_path = "model_cache/sentence-transformers/all-MiniLM-L6-v2/"
+                try:
+                    self.sentence_transformer = SentenceTransformer(model_path)
+                except:
+                    # Fallback to downloading the model
+                    self.sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
                 logger.info("✅ SentenceTransformer loaded successfully")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to load SentenceTransformer: {e}")
@@ -126,16 +129,25 @@ class ResponseParser:
                     )
                 else:
                     parsing_attempts.append("legacy_json: FAILED")
-                    # Try special tokens format
-                    objects = self._parse_special_tokens(text)
+                    # Try coordinate token format
+                    objects = self._parse_coordinate_tokens(text)
                     if objects:
-                        parsing_method = "special_tokens"
+                        parsing_method = "coordinate_tokens"
                         parsing_attempts.append(
-                            f"special_tokens: SUCCESS ({len(objects)} objects)"
+                            f"coordinate_tokens: SUCCESS ({len(objects)} objects)"
                         )
                     else:
-                        parsing_attempts.append("special_tokens: FAILED")
-                        # Try unquoted format
+                        parsing_attempts.append("coordinate_tokens: FAILED")
+                        # Try special tokens format
+                        objects = self._parse_special_tokens(text)
+                        if objects:
+                            parsing_method = "special_tokens"
+                            parsing_attempts.append(
+                                f"special_tokens: SUCCESS ({len(objects)} objects)"
+                            )
+                        else:
+                            parsing_attempts.append("special_tokens: FAILED")
+                            # Try unquoted format
                         objects = self._parse_unquoted_format(text)
                         if objects:
                             parsing_method = "unquoted"
@@ -484,6 +496,92 @@ class ResponseParser:
         except (json.JSONDecodeError, TypeError):
             return []
 
+    def _parse_coordinate_tokens(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Parse coordinate token format supporting multi-geometry.
+
+        Formats supported:
+        - bbox (4 coords): 类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>
+        - square (8 coords): 类别/属性: <|box_start|><coord_x1><coord_y1>...<coord_x4><coord_y4><|box_end|>
+        - line (variable): 类别/属性: <|box_start|><coord_x1><coord_y1>...<coord_xN><coord_yN><|box_end|>
+        """
+        # Pattern to match description followed by coordinate token sequence
+        pattern = r"([^:]+):\s*<\|box_start\|>((?:<coord_\d+>)+)<\|box_end\|>"
+        matches = re.findall(pattern, text)
+
+        self.parser_logger.debug(
+            f"🔍 Coordinate tokens: Found {len(matches)} potential matches"
+        )
+
+        objects = []
+        skipped_matches = []
+
+        for i, (description, coord_sequence) in enumerate(matches):
+            try:
+                # Extract individual coordinate tokens
+                coord_tokens = re.findall(r"<coord_(\d+)>", coord_sequence)
+                coords = [int(token) for token in coord_tokens]
+
+                if len(coords) < 2:
+                    skipped_matches.append(
+                        f"Match {i}: Too few coordinates ({len(coords)})"
+                    )
+                    continue
+
+                # Determine geometry type based on coordinate count
+                if len(coords) == 4:
+                    geometry_type = "bbox"
+                    # Convert to normalized coordinates (assuming max 2047 range)
+                    bbox = [coord / 2047.0 for coord in coords]
+                    objects.append(
+                        {
+                            "bbox_2d": bbox,
+                            "bbox": bbox,  # legacy compatibility
+                            "description": description.strip(),
+                            "geometry_type": geometry_type,
+                        }
+                    )
+                elif len(coords) == 8:
+                    geometry_type = "square"
+                    # Keep as absolute coordinates for square (will be handled by downstream)
+                    objects.append(
+                        {
+                            "square": coords,
+                            "description": description.strip(),
+                            "geometry_type": geometry_type,
+                        }
+                    )
+                elif len(coords) >= 6 and len(coords) % 2 == 0:
+                    geometry_type = "line"
+                    # Keep as absolute coordinates for line
+                    objects.append(
+                        {
+                            "line": coords,
+                            "description": description.strip(),
+                            "geometry_type": geometry_type,
+                        }
+                    )
+                else:
+                    skipped_matches.append(
+                        f"Match {i}: Invalid coordinate count ({len(coords)})"
+                    )
+                    continue
+
+                self.parser_logger.debug(
+                    f"✅ Coordinate token {i}: {geometry_type} with {len(coords)} coords"
+                )
+
+            except (ValueError, IndexError) as e:
+                skipped_matches.append(f"Match {i}: Error parsing coordinates - {e}")
+                continue
+
+        if skipped_matches:
+            self.parser_logger.debug(
+                f"🔍 Coordinate tokens: Skipped {len(skipped_matches)} matches: {'; '.join(skipped_matches)}"
+            )
+
+        return objects
+
     def _parse_special_tokens(self, text: str) -> List[Dict[str, Any]]:
         """Parse Qwen2.5-VL special token format."""
         pattern = r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|box_start\|>\(([^)]+)\),\s*\(([^)]+)\)<\|box_end\|>"
@@ -543,9 +641,9 @@ class ResponseParser:
         self, objects: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Validate and filter parsed objects with enhanced error handling.
+        Validate and filter parsed objects with multi-geometry support.
 
-        Skips objects that don't meet validation criteria instead of failing.
+        Supports bbox, square, and line geometries. Skips objects that don't meet validation criteria.
         """
         if not objects:
             self.parser_logger.debug("🔍 No objects to validate")
@@ -559,55 +657,82 @@ class ResponseParser:
                 # Log the raw object being validated for debugging
                 self.parser_logger.debug(f"🔍 Validating object {i}: {obj}")
 
-                bbox = obj.get("bbox_2d") or obj.get("bbox") or []
-                if not isinstance(bbox, list) or len(bbox) != 4:
-                    skipped_reasons.append(
-                        f"Object {i}: Invalid bbox format - got {type(bbox)} with value {bbox}"
-                    )
-                    continue
+                # EXPLICIT: Detect geometry type without fallback
+                if "geometry_type" not in obj:
+                    # Infer geometry type from available keys
+                    if "bbox_2d" in obj:
+                        geometry_type = "bbox"
+                    elif "line" in obj:
+                        geometry_type = "line"
+                    elif "square" in obj:
+                        geometry_type = "square"
+                    else:
+                        skipped_reasons.append(
+                            f"Object {i}: No geometry type specified and no recognizable geometry keys found. "
+                            f"Available keys: {list(obj.keys())}"
+                        )
+                        continue
+                else:
+                    geometry_type = obj["geometry_type"]
 
-                # Ensure coordinates are numeric and valid
-                try:
-                    x1, y1, x2, y2 = [float(coord) for coord in bbox]
-                except (ValueError, TypeError) as e:
-                    skipped_reasons.append(
-                        f"Object {i}: Non-numeric coordinates - {bbox} (error: {e})"
-                    )
-                    continue
+                if geometry_type == "bbox" or (
+                    not geometry_type and ("bbox_2d" in obj or "bbox" in obj)
+                ):
+                    # Validate bbox geometry
+                    if not self._validate_bbox_object(obj, i, skipped_reasons):
+                        continue
 
-                # Skip invalid geometries
-                if x1 >= x2 or y1 >= y2:
-                    skipped_reasons.append(
-                        f"Object {i}: Invalid geometry (x1={x1}, y1={y1}, x2={x2}, y2={y2})"
-                    )
-                    continue
+                elif geometry_type == "square" and "square" in obj:
+                    # Validate square geometry
+                    if not self._validate_square_object(obj, i, skipped_reasons):
+                        continue
 
-                # Skip negative coordinates (optional - depends on your coordinate system)
-                if x1 < 0 or y1 < 0 or x2 < 0 or y2 < 0:
-                    skipped_reasons.append(
-                        f"Object {i}: Negative coordinates - [{x1}, {y1}, {x2}, {y2}]"
-                    )
-                    continue
+                elif geometry_type == "line" and "line" in obj:
+                    # Validate line geometry
+                    if not self._validate_line_object(obj, i, skipped_reasons):
+                        continue
+
+                else:
+                    # Unknown or missing geometry - try bbox as fallback
+                    if not self._validate_bbox_object(obj, i, skipped_reasons):
+                        skipped_reasons.append(
+                            f"Object {i}: Unknown geometry type '{geometry_type}' and bbox validation failed"
+                        )
+                        continue
 
                 desc = (
                     obj.get("description") or obj.get("desc") or obj.get("label") or ""
                 )
                 desc = str(desc).strip()
                 if not desc:
+                    # EXPLICIT: Check for description key without fallback
+                    desc_info = (
+                        obj.get("description", "MISSING_KEY")
+                        if "description" in obj
+                        else "NO_DESCRIPTION_KEY"
+                    )
                     skipped_reasons.append(
-                        f"Object {i}: Empty description - got '{obj.get('description', 'MISSING_KEY')}'"
+                        f"Object {i}: Empty description - got '{desc_info}'"
                     )
                     continue
 
-                validated.append(
-                    {
-                        "bbox_2d": [x1, y1, x2, y2],
-                        "bbox": [x1, y1, x2, y2],  # legacy key
-                        "description": desc,
-                    }
-                )
+                # Add validated object with appropriate geometry data
+                validated_obj = {"description": desc}
+
+                if geometry_type == "bbox" or ("bbox_2d" in obj or "bbox" in obj):
+                    # Extract bbox coordinates
+                    bbox = obj.get("bbox_2d") or obj.get("bbox")
+                    if bbox is not None:
+                        validated_obj["bbox_2d"] = bbox
+                        validated_obj["bbox"] = bbox  # legacy compatibility
+                elif geometry_type == "square" and "square" in obj:
+                    validated_obj["square"] = obj["square"]
+                elif geometry_type == "line" and "line" in obj:
+                    validated_obj["line"] = obj["line"]
+
+                validated.append(validated_obj)
                 self.parser_logger.debug(
-                    f"✅ Object {i}: Valid - bbox=[{x1}, {y1}, {x2}, {y2}], desc='{desc}'"
+                    f"✅ Object {i}: Valid {geometry_type} - desc='{desc}'"
                 )
 
             except (ValueError, TypeError) as e:
@@ -637,6 +762,164 @@ class ResponseParser:
         )
         return validated
 
+    def _validate_bbox_object(
+        self, obj: Dict[str, Any], obj_index: int, skipped_reasons: List[str]
+    ) -> bool:
+        """
+        Validate bbox geometry object.
+
+        Args:
+            obj: Object to validate
+            obj_index: Index for error reporting
+            skipped_reasons: List to append skip reasons to
+
+        Returns:
+            True if valid, False otherwise
+        """
+        # Check for bbox coordinates
+        bbox = obj.get("bbox_2d") or obj.get("bbox")
+        if bbox is None:
+            skipped_reasons.append(f"Object {obj_index}: Missing bbox coordinates")
+            return False
+
+        # Validate bbox format
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            skipped_reasons.append(
+                f"Object {obj_index}: Invalid bbox format - expected 4 coordinates, got {bbox}"
+            )
+            return False
+
+        # Convert to float and validate coordinates
+        try:
+            x1, y1, x2, y2 = [float(coord) for coord in bbox]
+        except (ValueError, TypeError) as e:
+            skipped_reasons.append(
+                f"Object {obj_index}: Non-numeric bbox coordinates - {bbox} (error: {e})"
+            )
+            return False
+
+        # Validate coordinate geometry
+        if x1 >= x2 or y1 >= y2:
+            skipped_reasons.append(
+                f"Object {obj_index}: Invalid bbox geometry - x1({x1}) >= x2({x2}) or y1({y1}) >= y2({y2})"
+            )
+            return False
+
+        # Basic bounds check (assuming reasonable image dimensions)
+        if any(coord < 0 for coord in [x1, y1, x2, y2]):
+            skipped_reasons.append(
+                f"Object {obj_index}: Negative coordinates in bbox - [{x1}, {y1}, {x2}, {y2}]"
+            )
+            return False
+
+        return True
+
+    def _validate_square_object(
+        self, obj: Dict[str, Any], obj_index: int, skipped_reasons: List[str]
+    ) -> bool:
+        """
+        Validate square geometry object.
+
+        Args:
+            obj: Object to validate
+            obj_index: Index for error reporting
+            skipped_reasons: List to append skip reasons to
+
+        Returns:
+            True if valid, False otherwise
+        """
+        # Check for square coordinates
+        square = obj.get("square")
+        if square is None:
+            skipped_reasons.append(f"Object {obj_index}: Missing square coordinates")
+            return False
+
+        # Validate square format (8 coordinates for 4 corners)
+        if not isinstance(square, list) or len(square) != 8:
+            skipped_reasons.append(
+                f"Object {obj_index}: Invalid square format - expected 8 coordinates, got {len(square) if isinstance(square, list) else 'non-list'}"
+            )
+            return False
+
+        # Convert to float and validate coordinates
+        try:
+            coords = [float(coord) for coord in square]
+        except (ValueError, TypeError) as e:
+            skipped_reasons.append(
+                f"Object {obj_index}: Non-numeric square coordinates - {square} (error: {e})"
+            )
+            return False
+
+        # Basic bounds check
+        if any(coord < 0 for coord in coords):
+            skipped_reasons.append(
+                f"Object {obj_index}: Negative coordinates in square - {coords}"
+            )
+            return False
+
+        # Validate that we have 4 distinct points (simple check)
+        points = [(coords[i], coords[i + 1]) for i in range(0, 8, 2)]
+        if len(set(points)) < 3:  # At least 3 distinct points for a meaningful polygon
+            skipped_reasons.append(
+                f"Object {obj_index}: Square has too few distinct points - {points}"
+            )
+            return False
+
+        return True
+
+    def _validate_line_object(
+        self, obj: Dict[str, Any], obj_index: int, skipped_reasons: List[str]
+    ) -> bool:
+        """
+        Validate line geometry object.
+
+        Args:
+            obj: Object to validate
+            obj_index: Index for error reporting
+            skipped_reasons: List to append skip reasons to
+
+        Returns:
+            True if valid, False otherwise
+        """
+        # Check for line coordinates
+        line = obj.get("line")
+        if line is None:
+            skipped_reasons.append(f"Object {obj_index}: Missing line coordinates")
+            return False
+
+        # Validate line format (even number of coordinates >= 6 for at least 3 points)
+        if not isinstance(line, list) or len(line) < 6 or len(line) % 2 != 0:
+            skipped_reasons.append(
+                f"Object {obj_index}: Invalid line format - expected even number of coordinates >= 6, got {len(line) if isinstance(line, list) else 'non-list'}"
+            )
+            return False
+
+        # Convert to float and validate coordinates
+        try:
+            coords = [float(coord) for coord in line]
+        except (ValueError, TypeError) as e:
+            skipped_reasons.append(
+                f"Object {obj_index}: Non-numeric line coordinates - {line} (error: {e})"
+            )
+            return False
+
+        # Basic bounds check
+        if any(coord < 0 for coord in coords):
+            skipped_reasons.append(
+                f"Object {obj_index}: Negative coordinates in line - {coords}"
+            )
+            return False
+
+        # Validate that we have distinct points (simple check)
+        points = [(coords[i], coords[i + 1]) for i in range(0, len(coords), 2)]
+        if len(set(points)) < 2:  # At least 2 distinct points for a meaningful line
+            skipped_reasons.append(
+                f"Object {obj_index}: Line has too few distinct points - {points}"
+            )
+            return False
+
+        return True
+
     def calculate_semantic_similarity(self, desc1: str, desc2: str) -> float:
         """Calculate semantic similarity between descriptions."""
         if self.sentence_transformer is not None:
@@ -649,3 +932,5 @@ class ResponseParser:
                 return max(0.0, similarity)
             except Exception as e:
                 raise ValueError(f"Semantic similarity model not available: {e}")
+        # If sentence_transformer is None, return 0.0 as default similarity
+        return 0.0

@@ -13,8 +13,18 @@ from pathlib import Path
 from typing import Dict, List
 
 
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Configure UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 logger = logging.getLogger(__name__)
 

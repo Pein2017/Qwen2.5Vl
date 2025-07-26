@@ -5,8 +5,12 @@ This module provides direct access to configuration values without any parameter
 or nested structures. All config values are defined once in YAML and accessed directly.
 
 Usage:
-    # Initialize once at application startup
+    # Method 1: Initialize from YAML file
     init_config("configs/base.yaml")
+
+    # Method 2: Initialize directly with DirectConfig object
+    my_config = DirectConfig(model_path="...", learning_rate=5e-6, ...)
+    set_config(my_config)
 
     # Access anywhere in the codebase - direct and flat
     from src.config import config
@@ -17,11 +21,69 @@ Usage:
     data_root = config.data_root
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
 import yaml
+
+
+class ConfigValidator:
+    """Helper class for configuration validation and utilities."""
+
+    @staticmethod
+    def validate_learning_rates(config) -> list[str]:
+        """Validate learning rate configuration and return any issues."""
+        issues = []
+        lr_fields = [
+            "learning_rate",
+            "vision_lr",
+            "merger_lr",
+            "llm_lr",
+            "coordinate_lr",
+            "adapter_lr",
+        ]
+
+        for _ in lr_fields:
+            if hasattr(config, field):
+                lr = getattr(config, field)
+                if lr < 0:
+                    issues.append(f"Learning rate '{field}' cannot be negative: {lr}")
+                elif lr > 1.0:
+                    issues.append(f"Learning rate '{field}' seems too high: {lr}")
+
+        return issues
+
+    @staticmethod
+    def get_learning_rates_dict(config) -> dict[str, float]:
+        """Get all learning rates as a dictionary for easy access."""
+        return {
+            "vision": config.vision_lr,
+            "merger": config.merger_lr,
+            "llm": config.llm_lr,
+            "coordinate": config.coordinate_lr,
+            "adapter": config.adapter_lr,
+        }
+
+    @staticmethod
+    def validate_coordinate_config(config) -> list[str]:
+        """Validate coordinate token configuration."""
+        issues = []
+
+        if hasattr(config, "coordinate_tokens_enabled"):
+            if config.coordinate_tokens_enabled:
+                required_fields = [
+                    "max_coord_value",
+                    "coordinate_loss_weight",
+                    "regular_loss_weight",
+                ]
+                for field in required_fields:
+                    if not hasattr(config, field):
+                        issues.append(
+                            f"Required coordinate config field missing: {field}"
+                        )
+
+        return issues
 
 
 @dataclass
@@ -96,20 +158,14 @@ class DirectConfig:
     disable_tqdm: bool
     verbose: bool
 
-    # Coordinate token configuration (replaces legacy detection)
-    coordinate_tokens_enabled: bool
-    coordinate_config_enable_coordinate_tokens: bool
-    coordinate_config_max_coord_value: int
-    coordinate_config_coord_token_init_std: float
-    coordinate_config_coordinate_loss_weight: float
-    coordinate_config_regular_loss_weight: float
-    coordinate_config_soft_expectation_temperature: float
-    coordinate_config_focal_loss_alpha: float
-    coordinate_config_focal_loss_gamma: float
-    coordinate_config_use_official_box_tokens: bool
-    chat_processor_enable_coordinate_tokens: bool
-    chat_processor_max_coord_value: int
-    chat_processor_use_official_box_tokens: bool
+    # Training control
+    detection_freeze_epochs: int
+
+    # Coordinate token configuration (simplified)
+    coordinate_tokens_enabled: bool  # Enable coordinate token system
+    max_coord_value: int  # Maximum coordinate value
+    coordinate_loss_weight: float  # Weight for coordinate loss
+    regular_loss_weight: float  # Weight for regular LLM loss
 
     # Essential settings
     remove_unused_columns: bool
@@ -124,18 +180,30 @@ class DirectConfig:
     run_name: str
     tb_dir: str
 
-
     # Teacher-Student Loss Weights
     teacher_loss_weight: float
     student_loss_weight: float
-
 
     # Vision processing parameters
     patch_size: int
     merge_size: int
     temporal_patch_size: int
 
-    # === OPTIONAL FIELDS (with defaults) ===
+    # Training control flags
+    training_prompt_style: bool
+    use_consistent_prompts: bool
+
+    # === TRAINING STABILITY SETTINGS (ALL REQUIRED - NO DEFAULTS) ===
+    # Stability thresholds (eliminates getattr fallbacks)
+    max_consecutive_nan: int
+    max_consecutive_zero: int
+    nan_monitoring_window: int
+    max_nan_ratio: float
+
+    # Recovery settings (eliminates getattr fallbacks)
+    nan_recovery_enabled: bool
+    learning_rate_reduction_factor: float
+    gradient_clip_reduction_factor: float
 
     # Runtime properties (added dynamically during initialization)
     run_output_dir: str = ""
@@ -265,10 +333,23 @@ def init_config(config_path: str) -> DirectConfig:
             if target_type is bool and isinstance(value, str):
                 converted_dict[key] = value.lower() in ("true", "1", "yes")
             else:
-                converted_dict[key] = target_type(value)
+                # Handle the case where target_type is a string type name
+                if isinstance(target_type, str):
+                    if target_type == "str":
+                        converted_dict[key] = str(value)
+                    elif target_type == "int":
+                        converted_dict[key] = int(value)
+                    elif target_type == "float":
+                        converted_dict[key] = float(value)
+                    elif target_type == "bool":
+                        converted_dict[key] = bool(value)
+                    else:
+                        raise ValueError(f"Unsupported string type: {target_type}")
+                else:
+                    converted_dict[key] = target_type(value)
         except (ValueError, TypeError) as e:
             raise ValueError(
-                f"Config error: Could not convert '{key}' with value '{value}' to type {target_type.__name__}"
+                f"Config error: Could not convert '{key}' with value '{value}' to type {target_type}"
             ) from e
 
     # Create and populate config using dictionary unpacking
@@ -293,6 +374,9 @@ def init_config(config_path: str) -> DirectConfig:
     # Create directories
     Path(new_config.run_output_dir).mkdir(parents=True, exist_ok=True)
 
+    # EXPLICIT CONFIG: No default assignments - all values must be in YAML
+    # coordinate_config_required_loss_components must be explicitly set in config
+
     # Validate the final configuration
     _validate_config(new_config)
 
@@ -311,23 +395,59 @@ def _validate_config(config: DirectConfig) -> None:
 
     # Coordinate token validation
     if config.coordinate_tokens_enabled:
-        if not hasattr(config, 'coordinate_config_max_coord_value'):
-            raise ValueError("coordinate_config_max_coord_value required when coordinate tokens enabled")
-        if config.coordinate_config_max_coord_value <= 0:
-            raise ValueError("coordinate_config_max_coord_value must be positive")
-        if config.coordinate_config_coordinate_loss_weight < 0:
-            raise ValueError("coordinate_config_coordinate_loss_weight must be non-negative")
-        if config.coordinate_config_regular_loss_weight < 0:
-            raise ValueError("coordinate_config_regular_loss_weight must be non-negative")
-        if config.coordinate_config_soft_expectation_temperature <= 0:
-            raise ValueError("coordinate_config_soft_expectation_temperature must be positive")
-        if not (0.0 <= config.coordinate_config_focal_loss_alpha <= 1.0):
-            raise ValueError("coordinate_config_focal_loss_alpha must be between 0 and 1")
-        if config.coordinate_config_focal_loss_gamma < 0:
-            raise ValueError("coordinate_config_focal_loss_gamma must be non-negative")
+        if config.max_coord_value <= 0:
+            raise ValueError("max_coord_value must be positive")
+        if config.coordinate_loss_weight < 0:
+            raise ValueError("coordinate_loss_weight must be non-negative")
+        if config.regular_loss_weight < 0:
+            raise ValueError("regular_loss_weight must be non-negative")
 
-    if config.coordinate_config_max_coord_value <= 0:
-        raise ValueError("coordinate_config_max_coord_value must be positive")
+
+def set_config(direct_config: DirectConfig) -> None:
+    """
+    Set global configuration directly with a DirectConfig object.
+
+    Args:
+        direct_config: Pre-configured DirectConfig instance
+
+    Raises:
+        RuntimeError: If config is already initialized
+        ValueError: If configuration is invalid
+    """
+    global config
+    if config is not None:
+        raise RuntimeError(
+            "Config already initialized. Call reset_config() first if needed."
+        )
+
+    # Validate the configuration
+    _validate_config(direct_config)
+
+    # --- Automatically derive and set paths (same logic as init_config) ---
+    if not direct_config.run_name:
+        raise ValueError("`run_name` must be defined in the configuration.")
+
+    # 1. Main output directory for the run
+    direct_config.run_output_dir = str(
+        Path(direct_config.output_dir) / direct_config.run_name
+    )
+
+    # 2. TensorBoard directory
+    direct_config.tensorboard_dir = str(
+        Path(direct_config.tb_dir) / direct_config.run_name
+    )
+
+    # 3. Log file directory
+    direct_config.log_file_dir = str(Path(direct_config.run_output_dir) / "logs")
+
+    # Create directories
+    Path(direct_config.run_output_dir).mkdir(parents=True, exist_ok=True)
+
+    # EXPLICIT CONFIG: No default assignments - all values must be explicit
+    # coordinate_config_required_loss_components must be set in DirectConfig constructor
+
+    # Set global config
+    config = direct_config
 
 
 def reset_config() -> None:

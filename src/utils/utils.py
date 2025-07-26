@@ -30,11 +30,9 @@ VISION_START_TOKEN = "<|vision_start|>"
 VISION_END_TOKEN = "<|vision_end|>"
 IMAGE_PAD_TOKEN = "<|image_pad|>"
 
-# Default model paths
-DEFAULT_BASE_MODEL_PATH = (
-    "/data4/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
-)
-DEFAULT_7B_MODEL_PATH = "/data4/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
+# Default model paths (relative to project root)
+DEFAULT_BASE_MODEL_PATH = "model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+DEFAULT_7B_MODEL_PATH = "model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
 
 
 # ============================================================================
@@ -44,8 +42,18 @@ DEFAULT_7B_MODEL_PATH = "/data4/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-7B-I
 
 def format_object_description(obj: Dict[str, Any]) -> str:
     """Format object description as clean JSON."""
-    bbox_2d = obj.get("bbox_2d", [])
-    desc = obj.get("desc", "")
+    # EXPLICIT: Check for required keys without fallbacks
+    if "bbox_2d" not in obj:
+        raise ValueError(
+            f"Object missing required 'bbox_2d' key. Available keys: {list(obj.keys())}"
+        )
+    if "desc" not in obj:
+        raise ValueError(
+            f"Object missing required 'desc' key. Available keys: {list(obj.keys())}"
+        )
+
+    bbox_2d = obj["bbox_2d"]
+    desc = obj["desc"]
 
     # Use simple JSON format without special tokens
     return json.dumps({"bbox_2d": bbox_2d, "desc": desc}, ensure_ascii=False)
@@ -56,8 +64,13 @@ def format_single_round_conversation(data: Dict[str, Any]) -> List[Dict[str, str
     # User message with image placeholder
     user_content = f"{DEFAULT_IMAGE_TOKEN}\nPlease describe the objects in this image with their locations."
 
-    # Assistant response with object descriptions
-    objects = data.get("objects", [])
+    # EXPLICIT: Check for objects without fallback
+    if "objects" not in data:
+        raise ValueError(
+            f"Data missing required 'objects' key. Available keys: {list(data.keys())}"
+        )
+
+    objects = data["objects"]
     if not objects:
         assistant_content = "I don't see any objects in this image."
     else:
@@ -74,11 +87,24 @@ def format_multi_round_conversation(data: Dict[str, Any]) -> str:
     """Format multi-round conversation with teachers."""
     conversation = []
 
-    # Add teachers first
-    teachers = data.get("teachers", data.get("examples", []))
+    # EXPLICIT: Check for teachers/examples without nested fallbacks
+    teachers = []
+    if "teachers" in data:
+        teachers = data["teachers"]
+    elif "examples" in data:
+        teachers = data["examples"]
+    # If neither exists, teachers remains empty list
+
     for teacher in teachers:
         conversation.append("User: [IMAGE]")
-        teacher_objects = teacher.get("objects", [])
+
+        # EXPLICIT: Check for objects in teacher
+        if "objects" not in teacher:
+            raise ValueError(
+                f"Teacher missing required 'objects' key. Available keys: {list(teacher.keys())}"
+            )
+
+        teacher_objects = teacher["objects"]
         if teacher_objects:
             # Format as JSON array
             objects_json = json.dumps(
@@ -94,10 +120,16 @@ def format_multi_round_conversation(data: Dict[str, Any]) -> str:
     return "\n".join(conversation)
 
 
+from typing import Union
+
+
 def format_conversation(
     data: Dict[str, Any], multi_round: bool = False
-) -> List[Dict[str, str]]:
-    """Format conversation based on mode."""
+) -> Union[List[Dict[str, str]], str]:
+    """
+    Format conversation based on mode.
+    Returns a list of dicts for single round, or a string for multi-round.
+    """
     if multi_round:
         return format_multi_round_conversation(data)
     else:
@@ -209,7 +241,10 @@ def prepare_inputs_for_generate(
         raise ValueError("input_ids required for generation")
 
     input_ids = inputs["input_ids"]
-    labels = inputs.get("labels")
+    # FAIL FAST: labels should be explicit when needed for this operation
+    labels = inputs.get(
+        "labels"
+    )  # Keep .get() for backward compatibility in generation
     batch_size = input_ids.size(0)
 
     # Find prompt end positions if not provided

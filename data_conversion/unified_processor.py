@@ -12,18 +12,33 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from data_conversion.coordinate_manager import CoordinateManager, FormatConverter, DataValidator, StructureValidator
+# TeacherSelector now integrated as nested class
+from data_conversion.config import DataConversionConfig
+from data_conversion.coordinate_manager import (
+    CoordinateManager,
+    DataValidator,
+    FormatConverter,
+    StructureValidator,
+)
 from data_conversion.data_splitter import DataSplitter
 from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
-from data_conversion.vision_process import ImageProcessor
-# TeacherSelector now integrated as nested class
-
-from data_conversion.config import DataConversionConfig
 from data_conversion.utils.file_ops import FileOperations
+from data_conversion.validation_manager import ValidationManager
+from data_conversion.vision_process import ImageProcessor
 
 
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Configure UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +47,7 @@ class UnifiedProcessor:
     """Streamlined orchestrator for the unified data processing pipeline."""
 
     def __init__(self, config: DataConversionConfig):
-        """Initialize with configuration."""
+        """Initialize processor with configuration."""
         self.config = config
         self.input_dir = Path(config.input_dir)
         self.output_dir = config.get_dataset_output_dir()
@@ -68,6 +83,19 @@ class UnifiedProcessor:
             seed=config.seed,
         )
         self.data_splitter = DataSplitter(val_ratio=config.val_ratio, seed=config.seed)
+
+        # Initialize validation manager with strict validation
+        self.validation_manager = ValidationManager(
+            validation_mode="strict",
+            min_object_size=10,
+            max_coordinate_value=50000,
+            require_non_empty_description=True,
+            check_coordinate_bounds=True,
+        )
+
+        # Track invalid objects and samples for reporting
+        self.invalid_objects = []
+        self.invalid_samples = []
 
         logger.info("UnifiedProcessor initialized successfully (Chinese-only mode)")
 
@@ -157,10 +185,16 @@ class UnifiedProcessor:
             x1, y1 = coords[0]
             x2, y2 = coords[1]
             bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
-            # Clean bbox coordinates for VLM training
-            from utils.transformations import CoordinateTransformer
-
-            bbox = CoordinateTransformer.clean_bbox_coordinates(bbox)
+            # Clean bbox coordinates for VLM training - ensure proper ordering and bounds
+            bbox = [max(0, coord) for coord in bbox]  # Remove any negative coordinates
+            # Ensure min <= max for both x and y
+            x_min, y_min, x_max, y_max = bbox
+            bbox = [
+                min(x_min, x_max),
+                min(y_min, y_max),
+                max(x_min, x_max),
+                max(y_min, y_max),
+            ]
 
             properties = item.get("properties", {}) or {}
             content_dict = self.extract_content_fields(properties)
@@ -222,7 +256,7 @@ class UnifiedProcessor:
                 )
 
             if not objects:
-                logger.debug(f"No valid objects found in {json_path.name}")
+                logger.warning(f"No valid objects found in {json_path.name}")
                 return None
 
             # Apply unified coordinate transformation pipeline
@@ -233,6 +267,28 @@ class UnifiedProcessor:
                 )
             )
             objects = processed_sample["objects"]
+
+            # Process objects (validation step has been removed)
+            objects = self._filter_valid_objects(
+                objects, final_width, final_height, str(image_path.name)
+            )
+
+            if not objects:
+                # Track invalid sample for reporting
+                invalid_sample = {
+                    "sample_id": str(json_path.name),
+                    "reason": "no_valid_objects",
+                    "original_object_count": len(sample_data.get("objects", [])),
+                    "image_path": str(image_path),
+                    "json_path": str(json_path),
+                }
+                self.invalid_samples.append(invalid_sample)
+
+                # Skip sample if no objects
+                logger.warning(
+                    f"No valid objects for {json_path.name}, skipping sample"
+                )
+                return None
 
             # Sort objects by position using first coordinate pair
             def get_sort_key(obj):
@@ -268,6 +324,33 @@ class UnifiedProcessor:
             if self.config.fail_fast:
                 raise
             return None
+
+    def _filter_valid_objects(
+        self, objects: List[Dict], img_w: int, img_h: int, image_id: str
+    ) -> List[Dict]:
+        """Filter objects using comprehensive validation with reporting."""
+        if not objects:
+            return objects
+
+        # Use ValidationManager to filter objects
+        valid_objects, invalid_objects = self.validation_manager.filter_valid_objects(
+            objects, img_w, img_h, image_id
+        )
+
+        # Track invalid objects for reporting
+        self.invalid_objects.extend(invalid_objects)
+
+        # Log validation results
+        if invalid_objects:
+            logger.warning(
+                f"Filtered out {len(invalid_objects)} invalid objects from {image_id}: "
+                f"{len(valid_objects)} valid objects remaining"
+            )
+            logger.debug(
+                f"Invalid objects details: {[obj.get('_validation_errors', []) for obj in invalid_objects]}"
+            )
+
+        return valid_objects
 
     def _process_sample_coordinates_unified(
         self,
@@ -341,10 +424,8 @@ class UnifiedProcessor:
             raise ValueError(f"No supported geometry type in first object: {first_obj}")
 
         # Use unified geometry transformation for dimension calculation
-        final_bbox, final_geometry, final_width, final_height = (
-            CoordinateManager.transform_geometry_complete(
-                geometry_input, image_path, json_width, json_height, enable_smart_resize
-            )
+        _, _, final_width, final_height = CoordinateManager.transform_geometry_complete(
+            geometry_input, image_path, json_width, json_height, enable_smart_resize
         )
 
         # Process all objects with their native geometry
@@ -480,28 +561,38 @@ class UnifiedProcessor:
     def split_into_sets(
         self, all_samples: List[Dict]
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Split samples into train/val/teacher sets."""
-        logger.info("📊 Selecting teacher samples...")
+        """Split samples into training, validation, and teacher sets.
 
-        # Select teacher samples
-        teacher_samples, teacher_indices = self.teacher_selector.select_teachers(
-            all_samples
+        All samples remain in flat format without any teacher-student nesting.
+
+        Args:
+            all_samples: List of all processed samples
+
+        Returns:
+            Tuple of (train_samples, val_samples, teacher_samples)
+        """
+        logger.info(f"📊 Splitting {len(all_samples)} samples...")
+
+        # Create data splitter
+        data_splitter = DataSplitter(
+            val_ratio=self.config.val_ratio, seed=self.config.seed
         )
 
-        # Remove teacher samples from student pool
-        teacher_image_paths = {sample["images"][0] for sample in teacher_samples}
-        student_samples = [
-            sample
-            for sample in all_samples
-            if sample["images"][0] not in teacher_image_paths
+        # Select teacher samples first (before train/val split)
+        teacher_selector = self.teacher_selector
+        teacher_samples, teacher_indices = teacher_selector.select_teachers(all_samples)
+
+        # Remove teacher samples from the pool
+        remaining_samples = [
+            s for i, s in enumerate(all_samples) if i not in teacher_indices
         ]
 
-        logger.info(f"📚 Teacher pool: {len(teacher_samples)} samples")
-        logger.info(f"🎓 Student pool: {len(student_samples)} samples")
+        # Split remaining samples into train and validation sets
+        train_samples, val_samples = data_splitter.split(remaining_samples)
 
-        # Split student samples into train/val
-        logger.info("🔧 Splitting train/validation data...")
-        train_samples, val_samples = self.data_splitter.split(student_samples)
+        logger.info(
+            f"✅ Split complete: {len(train_samples)} train, {len(val_samples)} val, {len(teacher_samples)} teacher samples"
+        )
 
         return train_samples, val_samples, teacher_samples
 
@@ -511,22 +602,61 @@ class UnifiedProcessor:
         val_samples: List[Dict],
         teacher_samples: List[Dict],
     ) -> None:
-        """Write all output files."""
-        logger.info("💾 Writing output files...")
+        """Write output files in flat format only.
 
-        # Write individual JSONL files
+        All files are written in the same flat format: {'images': [...], 'objects': [...]}
+        No nested teacher-student structure is used.
+        """
+        logger.info("📾 Writing output files...")
+
+        # Write all files in flat format (no teacher-student nesting)
         FileOperations.write_jsonl(train_samples, self.output_dir / "train.jsonl")
         FileOperations.write_jsonl(val_samples, self.output_dir / "val.jsonl")
-        FileOperations.write_jsonl(teacher_samples, self.output_dir / "teacher.jsonl")
+        FileOperations.write_jsonl(
+            teacher_samples, self.output_dir / "teacher_pool.jsonl"
+        )
 
-        # Write combined file
-        all_samples = teacher_samples + train_samples + val_samples
-        FileOperations.write_jsonl(all_samples, self.output_dir / "all_samples.jsonl")
+        # Write all samples in flat format
+        all_direct_samples = teacher_samples + train_samples + val_samples
+        FileOperations.write_jsonl(
+            all_direct_samples, self.output_dir / "all_samples.jsonl"
+        )
 
-        # Extract and export unique labels
-        self._export_label_vocabulary(all_samples)
+        # Extract and export unique labels from original samples
+        self._export_label_vocabulary(all_direct_samples)
+
+        # Export validation reports
+        self._export_validation_reports()
 
         logger.info("📊 Output files written successfully")
+        logger.info(
+            f"   📚 All samples (flat format): all_samples.jsonl ({len(all_direct_samples)} samples)"
+        )
+        logger.info(
+            f"   🎓 Training files (flat format): train.jsonl ({len(train_samples)} samples), val.jsonl ({len(val_samples)} samples)"
+        )
+        logger.info(
+            f"   📚 Teacher pool (flat format): teacher_pool.jsonl ({len(teacher_samples)} samples)"
+        )
+
+    def _convert_to_teacher_student_format(
+        self, student_samples: List[Dict], teacher_pool: List[Dict]
+    ) -> List[Dict]:
+        """DEPRECATED: No longer needed as we use flat format only.
+
+        This method is kept for backward compatibility but now simply returns
+        the student samples without any transformation to teacher-student format.
+
+        Args:
+            student_samples: List of samples to use as students
+            teacher_pool: Pool of teacher samples (unused)
+
+        Returns:
+            List of samples in flat format (unchanged)
+        """
+        # Simply return the samples without any transformation
+        # This ensures all files use the flat format
+        return student_samples.copy()
 
     def _export_label_vocabulary(self, all_samples: List[Dict]) -> None:
         """Extract and export unique labels from all samples."""
@@ -543,8 +673,6 @@ class UnifiedProcessor:
                     full_descriptions.add(desc)
 
                     # Parse description to extract components
-                    from data_conversion.coordinate_manager import FormatConverter
-
                     components = FormatConverter.parse_description_string(desc)
 
                     obj_type = components.get("object_type", "").strip()
@@ -603,6 +731,56 @@ class UnifiedProcessor:
         logger.info(f"   🏷️  {len(properties)} properties")
         logger.info(f"   📝 {len(full_descriptions)} complete descriptions")
 
+    def _export_validation_reports(self) -> None:
+        """Export comprehensive validation reports including invalid samples and objects."""
+        logger.info("📋 Exporting validation reports...")
+
+        # Export ValidationManager reports
+        validation_files = self.validation_manager.export_validation_reports(
+            self.output_dir
+        )
+
+        # Export invalid objects with detailed error information
+        if self.invalid_objects:
+            invalid_objects_path = self.output_dir / "invalid_objects.jsonl"
+            FileOperations.write_jsonl(self.invalid_objects, invalid_objects_path)
+            logger.info(
+                f"📋 Exported {len(self.invalid_objects)} invalid objects to {invalid_objects_path}"
+            )
+
+        # Export invalid samples summary
+        if self.invalid_samples:
+            invalid_samples_path = self.output_dir / "invalid_samples.jsonl"
+            FileOperations.write_jsonl(self.invalid_samples, invalid_samples_path)
+            logger.info(
+                f"📋 Exported {len(self.invalid_samples)} invalid samples to {invalid_samples_path}"
+            )
+
+        # Generate validation summary statistics
+        validation_summary = {
+            "total_invalid_objects": len(self.invalid_objects),
+            "total_invalid_samples": len(self.invalid_samples),
+            "validation_manager_stats": self.validation_manager.generate_validation_summary(),
+            "invalid_sample_reasons": {},
+            "timestamp": self._get_current_timestamp(),
+        }
+
+        # Count reasons for invalid samples
+        for sample in self.invalid_samples:
+            reason = sample.get("reason", "unknown")
+            validation_summary["invalid_sample_reasons"][reason] = (
+                validation_summary["invalid_sample_reasons"].get(reason, 0) + 1
+            )
+
+        # Export validation summary
+        summary_path = self.output_dir / "validation_report.json"
+        FileOperations.save_json_data(validation_summary, summary_path, indent=2)
+
+        logger.info("✅ Validation reports exported successfully")
+        logger.info(f"   📊 {len(self.invalid_objects)} invalid objects")
+        logger.info(f"   📊 {len(self.invalid_samples)} invalid samples")
+        logger.info(f"   📋 Detailed reports: {list(validation_files.keys())}")
+
     def _get_current_timestamp(self) -> str:
         """Get current timestamp in ISO format."""
         from datetime import datetime
@@ -632,23 +810,33 @@ class UnifiedProcessor:
         # Step 4: Write output files
         self.write_outputs(train_samples, val_samples, teacher_samples)
 
-        # Chinese-only mode - no token mapping needed
+        # Validation steps have been removed
 
-        # Final summary
+        # Final summary with validation statistics
         result = {
             "train": len(train_samples),
             "val": len(val_samples),
             "teacher": len(teacher_samples),
             "total_processed": len(all_samples),
+            "total_invalid_objects": len(self.invalid_objects),
+            "total_invalid_samples": len(self.invalid_samples),
+            "validation_success_rate": self.validation_manager.valid_samples
+            / max(1, self.validation_manager.total_samples_processed),
         }
 
         logger.info("🎉 Pipeline completed successfully!")
         logger.info("📊 Final Output:")
         logger.info(f"   Training: {result['train']} samples → train.jsonl")
         logger.info(f"   Validation: {result['val']} samples → val.jsonl")
-        logger.info(f"   Teacher: {result['teacher']} samples → teacher.jsonl")
+        logger.info(f"   Teacher: {result['teacher']} samples → teacher_pool.jsonl")
         logger.info(
             f"   Combined: {result['total_processed']} samples → all_samples.jsonl"
+        )
+        logger.info("🔍 Validation Summary:")
+        logger.info(f"   Invalid objects filtered: {result['total_invalid_objects']}")
+        logger.info(f"   Invalid samples skipped: {result['total_invalid_samples']}")
+        logger.info(
+            f"   Validation success rate: {result['validation_success_rate']:.2%}"
         )
 
         return result
@@ -755,7 +943,9 @@ class TeacherSelector:
             return [], []
 
         if len(samples) <= self.max_teachers:
-            logger.info(f"Using all {len(samples)} samples as teachers (below max_teachers)")
+            logger.info(
+                f"Using all {len(samples)} samples as teachers (below max_teachers)"
+            )
             return samples, list(range(len(samples)))
 
         # Set random seed for reproducibility
@@ -769,14 +959,16 @@ class TeacherSelector:
             spatial_coverage = self._calculate_spatial_coverage(sample)
             geometry_diversity = self._calculate_geometry_diversity(sample)
 
-            metadata_list.append({
-                "index": i,
-                "labels": labels,
-                "density": density,
-                "spatial_coverage": spatial_coverage,
-                "geometry_diversity": geometry_diversity,
-                "label_count": len(labels),
-            })
+            metadata_list.append(
+                {
+                    "index": i,
+                    "labels": labels,
+                    "density": density,
+                    "spatial_coverage": spatial_coverage,
+                    "geometry_diversity": geometry_diversity,
+                    "label_count": len(labels),
+                }
+            )
 
         logger.debug(f"Calculated metadata for {len(metadata_list)} samples")
 
@@ -797,10 +989,14 @@ class TeacherSelector:
                 covered_labels.update(metadata["labels"])
                 object_types_needed -= sample_object_types
                 density_counts[metadata["density"]] += 1
-                logger.debug(f"Selected sample {metadata['index']} for object types: {sample_object_types}")
+                logger.debug(
+                    f"Selected sample {metadata['index']} for object types: {sample_object_types}"
+                )
 
         # Priority 2: Fill remaining slots with diverse samples
-        remaining_metadata = [m for m in metadata_list if m["index"] not in selected_indices]
+        remaining_metadata = [
+            m for m in metadata_list if m["index"] not in selected_indices
+        ]
 
         # Score remaining samples by uncovered labels + diversity factors
         for metadata in remaining_metadata:
@@ -812,7 +1008,9 @@ class TeacherSelector:
 
             # Density diversity bonus (prefer underrepresented density types)
             min_density_count = min(density_counts.values())
-            density_bonus = 2 if density_counts[metadata["density"]] == min_density_count else 0
+            density_bonus = (
+                2 if density_counts[metadata["density"]] == min_density_count else 0
+            )
 
             # Geometry diversity bonus
             geometry_bonus = metadata["geometry_diversity"] * 1.5
@@ -820,7 +1018,9 @@ class TeacherSelector:
             # Spatial coverage bonus
             spatial_bonus = metadata["spatial_coverage"] * 1.0
 
-            total_score = uncovered_score + density_bonus + geometry_bonus + spatial_bonus
+            total_score = (
+                uncovered_score + density_bonus + geometry_bonus + spatial_bonus
+            )
 
             metadata["diversity_score"] = total_score
 
@@ -858,8 +1058,9 @@ class TeacherSelector:
 def main():
     """Main entry point with CLI argument parsing."""
     import argparse
+
     from config import setup_logging, validate_config
-    
+
     parser = argparse.ArgumentParser(description="Data Processor for Qwen2.5-VL")
 
     # Required arguments

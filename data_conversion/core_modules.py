@@ -19,12 +19,21 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
-# Set UTF-8 encoding for stdout/stderr
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+# Set UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
+
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -161,7 +170,7 @@ class ResponseFormatter:
 
     @staticmethod
     def format_to_string(
-        content_dict: Dict[str, Any], response_types: Set[str] = None
+        content_dict: Dict[str, Any], response_types: Optional[Set[str]] = None
     ) -> str:
         """Convert content dictionary to string format with flexible response types."""
         if response_types is None:
@@ -244,7 +253,7 @@ class ObjectProcessor:
     @staticmethod
     def sort_objects_by_position(
         objects_ref: List[Any], objects_bbox: List[List[float]]
-    ) -> tuple:
+    ) -> Tuple[List[Any], List[List[float]]]:
         """Sort objects by bounding bbox_2d coordinates (top-left to bottom-right)."""
         if not objects_ref or not objects_bbox or len(objects_ref) != len(objects_bbox):
             return objects_ref, objects_bbox
@@ -257,14 +266,16 @@ class ObjectProcessor:
 
         # Separate back into sorted lists
         if combined_objects:
-            objects_ref, objects_bbox = zip(*combined_objects)
-            return list(objects_ref), list(objects_bbox)
+            objects_ref_tuple, objects_bbox_tuple = zip(*combined_objects)
+            return list(objects_ref_tuple), list(objects_bbox_tuple)
         else:
             return [], []
 
     @staticmethod
     def validate_bbox(
-        bbox: List[float], image_width: int = None, image_height: int = None
+        bbox: List[float],
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
     ) -> bool:
         """
         Validate a single bounding bbox_2d with enhanced checks.
@@ -314,7 +325,7 @@ class ObjectProcessor:
         original_height: int,
         new_width: int,
         new_height: int,
-    ) -> List[int]:
+    ) -> List[float]:
         """
         Scale a bounding bbox_2d from the original image dimensions to the resized
         dimensions.
@@ -348,7 +359,12 @@ class ObjectProcessor:
         new_x_max = max(scaled_x1, scaled_x2)
         new_y_max = max(scaled_y1, scaled_y2)
 
-        final_bbox = [new_x_min, new_y_min, new_x_max, new_y_max]
+        final_bbox = [
+            float(new_x_min),
+            float(new_y_min),
+            float(new_x_max),
+            float(new_y_max),
+        ]
 
         # Validate the scaled bounding bbox_2d against the new image dimensions
         ObjectProcessor.validate_bbox(
@@ -359,7 +375,13 @@ class ObjectProcessor:
 
 
 class DataValidator:
-    """Handles data validation and error checking."""
+    """
+    Handles data validation and error checking.
+    
+    DEPRECATED: This class is for legacy conversation format and is superseded by
+    ValidationManager and DataValidator in coordinate_manager.py.
+    Use ValidationManager for comprehensive validation with reporting.
+    """
 
     @staticmethod
     def validate_sample_structure(sample: Dict[str, Any]) -> bool:
@@ -426,7 +448,7 @@ def load_token_map(token_map_path: Union[str, Path]) -> Dict[str, str]:
 
 
 def convert_to_string_format(
-    content_dict: Dict[str, Any], response_types: Set[str] = None
+    content_dict: Dict[str, Any], response_types: Optional[Set[str]] = None
 ) -> str:
     """Convenience function for string formatting."""
     return ResponseFormatter.format_to_string(content_dict, response_types)

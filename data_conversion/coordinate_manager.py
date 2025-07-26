@@ -45,6 +45,8 @@ class CoordinateManager:
 
             # Apply EXIF orientation to get transformed dimensions
             transformed_img = ImageOps.exif_transpose(img)
+            if transformed_img is None:
+                transformed_img = img
             new_width, new_height = transformed_img.size
 
             is_transformed = (
@@ -66,7 +68,7 @@ class CoordinateManager:
         original_height: int,
         new_width: int,
         new_height: int,
-        exif_orientation: int = None,
+        exif_orientation: Optional[int] = None,
     ) -> List[float]:
         """
         Transform bbox coordinates to account for EXIF orientation changes.
@@ -295,7 +297,7 @@ class CoordinateManager:
                     f"Applied smart resize: {current_width}x{current_height} (within MAX_PIXELS={MAX_PIXELS})"
                 )
 
-        return current_bbox, current_width, current_height
+        return [float(x) for x in current_bbox], current_width, current_height
 
     @staticmethod
     def validate_bbox_bounds(bbox: List[float], width: int, height: int) -> bool:
@@ -662,13 +664,12 @@ class CoordinateManager:
 
         return result_geometry
 
-
     # ============================================================================
     # GEOMETRY PROCESSING METHODS (merged from GeometryProcessor)
     # ============================================================================
 
     @staticmethod
-    def extract_bbox_from_geometry(geometry_input: Union[List, Dict]) -> List[int]:
+    def extract_bbox_from_geometry(geometry_input: Union[List, Dict]) -> List[float]:
         """
         Extract bounding box from any geometry type.
 
@@ -676,14 +677,14 @@ class CoordinateManager:
             geometry_input: Geometry data (bbox list, GeoJSON geometry object, etc.)
 
         Returns:
-            [x1, y1, x2, y2] bounding box coordinates (integers)
+            [x1, y1, x2, y2] bounding box coordinates (floats)
         """
         if not geometry_input:
-            return [0, 0, 0, 0]
+            return [0.0, 0.0, 0.0, 0.0]
 
         # Handle simple bbox list
         if isinstance(geometry_input, list) and len(geometry_input) == 4:
-            return CoordinateManager.round_coordinates_to_int(geometry_input)
+            return [float(x) for x in geometry_input]
 
         # Handle GeoJSON-style geometry object
         if isinstance(geometry_input, dict):
@@ -709,10 +710,10 @@ class CoordinateManager:
             y_min, y_max = min(y_coords), max(y_coords)
 
             bbox = [
-                int(round(x_min)),
-                int(round(y_min)),
-                int(round(x_max)),
-                int(round(y_max)),
+                float(round(x_min)),
+                float(round(y_min)),
+                float(round(x_max)),
+                float(round(y_max)),
             ]
             logger.debug(
                 f"Extracted bbox {bbox} from {geometry_type} with {len(all_points)} points"
@@ -720,7 +721,7 @@ class CoordinateManager:
             return bbox
 
         logger.warning(f"Unknown geometry input type: {type(geometry_input)}")
-        return [0, 0, 0, 0]
+        return [0.0, 0.0, 0.0, 0.0]
 
     @staticmethod
     def get_all_coordinate_points(
@@ -910,7 +911,7 @@ class CoordinateManager:
     @staticmethod
     def extract_hierarchical_geometry(
         geometry_input: Union[List, Dict], preferred_format: str = "auto"
-    ) -> Dict[str, Union[List[float], Dict]]:
+    ) -> Dict[str, Union[List[float], Dict, Any]]:
         """
         Extract geometry in hierarchical learning format with multiple annotation types.
 
@@ -939,7 +940,7 @@ class CoordinateManager:
 
             # Extract bbox for all types (always available)
             bbox = CoordinateManager.extract_bbox_from_geometry(geometry_input)
-            result = {"bbox_2d": bbox}
+            result: Dict[str, Union[List[float], Dict, Any]] = {"bbox_2d": bbox}
 
             # Determine appropriate annotation format based on geometry type and preference
             if geometry_type == "LineString" and (preferred_format in ["line", "auto"]):
@@ -969,6 +970,7 @@ class CoordinateManager:
             return result
 
         logger.warning(f"Unknown geometry input type: {type(geometry_input)}")
+        # Return a dictionary with a valid bbox_2d list to match expected type
         return {"bbox_2d": [0.0, 0.0, 0.0, 0.0]}
 
     @staticmethod
@@ -1105,32 +1107,32 @@ class FormatConverter:
 # Merged from utils/validators.py - DataValidator and StructureValidator classes
 class DataValidator:
     """Validates data structures and content."""
-    
+
     @staticmethod
     def validate_bbox(
-        bbox: List[float], 
-        image_width: Optional[int] = None, 
-        image_height: Optional[int] = None
+        bbox: List[float],
+        image_width: Optional[int] = None,
+        image_height: Optional[int] = None,
     ) -> bool:
         """
         Validate a single bounding box with enhanced checks.
-        
+
         Args:
             bbox: A list of 4 numbers [x_min, y_min, x_max, y_max]
             image_width: Optional width to check bounds
             image_height: Optional height to check bounds
-            
+
         Raises:
             ValueError: If the bounding box is invalid
         """
         if not isinstance(bbox, list) or len(bbox) != 4:
             raise ValueError(f"Bbox must be a list of 4 elements, got: {bbox}")
-        
+
         if not all(isinstance(coord, (int, float)) for coord in bbox):
             raise ValueError(f"Bbox coordinates must be numbers, got: {bbox}")
-        
+
         x_min, y_min, x_max, y_max = bbox
-        
+
         # Ensure correct ordering
         if x_min > x_max:
             x_min, x_max = x_max, x_min
@@ -1138,81 +1140,89 @@ class DataValidator:
         if y_min > y_max:
             y_min, y_max = y_max, y_min
             bbox = [x_min, y_min, x_max, y_max]
-        
+
         # Allow zero-width or zero-height bboxes (for lines)
         if x_min > x_max or y_min > y_max:
             raise ValueError(
                 f"Invalid bbox: x_min <= x_max and y_min <= y_max required, got: {bbox}"
             )
-        
+
         if x_min < 0 or y_min < 0 or x_max < 0 or y_max < 0:
             raise ValueError(f"Bbox coordinates cannot be negative, got: {bbox}")
-        
+
         if image_width is not None and image_height is not None:
             if x_max > image_width or y_max > image_height:
                 raise ValueError(
                     f"Bbox {bbox} exceeds image dimensions ({image_width}x{image_height})"
                 )
-        
+
         return True
-    
+
     @staticmethod
     def validate_square(square) -> bool:
         """Validate square format [x1, y1, x2, y2, x3, y3, x4, y4]."""
         if not isinstance(square, list) or len(square) != 8:
             raise ValueError(f"Square must be list of 8 numbers, got {square}")
-        
+
         for i, coord in enumerate(square):
             if not isinstance(coord, (int, float)):
-                raise ValueError(f"Square coordinate {i} must be number, got {type(coord)}")
-        
+                raise ValueError(
+                    f"Square coordinate {i} must be number, got {type(coord)}"
+                )
+
         return True
-    
-    @staticmethod 
+
+    @staticmethod
     def validate_line(line) -> bool:
         """Validate line format [x1, y1, x2, y2, ..., xn, yn]."""
         if not isinstance(line, list) or len(line) < 4 or len(line) % 2 != 0:
-            raise ValueError(f"Line must be list of even number of coordinates (>=4), got {line}")
-        
+            raise ValueError(
+                f"Line must be list of even number of coordinates (>=4), got {line}"
+            )
+
         for i, coord in enumerate(line):
             if not isinstance(coord, (int, float)):
-                raise ValueError(f"Line coordinate {i} must be number, got {type(coord)}")
-        
+                raise ValueError(
+                    f"Line coordinate {i} must be number, got {type(coord)}"
+                )
+
         return True
-    
+
     @staticmethod
     def validate_sample_structure(sample: Dict[str, Any]) -> bool:
         """Validate basic sample structure for training data."""
         required_fields = ["images", "objects"]
-        
+
         for field in required_fields:
             if field not in sample:
                 raise ValueError(f"Missing required field: {field}")
-        
+
         # Validate images field
         images = sample.get("images")
         if not isinstance(images, list) or len(images) == 0:
             raise ValueError("Field 'images' must be a non-empty list")
-        
+
         # Validate objects field
         objects = sample.get("objects")
         if not isinstance(objects, list):
             raise ValueError("Field 'objects' must be a list")
-        
+
         # Validate each object
         for i, obj in enumerate(objects):
             if not isinstance(obj, dict):
                 raise ValueError(f"Object {i} must be a dictionary")
-            
+
             # Check for required desc field
             if "desc" not in obj:
                 raise ValueError(f"Object {i} missing 'desc'")
-            
+
             # Check for at least one geometry type
             geometry_types = ["bbox_2d", "square", "line"]
             if not any(geom_type in obj for geom_type in geometry_types):
-                raise ValueError(f"Object {i} missing geometry type (bbox_2d, square, or line)")
-            
+                raise ValueError(
+                    f"Object {i} missing geometry type (bbox_2d, square, or line)"
+                )
+
             # Validate geometry coordinates
             if "bbox_2d" in obj:
                 DataValidator.validate_bbox(obj["bbox_2d"])
@@ -1220,72 +1230,74 @@ class DataValidator:
                 DataValidator.validate_square(obj["square"])
             elif "line" in obj:
                 DataValidator.validate_line(obj["line"])
-            
+
             # Validate description
             desc = obj["desc"]
             if not isinstance(desc, str) or not desc.strip():
                 raise ValueError(f"Object {i} 'desc' must be non-empty string")
-        
+
         return True
 
 
 class StructureValidator:
     """Validates pipeline structures and outputs."""
-    
+
     @staticmethod
     def validate_pipeline_output(
-        train_samples: List[Dict], 
-        val_samples: List[Dict], 
-        teacher_samples: List[Dict]
+        train_samples: List[Dict], val_samples: List[Dict], teacher_samples: List[Dict]
     ) -> bool:
         """Validate complete pipeline output."""
         if not train_samples:
             raise ValueError("Training samples cannot be empty")
-        
+
         # For small datasets, validation samples can be empty
         if not val_samples and len(train_samples) > 1:
-            raise ValueError("Validation samples cannot be empty when multiple training samples exist")
-        
+            raise ValueError(
+                "Validation samples cannot be empty when multiple training samples exist"
+            )
+
         # For very small datasets, teacher samples can be empty
         if not teacher_samples and len(train_samples) + len(val_samples) > 2:
-            raise ValueError("Teacher samples cannot be empty when sufficient samples exist")
-        
+            raise ValueError(
+                "Teacher samples cannot be empty when sufficient samples exist"
+            )
+
         # Validate sample structures
         for i, sample in enumerate(train_samples):
             try:
                 DataValidator.validate_sample_structure(sample)
             except ValueError as e:
                 raise ValueError(f"Train sample {i}: {e}")
-        
+
         for i, sample in enumerate(val_samples):
             try:
                 DataValidator.validate_sample_structure(sample)
             except ValueError as e:
                 raise ValueError(f"Validation sample {i}: {e}")
-        
+
         for i, sample in enumerate(teacher_samples):
             try:
                 DataValidator.validate_sample_structure(sample)
             except ValueError as e:
                 raise ValueError(f"Teacher sample {i}: {e}")
-        
+
         # Check for overlap between sets
         train_images = {sample["images"][0] for sample in train_samples}
         val_images = {sample["images"][0] for sample in val_samples}
         teacher_images = {sample["images"][0] for sample in teacher_samples}
-        
+
         if train_images & val_images:
             raise ValueError("Training and validation sets have overlapping images")
-        
+
         if train_images & teacher_images:
             raise ValueError("Training and teacher sets have overlapping images")
-        
+
         if val_images & teacher_images:
             raise ValueError("Validation and teacher sets have overlapping images")
-        
+
         logger.info(
             f"Pipeline output validation passed: "
             f"{len(train_samples)} train, {len(val_samples)} val, {len(teacher_samples)} teacher"
         )
-        
+
         return True

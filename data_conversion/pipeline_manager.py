@@ -2,7 +2,13 @@
 """
 Unified Pipeline Manager
 
-Replaces the complex bash script with a Python-based pipeline manager
+DEPRECATED: This alternative pipeline implementation is superseded by unified_processor.py
+which is the standard entry point used by convert_dataset.sh.
+
+This file is kept for reference but should not be used in production.
+Use unified_processor.py directly or through convert_dataset.sh instead.
+
+Original purpose: Replaces the complex bash script with a Python-based pipeline manager
 that provides better error handling, logging, and progress tracking.
 """
 
@@ -11,20 +17,108 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from unified_processor import UnifiedProcessor
+from data_conversion.config import DataConversionConfig
+from data_conversion.coordinate_manager import FormatConverter
+from data_conversion.unified_processor import UnifiedProcessor
+from data_conversion.utils.file_ops import FileOperations
+from data_conversion.vision_process import ImageProcessor
 
-from config import DataConversionConfig, setup_logging, validate_config
-from utils.file_ops import FileOperations
-from utils.transformations import FormatConverter
-from core_modules import TokenMapper
 
+# Set UTF-8 encoding for stdout/stderr if supported
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        getattr(sys.stdout, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
+try:
+    if hasattr(sys.stderr, "reconfigure"):
+        getattr(sys.stderr, "reconfigure")(encoding="utf-8")
+except (AttributeError, TypeError):
+    pass
 
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(config: DataConversionConfig) -> None:
+    """Set up logging based on configuration."""
+    log_level = getattr(logging, config.log_level.upper(), logging.INFO)
+
+    # Configure root logger
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
+    )
+
+    logger.info(f"Logging initialized at level {config.log_level}")
+
+
+def validate_config(config: DataConversionConfig) -> bool:
+    """Validate configuration settings."""
+    # Check required paths
+    input_dir = Path(config.input_dir)
+    if not input_dir.exists():
+        logger.error(f"Input directory does not exist: {input_dir}")
+        return False
+
+    # Check output directory
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check token map if specified
+    if config.token_map_path and not Path(config.token_map_path).exists():
+        logger.warning(f"Token map file not found: {config.token_map_path}")
+
+    # Check hierarchy if specified
+    if config.hierarchy_path and not Path(config.hierarchy_path).exists():
+        logger.warning(f"Hierarchy file not found: {config.hierarchy_path}")
+
+    return True
+
+
+class TokenMapper:
+    """Maps tokens in content according to a mapping dictionary."""
+
+    def __init__(self, token_map: Dict[str, str]):
+        """Initialize with token mapping dictionary."""
+        self.token_map = token_map
+
+    def apply_to_content_zh(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply token mapping to Chinese content dictionary."""
+        if not content or not isinstance(content, dict):
+            return content
+
+        result = {}
+        for key, value in content.items():
+            if isinstance(value, str):
+                # Apply mapping to string values
+                mapped_value = self._map_string(value)
+                result[key] = mapped_value
+            elif isinstance(value, list):
+                # Apply mapping to each item in list
+                result[key] = [
+                    self._map_string(item) if isinstance(item, str) else item
+                    for item in value
+                ]
+            else:
+                # Keep other types unchanged
+                result[key] = value
+
+        return result
+
+    def _map_string(self, text: str) -> str:
+        """Apply token mapping to a single string."""
+        if not text:
+            return text
+
+        result = text
+        for old_token, new_token in self.token_map.items():
+            result = result.replace(old_token, new_token)
+
+        return result
 
 
 class PipelineStep:
@@ -119,9 +213,7 @@ class PipelineManager:
                 original_data = FileOperations.load_json_data(json_file)
 
                 # Clean the data
-                cleaned_data = FormatConverter.clean_annotation_content(
-                    original_data, lang_param
-                )
+                cleaned_data = FormatConverter.clean_annotation_content(original_data)
 
                 # Save cleaned data
                 if output_dir != input_dir:
@@ -223,13 +315,16 @@ class PipelineManager:
             processing_config = DataConversionConfig(
                 input_dir=processing_input_dir,
                 output_dir=self.config.output_dir,
-                output_image_dir=self.config.output_image_dir,
-                language=self.config.language,
-                response_types=self.config.response_types,
+                object_types=self.config.object_types
+                if hasattr(self.config, "object_types")
+                else ["bbu", "label", "fiber", "wire"],
                 resize=self.config.resize,
                 val_ratio=self.config.val_ratio,
                 max_teachers=self.config.max_teachers,
                 seed=self.config.seed,
+                output_image_dir=self.config.output_image_dir,
+                language=self.config.language,
+                response_types=self.config.response_types,
                 token_map_path=self.config.token_map_path,
                 hierarchy_path=self.config.hierarchy_path,
                 log_level=self.config.log_level,
@@ -237,6 +332,17 @@ class PipelineManager:
             )
 
             # Create unified processor with updated config
+            # Ensure object_types is properly set in the config
+            if (
+                not hasattr(processing_config, "object_types")
+                or not processing_config.object_types
+            ):
+                # Default to common object types if not specified
+                processing_config.object_types = ["bbu", "label", "fiber", "wire"]
+                logger.info(
+                    f"Using default object types: {processing_config.object_types}"
+                )
+
             processor = UnifiedProcessor(processing_config)
 
             # Execute processing
@@ -346,14 +452,22 @@ class PipelineManager:
         self, input_dir: Path, output_dir: Path
     ) -> None:
         """Process images with smart resizing and update JSON dimensions accordingly."""
-        from image_processor import ImageProcessor
-
         # Create temporary image processor for this step
         temp_config = DataConversionConfig(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
-            output_image_dir=str(output_dir),  # Process to same directory
+            object_types=self.config.object_types
+            if hasattr(self.config, "object_types")
+            else ["bbu", "label"],
             resize=self.config.resize,
+            val_ratio=self.config.val_ratio
+            if hasattr(self.config, "val_ratio")
+            else 0.1,
+            max_teachers=self.config.max_teachers
+            if hasattr(self.config, "max_teachers")
+            else 10,
+            seed=self.config.seed if hasattr(self.config, "seed") else 42,
+            output_image_dir=str(output_dir),  # Process to same directory
             language=self.config.language,
             log_level=self.config.log_level,
         )

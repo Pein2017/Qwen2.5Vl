@@ -56,39 +56,77 @@ class TrainingCoordinator:
         self.tokenizer = tokenizer
         self.logger = get_training_logger()
 
-        # Get configuration
+        # Get configuration - no fallback to global config
         if config_obj is None:
-            from src.config import config
+            raise ValueError(
+                "config_obj must be provided - no default configuration allowed"
+            )
 
-            self.config = config
-        else:
-            self.config = config_obj
+        self.config = config_obj
+        self.logger.debug(f"🔍 COORDINATOR: Using provided config object")
 
-        # Using unified flat configuration
-        self.use_domain_config = False
+        # DEBUG: Log critical config values
+        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
+        self.logger.debug(
+            f"🔍 COORDINATOR: coordinate_tokens_enabled = {coordinate_tokens_enabled}"
+        )
+        self.logger.debug(f"🔍 COORDINATOR: config object id = {id(self.config)}")
+
+        # Validate required configuration parameters
+        self._validate_required_config()
 
         # Initialize managers
         self.loss_manager = self._create_loss_manager()
         self.parameter_manager = self._create_parameter_manager()
 
-        # Training state
+        # Training state - all from config
         self.current_epoch = 0
         self.global_step = 0
-        self.detection_training_enabled = True
+        self.detection_training_enabled = self.config.coordinate_tokens_enabled
         self._training_metrics = {}
 
         self.logger.info("✅ Training coordinator initialized")
-        self.logger.info("   Using unified flat configuration")
+        self.logger.info("   Using unified configuration from config.yaml")
+
+    def _validate_required_config(self):
+        """Validate that all required configuration parameters are present."""
+        required_params = [
+            "weight_decay",
+            "coordinate_lr",
+        ]
+
+        # Check for coordinate tokens enabled
+        if not hasattr(self.config, "coordinate_tokens_enabled"):
+            required_params.append("coordinate_tokens_enabled")
+
+        missing_params = []
+        for param in required_params:
+            if not hasattr(self.config, param):
+                missing_params.append(param)
+
+        if missing_params:
+            raise ValueError(
+                f"Missing required configuration parameters: {missing_params}"
+            )
 
     def _create_loss_manager(self) -> LossManager:
         """Create and configure loss manager."""
-        # Legacy detection parameters (ignored - using coordinate tokens instead)
-        return LossManager(tokenizer=self.tokenizer)
+        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
+        return LossManager(
+            tokenizer=self.tokenizer,
+            model=self.model,
+            teacher_loss_weight=self.config.teacher_loss_weight,
+            student_loss_weight=self.config.student_loss_weight,
+            coordinate_tokens_enabled=coordinate_tokens_enabled,
+        )
 
     def _create_parameter_manager(self) -> ParameterGroupManager:
         """Create and configure parameter manager."""
-        weight_decay = getattr(self.config, "weight_decay", 0.01)
-        return ParameterGroupManager(model=self.model, base_weight_decay=weight_decay)
+        return ParameterGroupManager(
+            model=self.model,
+            base_weight_decay=self.config.weight_decay,
+            config=self.config,
+        )
 
     def setup_training(self) -> Dict[str, Any]:
         """
@@ -99,9 +137,6 @@ class TrainingCoordinator:
         """
         # Create optimizer parameter groups
         optimizer_groups = self.parameter_manager.create_optimizer_groups()
-
-        # Setup detection training schedule
-        self._setup_detection_schedule()
 
         # Get parameter statistics
         param_stats = self.parameter_manager.get_parameter_statistics()
@@ -122,19 +157,6 @@ class TrainingCoordinator:
             "detection_enabled": self.detection_training_enabled,
         }
 
-    def _setup_detection_schedule(self):
-        """Setup detection training schedule based on configuration."""
-        freeze_epochs = getattr(self.config, "detection_freeze_epochs", 0)
-
-        if freeze_epochs > 0:
-            self.logger.info(
-                f"🔒 Detection head will be frozen for first {freeze_epochs} epochs"
-            )
-            # Initially disable detection training if freeze epochs specified
-            self.detection_training_enabled = False
-        else:
-            self.detection_training_enabled = True
-
     def compute_loss(
         self, model_outputs: Any, inputs: Dict[str, Any], is_training: bool = True
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -149,8 +171,6 @@ class TrainingCoordinator:
         Returns:
             Tuple of (total_loss, loss_components)
         """
-        # Simplified loss computation - validation moved to config level
-
         total_loss, loss_components = self.loss_manager.compute_total_loss(
             model_outputs=model_outputs,
             inputs=inputs,
@@ -158,9 +178,34 @@ class TrainingCoordinator:
             detection_training_enabled=self.detection_training_enabled,
         )
 
-        # Simplified logging - excessive validation removed
+        # Log performance metrics periodically
+        if hasattr(self, "global_step") and self.global_step % 50 == 0:
+            self._log_performance_metrics(loss_components)
 
         return total_loss, loss_components
+
+    def _log_performance_metrics(self, loss_components: Dict[str, float]):
+        """Log performance metrics for monitoring."""
+        if torch.cuda.is_available():
+            memory_mb = torch.cuda.memory_allocated() / (1024 * 1024)
+            self.logger.debug(
+                f"GPU Memory: {memory_mb:.1f}MB, Step: {self.global_step}"
+            )
+
+        # Log key loss components concisely
+        key_losses = [
+            "llm_loss",
+            "coordinate_l1_loss",
+            "teacher_lm_loss",
+            "student_lm_loss",
+        ]
+        loss_summary = {
+            k: f"{loss_components.get(k, 0.0):.3f}"
+            for k in key_losses
+            if k in loss_components
+        }
+        if loss_summary:
+            self.logger.debug(f"Losses: {loss_summary}")
 
     def step_update(self, step: int, epoch: int):
         """
@@ -173,27 +218,8 @@ class TrainingCoordinator:
         self.global_step = step
         self.current_epoch = epoch
 
-        # Check if detection training should be enabled
-        self._update_detection_training_state(epoch)
-
         # Update training metrics
         self._update_training_metrics()
-
-    def _update_detection_training_state(self, epoch: int):
-        """Update detection training state based on epoch and schedule."""
-        freeze_epochs = getattr(self.config, "detection_freeze_epochs", 0)
-
-        # Enable detection training after freeze period
-        if (
-            freeze_epochs > 0
-            and epoch >= freeze_epochs
-            and not self.detection_training_enabled
-        ):
-            self.detection_training_enabled = True
-            self.logger.info(f"🔓 Detection training enabled at epoch {epoch}")
-
-            # Unfreeze coordinate token parameters
-            self.parameter_manager.unfreeze_components(["coordinate"])
 
     def _update_training_metrics(self):
         """Update training metrics for monitoring."""
@@ -220,8 +246,8 @@ class TrainingCoordinator:
         coordinate_tokens_enabled = self._validate_coordinate_token_config()
 
         if coordinate_tokens_enabled:
-            # Ensure all coordinate loss components are present
-            required_coord_losses = ["focal_loss", "l1_loss", "giou_loss"]
+            # Use simplified coordinate loss component
+            required_coord_losses = ["coordinate_l1_loss"]
             missing_losses = []
 
             for key in required_coord_losses:
@@ -230,15 +256,22 @@ class TrainingCoordinator:
                     missing_losses.append(key)
 
             if missing_losses:
-                self.logger.debug(f"🔧 Added missing coordinate losses: {missing_losses}")
+                self.logger.debug(
+                    f"🔧 Added missing coordinate losses: {missing_losses}"
+                )
 
             # Log coordinate loss summary
-            total_coord_loss = sum(averaged_losses.get(key, 0.0) for key in required_coord_losses)
-            self.logger.debug(f"📊 Averaged coordinate losses: total={total_coord_loss:.6f}")
+            total_coord_loss = sum(
+                averaged_losses.get(key, 0.0) for key in required_coord_losses
+            )
+            self.logger.debug(
+                f"📊 Averaged coordinate losses: total={total_coord_loss:.6f}"
+            )
 
         # Add the main 'loss' field that the trainer expects
         llm_loss = averaged_losses.get("llm_loss", 0.0)
-        coord_loss = sum(averaged_losses.get(key, 0.0) for key in ["focal_loss", "l1_loss", "giou_loss"])
+        required_coord_losses = ["coordinate_l1_loss"]
+        coord_loss = sum(averaged_losses.get(key, 0.0) for key in required_coord_losses)
         averaged_losses["loss"] = llm_loss + coord_loss
 
         return averaged_losses
@@ -295,22 +328,15 @@ class TrainingCoordinator:
         param_warnings = self.parameter_manager.validate_configuration()
         warnings.extend(param_warnings)
 
-        # Validate coordinate token configuration
-        coordinate_enabled = getattr(
-            self.config, "coordinate_tokens_enabled", False
-        )
-        coordinate_lr = getattr(self.config, "coordinate_lr", 0.0)
-
-        if coordinate_enabled and coordinate_lr <= 0:
+        # Validate coordinate token configuration - no defaults
+        coordinate_enabled = self.config.coordinate_tokens_enabled
+        if coordinate_enabled and self.config.coordinate_lr <= 0:
             warnings.append(
                 "Coordinate tokens enabled but coordinate_lr is 0 - coordinate tokens will not be trained"
             )
 
-        # Validate teacher-student configuration
-        teacher_ratio = getattr(self.config, "teacher_ratio", 0.0)
-        num_teachers = getattr(self.config, "num_teacher_samples", 0)
-
-        if teacher_ratio > 0 and num_teachers == 0:
+        # Validate teacher-student configuration - no defaults
+        if self.config.teacher_ratio > 0 and self.config.num_teacher_samples == 0:
             warnings.append(
                 "Teacher ratio > 0 but num_teacher_samples is 0 - no teachers will be used"
             )
@@ -320,22 +346,33 @@ class TrainingCoordinator:
     def _validate_coordinate_token_config(self) -> bool:
         """Validate coordinate token configuration and return if enabled."""
         try:
-            # Check if coordinate tokens are enabled in flat config
-            coordinate_enabled = getattr(self.config, "coordinate_tokens_enabled", False)
+            # No defaults - all values must be explicitly configured
+            coordinate_enabled = self.config.coordinate_tokens_enabled
+            coordinate_lr = self.config.coordinate_lr
+
+            self.logger.debug(
+                f"🔍 CONFIG_DEBUG: coordinate_tokens_enabled = {coordinate_enabled}"
+            )
+            self.logger.debug(f"🔍 CONFIG_DEBUG: coordinate_lr = {coordinate_lr}")
+            self.logger.debug(f"🔍 CONFIG_DEBUG: config type = {type(self.config)}")
 
             if coordinate_enabled:
                 # Additional validation
-                coordinate_lr = getattr(self.config, "coordinate_lr", 0)
                 if coordinate_lr <= 0:
-                    self.logger.warning("⚠️ Coordinate tokens enabled but coordinate_lr is 0 or missing")
+                    self.logger.warning(
+                        "⚠️ Coordinate tokens enabled but coordinate_lr is 0"
+                    )
                     return False
 
                 self.logger.debug("✅ Coordinate token configuration validated")
                 return True
             else:
-                self.logger.debug("🔧 Coordinate tokens disabled in configuration")
+                self.logger.debug("ℹ️ Coordinate tokens disabled in configuration")
                 return False
 
+        except AttributeError as e:
+            self.logger.error(f"❌ Missing required coordinate token config: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"❌ Error validating coordinate token config: {e}")
             return False
@@ -343,16 +380,27 @@ class TrainingCoordinator:
     def _log_coordinate_metrics_summary(self, current_losses: Dict[str, float]):
         """Log summary of coordinate token metrics."""
         try:
-            coord_loss = current_losses.get("coordinate_loss", 0.0)
-            focal_loss = current_losses.get("focal_loss", 0.0)
-            regular_loss = current_losses.get("regular_loss", 0.0)
-            l1_loss = current_losses.get("l1_loss", 0.0)
-            giou_loss = current_losses.get("giou_loss", 0.0)
+            # Use simplified coordinate loss component
+            loss_components = ["coordinate_l1_loss"]
 
-            total_coord_loss = coord_loss + focal_loss + regular_loss + l1_loss + giou_loss
+            llm_loss = current_losses.get("llm_loss", 0.0)
+
+            # Build loss summary from configured components
+            coord_losses = {}
+            total_coord_loss = llm_loss
+
+            for component in loss_components:
+                loss_value = current_losses.get(component, 0.0)
+                coord_losses[component] = loss_value
+                total_coord_loss += loss_value
 
             if total_coord_loss > 0:
-                self.logger.info(f"📊 Coordinate metrics: coord={coord_loss:.4f}, focal={focal_loss:.4f}, regular={regular_loss:.4f}, l1={l1_loss:.4f}, giou={giou_loss:.4f}, total={total_coord_loss:.4f}")
+                loss_summary = ", ".join(
+                    [f"{k}={v:.4f}" for k, v in coord_losses.items()]
+                )
+                self.logger.info(
+                    f"📊 Coordinate metrics: llm={llm_loss:.4f}, {loss_summary}, total={total_coord_loss:.4f}"
+                )
             else:
                 self.logger.debug("📊 All coordinate losses are zero for this step")
 

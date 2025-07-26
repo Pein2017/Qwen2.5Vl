@@ -86,12 +86,23 @@ CHINESE_TRAINING_PROMPT = """你是一个专用于通信机房BBU设备检测的
    - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
 
 【输出要求】
-1. **格式**: 必须严格按照 `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>` 的格式输出。
-   - `类别/属性` 必须与【核心目标】中的定义完全一致。
-   - 使用 `<coord_...>` token 表示边界框的绝对像素坐标。
-2. **完整性**: 检测所有指定对象，外接矩形需完整包围对象的可见部分。
-3. **准确性**: 精确标注，特别是要根据位置区分相似对象（如不同类型的螺丝）。
-4. **排除项**: 忽略所有未在【核心目标】中列出的对象（如线缆、水印、时间戳等）。"""
+1. **多几何格式支持**: 根据对象几何特征使用不同坐标数量：
+   - **矩形对象** (BBU设备/螺丝连接点/挡风板/机柜空间): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>`
+   - **旋转标签** (标签贴纸): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><coord_x3><coord_y3><coord_x4><coord_y4><|box_end|>` (8个坐标，4个角点)
+   - **线缆路径** (光纤/电线): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2>...<coord_xN><coord_yN><|box_end|>` (可变长度，偶数个坐标)
+
+2. **坐标说明**:
+   - 使用 `<coord_...>` token 表示绝对像素坐标
+   - 矩形: (x1,y1)左上角, (x2,y2)右下角
+   - 旋转标签: 4个角点按顺序标注
+   - 线缆: 沿路径关键点坐标序列
+
+3. **检测策略**:
+   - **完整性**: 检测所有指定对象，几何边界需完整覆盖对象可见部分
+   - **准确性**: 精确标注，特别要根据位置区分相似对象（如不同类型的螺丝）
+   - **几何适配**: 根据对象形状选择最适合的几何表示方式
+
+4. **排除项**: 忽略所有未在【核心目标】中列出的对象（如水印、时间戳等）。"""
 
 CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手。
 
@@ -108,7 +119,10 @@ CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手。
 - 机柜空间: 机柜空间/满载、机柜空间/非满载
 - 标签贴纸
 
-请严格按照 `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>` 的格式输出所有检测结果。"""
+请根据对象几何特征选择合适的坐标格式输出所有检测结果：
+- 矩形对象: `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>`
+- 旋转标签: `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><coord_x3><coord_y3><coord_x4><coord_y4><|box_end|>`
+- 线缆路径: `类别/属性: <|box_start|><coord_x1><coord_y1>...<coord_xN><coord_yN><|box_end|>`"""
 
 # ============================
 # LEGACY PROMPTS (保持兼容性)
@@ -179,9 +193,7 @@ def get_user_prompt_prefix(
             return "📚 参考示例:" if use_training_prompt else "参考示例:"
         elif context == "target":
             if use_training_prompt:
-                return (
-                    "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
-                )
+                return "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
             else:
                 return "请检测目标图像:"
         else:  # standalone

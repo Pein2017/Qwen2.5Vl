@@ -17,7 +17,16 @@ Key Features:
 import json
 import random
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import torch
 from torch.utils.data import Dataset
@@ -38,7 +47,12 @@ logger = get_data_logger()
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
-    """Read JSONL file and return list of dictionaries."""
+    """Read JSONL file and return list of dictionaries.
+
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file contains invalid JSON
+    """
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line.strip()) for line in f if line.strip()]
 
@@ -53,19 +67,26 @@ class BBUDataset(Dataset):
         teacher_pool_manager: Optional[TeacherPoolManager],
         teacher_ratio: float,
         is_training: bool,
+        config=None,
     ):
         """
-        Initialize BBU dataset.
+        Initialize BBU dataset with flat sample format and dynamic teacher pairing.
 
         Args:
-            data_path: Path to JSONL data file
+            data_path: Path to all_samples.jsonl file (flat format)
             chat_processor: Chat processor instance
             teacher_pool_manager: Manager for teacher examples
             teacher_ratio: Ratio of samples to use teacher examples (0.0 = no teachers)
             is_training: Whether this is a training dataset (affects prompt selection)
+            config: Configuration object (explicit config or global config)
+
+        Raises:
+            FileNotFoundError: If data_path doesn't exist
+            ValueError: If the dataset contains invalid samples
         """
         # Get config for this instance
-        config = get_config()
+        if config is None:
+            config = get_config()
 
         self.data_path = data_path
         self.chat_processor = chat_processor
@@ -73,13 +94,7 @@ class BBUDataset(Dataset):
         self.teacher_ratio = teacher_ratio
         self.is_training = is_training
 
-        # --------------------------------------------------------------
-        # Optional ChatProcessor context switch.
-        # Older versions exposed ``set_context`` (training/eval) but the
-        # streamlined implementation used in this project no longer needs
-        # it.  To remain backward-compatible we *only* invoke the method when
-        # it actually exists, avoiding AttributeError in worker processes.
-        # --------------------------------------------------------------
+        # Set context for chat processor if available
         context = "training" if is_training else "evaluation"
         if hasattr(self.chat_processor, "set_context"):
             self.chat_processor.set_context(context)  # type: ignore[attr-defined]
@@ -88,23 +103,17 @@ class BBUDataset(Dataset):
                 "ChatProcessor has no `set_context`; proceeding without context flag."
             )
 
-        # Load data
+        # Load flat samples from all_samples.jsonl
         self.data = self._load_data()
 
-        logger.info(f"Loaded {len(self.data)} samples from {data_path}")
+        logger.info(f"Loaded {len(self.data)} flat samples from {data_path}")
         logger.info(f"Dataset mode: {'training' if is_training else 'evaluation'}")
         logger.info(f"Teacher ratio: {teacher_ratio}")
         if teacher_pool_manager:
             logger.info(f"Teacher pool size: {len(teacher_pool_manager)}")
 
-        # Candidates system removed - no longer needed
-
-        # Initialize special tokens first (needed for validation)
+        # Initialize special tokens
         self.tokens = SpecialTokens()
-
-        # Calculate sequence lengths for optimization
-        self._sequence_lengths = None
-        # Note: calculate_lengths feature removed for simplicity
 
         # Initialize teacher assignment tracking
         self._teacher_assignment_stats = {
@@ -113,46 +122,38 @@ class BBUDataset(Dataset):
             "samples_without_teacher": 0,
         }
 
-        # ---------------- Dynamic teacher sampling ----------------
-        # Dynamic teacher sampling: require explicit configuration.
+        # Get number of teachers from config
         if not hasattr(config, "num_teacher_samples"):
             raise AttributeError(
                 "'num_teacher_samples' must be specified in YAML configuration"
             )
 
         self._num_teachers = int(config.num_teacher_samples)
-        # Use consistent teacher sampling for both train and validation
-        # This prevents train/val data distribution mismatch
-        self.teacher_ratio = getattr(config, "teacher_ratio", 0.7)
 
-        # Allow override for validation datasets if zero-shot evaluation is explicitly requested
-        if "val" in self.data_path.lower() and getattr(config, "val_zero_shot", False):
+        # Use consistent teacher ratio for both train and validation
+        self.teacher_ratio = config.teacher_ratio
+
+        # Disable teacher sampling if requested
+        if self._num_teachers == 0:
             logger.info(
-                "Validation dataset with zero-shot mode enabled, disabling teacher sampling."
+                f"Dataset {self.data_path}: teacher sampling disabled (num_teacher_samples=0)"
             )
-            self._num_teachers = 0
             self.teacher_ratio = 0.0
         else:
             logger.info(
-                f"Dataset {self.data_path}: teacher ratio set to {self.teacher_ratio}"
+                f"Dataset {self.data_path}: teacher ratio set to {self.teacher_ratio}, num_teachers={self._num_teachers}"
             )
 
-        # Initialize teacher pool manager only if not provided
+        # Instantiate teacher pool manager if needed
         if self._num_teachers > 0 and teacher_pool_manager is None:
-            teacher_pool_manager = create_teacher_pool_manager()
+            self.teacher_pool_manager = create_teacher_pool_manager(config)
+        else:
+            self.teacher_pool_manager = teacher_pool_manager
 
-        # Assign (may be None if no teachers / eval mode)
-        self.teacher_pool_manager = teacher_pool_manager
-
-        if self._num_teachers > 0 and self.teacher_pool_manager is not None:
-            logger.info(
-                f"Teacher pool manager active with {len(self.teacher_pool_manager)} teachers"
+        if self._num_teachers > 0 and not self.teacher_pool_manager:
+            raise ValueError(
+                "Teacher sampling enabled but teacher pool manager is not available"
             )
-        elif self._num_teachers > 0 and self.teacher_pool_manager is None:
-            logger.warning(
-                "Teacher pool manager unavailable, disabling teacher sampling"
-            )
-            self._num_teachers = 0
 
     @property
     def data_root(self) -> str:
@@ -164,11 +165,14 @@ class BBUDataset(Dataset):
         """Get model max length from global config."""
         return get_config().max_total_length
 
-
     def _validate_and_filter_samples(
         self, raw_data: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Validate and filter samples with strict requirements."""
+        """Validate samples with strict requirements.
+
+        Raises:
+            ValueError: If any sample is invalid
+        """
         valid_samples = []
         is_training = "train" in self.data_path.lower()
         min_images = 1  # At least one image must be present
@@ -178,255 +182,162 @@ class BBUDataset(Dataset):
         )
 
         for idx, sample in enumerate(raw_data):
+            # Strict validation for sample format
             if not isinstance(sample, dict):
                 raise ValueError(f"Sample {idx} is not a dictionary")
 
-            # Count total images and validate structure
-            total_images = 0
-            objects_to_validate = []
-
-            # Handle different sample formats
+            # Handle teacher pool format (with 'teachers' and 'student' fields)
             if "teachers" in sample and "student" in sample:
-                # New teacher/student format
-                teachers = sample["teachers"]
-                student = sample["student"]
-
-                if not isinstance(teachers, list):
-                    raise ValueError(f"Sample {idx} 'teachers' must be a list")
-                if not isinstance(student, dict):
-                    raise ValueError(f"Sample {idx} 'student' must be a dict")
-
-                # Validate teachers
-                for t_idx, teacher in enumerate(teachers):
-                    if (
-                        not isinstance(teacher, dict)
-                        or "images" not in teacher
-                        or "objects" not in teacher
-                    ):
-                        raise ValueError(
-                            f"Sample {idx} teacher[{t_idx}] missing 'images' or 'objects'"
-                        )
-                    if (
-                        not isinstance(teacher["images"], list)
-                        or len(teacher["images"]) == 0
-                    ):
-                        raise ValueError(
-                            f"Sample {idx} teacher[{t_idx}] has empty images"
-                        )
-                    total_images += len(teacher["images"])
-                    objects_to_validate.extend(teacher["objects"])
-
-                # Validate student
-                if "images" not in student or "objects" not in student:
+                # For teacher pool files, we validate the student part
+                student_sample = sample["student"]
+                if not isinstance(student_sample, dict):
                     raise ValueError(
-                        f"Sample {idx} student missing 'images' or 'objects'"
+                        f"Sample {idx} has invalid 'student' field (not a dictionary)"
                     )
+
+                if "images" not in student_sample or "objects" not in student_sample:
+                    raise ValueError(
+                        f"Student in sample {idx} missing required fields 'images' or 'objects'. Found keys: {list(student_sample.keys())}"
+                    )
+
                 if (
-                    not isinstance(student["images"], list)
-                    or len(student["images"]) == 0
+                    not isinstance(student_sample["images"], list)
+                    or len(student_sample["images"]) == 0
                 ):
-                    raise ValueError(f"Sample {idx} student has empty images")
-                total_images += len(student["images"])
-                objects_to_validate.extend(student["objects"])
-
-            elif "examples" in sample and "target" in sample:
-                # Legacy examples/target format
-                examples = sample["examples"]
-                target = sample["target"]
-
-                if not isinstance(examples, list):
-                    raise ValueError(f"Sample {idx} 'examples' must be a list")
-                if not isinstance(target, dict):
-                    raise ValueError(f"Sample {idx} 'target' must be a dict")
-
-                # Validate examples
-                for e_idx, example in enumerate(examples):
-                    if (
-                        not isinstance(example, dict)
-                        or "images" not in example
-                        or "objects" not in example
-                    ):
-                        raise ValueError(
-                            f"Sample {idx} example[{e_idx}] missing 'images' or 'objects'"
-                        )
-                    if (
-                        not isinstance(example["images"], list)
-                        or len(example["images"]) == 0
-                    ):
-                        raise ValueError(
-                            f"Sample {idx} example[{e_idx}] has empty images"
-                        )
-                    total_images += len(example["images"])
-                    objects_to_validate.extend(example["objects"])
-
-                # Validate target
-                if "images" not in target or "objects" not in target:
                     raise ValueError(
-                        f"Sample {idx} target missing 'images' or 'objects'"
-                    )
-                if not isinstance(target["images"], list) or len(target["images"]) == 0:
-                    raise ValueError(f"Sample {idx} target has empty images")
-                total_images += len(target["images"])
-                objects_to_validate.extend(target["objects"])
-
-            elif "images" in sample and "objects" in sample:
-                # Simple format (will have teachers added later)
-                if not isinstance(sample["images"], list) or len(sample["images"]) == 0:
-                    raise ValueError(f"Sample {idx} has empty images")
-                if not isinstance(sample["objects"], list):
-                    raise ValueError(f"Sample {idx} has invalid objects")
-                total_images = len(sample["images"])
-                objects_to_validate.extend(sample["objects"])
-
-            else:
-                raise ValueError(
-                    f"Sample {idx} has invalid format. Expected 'teachers'+'student', "
-                    f"'examples'+'target', or 'images'+'objects' keys. "
-                    f"Found keys: {list(sample.keys())}"
-                )
-
-            # Check minimum image requirement
-            if total_images < min_images:
-                raise ValueError(
-                    f"Sample {idx} has only {total_images} images, "
-                    f"minimum {min_images} required"
-                )
-
-            # Validate object structure
-            for obj_idx, obj in enumerate(objects_to_validate):
-                if not (isinstance(obj, dict) and "bbox_2d" in obj and "desc" in obj):
-                    raise ValueError(
-                        f"Sample {idx} object[{obj_idx}] missing 'bbox_2d' or 'desc' keys"
+                        f"Student in sample {idx} has empty 'images' field"
                     )
 
+                if not isinstance(student_sample["objects"], list):
+                    raise ValueError(
+                        f"Student in sample {idx} has invalid 'objects' field (must be a list)"
+                    )
+
+                # Add the validated teacher-student sample
+                valid_samples.append(sample)
+                continue
+
+            # Validate flat sample format (images + objects)
+            if "images" not in sample or "objects" not in sample:
+                raise ValueError(
+                    f"Sample {idx} missing required fields 'images' or 'objects'. Found keys: {list(sample.keys())}"
+                )
+
+            if not isinstance(sample["images"], list) or len(sample["images"]) == 0:
+                raise ValueError(f"Sample {idx} has empty 'images' field")
+
+            if not isinstance(sample["objects"], list):
+                raise ValueError(
+                    f"Sample {idx} has invalid 'objects' field (must be a list)"
+                )
+
+            # Add the validated flat sample
             valid_samples.append(sample)
 
-        if len(valid_samples) == 0:
-            raise RuntimeError(f"No valid samples found in {self.data_path}")
+        if not valid_samples:
+            raise ValueError(f"No valid samples found in {self.data_path}")
 
-        validation_ratio = len(valid_samples) / len(raw_data)
-        if validation_ratio < 0.8:
-            logger.debug(
-                f"⚠️ WARNING: Only {validation_ratio:.1%} of samples passed validation"
-            )
-
+        logger.debug(f"✅ Validated {len(valid_samples)} samples")
         return valid_samples
-
-    def _calculate_sequence_lengths(self):
-        """Pre-calculate sequence lengths for optimization."""
-        logger.debug("📏 Pre-calculating sequence lengths...")
-        lengths = []
-
-        for i in range(min(100, len(self.data))):  # Sample first 100 for estimation
-            sample = self._get_item(i)
-            if "input_ids" in sample:
-                lengths.append(sample["input_ids"].shape[-1])
-            else:
-                lengths.append(8192)  # Default estimate
-
-        self._sequence_lengths = lengths
-        avg_length = sum(lengths) / len(lengths) if lengths else 8192
-        logger.debug(f"📏 Average sequence length: {avg_length:.0f} tokens")
-
-    @property
-    def sequence_lengths(self) -> List[int]:
-        """Get sequence lengths for optimization."""
-        return self._sequence_lengths
 
     def __len__(self) -> int:
         return len(self.data)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a single sample with strict validation - no fallbacks."""
+        logger.debug(f"🔍 DATASET: Loading flat sample {idx}")
         return self._get_item(idx)
 
     def _get_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Internal getter to handle data processing and GT extraction."""
-        raw_sample = self.data[idx]
+        """Internal getter to handle flat sample processing and teacher pairing."""
+        # Get flat sample from data
+        flat_sample = self.data[idx]
 
-        # Create structured sample with teacher/student format
-        structured_sample = self._create_structured_sample(raw_sample, idx)
+        # DEBUG: Detailed logging for flat sample
+        logger.debug(f"🔍 FLAT SAMPLE {idx}:")
+        logger.debug(f"   Keys: {list(flat_sample.keys())}")
+        logger.debug(
+            f"   Objects count: {len(flat_sample['objects']) if 'objects' in flat_sample else 0}"
+        )
+        logger.debug(f"   Images: {flat_sample['images']}")
+
+        # Create teacher-student structured sample
+        structured_sample = self._create_structured_sample(flat_sample, idx)
+
+        # DEBUG: Log structured sample
+        logger.debug(f"🔍 STRUCTURED SAMPLE {idx}:")
+        if "student" in structured_sample and "objects" in structured_sample["student"]:
+            student_objects = structured_sample["student"]["objects"]
+            logger.debug(
+                f"   Student objects count: {len(student_objects) if student_objects else 0}"
+            )
+        if "teachers" in structured_sample:
+            teachers = structured_sample["teachers"]
+            logger.debug(f"   Teachers count: {len(teachers) if teachers else 0}")
 
         # Process through chat processor
         processed_data = self.chat_processor.process_sample(structured_sample)
 
+        # Convert ChatProcessorOutput to Dict[str, torch.Tensor] if needed
+        if not isinstance(processed_data, dict):
+            from dataclasses import asdict
+
+            processed_data = asdict(processed_data)
+
         return processed_data
 
     def _create_structured_sample(
-        self, raw_sample: Dict[str, Any], idx: int
+        self, flat_sample: Dict[str, Any], idx: int
     ) -> Dict[str, Any]:
         """
-        Create structured sample in consistent teacher/student format.
+        Create structured teacher-student sample from flat sample.
 
         Args:
-            raw_sample: Raw sample from JSONL
+            flat_sample: Flat sample from all_samples.jsonl
             idx: Sample index for reproducible teacher sampling
 
         Returns:
             Dict with "teachers" (List[Sample]) and "student" (Sample) keys
         """
-        # For evaluation mode: respect teacher_ratio if configured
-        # This allows validation to use the same teacher guidance as training
-        if not self.is_training and self.teacher_ratio == 0.0:
-            # Only skip teachers if explicitly configured with 0.0 ratio
-            if "teachers" in raw_sample and "student" in raw_sample:
-                return {"teachers": [], "student": raw_sample["student"]}
-            elif "examples" in raw_sample and "target" in raw_sample:
-                return {"teachers": [], "student": raw_sample["target"]}
-            else:
-                return {"teachers": [], "student": raw_sample}
+        # For samples without teachers (determined by teacher_ratio)
+        if (
+            self.teacher_ratio == 0.0
+            or self.teacher_pool_manager is None
+            or self._num_teachers == 0
+        ):
+            return {"teachers": [], "student": flat_sample}
 
-        # Training mode: handle teacher sampling
-        teachers = []
-        student = raw_sample
+        # Sample teachers based on teacher_ratio probability
+        teachers = self._sample_teachers_for_student(flat_sample, idx)
 
-        # Case 1: Sample already has teacher/student structure
-        if "teachers" in raw_sample and "student" in raw_sample:
-            teachers = raw_sample["teachers"]
-            student = raw_sample["student"]
-
-        # Case 2: Sample has legacy examples/target structure
-        elif "examples" in raw_sample and "target" in raw_sample:
-            teachers = raw_sample["examples"]
-            student = raw_sample["target"]
-
-        # Case 3: Simple sample - add teachers from pool if available
-        else:
-            teachers = self._sample_teachers_for_student(raw_sample, idx)
-            student = raw_sample
-
-        return {"teachers": teachers, "student": student}
+        # Build teacher-student structure
+        return {"teachers": teachers, "student": flat_sample}
 
     def _sample_teachers_for_student(
         self, student_sample: Dict[str, Any], idx: int
     ) -> List[Dict[str, Any]]:
         """
-        Sample teacher examples for a student sample.
+        Sample teacher examples for a student sample based on teacher_ratio.
 
         Args:
             student_sample: The student sample to create teachers for
             idx: Sample index for reproducible sampling
 
         Returns:
-            List of teacher samples
+            List of teacher samples (empty if teachers are not used for this sample)
         """
-        # No teachers in evaluation mode or if teacher pool unavailable
-        if (
-            not self.is_training
-            or self._num_teachers == 0
-            or self.teacher_pool_manager is None
-        ):
-            return []
+        # Track statistics
+        self._teacher_assignment_stats["total_samples"] += 1
 
-        # Decide whether to use teachers based on teacher ratio
+        # Decide whether to use teachers based on teacher_ratio
         use_teachers = random.random() < self.teacher_ratio
 
-        # Track teacher assignment statistics
-        self._teacher_assignment_stats["total_samples"] += 1
+        # Update statistics
         if use_teachers:
             self._teacher_assignment_stats["samples_with_teacher"] += 1
         else:
             self._teacher_assignment_stats["samples_without_teacher"] += 1
+            return []  # No teachers for this sample
 
         # Log statistics periodically (every 100 samples)
         if self._teacher_assignment_stats["total_samples"] % 100 == 0:
@@ -439,26 +350,20 @@ class BBUDataset(Dataset):
                 f"(actual ratio: {actual_ratio:.3f}, configured: {self.teacher_ratio:.3f})"
             )
 
-        if not use_teachers:
-            return []
-
         # Create reproducible seed for this sample
         epoch_seed = hash((idx, random.getstate()[1][0])) % (2**32)
 
-        # Sample teachers from pool
-        multi_chat_sample = self.teacher_pool_manager.create_multi_chat_sample(
-            student_sample=student_sample,
+        # Get teachers from pool using the reproducible seed
+        if self.teacher_pool_manager is None:
+            raise ValueError(
+                f"Teacher pool manager is None but teacher sampling is enabled"
+            )
+
+        # Get multiple teachers from pool
+        teachers = self.teacher_pool_manager.get_multiple_teachers(
             num_teachers=self._num_teachers,
             seed=epoch_seed,
         )
-
-        # Extract teachers from the multi-chat sample
-        if "teachers" in multi_chat_sample:
-            teachers = multi_chat_sample["teachers"]
-        elif "examples" in multi_chat_sample:
-            teachers = multi_chat_sample["examples"]
-        else:
-            teachers = []
 
         logger.debug(
             f"Sample {idx}: Sampled {len(teachers)} teachers (seed={epoch_seed})"
@@ -478,23 +383,30 @@ class BBUDataset(Dataset):
             "samples_without_teacher": without_teacher,
             "actual_teacher_ratio": with_teacher / total if total > 0 else 0.0,
             "configured_teacher_ratio": self.teacher_ratio,
-            "ratio_accuracy": abs((with_teacher / total) - self.teacher_ratio)
-            if total > 0
-            else 0.0,
+            "ratio_accuracy": abs(
+                (with_teacher / total if total > 0 else 0.0) - self.teacher_ratio
+            ),
         }
 
     def _load_data(self) -> List[Dict]:
-        """Load data from JSONL file."""
+        """Load flat samples from JSONL file.
+
+        Raises:
+            FileNotFoundError: If the file doesn't exist
+            ValueError: If the file contains no valid samples
+        """
         # Load raw data
         raw_data = read_jsonl(self.data_path)
         logger.debug(f"📊 Loaded {len(raw_data)} raw samples from {self.data_path}")
 
-        # Basic validation and filtering
+        if not raw_data:
+            raise ValueError(f"No samples found in {self.data_path}")
+
+        # Basic validation and filtering for flat format
         validated_data = self._validate_and_filter_samples(raw_data)
         logger.debug(f"📊 After validation: {len(validated_data)} valid samples")
 
         return validated_data
-
 
 
 def extract_ground_truth_from_sample(
@@ -505,7 +417,7 @@ def extract_ground_truth_from_sample(
     now handles ground truth extraction and normalization directly.
     Kept for historical reference but should not be used.
     """
-    raise DeprecationWarning(
+    raise NotImplementedError(
         "extract_ground_truth_from_sample is deprecated and should not be called. "
         "Use the ChatProcessor's process_sample method instead."
     )
@@ -527,8 +439,16 @@ class StandardDataCollator:
 
     def __call__(
         self, instances: Sequence[Any]
-    ) -> Dict[str, Union[torch.Tensor, List[int]]]:
-        """Collate a batch of :class:`ChatProcessorOutput` or raw dicts."""
+    ) -> Mapping[
+        str,
+        Union[torch.Tensor, List[int], List[List[int]], List[List[Tuple[int, int]]]],
+    ]:
+        """Collate a batch of :class:`ChatProcessorOutput` or raw dicts.
+
+        Raises:
+            ValueError: If instances contain incompatible or missing data
+            AssertionError: If attention mask validation fails
+        """
 
         # ------------------------------------------------------------------
         # Normalise instance format: if caller passed dataclasses convert them
@@ -545,19 +465,30 @@ class StandardDataCollator:
 
         for instance in instances:
             # Extract spans from each instance - defaults to empty list for samples without teachers
-            teacher_spans = instance.get("teacher_assistant_spans", [])
-            student_spans = instance.get("student_assistant_spans", [])
+            teacher_spans = (
+                instance["teacher_assistant_spans"]
+                if "teacher_assistant_spans" in instance
+                else []
+            )
+            student_spans = (
+                instance["student_assistant_spans"]
+                if "student_assistant_spans" in instance
+                else []
+            )
 
             teacher_spans_batch.append(teacher_spans)
             student_spans_batch.append(student_spans)
 
-        # FAIL-FAST: Process all instances without filtering or fallbacks
+        # FAIL-FAST: Validate required fields in all instances
         for i, instance in enumerate(instances):
-            if "pixel_values" in instance and instance["pixel_values"] is not None:
-                # Retrieve merge_size **once** for all samples in this batch
-                from src.config import get_config
+            if "input_ids" not in instance:
+                raise ValueError(f"Instance {i} missing required field 'input_ids'")
+            if "labels" not in instance:
+                raise ValueError(f"Instance {i} missing required field 'labels'")
 
-                merge_size = get_config().merge_size
+            if "pixel_values" in instance and instance["pixel_values"] is not None:
+                # Use default merge_size for vision token calculation
+                merge_size = 2  # Default Qwen2.5-VL merge_size
 
                 # Log vision token information for debugging
                 if (
@@ -576,9 +507,8 @@ class StandardDataCollator:
                         f"Sample {i}: {pre_merge_tokens} pre-merge → {total_final_tokens} final tokens"
                     )
                 else:
-                    vision_tokens = instance["pixel_values"].shape[0]
-                    logger.debug(
-                        f"Sample {i}: {vision_tokens} vision tokens (no grid_thw)"
+                    raise ValueError(
+                        f"Sample {i} has pixel_values but missing image_grid_thw"
                     )
 
         # 1. Extract sequences
@@ -589,7 +519,8 @@ class StandardDataCollator:
             instance["labels"].squeeze() for instance in instances
         ]
         position_ids_list: List[Optional[torch.Tensor]] = [
-            instance.get("position_ids") for instance in instances
+            instance["position_ids"] if "position_ids" in instance else None
+            for instance in instances
         ]
 
         # 2. Calculate batch dimensions
@@ -634,14 +565,23 @@ class StandardDataCollator:
                 )
 
         # 4. Create padded tensors efficiently (single allocation)
+        # Make sure we have a valid pad token ID
+        pad_token_id = (
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else 0
+        )
+
         padded_input_ids = torch.full(
-            (batch_size, batch_max_length),
-            self.tokenizer.pad_token_id,
+            size=(batch_size, batch_max_length),
+            fill_value=int(pad_token_id),
             dtype=input_ids_list[0].dtype,
         )
+
+        # Ensure IGNORE_INDEX is a numeric value
         padded_labels = torch.full(
-            (batch_size, batch_max_length),
-            IGNORE_INDEX,
+            size=(batch_size, batch_max_length),
+            fill_value=-100,  # Use -100 directly instead of IGNORE_INDEX
             dtype=labels_list[0].dtype,
         )
 
@@ -709,14 +649,20 @@ class StandardDataCollator:
         images = [
             instance["pixel_values"]
             for instance in instances
-            if "pixel_values" in instance and instance["pixel_values"].shape[0] > 0
+            if "pixel_values" in instance
+            and instance["pixel_values"] is not None
+            and instance["pixel_values"].shape[0] > 0
         ]
 
         if images:
             # Track image counts per sample for proper extraction during generation
             image_counts_per_sample = []
             for instance in instances:
-                if "pixel_values" in instance and instance["pixel_values"].shape[0] > 0:
+                if (
+                    "pixel_values" in instance
+                    and instance["pixel_values"] is not None
+                    and instance["pixel_values"].shape[0] > 0
+                ):
                     image_counts_per_sample.append(instance["pixel_values"].shape[0])
                 else:
                     image_counts_per_sample.append(0)
@@ -737,6 +683,7 @@ class StandardDataCollator:
                 instance["image_grid_thw"]
                 for instance in instances
                 if "image_grid_thw" in instance
+                and instance["image_grid_thw"] is not None
                 and instance["image_grid_thw"].shape[0] > 0
             ]
 
@@ -763,10 +710,6 @@ class StandardDataCollator:
 
         batch["ground_truth_objects"] = ground_truth_objects
 
-        # Ensure optional keys are always present for schema validation
-        batch.setdefault("pixel_values", None)
-        batch.setdefault("image_grid_thw", None)
-
         # Add teacher-student spans to batch
         batch["teacher_assistant_spans"] = teacher_spans_batch
         batch["student_assistant_spans"] = student_spans_batch
@@ -788,10 +731,22 @@ class PackedDataCollator:
 
     tokenizer: PreTrainedTokenizerBase
 
-    def __call__(self, instances: Sequence[Any]) -> Dict[str, Any]:
+    def __call__(
+        self, instances: Sequence[Any]
+    ) -> Mapping[
+        str,
+        Union[torch.Tensor, List[int], List[List[int]], List[List[Tuple[int, int]]]],
+    ]:
         # Convert dataclass inputs to dicts (if needed) early.
         if instances and isinstance(instances[0], ChatProcessorOutput):
             instances = [asdict(ins) for ins in instances]  # type: ignore[assignment]
+
+        # Fail-fast validation of required fields
+        for i, instance in enumerate(instances):
+            if "input_ids" not in instance:
+                raise ValueError(f"Instance {i} missing required field 'input_ids'")
+            if "labels" not in instance:
+                raise ValueError(f"Instance {i} missing required field 'labels'")
 
         # ------------------------------------------------------------------
         # Extract teacher-student spans and adjust for packed sequences
@@ -801,8 +756,16 @@ class PackedDataCollator:
 
         for instance in instances:
             # Extract spans from each instance - defaults to empty list for samples without teachers
-            teacher_spans = instance.get("teacher_assistant_spans", [])
-            student_spans = instance.get("student_assistant_spans", [])
+            teacher_spans = (
+                instance["teacher_assistant_spans"]
+                if "teacher_assistant_spans" in instance
+                else []
+            )
+            student_spans = (
+                instance["student_assistant_spans"]
+                if "student_assistant_spans" in instance
+                else []
+            )
 
             teacher_spans_batch.append(teacher_spans)
             student_spans_batch.append(student_spans)
@@ -902,31 +865,34 @@ class PackedDataCollator:
         # 6. Vision tensors (images / grids) – unchanged relative to the
         #    previous implementation.
         # ------------------------------------------------------------------
-        if any(
-            "pixel_values" in ins and ins["pixel_values"] is not None
+        pixel_values_list = [
+            ins["pixel_values"]
             for ins in instances
-        ):
-            batch["pixel_values"] = torch.cat(
-                [
-                    ins["pixel_values"]
-                    for ins in instances
-                    if ins.get("pixel_values") is not None
-                ],
-                dim=0,
-            )
-            batch["image_grid_thw"] = torch.cat(
-                [
-                    ins["image_grid_thw"]
-                    for ins in instances
-                    if ins.get("image_grid_thw") is not None
-                ],
-                dim=0,
-            )
+            if "pixel_values" in ins and ins["pixel_values"] is not None
+        ]
+
+        if pixel_values_list:
+            batch["pixel_values"] = torch.cat(pixel_values_list, dim=0)
+
+            # Ensure image_grid_thw is present for each pixel_values
+            grid_thw_list = [
+                ins["image_grid_thw"]
+                for ins in instances
+                if "image_grid_thw" in ins and ins["image_grid_thw"] is not None
+            ]
+
+            if not grid_thw_list or len(grid_thw_list) != len(pixel_values_list):
+                raise ValueError(
+                    "pixel_values present but missing or inconsistent image_grid_thw. "
+                    "Both must be provided together."
+                )
+
+            batch["image_grid_thw"] = torch.cat(grid_thw_list, dim=0)
 
             # Track image counts per sample for compatibility with utilities
             batch["image_counts_per_sample"] = [
                 ins["pixel_values"].shape[0]
-                if ins.get("pixel_values") is not None
+                if "pixel_values" in ins and ins["pixel_values"] is not None
                 else 0
                 for ins in instances
             ]
@@ -939,7 +905,8 @@ class PackedDataCollator:
         # 7. Keep ground-truth objects (list per sample).
         # ------------------------------------------------------------------
         batch["ground_truth_objects"] = [
-            ins.get("ground_truth_objects", []) for ins in instances
+            ins["ground_truth_objects"] if "ground_truth_objects" in ins else []
+            for ins in instances
         ]
 
         # Add adjusted teacher-student spans to batch
@@ -969,6 +936,9 @@ def create_data_collator(
 
     Returns:
         Data collator instance
+
+    Raises:
+        ValueError: If an unknown collator type is specified
     """
     if collator_type == "standard":
         return StandardDataCollator(tokenizer=tokenizer)

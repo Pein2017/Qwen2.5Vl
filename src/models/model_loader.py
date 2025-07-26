@@ -8,7 +8,7 @@ this loader to ensure strict consistency.
 NO SILENT FALLBACKS - All errors are exposed immediately.
 """
 
-from typing import Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import torch
 from transformers.models.auto.processing_auto import AutoProcessor
@@ -21,7 +21,6 @@ from transformers.models.qwen2_vl.image_processing_qwen2_vl import (
 )
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src.config import config
 from src.logger_utils import get_logger
 from src.models.patches import apply_comprehensive_qwen25_fixes, verify_qwen25_patches
 
@@ -38,9 +37,10 @@ class ModelLoadingError(Exception):
 def load_model_and_processor_unified(
     model_path: str,
     for_inference: bool = False,
-    force_detection: bool = None,
-    attn_implementation: str = None,
-) -> Tuple[Union[torch.nn.Module, any], PreTrainedTokenizerBase, Qwen2VLImageProcessor]:
+    force_detection: Optional[bool] = None,
+    attn_implementation: Optional[str] = None,
+    config=None,
+) -> Tuple[Union[torch.nn.Module, Any], PreTrainedTokenizerBase, Qwen2VLImageProcessor]:
     """
     UNIFIED model and processor loading for training and inference.
 
@@ -63,6 +63,14 @@ def load_model_and_processor_unified(
     logger.info(f"   Mode: {'INFERENCE' if for_inference else 'TRAINING'}")
 
     try:
+        # Use explicit config if provided, otherwise fall back to global config
+        if config is None:
+            from src.config import get_config
+
+            config = get_config()
+            logger.info("📄 Using global configuration system (fallback)")
+        else:
+            logger.info("📄 Using explicit configuration system")
         # =====================================================================
         # STEP 1: Apply patches (MANDATORY)
         # =====================================================================
@@ -79,8 +87,9 @@ def load_model_and_processor_unified(
             )
         coordinate_tokens_enabled = config.coordinate_tokens_enabled
 
+        # Handle None value for force_detection
         if force_detection is not None:
-            detection_enabled = force_detection
+            detection_enabled = bool(force_detection)
             logger.info(f"🎯 Detection mode FORCED: {detection_enabled}")
         else:
             # For coordinate token models, we need the detection wrapper
@@ -92,16 +101,17 @@ def load_model_and_processor_unified(
         logger.info(f"🎯 Coordinate tokens enabled: {coordinate_tokens_enabled}")
 
         # Determine effective attention implementation
+        effective_attn_impl = ""
         if attn_implementation is not None:
-            effective_attn_impl = attn_implementation
+            effective_attn_impl = str(attn_implementation)
             logger.info(f"⚡ Attention implementation OVERRIDE: {effective_attn_impl}")
         else:
-            effective_attn_impl = getattr(
-                config, "attn_implementation", "flash_attention_2"
-            )
-            logger.info(
-                f"⚡ Attention implementation from config: {effective_attn_impl}"
-            )
+            # Use default from config if available
+            if hasattr(config, "attn_implementation") and config.attn_implementation:
+                effective_attn_impl = str(config.attn_implementation)
+                logger.info(
+                    f"⚡ Attention implementation from config: {effective_attn_impl}"
+                )
 
         # =====================================================================
         # STEP 3: Load tokenizer (IDENTICAL setup for training/inference)
@@ -110,7 +120,7 @@ def load_model_and_processor_unified(
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 pretrained_model_name_or_path=model_path,
-                model_max_length=getattr(config, "model_max_length", 120000),
+                model_max_length=config.model_max_length,
                 padding_side="left",  # Required for Flash Attention in Qwen2.5-VL
                 use_fast=False,
                 trust_remote_code=True,
@@ -122,13 +132,19 @@ def load_model_and_processor_unified(
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             logger.info("✅ Pad token set to EOS token")
-        logger.info(f"[PADDING_SIDE_CHECK] Tokenizer padding side after load: {tokenizer.padding_side}")
+        logger.info(
+            f"[PADDING_SIDE_CHECK] Tokenizer padding side after load: {tokenizer.padding_side}"
+        )
 
         # CRITICAL FIX: Ensure padding_side is ALWAYS 'left' regardless of how tokenizer was created
-        if tokenizer.padding_side != 'left':
-            logger.warning(f"🔧 Fixing tokenizer padding_side: {tokenizer.padding_side} -> left")
-            tokenizer.padding_side = 'left'
-            logger.info(f"[PADDING_SIDE_FIX] Tokenizer padding side corrected to: {tokenizer.padding_side}")
+        if tokenizer.padding_side != "left":
+            logger.warning(
+                f"🔧 Fixing tokenizer padding_side: {tokenizer.padding_side} -> left"
+            )
+            tokenizer.padding_side = "left"
+            logger.info(
+                f"[PADDING_SIDE_FIX] Tokenizer padding side corrected to: {tokenizer.padding_side}"
+            )
 
         # =====================================================================
         # STEP 4: Load model (STRICT detection vs non-detection)
@@ -152,18 +168,11 @@ def load_model_and_processor_unified(
                 # Create coordinate config if coordinate tokens are enabled - NO DEFAULTS
                 coordinate_config = None
                 if coordinate_tokens_enabled:
-                    from src.models.wrapper import CoordinateConfig
-
-                    # Validate all required coordinate config parameters
+                    # Validate required coordinate config parameters (simplified)
                     required_coord_params = [
-                        "coordinate_config_max_coord_value",
-                        "coordinate_config_coord_token_init_std",
-                        "coordinate_config_coordinate_loss_weight",
-                        "coordinate_config_regular_loss_weight",
-                        "coordinate_config_soft_expectation_temperature",
-                        "coordinate_config_focal_loss_alpha",
-                        "coordinate_config_focal_loss_gamma",
-                        "coordinate_config_use_official_box_tokens",
+                        "max_coord_value",
+                        "coordinate_loss_weight",
+                        "regular_loss_weight",
                     ]
 
                     missing_params = []
@@ -177,16 +186,20 @@ def load_model_and_processor_unified(
                             f"{missing_params}. All coordinate config parameters must be explicitly set."
                         )
 
+                    # Create proper coordinate config instance
+                    from src.models.wrapper import CoordinateConfig
+
                     coordinate_config = CoordinateConfig(
-                        enable_coordinate_tokens=True,
-                        max_coord_value=config.coordinate_config_max_coord_value,
-                        coord_token_init_std=config.coordinate_config_coord_token_init_std,
-                        coordinate_loss_weight=config.coordinate_config_coordinate_loss_weight,
-                        regular_loss_weight=config.coordinate_config_regular_loss_weight,
-                        soft_expectation_temperature=config.coordinate_config_soft_expectation_temperature,
-                        focal_loss_alpha=config.coordinate_config_focal_loss_alpha,
-                        focal_loss_gamma=config.coordinate_config_focal_loss_gamma,
-                        use_official_box_tokens=config.coordinate_config_use_official_box_tokens,  # Required parameter
+                        enable_coordinate_tokens=config.coordinate_tokens_enabled,
+                        max_coord_value=config.max_coord_value,
+                        coordinate_loss_weight=config.coordinate_loss_weight,
+                        regular_loss_weight=config.regular_loss_weight,
+                        # Default values for backward compatibility
+                        coord_token_init_std=0.02,
+                        soft_expectation_temperature=1.0,
+                        use_official_box_tokens=True,
+                        enable_multi_geometry=True,
+                        max_line_coordinates=50,
                     )
                     logger.info("✅ Coordinate token configuration created")
 
@@ -195,6 +208,7 @@ def load_model_and_processor_unified(
                     tokenizer=tokenizer,
                     coordinate_config=coordinate_config,
                     attn_implementation=effective_attn_impl,
+                    config=config,
                 )
 
                 # CRITICAL: For coordinate token models, ensure vocabulary consistency
@@ -223,10 +237,27 @@ def load_model_and_processor_unified(
                             "✅ Model has coordinate token extensions - ensuring consistency"
                         )
 
+                        # Fix the issue with setting detection_enabled attribute
                         # Ensure the model's detection flag is consistent
-                        model.detection_enabled = (
-                            True  # Override for coordinate token models
-                        )
+                        # Instead of directly setting the attribute, use a more compatible approach
+                        if hasattr(model, "set_detection_enabled"):
+                            model.set_detection_enabled(True)
+                        else:
+                            # Create a method to safely set the attribute if it doesn't exist
+                            def set_detection_enabled(self, value):
+                                self._detection_enabled = value
+
+                            # Add the method to the model
+                            import types
+
+                            # Use setattr instead of direct assignment to avoid type error
+                            setattr(
+                                model,
+                                "set_detection_enabled",
+                                types.MethodType(set_detection_enabled, model),
+                            )
+                            model.set_detection_enabled(True)
+
                         logger.info(
                             "✅ Set detection_enabled=True for coordinate token model"
                         )
@@ -275,7 +306,9 @@ def load_model_and_processor_unified(
                     if deepspeed_enabled
                     else "auto",  # Let DeepSpeed handle if enabled
                     trust_remote_code=True,
-                    use_cache=config.use_cache_inference if for_inference else config.use_cache,
+                    use_cache=config.use_cache_inference
+                    if for_inference
+                    else config.use_cache,
                 )
 
                 # CRITICAL: Move to GPU for inference only if NOT using DeepSpeed
@@ -284,17 +317,83 @@ def load_model_and_processor_unified(
                     and torch.cuda.is_available()
                     and not deepspeed_enabled
                 ):
-                    model = model.to("cuda:0")
+                    # Use the device method instead of to() directly
+                    device = torch.device("cuda:0")
+                    # Use to() method properly
+                    model = model.to(device)
                     logger.info("🔧 Base model moved to GPU for inference")
                 elif deepspeed_enabled:
                     logger.info("🔧 DeepSpeed enabled - skipping manual GPU placement")
 
                 # Flag for consistency checks
-                model.detection_enabled = False
+                if hasattr(model, "set_detection_enabled"):
+                    model.set_detection_enabled(False)
+                else:
+                    # Create a method to safely set the attribute if it doesn't exist
+                    def set_detection_enabled(self, value):
+                        self._detection_enabled = value
+
+                    # Add the method to the model
+                    import types
+
+                    # Use setattr instead of direct assignment to avoid type error
+                    setattr(
+                        model,
+                        "set_detection_enabled",
+                        types.MethodType(set_detection_enabled, model),
+                    )
+                    model.set_detection_enabled(False)
+
                 logger.info("✅ Base model loaded successfully")
 
             except Exception as e:
                 raise ModelLoadingError(f"Failed to load base model: {e}")
+
+        # =====================================================================
+        # STEP 5: Add special tokens (CRITICAL for both simple and coordinate tokens)
+        # =====================================================================
+        # Always add required geometry tokens
+        geometry_tokens = {
+            "<|box_start|>": None,  # No special meaning, just used as delimiters
+            "<|box_end|>": None,
+            "<|square_start|>": None,
+            "<|square_end|>": None,
+            "<|line_start|>": None,
+            "<|line_end|>": None,
+            "<|object_ref_start|>": None,
+            "<|object_ref_end|>": None,
+        }
+
+        # Add to tokenizer
+        tokens_to_add = []
+        for token in geometry_tokens:
+            # Check if already in vocabulary
+            if token not in tokenizer.get_vocab():
+                tokens_to_add.append(token)
+
+        if tokens_to_add:
+            logger.info(
+                f"🎯 Adding {len(tokens_to_add)} special tokens: {tokens_to_add}"
+            )
+            special_tokens_dict = {"additional_special_tokens": tokens_to_add}
+            num_added = tokenizer.add_special_tokens(special_tokens_dict)
+            logger.info(f"✅ Added {num_added} special tokens to tokenizer")
+
+            # Model embeddings will be resized during initialization
+            # Update model's embedding table if model is already loaded
+            if isinstance(model, torch.nn.Module):
+                logger.info(f"🎯 Resizing model embeddings for new tokens")
+                model.resize_token_embeddings(len(tokenizer))
+                logger.info(f"✅ Model embeddings resized to {len(tokenizer)}")
+
+        # Log special token IDs
+        vocab = tokenizer.get_vocab()
+        logger.info(f"🔍 SPECIAL TOKEN IDs:")
+        for token in geometry_tokens:
+            if token in vocab:
+                logger.info(f"   {token}: {vocab[token]}")
+            else:
+                logger.warning(f"   {token}: NOT FOUND IN VOCABULARY")
 
         # =====================================================================
         # STEP 5: Load processor (IDENTICAL for training/inference)
@@ -359,9 +458,11 @@ def load_model_and_processor_unified(
         )
         logger.info(f"   Tokenizer vocab size: {len(tokenizer)}")
         # FINAL VERIFICATION: Ensure padding_side is still 'left' before returning
-        if tokenizer.padding_side != 'left':
-            logger.warning(f"🚨 CRITICAL: Tokenizer padding_side was reset! Fixing: {tokenizer.padding_side} -> left")
-            tokenizer.padding_side = 'left'
+        if tokenizer.padding_side != "left":
+            logger.warning(
+                f"🚨 CRITICAL: Tokenizer padding_side was reset! Fixing: {tokenizer.padding_side} -> left"
+            )
+            tokenizer.padding_side = "left"
         logger.info(f"   Tokenizer padding side: {tokenizer.padding_side}")
         logger.info(f"   Model device: {next(model.parameters()).device}")
         logger.info(f"   Model dtype: {next(model.parameters()).dtype}")
@@ -379,7 +480,12 @@ def load_model_and_processor_unified(
                     logger.info(
                         "🔧 Setting detection_enabled=True for coordinate token model"
                     )
-                    model.detection_enabled = True
+                    # Use setattr instead of direct assignment to avoid type error
+                    setattr(
+                        model,
+                        "detection_enabled",
+                        True,
+                    )
                 logger.info("✅ Coordinate token model consistency verified")
             elif model.detection_enabled != detection_enabled:
                 # For non-coordinate models, enforce strict consistency
@@ -388,7 +494,109 @@ def load_model_and_processor_unified(
                     f"model={model.detection_enabled}"
                 )
 
-        return model, tokenizer, image_processor
+        # =====================================================================
+        # STEP 7: Initialize Token Managers for vocabulary extension
+        # =====================================================================
+        if coordinate_tokens_enabled:
+            logger.info("🎯 Initializing Token Managers for vocabulary extension...")
+
+            # Calculate expected vocabulary extensions using config values only
+            base_vocab_size = config.model_vocab_size  # Use the value from YAML
+            expected_extensions = 0
+
+            # If coordinate tokens are enabled, get count from config
+            if hasattr(config, "max_coord_value"):
+                coordinate_token_count = config.max_coord_value
+                expected_extensions += coordinate_token_count
+                logger.info(
+                    f"🔢 Adding {coordinate_token_count} coordinate tokens to vocabulary"
+                )
+
+            # Multi-geometry is always enabled with unified token manager
+            # Import to get token count without hardcoding
+            from src.utils.tokens.special_tokens import UnifiedTokenManager
+
+            geometry_token_count = len(UnifiedTokenManager.NEW_GEOMETRY_TOKENS)
+            expected_extensions += geometry_token_count
+            logger.info(
+                f"📐 Adding {geometry_token_count} geometry tokens to vocabulary"
+            )
+
+            # Calculate and log the expected final vocabulary size
+            expected_final_size = base_vocab_size + expected_extensions
+            logger.info(
+                f"📊 Vocabulary extension: {base_vocab_size} + {expected_extensions} = {expected_final_size}"
+            )
+
+            # First, initialize the coordinate token manager (adds coordinate tokens to model)
+            # This is already done in the detection model loading path
+
+            # Then initialize unified token manager with awareness of coordinate tokens
+            from src.utils.tokens import create_unified_token_manager
+
+            # Create unified token manager (handles everything automatically)
+            token_manager = create_unified_token_manager(
+                tokenizer,
+                model,
+                max_coord_value=config.max_coord_value,
+            )
+
+            # Verify final vocabulary sizes
+            final_tokenizer_size = len(tokenizer.get_vocab())
+            final_model_size = model.get_input_embeddings().num_embeddings
+
+            logger.info("📊 FINAL VOCABULARY VERIFICATION:")
+            logger.info(f"   Expected size: {expected_final_size}")
+            logger.info(f"   Tokenizer size: {final_tokenizer_size}")
+            logger.info(f"   Model embedding size: {final_model_size}")
+
+            if final_tokenizer_size != expected_final_size:
+                logger.warning(
+                    f"⚠️ Final tokenizer size ({final_tokenizer_size}) doesn't match expected size ({expected_final_size})"
+                )
+            else:
+                logger.info(f"✅ Final tokenizer size verified: {final_tokenizer_size}")
+
+            if final_model_size != final_tokenizer_size:
+                logger.warning(
+                    f"⚠️ Model-tokenizer size mismatch: model={final_model_size}, tokenizer={final_tokenizer_size}"
+                )
+            else:
+                logger.info(
+                    f"✅ Model-tokenizer size consistency verified: {final_model_size}"
+                )
+
+            logger.info("✅ Simple Token Manager initialized successfully!")
+        else:
+            logger.info("ℹ️ Coordinate tokens disabled - using standard format")
+
+            # Multi-geometry support is always enabled - add geometry tokens
+            logger.info("📐 Adding geometry tokens (coordinate tokens disabled)")
+            from src.utils.tokens import create_unified_token_manager
+            from src.utils.tokens.special_tokens import UnifiedTokenManager
+
+            # Create unified token manager (handles everything automatically)
+            token_manager = create_unified_token_manager(
+                tokenizer,
+                model,
+                max_coord_value=0,  # No coordinate tokens for geometry-only mode
+            )
+
+            # Log the vocabulary sizes using config values
+            logger.info("📊 GEOMETRY-ONLY VOCABULARY VERIFICATION:")
+            logger.info(f"   Base size: {config.model_vocab_size}")
+            logger.info(
+                f"   Geometry tokens: {len(UnifiedTokenManager.NEW_GEOMETRY_TOKENS)}"
+            )
+            logger.info(
+                f"   Expected size: {config.model_vocab_size + len(UnifiedTokenManager.NEW_GEOMETRY_TOKENS)}"
+            )
+            logger.info(f"   Actual tokenizer size: {len(tokenizer.get_vocab())}")
+            logger.info(
+                f"   Actual model size: {model.get_input_embeddings().num_embeddings}"
+            )
+
+            return model, tokenizer, image_processor
 
     except ModelLoadingError:
         raise  # Re-raise our errors

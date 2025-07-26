@@ -9,7 +9,11 @@
 #   ├── train.jsonl          # Training split
 #   ├── val.jsonl            # Validation split  
 #   ├── teacher.jsonl        # Teacher samples
-#   └── label_vocabulary.json # Statistics
+#   ├── label_vocabulary.json # Statistics
+#   ├── validation_results.json # Validation results
+#   ├── invalid_objects.jsonl # Invalid objects with details
+#   ├── invalid_samples.jsonl # Invalid samples for visualization
+#   └── fixed_objects.jsonl # Fixed objects (if enabled)
 #
 # REQUIRED: Set all configuration variables below before running!
 
@@ -45,6 +49,12 @@ OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-sep
 # Optional settings
 LOG_LEVEL="INFO"                    # e.g., "INFO", "DEBUG", "WARNING", "ERROR" or leave empty
 SEED="17"                         # e.g., "17" or leave empty
+
+# Validation settings - OPTIONAL (currently hardcoded in unified_processor.py)
+# TODO: These parameters will be configurable in a future update
+VALIDATION_MODE="strict"            # e.g., "strict", "lenient", "warning_only"
+MIN_OBJECT_SIZE="10"               # e.g., "10" for minimum object size in pixels
+ENABLE_VALIDATION_REPORTS="true"   # "true" or "false" to enable detailed validation reports
 
 # ============================================================================
 # SIMPLIFIED VALIDATION - Python config handles detailed validation
@@ -85,6 +95,9 @@ echo "   Smart Resize: $RESIZE"
 echo "   Object Types: $OBJECT_TYPES"
 echo "   Log Level: $LOG_LEVEL"
 echo "   Seed: $SEED"
+echo "   Validation Mode: $VALIDATION_MODE (hardcoded: strict)"
+echo "   Min Object Size: $MIN_OBJECT_SIZE (hardcoded: 10px)"
+echo "   Validation Reports: Always enabled"
 echo ""
 
 # Build command arguments
@@ -119,6 +132,9 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "✅ Dataset $DATASET_NAME processed successfully!"
     echo "📁 Output: $OUTPUT_DIR/$DATASET_NAME/"
+    
+    # Validation step has been removed for simplification
+    
     echo "🚀 Ready for training!"
 else
     echo ""

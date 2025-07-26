@@ -101,7 +101,7 @@ def check_flash_attention_available() -> bool:
 
         # Lazy import – will raise if the fused kernels are missing.
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
-            Qwen2_5_VLFlashAttention2,  # noqa: F401 – imported for availability check only
+            Qwen2_5_VLFlashAttention2,  # noqa
         )
 
         return True
@@ -291,9 +291,7 @@ class InferenceEngine:
             from src.models.model_loader import load_model_and_processor_unified
 
             # Detect model type based on config - coordinate tokens drive wrapper usage
-            coordinate_tokens_enabled = getattr(
-                config, "coordinate_tokens_enabled", False
-            )
+            coordinate_tokens_enabled = config.coordinate_tokens_enabled
 
             logger.info(f"🎯 Model type detection:")
             logger.info(f"   Coordinate tokens enabled: {coordinate_tokens_enabled}")
@@ -313,19 +311,49 @@ class InferenceEngine:
             model, tokenizer, image_processor = load_model_and_processor_unified(
                 model_path=str(model_dir),
                 for_inference=True,  # ONLY difference from training
+                force_detection=False,  # Explicit value instead of None
                 attn_implementation=attn_implementation,
             )
 
-            # Create processor-like object for compatibility
-            processor = type(
-                "UnifiedProcessor",
-                (),
-                {
-                    "tokenizer": tokenizer,
-                    "image_processor": image_processor,
-                    "batch_decode": tokenizer.batch_decode,
-                },
-            )()
+            # Create processor-like object for compatibility with proper methods
+            class UnifiedProcessor:
+                def __init__(self, tokenizer, image_processor):
+                    self.tokenizer = tokenizer
+                    self.image_processor = image_processor
+
+                def __call__(
+                    self, text=None, images=None, return_tensors=None, **kwargs
+                ):
+                    """Process text and images together"""
+                    inputs = {}
+
+                    if text is not None:
+                        # Process text using tokenizer
+                        text_inputs = self.tokenizer(
+                            text, return_tensors=return_tensors, **kwargs
+                        )
+                        # Convert BatchEncoding to dict if needed
+                        if hasattr(text_inputs, "to_dict"):
+                            text_inputs = text_inputs.to_dict()
+                        inputs.update(text_inputs)
+
+                    if images is not None:
+                        # Process images using image_processor
+                        image_inputs = self.image_processor(
+                            images, return_tensors=return_tensors, **kwargs
+                        )
+                        # Convert BatchEncoding to dict if needed
+                        if hasattr(image_inputs, "to_dict"):
+                            image_inputs = image_inputs.to_dict()
+                        inputs.update(image_inputs)
+
+                    return inputs
+
+                def batch_decode(self, *args, **kwargs):
+                    """Pass through to tokenizer's batch_decode"""
+                    return self.tokenizer.batch_decode(*args, **kwargs)
+
+            processor = UnifiedProcessor(tokenizer, image_processor)
 
             model.eval()
 
@@ -351,6 +379,8 @@ class InferenceEngine:
 
     def _load_teacher_pool(self) -> List[Dict[str, Any]]:
         """Load teacher samples from teacher pool JSONL file."""
+        if self.teacher_pool_file is None:
+            raise ValueError("teacher_pool_file is None")
         teacher_pool_path = Path(self.teacher_pool_file)
         if not teacher_pool_path.exists():
             raise FileNotFoundError(
@@ -370,7 +400,7 @@ class InferenceEngine:
 
         return teacher_samples
 
-    def _sample_teachers(self, seed: int = None) -> List[Dict[str, Any]]:
+    def _sample_teachers(self, seed: Optional[int] = None) -> List[Dict[str, Any]]:
         """Sample random teacher examples."""
         if seed is not None:
             random.seed(seed)
@@ -381,7 +411,7 @@ class InferenceEngine:
         return random.sample(self.teacher_samples, self.num_teachers)
 
     def prepare_inference_inputs(
-        self, sample: Dict[str, Any], seed: int = None
+        self, sample: Dict[str, Any], seed: Optional[int] = None
     ) -> Tuple[str, List[Image.Image]]:
         """Prepare inputs for inference exactly like demo script.
 
@@ -400,7 +430,7 @@ class InferenceEngine:
         return self._prepare_standard_inputs(sample)
 
     def _prepare_teacher_guided_inputs(
-        self, student_sample: Dict[str, Any], seed: int = None
+        self, student_sample: Dict[str, Any], seed: Optional[int] = None
     ) -> Tuple[str, List[Image.Image]]:
         """Prepare inputs with teacher guidance using the exact training pipeline."""
         # Sample teacher examples
@@ -430,9 +460,12 @@ class InferenceEngine:
         messages_dicts = [asdict(msg) for msg in processed_messages]
 
         # Apply chat template with generation prompt
-        prompt_str: str = self.chat_processor.tokenizer.apply_chat_template(
+        prompt_str = self.chat_processor.tokenizer.apply_chat_template(
             messages_dicts, tokenize=False, add_generation_prompt=True
         )
+        # Ensure we return a string
+        if not isinstance(prompt_str, str):
+            prompt_str = str(prompt_str)
 
         logger.debug(f"Built teacher-guided prompt with {len(images)} images")
         logger.debug(f"Teacher examples: {len(teachers)}")
@@ -471,9 +504,12 @@ class InferenceEngine:
         messages_dicts = [asdict(msg) for msg in processed_messages]
 
         # Apply chat template with generation prompt
-        prompt_str: str = self.chat_processor.tokenizer.apply_chat_template(
+        prompt_str = self.chat_processor.tokenizer.apply_chat_template(
             messages_dicts, tokenize=False, add_generation_prompt=True
         )
+        # Ensure we return a string
+        if not isinstance(prompt_str, str):
+            prompt_str = str(prompt_str)
 
         logger.debug(f"Built standard inference prompt using ChatProcessor")
         logger.debug(f"Prompt preview (first 500 chars): {prompt_str[:500]}...")
@@ -701,11 +737,22 @@ class InferenceEngine:
                             pad_len = max_len - ids.shape[1]
                             if pad_len > 0:
                                 # Left padding for generation
+                                # Make sure we have a valid pad token ID
+                                pad_token_id = (
+                                    self.processor.tokenizer.pad_token_id
+                                    if self.processor.tokenizer.pad_token_id is not None
+                                    else 0
+                                )
                                 padded = torch.cat(
                                     [
                                         torch.full(
-                                            (ids.shape[0], pad_len),
-                                            self.processor.tokenizer.pad_token_id,
+                                            size=(
+                                                ids.shape[0],
+                                                pad_len,
+                                            ),
+                                            fill_value=int(
+                                                pad_token_id
+                                            ),  # Ensure pad_token_id is an integer
                                             dtype=ids.dtype,
                                             device=ids.device,
                                         ),
@@ -1023,7 +1070,9 @@ class InferenceEngine:
                             )
 
                         # Process each response in the batch
-                        for sample, response, sample_idx in zip(batch_samples, responses, batch_indices):
+                        for sample, response, sample_idx in zip(
+                            batch_samples, responses, batch_indices
+                        ):
                             # Extract metadata
                             target = sample
                             target_images = target.get("images", [])

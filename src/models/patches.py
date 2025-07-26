@@ -35,13 +35,14 @@ def patch_torch_library_wrap_triton():
     Compatibility patch for torch.library.wrap_triton missing in PyTorch 2.5.1.
     This function adds the missing wrap_triton method to maintain Flash Attention compatibility.
     """
-    if not hasattr(torch.library, "wrap_triton"):
+    if hasattr(torch, "library") and not hasattr(torch.library, "wrap_triton"):
 
         def wrap_triton(kernel_fn):
             """Fallback implementation that returns the kernel directly for older PyTorch versions."""
             return kernel_fn
 
-        torch.library.wrap_triton = wrap_triton
+        # Add the function to torch.library module
+        setattr(torch.library, "wrap_triton", wrap_triton)
         logger.info(
             "🔧 Applied torch.library.wrap_triton compatibility patch for PyTorch 2.5.1"
         )
@@ -154,14 +155,14 @@ def safe_visual_forward(original_forward):
     During inference/generation, we provide safe fallbacks.
     """
 
-    def wrapped_forward(self, pixel_values: torch.Tensor, grid_thw: torch.Tensor):
+    def wrapped_forward(self, hidden_states: torch.Tensor, grid_thw: torch.Tensor):
         # Check if we're in training mode
         is_training = self.training
 
         if is_training:
             # During training: fail fast, don't apply any "fixes"
             # This ensures we catch and fix real issues instead of masking them
-            return original_forward(self, pixel_values, grid_thw)
+            return original_forward(self, hidden_states, grid_thw)
 
         # Only apply safe handling during inference
         try:
@@ -176,11 +177,11 @@ def safe_visual_forward(original_forward):
 
             target_device = next(self.parameters()).device  # e.g. cuda:0
 
-            if torch.is_tensor(pixel_values) and pixel_values.device != target_device:
+            if torch.is_tensor(hidden_states) and hidden_states.device != target_device:
                 logger.debug(
-                    f"🔧 Moving pixel_values from {pixel_values.device} to {target_device}"
+                    f"🔧 Moving hidden_states from {hidden_states.device} to {target_device}"
                 )
-                pixel_values = pixel_values.to(device=target_device, non_blocking=True)
+                hidden_states = hidden_states.to(device=target_device, non_blocking=True)
 
             if torch.is_tensor(grid_thw) and grid_thw.device != target_device:
                 logger.debug(
@@ -189,9 +190,9 @@ def safe_visual_forward(original_forward):
                 grid_thw = grid_thw.to(device=target_device, non_blocking=True)
 
             # Validate inputs before processing
-            if pixel_values.numel() == 0 or pixel_values.shape[0] == 0:
+            if hidden_states.numel() == 0 or hidden_states.shape[0] == 0:
                 logger.warning(
-                    "⚠️ Empty pixel_values tensor detected during inference, skipping visual processing"
+                    "⚠️ Empty hidden_states tensor detected during inference, skipping visual processing"
                 )
                 # Return empty tensor with correct shape and device
                 # EXPLICIT: Get hidden_size from model - no defaults
@@ -232,7 +233,7 @@ def safe_visual_forward(original_forward):
                     0, hidden_size, device=target_device, dtype=torch.float16
                 )
 
-            seq_len = pixel_values.shape[0]
+            seq_len = hidden_states.shape[0]
 
             # EXPLICIT: Get dimensions from model config - no defaults
             if hasattr(self, "embed_dim"):
@@ -262,32 +263,32 @@ def safe_visual_forward(original_forward):
                 )
                 # Pad to make it compatible
                 padding_needed = spatial_merge_unit - (seq_len % spatial_merge_unit)
-                pixel_values = torch.cat(
+                hidden_states = torch.cat(
                     [
-                        pixel_values,
+                        hidden_states,
                         torch.zeros(
                             padding_needed,
-                            pixel_values.shape[1],
-                            device=pixel_values.device,
-                            dtype=pixel_values.dtype,
+                            hidden_states.shape[1],
+                            device=hidden_states.device,
+                            dtype=hidden_states.dtype,
                         ),
                     ],
                     dim=0,
                 )
                 logger.debug(
-                    f"🔧 Padded pixel_values from {seq_len} to {pixel_values.shape[0]} during inference"
+                    f"🔧 Padded hidden_states from {seq_len} to {hidden_states.shape[0]} during inference"
                 )
 
             # Call original forward with validated inputs
-            return original_forward(self, pixel_values, grid_thw)
+            return original_forward(self, hidden_states, grid_thw)
 
         except Exception as e:
             logger.error(f"❌ Visual forward failed during inference: {e}")
             logger.error(
-                f"   pixel_values shape: {pixel_values.shape if torch.is_tensor(pixel_values) else 'N/A'}"
+                f"   hidden_states shape: {hidden_states.shape if torch.is_tensor(hidden_states) else 'N/A'}"
             )
             logger.error(
-                f"   pixel_values device: {pixel_values.device if torch.is_tensor(pixel_values) else 'N/A'}"
+                f"   hidden_states device: {hidden_states.device if torch.is_tensor(hidden_states) else 'N/A'}"
             )
             logger.error(
                 f"   grid_thw shape: {grid_thw.shape if torch.is_tensor(grid_thw) else 'N/A'}"
@@ -310,8 +311,8 @@ def safe_visual_forward(original_forward):
             # CRITICAL: Calculate correct number of expected features
             # This prevents the "image features and image tokens do not match" error
             if (
-                torch.is_tensor(pixel_values)
-                and pixel_values.numel() > 0
+                torch.is_tensor(hidden_states)
+                and hidden_states.numel() > 0
                 and torch.is_tensor(grid_thw)
                 and grid_thw.numel() > 0
             ):
@@ -350,7 +351,7 @@ def safe_visual_forward(original_forward):
                     f"⚠️ Visual forward failed with invalid inputs, returning empty tensor"
                 )
                 logger.warning(
-                    f"   pixel_values valid: {torch.is_tensor(pixel_values) and pixel_values.numel() > 0}"
+                    f"   hidden_states valid: {torch.is_tensor(hidden_states) and hidden_states.numel() > 0}"
                 )
                 logger.warning(
                     f"   grid_thw valid: {torch.is_tensor(grid_thw) and grid_thw.numel() > 0}"
@@ -381,7 +382,10 @@ def apply_comprehensive_qwen25_fixes():
             original_forward = (
                 qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel.forward
             )
-            qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel.forward = (
+            # Use setattr instead of direct assignment
+            setattr(
+                qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel,
+                "forward",
                 safe_visual_forward(original_forward)
             )
             logger.info("✅ Safe visual forward patch applied for generation")

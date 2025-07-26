@@ -44,13 +44,16 @@ class ParameterGroupManager:
     the Qwen2.5-VL model and detection head for differential learning rates.
     """
 
-    def __init__(self, model: PreTrainedModel, base_weight_decay: float = 0.0):
+    def __init__(
+        self, model: PreTrainedModel, base_weight_decay: float = 0.0, config=None
+    ):
         """
         Initialize parameter group manager.
 
         Args:
             model: The complete model (base + detection head)
             base_weight_decay: Base weight decay for parameter groups
+            config: Configuration object (explicit config or global config)
         """
         # Strict validation - fail fast
         if model is None:
@@ -62,6 +65,7 @@ class ParameterGroupManager:
 
         self.model = model
         self.base_weight_decay = base_weight_decay
+        self.config = config
         self.logger = get_training_logger()
 
         # Parameter group configurations
@@ -73,8 +77,11 @@ class ParameterGroupManager:
         self._categorize_parameters()
 
     def _initialize_group_configs(self):
-        """Initialize parameter group configurations from global config."""
-        config = get_config()
+        """Initialize parameter group configurations from config."""
+        if self.config is None:
+            config = get_config()
+        else:
+            config = self.config
 
         self.group_configs = {
             "vision": ParameterGroupConfig(
@@ -136,6 +143,49 @@ class ParameterGroupManager:
 
         self._log_parameter_statistics()
 
+    def _is_extended_vocabulary_parameter(self, param_name: str) -> bool:
+        """
+        Check if a parameter has extended vocabulary size (indicating coordinate tokens).
+
+        Args:
+            param_name: Parameter name to check
+
+        Returns:
+            True if parameter has extended vocabulary size
+        """
+        try:
+            # Get the actual parameter
+            param = dict(self.model.named_parameters()).get(param_name)
+            if param is None:
+                return False
+
+            # Check if model has coordinate token information
+            if hasattr(self.model, "original_vocab_size") and hasattr(
+                self.model, "extended_vocab_size"
+            ):
+                original_size = getattr(self.model, "original_vocab_size", 0)
+                extended_size = getattr(self.model, "extended_vocab_size", 0)
+
+                # For embedding parameters, check the first dimension (vocab size)
+                if "embed_tokens.weight" in param_name and param.dim() >= 2:
+                    actual_vocab_size = param.shape[0]
+                    return (
+                        actual_vocab_size == extended_size
+                        and extended_size > original_size
+                    )
+
+                # For LM head parameters, check the output dimension
+                if "lm_head.weight" in param_name and param.dim() >= 2:
+                    actual_vocab_size = param.shape[0]  # Output vocab size
+                    return (
+                        actual_vocab_size == extended_size
+                        and extended_size > original_size
+                    )
+
+            return False
+        except Exception:
+            return False
+
     def _categorize_parameter(self, param_name: str) -> str:
         """
         Categorize a parameter based on its name.
@@ -147,6 +197,8 @@ class ParameterGroupManager:
             Category name ("vision", "merger", "llm", "detection", "adapter", "other")
         """
         # Coordinate token parameters (highest priority)
+
+        # 1. Check for explicit coordinate token modules
         if any(
             pattern in param_name
             for pattern in [
@@ -155,6 +207,35 @@ class ParameterGroupManager:
                 "coordinate_tokens",
                 "coord_tokens",
                 "coordinate_head",
+            ]
+        ):
+            return "coordinate"
+
+        # 2. Check if this model has coordinate tokens enabled and this is an extended embedding/LM head
+        if (
+            hasattr(self.model, "coordinate_tokens_enabled")
+            and self.model.coordinate_tokens_enabled
+        ):
+            # Check if this is the input embeddings or LM head that contains coordinate tokens
+            if any(
+                pattern in param_name
+                for pattern in [
+                    "embed_tokens.weight",  # Input embeddings
+                    "lm_head.weight",  # Output LM head
+                ]
+            ):
+                # Verify this parameter actually has extended vocabulary
+                if self._is_extended_vocabulary_parameter(param_name):
+                    return "coordinate"
+
+        # 3. Check for coordinate-specific parameter patterns
+        if any(
+            pattern in param_name.lower()
+            for pattern in [
+                "coordinate",
+                "coord_",
+                "bbox",
+                "detection_head",
             ]
         ):
             return "coordinate"

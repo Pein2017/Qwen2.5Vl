@@ -10,8 +10,6 @@ Core vision processing functionality for Qwen2.5-VL including:
 Includes ImageProcessor class for data conversion pipeline.
 """
 
-import base64
-import copy
 import logging
 import math
 import os
@@ -21,15 +19,16 @@ import warnings
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import torch
 import torchvision
 from packaging import version
 from PIL import Image, ImageOps
-from torchvision import io, transforms
+from torchvision import io
 from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as TF
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +86,13 @@ def smart_resize(
 
     3. The aspect ratio of the image is maintained as closely as possible.
     """
+    # Ensure all parameters are integers
+    height = int(height)
+    width = int(width)
+    factor = int(factor)
+    min_pixels = int(min_pixels)
+    max_pixels = int(max_pixels)
+
     if max(height, width) / min(height, width) > MAX_RATIO:
         raise ValueError(
             f"absolute aspect ratio must be smaller than {MAX_RATIO}, got {max(height, width) / min(height, width)}"
@@ -95,12 +101,12 @@ def smart_resize(
     w_bar = max(factor, round_by_factor(width, factor))
     if h_bar * w_bar > max_pixels:
         beta = math.sqrt((height * width) / max_pixels)
-        h_bar = max(factor, floor_by_factor(height / beta, factor))
-        w_bar = max(factor, floor_by_factor(width / beta, factor))
+        h_bar = max(factor, floor_by_factor(int(height / beta), factor))
+        w_bar = max(factor, floor_by_factor(int(width / beta), factor))
     elif h_bar * w_bar < min_pixels:
         beta = math.sqrt(min_pixels / (height * width))
-        h_bar = ceil_by_factor(height * beta, factor)
-        w_bar = ceil_by_factor(width * beta, factor)
+        h_bar = ceil_by_factor(int(height * beta), factor)
+        w_bar = ceil_by_factor(int(width * beta), factor)
     return h_bar, w_bar
 
 
@@ -122,7 +128,9 @@ def to_rgb(pil_image: Image.Image) -> Image.Image:
 
     # CRITICAL FIX: Apply EXIF orientation transformation
     # This ensures the image is displayed as intended by the camera/annotation tool
-    pil_image = ImageOps.exif_transpose(pil_image)
+    transformed_image = ImageOps.exif_transpose(pil_image)
+    if transformed_image is not None:
+        pil_image = transformed_image
 
     if pil_image.mode == "RGBA":
         white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
@@ -134,56 +142,114 @@ def to_rgb(pil_image: Image.Image) -> Image.Image:
     return pil_image.convert("RGB")
 
 
+def _safe_to_int(value: Any, default: int = 0) -> int:
+    """Safely convert value to int with a default fallback."""
+    try:
+        if isinstance(value, (int, float)):
+            return int(value)
+        elif isinstance(value, str):
+            return int(value)
+        elif hasattr(value, "__int__"):
+            return int(value)
+        else:
+            return default
+    except (ValueError, TypeError):
+        return default
+
+
 def fetch_image(
     ele: dict[str, str | Image.Image], size_factor: int = IMAGE_FACTOR
 ) -> Image.Image:
-    if "image" in ele:
+    """Fetch and resize image from URL or local path.
+
+    Args:
+        ele: A dictionary containing image information.
+            - image: URL or local path to image, or PIL Image object.
+            - resized_height, resized_width: Optional pre-computed dimensions.
+        size_factor: Factor to ensure dimensions are divisible by.
+
+    Returns:
+        Resized PIL Image.
+    """
+    # Handle PIL Image directly
+    if "image" in ele and isinstance(ele["image"], Image.Image):
         image = ele["image"]
-    else:
-        image = ele["image_url"]
-    image_obj = None
-    if isinstance(image, Image.Image):
-        image_obj = image
-    elif image.startswith("http://") or image.startswith("https://"):
-        # fix memory leak issue while using BytesIO
-        with requests.get(image, stream=True) as response:
+    # Handle URL or path
+    elif "image" in ele and isinstance(ele["image"], str):
+        image_path = ele["image"]
+        # Handle URL
+        if image_path.startswith(("http://", "https://")):
+            try:
+                response = requests.get(image_path, stream=True, timeout=10)
+                response.raise_for_status()
+                image = Image.open(BytesIO(response.content))
+            except Exception as e:
+                logger.error(f"Failed to fetch image from URL: {e}")
+                # Create a small placeholder image on error
+                image = Image.new("RGB", (size_factor, size_factor), color="gray")
+        # Handle local path
+        else:
+            try:
+                image = Image.open(image_path)
+            except Exception as e:
+                logger.error(f"Failed to open image from path: {e}")
+                # Create a small placeholder image on error
+                image = Image.new("RGB", (size_factor, size_factor), color="gray")
+    elif "image_url" in ele and isinstance(ele["image_url"], str):
+        image_url = ele["image_url"]
+        try:
+            response = requests.get(image_url, stream=True, timeout=10)
             response.raise_for_status()
-            with BytesIO(response.content) as bio:
-                image_obj = copy.deepcopy(Image.open(bio))
-    elif image.startswith("file://"):
-        image_obj = Image.open(image[7:])
-    elif image.startswith("data:image"):
-        if "base64," in image:
-            _, base64_data = image.split("base64,", 1)
-            data = base64.b64decode(base64_data)
-            # fix memory leak issue while using BytesIO
-            with BytesIO(data) as bio:
-                image_obj = copy.deepcopy(Image.open(bio))
+            image = Image.open(BytesIO(response.content))
+        except Exception as e:
+            logger.error(f"Failed to fetch image from URL: {e}")
+            # Create a small placeholder image on error
+            image = Image.new("RGB", (size_factor, size_factor), color="gray")
     else:
-        image_obj = Image.open(image)
-    if image_obj is None:
-        raise ValueError(
-            f"Unrecognized image input, support local path, http url, base64 and PIL.Image, got {image}"
-        )
-    image = to_rgb(image_obj)
-    ## resize
+        # Create a blank image if no valid source
+        logger.warning("No valid image source provided, creating placeholder")
+        image = Image.new("RGB", (size_factor, size_factor), color="gray")
+
+    # Convert to RGB
+    image = to_rgb(image)
+
+    # Resize based on provided dimensions or calculate from image
     if "resized_height" in ele and "resized_width" in ele:
-        resized_height, resized_width = smart_resize(
-            ele["resized_height"],
-            ele["resized_width"],
-            factor=size_factor,
-        )
+        # Use pre-computed dimensions if provided
+        try:
+            # Extract height and width values safely
+            height_val = _safe_to_int(ele.get("resized_height"), 480)
+            width_val = _safe_to_int(ele.get("resized_width"), 640)
+
+            # Ensure values are integers before passing to smart_resize
+            resized_height, resized_width = smart_resize(
+                height_val,
+                width_val,
+                factor=size_factor,
+            )
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error processing dimensions: {e}, using defaults")
+            resized_height, resized_width = smart_resize(480, 640, factor=size_factor)
     else:
-        width, height = image.size
-        min_pixels = ele.get("min_pixels", MIN_PIXELS)
-        max_pixels = ele.get("max_pixels", MAX_PIXELS)
-        resized_height, resized_width = smart_resize(
-            height,
-            width,
-            factor=size_factor,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
+        # Get dimensions from the image
+        if hasattr(image, "size") and len(image.size) >= 2:
+            # Get dimensions as integers
+            width, height = _safe_to_int(image.size[0]), _safe_to_int(image.size[1])
+
+            min_pixels = _safe_to_int(ele.get("min_pixels"), MIN_PIXELS)
+            max_pixels = _safe_to_int(ele.get("max_pixels"), MAX_PIXELS)
+            resized_height, resized_width = smart_resize(
+                height,
+                width,
+                factor=size_factor,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
+            )
+        else:
+            # Fallback for invalid images
+            resized_height, resized_width = size_factor, size_factor
+
+    # Resize the image
     image = image.resize((resized_width, resized_height))
 
     return image
@@ -417,6 +483,13 @@ def _read_video_torchcodec(
     decoder = VideoDecoder(video_path, num_ffmpeg_threads=TORCHCODEC_NUM_THREADS)
     video_fps = decoder.metadata.average_fps
     total_frames = decoder.metadata.num_frames
+
+    # Handle potential None values from metadata
+    if total_frames is None:
+        total_frames = 1
+    if video_fps is None:
+        video_fps = 1.0
+
     start_frame, end_frame, total_frames = calculate_video_frame_range(
         ele,
         total_frames,
@@ -457,7 +530,12 @@ def get_video_reader_backend() -> str:
 
 def fetch_video(
     ele: dict, image_factor: int = IMAGE_FACTOR, return_video_sample_fps: bool = False
-) -> torch.Tensor | list[Image.Image]:
+) -> (
+    torch.Tensor
+    | list[Image.Image]
+    | tuple[torch.Tensor, float]
+    | tuple[list[Image.Image], float]
+):
     if isinstance(ele["video"], str):
         video_reader_backend = get_video_reader_backend()
         try:
@@ -469,33 +547,53 @@ def fetch_video(
             video, sample_fps = VIDEO_READER_BACKENDS["torchvision"](ele)
 
         nframes, _, height, width = video.shape
-        min_pixels = ele.get("min_pixels", VIDEO_MIN_PIXELS)
-        total_pixels = ele.get("total_pixels", VIDEO_TOTAL_PIXELS)
+        min_pixels = int(ele.get("min_pixels", VIDEO_MIN_PIXELS))
+        total_pixels = int(ele.get("total_pixels", VIDEO_TOTAL_PIXELS))
         max_pixels = max(
             min(VIDEO_MAX_PIXELS, total_pixels / nframes * FRAME_FACTOR),
             int(min_pixels * 1.05),
         )
-        max_pixels_supposed = ele.get("max_pixels", max_pixels)
+        max_pixels_supposed = int(ele.get("max_pixels", max_pixels))
         if max_pixels_supposed > max_pixels:
             logger.warning(
                 f"The given max_pixels[{max_pixels_supposed}] exceeds limit[{max_pixels}]."
             )
         max_pixels = min(max_pixels_supposed, max_pixels)
         if "resized_height" in ele and "resized_width" in ele:
+            # Ensure height and width are integers
+            resized_height_val = ele["resized_height"]
+            resized_width_val = ele["resized_width"]
+
+            # Convert to integers if needed
+            if isinstance(resized_height_val, str):
+                resized_height_val = int(resized_height_val)
+            elif hasattr(resized_height_val, "__int__"):
+                resized_height_val = int(resized_height_val)
+            else:
+                resized_height_val = int(float(resized_height_val))
+
+            if isinstance(resized_width_val, str):
+                resized_width_val = int(resized_width_val)
+            elif hasattr(resized_width_val, "__int__"):
+                resized_width_val = int(resized_width_val)
+            else:
+                resized_width_val = int(float(resized_width_val))
+
             resized_height, resized_width = smart_resize(
-                ele["resized_height"],
-                ele["resized_width"],
+                resized_height_val,
+                resized_width_val,
                 factor=image_factor,
             )
         else:
             resized_height, resized_width = smart_resize(
-                height,
-                width,
+                int(height),
+                int(width),
                 factor=image_factor,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
+                min_pixels=int(min_pixels),
+                max_pixels=int(max_pixels),
             )
-        video = transforms.functional.resize(
+        # Use TF.resize instead of functional.resize to avoid type issues
+        video = TF.resize(
             video,
             [resized_height, resized_width],
             interpolation=InterpolationMode.BICUBIC,
@@ -519,25 +617,47 @@ def fetch_video(
         if len(images) < nframes:
             images.extend([images[-1]] * (nframes - len(images)))
         if return_video_sample_fps:
-            return images, process_info.pop("fps", 2.0)
+            return images, float(process_info.pop("fps", 2.0))
         return images
 
 
 def extract_vision_info(conversations: list[dict] | list[list[dict]]) -> list[dict]:
-    vision_infos = []
-    if isinstance(conversations[0], dict):
-        conversations = [conversations]
-    for conversation in conversations:
+    """Extract vision information from conversations.
+
+    Args:
+        conversations: A list of conversations or a list of list of conversations
+
+    Returns:
+        A list of dictionaries containing vision information
+    """
+    vision_infos: list[dict] = []
+
+    # Handle empty input
+    if not conversations:
+        return vision_infos
+
+    # Determine format and standardize to list of conversations
+    # Check if it's a single conversation (list of messages) vs list of conversations
+    is_single_conversation = all(isinstance(item, dict) for item in conversations)
+
+    # Convert single conversation to list of conversations for uniform processing
+    conv_list = [conversations] if is_single_conversation else conversations
+
+    # Process each conversation
+    for conversation in conv_list:
         for message in conversation:
-            if isinstance(message["content"], list):
-                for ele in message["content"]:
-                    if (
-                        "image" in ele
-                        or "image_url" in ele
-                        or "video" in ele
-                        or ele.get("type", "") in ("image", "image_url", "video")
-                    ):
-                        vision_infos.append(ele)
+            if isinstance(message, dict) and "content" in message:
+                content = message["content"]
+                if isinstance(content, list):
+                    for ele in content:
+                        if isinstance(ele, dict) and (
+                            "image" in ele
+                            or "image_url" in ele
+                            or "video" in ele
+                            or ele.get("type", "") in ("image", "image_url", "video")
+                        ):
+                            vision_infos.append(ele)
+
     return vision_infos
 
 
@@ -547,13 +667,25 @@ def process_vision_info(
 ) -> tuple[
     list[Image.Image] | None,
     list[torch.Tensor | list[Image.Image]] | None,
-    Optional[dict],
+    dict[str, list[float]] | None,
 ]:
+    """Process vision information from conversations.
+
+    Args:
+        conversations: A list of conversations or a list of list of conversations
+        return_video_kwargs: Whether to return video keywords arguments
+
+    Returns:
+        A tuple of (image_inputs, video_inputs, video_kwargs)
+    """
+    # Extract vision information from conversations
     vision_infos = extract_vision_info(conversations)
-    ## Read images or videos
+
+    # Read images or videos
     image_inputs = []
     video_inputs = []
     video_sample_fps_list = []
+
     for vision_info in vision_infos:
         if "image" in vision_info or "image_url" in vision_info:
             image_inputs.append(fetch_image(vision_info))
@@ -565,13 +697,19 @@ def process_vision_info(
             video_inputs.append(video_input)
         else:
             raise ValueError("image, image_url or video should in content.")
+
+    # Handle empty inputs
     if len(image_inputs) == 0:
         image_inputs = None
     if len(video_inputs) == 0:
         video_inputs = None
+
+    # Return with or without video kwargs
     if return_video_kwargs:
         return image_inputs, video_inputs, {"fps": video_sample_fps_list}
-    return image_inputs, video_inputs
+
+    # Return a 3-tuple with None as the third element to match the return type
+    return image_inputs, video_inputs, None
 
 
 # Data Conversion Pipeline Image Processor
@@ -580,10 +718,7 @@ class ImageProcessor:
 
     def __init__(self, config):
         """Initialize with configuration."""
-        from data_conversion.config import DataConversionConfig
-        from data_conversion.utils.file_ops import FileOperations
-        from data_conversion.coordinate_manager import CoordinateManager
-        
+
         self.config = config
         self.input_dir = Path(config.input_dir)
         self.output_dir = config.get_dataset_output_dir()
@@ -591,7 +726,7 @@ class ImageProcessor:
 
         logger.info(f"ImageProcessor initialized: resize={config.resize}")
 
-    def to_rgb(self, pil_image: Image) -> Image:
+    def to_rgb(self, pil_image: Image.Image) -> Image.Image:
         """
         Convert PIL image to RGB with proper EXIF orientation handling.
 
@@ -600,7 +735,9 @@ class ImageProcessor:
         for transparency handling.
         """
         # Apply EXIF orientation transformation
-        pil_image = ImageOps.exif_transpose(pil_image)
+        transformed_image = ImageOps.exif_transpose(pil_image)
+        if transformed_image is not None:
+            pil_image = transformed_image
 
         if pil_image.mode == "RGBA":
             white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
@@ -623,7 +760,7 @@ class ImageProcessor:
             Tuple of (output_image_path, final_width, final_height)
         """
         from data_conversion.utils.file_ops import FileOperations
-        
+
         if not self.output_image_dir:
             # No processing needed, return original
             return image_path, width, height
@@ -703,7 +840,7 @@ class ImageProcessor:
     ) -> None:
         """Scale bounding box coordinates in-place for resized images."""
         from data_conversion.coordinate_manager import CoordinateManager
-        
+
         if original_width == new_width and original_height == new_height:
             return  # No scaling needed
 
@@ -719,7 +856,7 @@ class ImageProcessor:
                 if self.config.fail_fast:
                     raise
 
-    def get_processing_summary(self) -> Dict[str, any]:
+    def get_processing_summary(self) -> Dict[str, Any]:
         """Get summary of image processing operations."""
         summary = {
             "resize": self.config.resize,

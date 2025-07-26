@@ -1,3 +1,11 @@
+"""
+DEPRECATED: This standalone utility for EXIF orientation handling is superseded by
+the CoordinateManager.get_exif_transform_matrix() method in coordinate_manager.py.
+
+The current pipeline automatically handles EXIF orientation during coordinate transformations.
+This file is kept for manual image processing but is not used in the main pipeline.
+"""
+
 import argparse
 import logging
 from pathlib import Path
@@ -30,7 +38,14 @@ def process_image(path: Path, dry_run: bool = False) -> bool:
             if orientation == 1 and not img.info.get("exif"):
                 return False
 
-            img_oriented = ImageOps.exif_transpose(img).convert("RGB")
+            # Apply EXIF orientation and convert to RGB
+            img_oriented = ImageOps.exif_transpose(img)
+            if img_oriented is not None:
+                img_oriented = img_oriented.convert("RGB")
+            else:
+                # If exif_transpose failed, use original image
+                img_oriented = img.convert("RGB")
+
             if dry_run:
                 return orientation != 1 or bool(img.info.get("exif"))
 

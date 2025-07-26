@@ -12,26 +12,24 @@ Key Features:
 - Comprehensive error handling and validation
 """
 
-import torch
-from transformers.models.auto.tokenization_auto import AutoTokenizer
-from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 from transformers.training_args import TrainingArguments
 
-from src.config import get_config
 from src.core import CheckpointManager, DataProcessor
 from src.logger_utils import get_training_logger
-from src.models.wrapper import Qwen25VLWithDetection
 
 from .trainer import BBUTrainer
 from .training_coordinator import TrainingCoordinator
 
 
-def create_trainer_with_coordinator(training_args: TrainingArguments) -> BBUTrainer:
+def create_trainer_with_coordinator(
+    training_args: TrainingArguments, config=None
+) -> BBUTrainer:
     """
     Create BBU trainer with new training coordinator system.
 
     Args:
         training_args: HuggingFace training arguments
+        config: Explicit configuration object (new system)
 
     Returns:
         Configured BBUTrainer instance
@@ -39,51 +37,33 @@ def create_trainer_with_coordinator(training_args: TrainingArguments) -> BBUTrai
     logger = get_training_logger()
     logger.info("🏭 Creating trainer with new coordinator system...")
 
-    # Use unified configuration
-    config = get_config()
+    # Use explicit configuration if provided, otherwise fall back to global config
+    if config is None:
+        from src.config import get_config
+
+        config = get_config()
+        logger.info("📄 Using global configuration system (fallback)")
+    else:
+        logger.info("📄 Using explicit configuration system")
+
     cfg = config
-    logger.info("📄 Using unified configuration system")
 
-    # Create tokenizer and processor first
-    logger.info("🔤 Loading tokenizer and processor...")
-    tokenizer = AutoTokenizer.from_pretrained(config.model_path)
-    image_processor = Qwen2VLImageProcessor.from_pretrained(config.model_path)
+    # Model, tokenizer, and image processor loaded via unified loader
 
-    # Create coordinate config from global config
-    from src.models.wrapper import CoordinateConfig
-
-    coordinate_config = CoordinateConfig(
-        enable_coordinate_tokens=config.coordinate_tokens_enabled,
-        max_coord_value=getattr(config, "coordinate_config_max_coord_value", 2048),
-        coord_token_init_std=getattr(
-            config, "coordinate_config_coord_token_init_std", 0.01
-        ),
-        coordinate_loss_weight=getattr(
-            config, "coordinate_config_coordinate_loss_weight", 1.0
-        ),
-        regular_loss_weight=getattr(
-            config, "coordinate_config_regular_loss_weight", 1.0
-        ),
-        soft_expectation_temperature=getattr(
-            config, "coordinate_config_soft_expectation_temperature", 1.0
-        ),
-        focal_loss_alpha=getattr(config, "coordinate_config_focal_loss_alpha", 0.25),
-        focal_loss_gamma=getattr(config, "coordinate_config_focal_loss_gamma", 2.0),
-    )
-
-    # Create model with tokenizer and coordinate config
+    # Create model using unified model loader
     logger.info("🤖 Loading model...")
-    model = Qwen25VLWithDetection.from_pretrained(
-        config.model_path,
-        tokenizer=tokenizer,
-        coordinate_config=coordinate_config,
+    from src.models.model_loader import load_model_and_processor_unified
+
+    model, tokenizer, image_processor = load_model_and_processor_unified(
+        model_path=config.model_path,
+        for_inference=False,
         attn_implementation=config.attn_implementation,
-        torch_dtype=getattr(torch, config.torch_dtype),
+        config=config,
     )
 
     # Create datasets and collator using DataProcessor
     logger.info("📊 Creating datasets...")
-    data_processor = DataProcessor(tokenizer, image_processor)
+    data_processor = DataProcessor(tokenizer, image_processor, model, config=config)
     train_dataset, eval_dataset = data_processor.create_datasets()
 
     # Create data collator using DataProcessor
@@ -92,7 +72,9 @@ def create_trainer_with_coordinator(training_args: TrainingArguments) -> BBUTrai
 
     # Create training coordinator
     logger.info("🎯 Creating training coordinator...")
-    coordinator = TrainingCoordinator(model=model, tokenizer=tokenizer)
+    coordinator = TrainingCoordinator(
+        model=model, tokenizer=tokenizer, config_obj=config
+    )
 
     # Setup training
     coordinator.setup_training()
@@ -141,9 +123,11 @@ def safe_save_model_for_hf_trainer(trainer: BBUTrainer, output_dir: str):
     """
     # Use CheckpointManager for centralized saving logic
     checkpoint_manager = CheckpointManager()
-    
-    # Get model path from config to pass to checkpoint manager
-    config = get_config()
+
+    # Get model path from explicit config to pass to checkpoint manager
+    from src.config.explicit_config import get_explicit_config
+
+    config = get_explicit_config()
     model_path = config.model_path
 
     success = checkpoint_manager.save_model_safely(trainer, output_dir, model_path)

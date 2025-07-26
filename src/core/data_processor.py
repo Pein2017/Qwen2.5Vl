@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any, Tuple
 
 from src.chat_processor import ChatProcessor
-from src.config import get_config
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.teacher_pool import create_teacher_pool_manager
@@ -25,21 +24,34 @@ from src.teacher_pool import create_teacher_pool_manager
 class DataProcessor:
     """Unified data processing and dataset creation."""
 
-    def __init__(self, tokenizer: Any, image_processor: Any):
+    def __init__(
+        self, tokenizer: Any, image_processor: Any, model: Any = None, config=None
+    ):
         """
         Initialize data processor.
 
         Args:
             tokenizer: Model tokenizer
             image_processor: Image processor
+            model: Model instance (optional, for simple token manager initialization)
+            config: Explicit configuration object (new system)
         """
         self.tokenizer = tokenizer
         self.image_processor = image_processor
+        self.model = model
         self.logger = get_training_logger()
 
-        # Use unified configuration
-        self.config = get_config()
-        self.logger.info("📄 DataProcessor using unified configuration system")
+        # Use explicit configuration if provided, otherwise fall back to global config
+        if config is None:
+            from src.config import get_config
+
+            self.config = get_config()
+            self.logger.info(
+                "📄 DataProcessor using global configuration system (fallback)"
+            )
+        else:
+            self.config = config
+            self.logger.info("📄 DataProcessor using explicit configuration system")
 
         # Initialize components
         self._init_chat_processor()
@@ -51,36 +63,50 @@ class DataProcessor:
 
         # Get coordinate token configuration - strict validation
         if not hasattr(self.config, "coordinate_tokens_enabled"):
-            raise ValueError("coordinate_tokens_enabled must be explicitly configured in config")
+            raise ValueError(
+                "coordinate_tokens_enabled must be explicitly configured in config"
+            )
         coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
 
         # Get max_coord_value from flattened config
-        max_coord_value = getattr(self.config, "coordinate_config_max_coord_value", 2048)
-        if max_coord_value == 2048 and not hasattr(self.config, "coordinate_config_max_coord_value"):
-            self.logger.warning("⚠️ coordinate_config_max_coord_value not found in config, using default 2048")
+        # BEFORE (with silent defaults):
+        # max_coord_value = getattr(self.config, "coordinate_config_max_coord_value", 2048)
+        # use_official_box_tokens = getattr(self.config, "coordinate_config_use_official_box_tokens", True)
 
-        # Get additional coordinate token configuration from flattened config
-        use_official_box_tokens = getattr(self.config, "coordinate_config_use_official_box_tokens", True)
+        # AFTER (strict validation with simplified config):
+        if not hasattr(self.config, "max_coord_value"):
+            raise ValueError("max_coord_value must be explicitly configured in config")
+        max_coord_value = self.config.max_coord_value
 
-        self.logger.debug(f"🎯 CHAT PROCESSOR CONFIG: enabled={coordinate_tokens_enabled}, max_coord={max_coord_value}, box_tokens={use_official_box_tokens}")
+        # Use default for box tokens (always true with unified token manager)
+        use_official_box_tokens = True
+
+        self.logger.debug(
+            f"🎯 CHAT PROCESSOR CONFIG: coordinate_enabled={coordinate_tokens_enabled}, max_coord={max_coord_value}, box_tokens={use_official_box_tokens}"
+        )
 
         self.chat_processor = ChatProcessor(
             tokenizer=self.tokenizer,
             image_processor=self.image_processor,
+            config=self.config,
             model_max_length=model_max_length,
-            enable_coordinate_tokens=coordinate_tokens_enabled,
+            coordinate_tokens_enabled=coordinate_tokens_enabled,
             max_coord_value=max_coord_value,
-            use_official_box_tokens=use_official_box_tokens,
         )
+
+        # Update coordinate token ranges after tokenizer extension
+        if coordinate_tokens_enabled:
+            self.logger.info(
+                "🎯 Updating coordinate token ranges in chat processor..."
+            )
+            self.chat_processor._update_coordinate_token_ranges()
 
         if coordinate_tokens_enabled:
             self.logger.info(
-                f"✅ Chat processor initialized with coordinate tokens (max_coord_value: {max_coord_value})"
+                f"✅ Chat processor initialized with coordinate tokens (geometry + object_ref wrapping)"
             )
         else:
-            self.logger.info(
-                "✅ Chat processor initialized (coordinate tokens disabled)"
-            )
+            self.logger.info("✅ Chat processor initialized (JSON format only)")
 
     def _init_teacher_pool_manager(self) -> None:
         """Initialize teacher pool manager if available."""
@@ -88,7 +114,7 @@ class DataProcessor:
 
         self.teacher_pool_manager = None
         if teacher_pool_file and Path(teacher_pool_file).exists():
-            self.teacher_pool_manager = create_teacher_pool_manager()
+            self.teacher_pool_manager = create_teacher_pool_manager(self.config)
             self.logger.info(
                 f"✅ Teacher pool manager initialized: {teacher_pool_file}"
             )
@@ -114,6 +140,7 @@ class DataProcessor:
             teacher_pool_manager=self.teacher_pool_manager,
             teacher_ratio=data_config["teacher_ratio"],
             is_training=True,
+            config=self.config,
         )
 
         # Create evaluation dataset (no teachers)
@@ -121,8 +148,9 @@ class DataProcessor:
             data_path=data_config["val_data_path"],
             chat_processor=self.chat_processor,
             teacher_pool_manager=None,  # No teachers for evaluation
-            teacher_ratio=0.0,
+            teacher_ratio=data_config["val_teacher_ratio"],
             is_training=False,
+            config=self.config,
         )
 
         self.logger.info(
@@ -151,6 +179,7 @@ class DataProcessor:
             "train_data_path": self.config.train_data_path,
             "val_data_path": self.config.val_data_path,
             "teacher_ratio": self.config.teacher_ratio,
+            "val_teacher_ratio": 0.0,  # Always use 0 teacher ratio for validation
         }
 
     def get_data_statistics(self) -> dict:
@@ -167,8 +196,24 @@ class DataProcessor:
             "val_data_path": data_config["val_data_path"],
             "teacher_ratio": data_config["teacher_ratio"],
             "teacher_pool_available": self.teacher_pool_manager is not None,
-            "chat_processor_max_length": self.chat_processor.model_max_length,
         }
+
+        # Safely get model_max_length from chat_processor or config
+        if hasattr(self, "chat_processor") and self.chat_processor is not None:
+            if hasattr(self.chat_processor, "model_max_length"):
+                stats["chat_processor_max_length"] = (
+                    self.chat_processor.model_max_length
+                )
+            elif hasattr(self.chat_processor.tokenizer, "model_max_length"):
+                stats["chat_processor_max_length"] = (
+                    self.chat_processor.tokenizer.model_max_length
+                )
+            else:
+                stats["chat_processor_max_length"] = None
+        elif hasattr(self.config, "model_max_length") and self.config is not None:
+            stats["chat_processor_max_length"] = self.config.model_max_length
+        else:
+            stats["chat_processor_max_length"] = None
 
         return stats
 
