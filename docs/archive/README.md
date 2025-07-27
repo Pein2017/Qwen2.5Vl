@@ -1,16 +1,56 @@
-# Documentation Archive (2025 Update)
+# Documentation Archive
 
-This directory contains legacy documentation that has been archived due to the 2025 modular architecture migration. These files are preserved for historical reference but are no longer actively maintained.
+**Historical documentation preserved from the complex nested structure (pre-reorganization)**
 
-## Archived Documentation
+## 📋 **What's Archived Here**
 
-### Legacy Architecture (Pre-2025)
-The following files related to the monolithic architecture have been archived after the migration to the modular system:
+This directory contains the previous documentation structure that was reorganized on 2025-01-27 to create a simplified, maintainable documentation system.
 
-- **`coordinate-token-system-complete-guide.md`** - Legacy coordinate token system guide
-- **`soft_expectation_coordinate_regression.md`** - Legacy soft expectation approach
-- **`REORGANIZATION_PLAN.md`** - Historical reorganization planning
-- **`cleanup-candidates.md`** - Legacy cleanup planning
+### **Archived Structure**
+```
+archive/
+├── old-structure/           # Complete old documentation structure
+│   ├── core/               # Core system documentation
+│   ├── components/         # Component-specific guides
+│   ├── guides/             # User guides and tutorials
+│   ├── quick-start/        # Quick start materials
+│   ├── status/             # Implementation status docs
+│   ├── troubleshooting/    # Troubleshooting guides
+│   ├── reference/          # API and command references
+│   ├── workflows/          # Workflow documentation
+│   ├── refactoring/        # Refactoring notes and plans
+│   ├── implementation/     # Implementation details
+│   ├── legacy/             # Legacy documentation
+│   ├── advanced/           # Advanced topics
+│   ├── 专利/               # Chinese documentation
+│   └── archive-old/        # Previously archived content
+└── README.md               # This file
+```
+
+## 🎯 **Why Was This Reorganized?**
+
+### **Problems with Old Structure**
+- **12+ nested subdirectories** with overlapping content
+- **50+ scattered files** with duplicate information
+- **Unclear navigation** and hierarchy
+- **Mixed languages** and inconsistent naming
+- **Maintenance burden** due to scattered information
+- **User confusion** about where to find information
+
+### **New Simplified Structure**
+```
+docs/
+├── README.md               # Main entry point with navigation
+├── getting-started.md      # Quick start guide (consolidated)
+├── configuration.md        # Complete configuration guide (consolidated)
+├── coordinate-tokens.md    # Coordinate token system (consolidated)
+├── training.md            # Training guide and workflows (consolidated)
+├── troubleshooting.md     # All troubleshooting in one place (consolidated)
+├── api-reference.md       # API documentation (consolidated)
+├── architecture.md        # System architecture overview (consolidated)
+├── migration.md           # Migration guides (consolidated)
+└── archive/               # Historical content (this directory)
+```
 
 ### Legacy Data Formats
 - **`raw_data_template_数据堂.md`** - Legacy data template documentation
