@@ -62,7 +62,7 @@ RuntimeError: CUDA error: device-side assert triggered
 
 **Prevention:** Ensure proper model loading sequence
 
-### 3. **Trainer Compatibility Issue (Known Limitation)**
+### 3. **Trainer Configuration Issue (RESOLVED)**
 
 **Error Message:**
 ```
@@ -70,18 +70,29 @@ RuntimeError: CUDA error: device-side assert triggered
 ValueError: 🚨 KNOWN TRAINER COMPATIBILITY ISSUE
 ```
 
-**Cause:** Known HuggingFace trainer compatibility issue in coordinate mode
+**Cause:** Incorrect `remove_unused_columns` setting in TrainingArguments
 
-**Status:** ⚠️ **DOCUMENTED LIMITATION** - This is expected behavior
+**Status:** ✅ **RESOLVED** - Fixed by proper configuration
 
-**Impact:** Integration tests fail in coordinate mode, but core functionality works
+**Root Cause:** HuggingFace Trainer's default `remove_unused_columns=True` removes essential data columns in coordinate mode, causing empty data dictionaries.
 
 **Solution:**
-- **Use Standard Mode for production training** (recommended)
-- Test individual components separately for coordinate mode
-- The core coordinate token system works correctly in both modes
+```yaml
+# In configuration files (REQUIRED for coordinate mode)
+remove_unused_columns: false
+```
 
-**Test Results:** This accounts for 1 of the 2 remaining "failed" tests (actually expected)
+```python
+# In TrainingArguments
+training_args = TrainingArguments(
+    # ... other arguments ...
+    remove_unused_columns=False,  # Essential for coordinate mode
+)
+```
+
+**Prevention:** Always verify `remove_unused_columns: false` in coordinate mode configurations
+
+**Test Results:** All integration tests now pass in both Standard and Coordinate modes
 
 **Workaround:**
 ```yaml

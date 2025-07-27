@@ -131,6 +131,20 @@ python -m pytest tests/test_training_components.py -v
 
 ---
 
+## 🔧 **Configuration Requirements**
+
+### Coordinate Mode Requirements
+```yaml
+# REQUIRED for coordinate mode
+coordinate_tokens_enabled: true
+remove_unused_columns: false  # Essential - prevents data loss
+max_coord_value: 2048
+```
+
+**Critical:** Always set `remove_unused_columns: false` in coordinate mode to prevent HuggingFace Trainer from removing essential data columns.
+
+---
+
 ## 📚 Related Documentation
 
 - **Complete Guide:** [`docs/core/coordinate-token-system.md`](../core/coordinate-token-system.md)

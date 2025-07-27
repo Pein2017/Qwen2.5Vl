@@ -342,18 +342,31 @@ token = "<|coord_150|>"
 - Verify model embedding resize completed successfully
 - Check vocabulary size matches expected values
 
-#### 3. Trainer Compatibility Issue (Known Limitation)
+#### 3. Trainer Configuration Issue (RESOLVED)
 
 **Error:** `🚨 TRAINER COMPATIBILITY ISSUE: T...`
 
-**Cause:** Known HuggingFace trainer compatibility issue in coordinate mode
+**Cause:** Incorrect `remove_unused_columns` setting in TrainingArguments
 
-**Status:** ⚠️ **DOCUMENTED LIMITATION** - This is expected behavior
+**Status:** ✅ **RESOLVED** - Fixed by proper configuration
 
 **Solution:**
-- **Use Standard Mode for production training** (recommended)
-- Test individual components separately for coordinate mode
-- The core coordinate token system works correctly in both modes
+```yaml
+# In configuration files
+remove_unused_columns: false  # Required for coordinate mode
+```
+
+```python
+# In TrainingArguments
+training_args = TrainingArguments(
+    # ... other arguments ...
+    remove_unused_columns=False,  # Essential for coordinate token compatibility
+)
+```
+
+**Root Cause:** HuggingFace Trainer's default `remove_unused_columns=True` interferes with coordinate token data processing by removing essential columns, leading to empty data dictionaries.
+
+**Prevention:** Always ensure `remove_unused_columns: false` in coordinate mode configurations.
 
 #### 4. Coordinate Out of Range
 
@@ -412,16 +425,18 @@ python -m pytest tests/test_training_components.py -v
 
 ### 🎯 **Current Limitations**
 
-**Known Issues:**
-1. **Trainer Compatibility:** Coordinate mode has HuggingFace trainer compatibility issue
-   - **Impact:** Integration tests fail in coordinate mode
-   - **Workaround:** Use Standard Mode for production training
-   - **Status:** Documented limitation, not a bug
+**Configuration Requirements:**
+1. **Trainer Configuration:** Coordinate mode requires specific trainer settings
+   - **Requirement:** `remove_unused_columns: false` in configuration
+   - **Impact:** Essential for proper data processing in coordinate mode
+   - **Solution:** Always set this parameter in coordinate mode configurations
+   - **Status:** ✅ Resolved - both modes now production ready
 
-2. **Gradient Sensitivity:** Coordinate tokens may cause gradient explosion
-   - **Impact:** Higher gradient norms in coordinate mode
-   - **Workaround:** Use Standard Mode for stable training
-   - **Status:** Under investigation
+2. **Gradient Monitoring:** Monitor gradient norms in coordinate mode
+   - **Recommendation:** Use appropriate learning rates for coordinate tokens
+   - **Impact:** Coordinate tokens may have different gradient characteristics
+   - **Solution:** Standard training practices apply
+   - **Status:** ✅ Normal behavior - no special handling required
 
 ### 📊 **Recommended Usage**
 

@@ -1114,15 +1114,15 @@ class TrainerCompatibleDataCollator:
                     "The core coordinate token system works correctly (verified by unit tests)"
                 )
 
-            # EMERGENCY RECOVERY: Try to provide a helpful error message that suggests
-            # the user should skip this specific test since the core functionality works
+            # EMERGENCY RECOVERY: This should not happen with proper configuration
+            # but provide a helpful error message for debugging
             raise ValueError(
-                "🚨 TRAINER COMPATIBILITY ISSUE: The HuggingFace trainer's data loading "
-                "pipeline is clearing data in coordinate mode. This is a known issue with the "
-                "current trainer version. The core coordinate token system works correctly "
+                "🚨 TRAINER CONFIGURATION ISSUE: The HuggingFace trainer's data loading "
+                "pipeline is clearing data. This typically indicates missing configuration: "
+                "remove_unused_columns=False. The core coordinate token system works correctly "
                 "(verified by training components tests). "
-                "RECOMMENDATION: Use Standard Mode for production training. "
-                "For coordinate mode, test individual components separately."
+                "SOLUTION: Ensure remove_unused_columns=False in TrainingArguments. "
+                "Both Standard and Coordinate modes are production ready with proper configuration."
             )
 
         # Delegate to the base collator
@@ -1158,7 +1158,8 @@ def create_data_collator(collator_type: str = "standard", tokenizer=None, **kwar
     else:
         raise ValueError(f"Unknown collator_type: {collator_type}")
 
-    # Wrap the collator for better trainer compatibility and debugging
+    # Wrap the collator for enhanced trainer compatibility and debugging
+    # This wrapper provides better error messages and handles edge cases
     return TrainerCompatibleDataCollator(base_collator)
 
 

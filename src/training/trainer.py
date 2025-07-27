@@ -1433,14 +1433,13 @@ class BBUTrainer(Trainer):
                     # Every student sample must have coordinate losses (students do detection)
                     # Use small threshold to handle floating point precision issues
                     coord_loss_threshold = 1e-6
-                    
+
                     # Check if we're in a testing environment (integration tests)
                     # Integration tests with synthetic data may not generate proper coordinate tokens
-                    is_integration_test = (
-                        hasattr(self.args, 'output_dir') and 
-                        'pipeline_test' in str(self.args.output_dir)
-                    )
-                    
+                    is_integration_test = hasattr(
+                        self.args, "output_dir"
+                    ) and "pipeline_test" in str(self.args.output_dir)
+
                     if (
                         total_coord_loss < coord_loss_threshold
                         and student_lm_loss > 0.0
@@ -1713,27 +1712,31 @@ class BBUTrainer(Trainer):
 
     def get_train_dataloader(self) -> torch.utils.data.DataLoader:
         """
-        Override to prevent HuggingFace trainer from applying column removal wrapper.
-        
-        This fixes the trainer compatibility issue where empty dictionaries are passed
-        to the data collator in coordinate mode. The base trainer's column removal
-        logic conflicts with our custom BBUDataset and coordinate token system.
+        Override to ensure proper data loading with BBU datasets.
+
+        This ensures compatibility between HuggingFace trainer and our custom BBUDataset
+        and coordinate token system. The base trainer's column removal logic can interfere
+        with our data processing when remove_unused_columns=True (the default).
+
+        Note: This issue is resolved by setting remove_unused_columns=False in configuration.
         """
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
 
         from torch.utils.data import DataLoader
-        
+
         # Define seed_worker locally if not available
         def seed_worker(worker_id):
             """Worker init function to set random seed for each worker."""
             import random
+
             import numpy as np
             import torch
+
             worker_seed = torch.initial_seed() % 2**32
             np.random.seed(worker_seed)
             random.seed(worker_seed)
-        
+
         # Use our data collator directly without any wrapper
         dataloader_params = {
             "batch_size": self._train_batch_size,
@@ -1749,31 +1752,35 @@ class BBUTrainer(Trainer):
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        return self.accelerator.prepare(DataLoader(self.train_dataset, **dataloader_params))
+        return self.accelerator.prepare(
+            DataLoader(self.train_dataset, **dataloader_params)
+        )
 
     def get_eval_dataloader(self, eval_dataset=None) -> torch.utils.data.DataLoader:
         """
         Override to prevent HuggingFace trainer from applying column removal wrapper.
-        
+
         This ensures consistent behavior between training and evaluation dataloaders.
         """
         if eval_dataset is None and self.eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
 
         eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
-        
+
         from torch.utils.data import DataLoader
-        
+
         # Define seed_worker locally if not available
         def seed_worker(worker_id):
             """Worker init function to set random seed for each worker."""
             import random
+
             import numpy as np
             import torch
+
             worker_seed = torch.initial_seed() % 2**32
             np.random.seed(worker_seed)
             random.seed(worker_seed)
-        
+
         # Use our data collator directly without any wrapper
         dataloader_params = {
             "batch_size": self.args.per_device_eval_batch_size,
