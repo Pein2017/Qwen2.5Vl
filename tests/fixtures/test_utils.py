@@ -408,19 +408,33 @@ class TestUtils:
         initial_allocated = torch.cuda.memory_allocated() / 1024**2
         initial_reserved = torch.cuda.memory_reserved() / 1024**2
 
-        # Force garbage collection
-        gc.collect()
+        # Force garbage collection multiple times
+        for _ in range(3):
+            gc.collect()
+
+        # Synchronize GPU operations
+        torch.cuda.synchronize()
 
         # Clear CUDA cache multiple times for thorough cleanup
-        for i in range(3):
+        for i in range(5):  # Increased from 3 to 5
             torch.cuda.empty_cache()
-            if i < 2:  # Small delay between cache clears
+            if i < 4:  # Small delay between cache clears
                 import time
-
                 time.sleep(0.1)
+
+        # Additional aggressive cleanup
+        try:
+            torch.cuda.ipc_collect()  # Clean up inter-process communication
+        except Exception:
+            pass  # IPC collect may not be available in all environments
 
         # Reset memory stats
         torch.cuda.reset_peak_memory_stats()
+        torch.cuda.reset_max_memory_allocated()
+        torch.cuda.reset_max_memory_cached()
+
+        # Final synchronization
+        torch.cuda.synchronize()
 
         # Get final memory state
         final_allocated = torch.cuda.memory_allocated() / 1024**2

@@ -1711,6 +1711,86 @@ class BBUTrainer(Trainer):
                 self.args, self.state, self.control
             )
 
+    def get_train_dataloader(self) -> torch.utils.data.DataLoader:
+        """
+        Override to prevent HuggingFace trainer from applying column removal wrapper.
+        
+        This fixes the trainer compatibility issue where empty dictionaries are passed
+        to the data collator in coordinate mode. The base trainer's column removal
+        logic conflicts with our custom BBUDataset and coordinate token system.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        from torch.utils.data import DataLoader
+        
+        # Define seed_worker locally if not available
+        def seed_worker(worker_id):
+            """Worker init function to set random seed for each worker."""
+            import random
+            import numpy as np
+            import torch
+            worker_seed = torch.initial_seed() % 2**32
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+        
+        # Use our data collator directly without any wrapper
+        dataloader_params = {
+            "batch_size": self._train_batch_size,
+            "collate_fn": self.data_collator,  # No column removal wrapper
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(self.train_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        return self.accelerator.prepare(DataLoader(self.train_dataset, **dataloader_params))
+
+    def get_eval_dataloader(self, eval_dataset=None) -> torch.utils.data.DataLoader:
+        """
+        Override to prevent HuggingFace trainer from applying column removal wrapper.
+        
+        This ensures consistent behavior between training and evaluation dataloaders.
+        """
+        if eval_dataset is None and self.eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
+        
+        from torch.utils.data import DataLoader
+        
+        # Define seed_worker locally if not available
+        def seed_worker(worker_id):
+            """Worker init function to set random seed for each worker."""
+            import random
+            import numpy as np
+            import torch
+            worker_seed = torch.initial_seed() % 2**32
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+        
+        # Use our data collator directly without any wrapper
+        dataloader_params = {
+            "batch_size": self.args.per_device_eval_batch_size,
+            "collate_fn": self.data_collator,  # No column removal wrapper
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        return self.accelerator.prepare(DataLoader(eval_dataset, **dataloader_params))
+
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Log `logs` on the various objects watching training.

@@ -42,7 +42,7 @@ class SyntheticDataGenerator:
     def __init__(
         self,
         num_samples: int = 20,
-        image_size: Tuple[int, int] = (280, 560),
+        image_size: Tuple[int, int] = (168, 168),  # 6x28x28 - good balance of memory vs functionality
         temp_dir_prefix: str = "bbu_test_data_",
     ):
         """
@@ -86,12 +86,19 @@ class SyntheticDataGenerator:
         image_array = np.random.randint(80, 120, (height, width, 3), dtype=np.uint8)
 
         # Add equipment-like rectangular regions
-        num_equipment_regions = random.randint(2, 5)
+        num_equipment_regions = random.randint(2, min(5, width // 40))  # Adaptive to image size
         for _ in range(num_equipment_regions):
-            x1 = random.randint(0, width // 2)
-            y1 = random.randint(0, height // 2)
-            x2 = random.randint(x1 + 50, min(x1 + 200, width))
-            y2 = random.randint(y1 + 30, min(y1 + 150, height))
+            x1 = random.randint(0, max(1, width // 2))
+            y1 = random.randint(0, max(1, height // 2))
+            
+            # Adaptive region sizing
+            min_region_width = min(20, width // 4)
+            max_region_width = min(200, width - x1)
+            min_region_height = min(15, height // 4)
+            max_region_height = min(150, height - y1)
+            
+            x2 = random.randint(x1 + min_region_width, max(x1 + min_region_width + 1, max_region_width))
+            y2 = random.randint(y1 + min_region_height, max(y1 + min_region_height + 1, max_region_height))
 
             # Equipment colors (metallic grays, blues)
             colors = [
@@ -118,22 +125,36 @@ class SyntheticDataGenerator:
     def generate_bbox_2d_coordinates(self) -> List[int]:
         """Generate realistic bounding box coordinates."""
         width, height = self.image_size
-        x1 = random.randint(10, width // 3)
-        y1 = random.randint(10, height // 3)
-        x2 = random.randint(x1 + 30, min(x1 + 200, width - 10))
-        y2 = random.randint(y1 + 20, min(y1 + 120, height - 10))
+        
+        # Ensure minimum viable ranges
+        min_box_size = 20
+        margin = 10
+        
+        x1 = random.randint(margin, max(margin + 1, width // 3))
+        y1 = random.randint(margin, max(margin + 1, height // 3))
+        
+        max_x2 = min(x1 + min(width // 2, 200), width - margin)
+        max_y2 = min(y1 + min(height // 2, 120), height - margin)
+        
+        x2 = random.randint(x1 + min_box_size, max(x1 + min_box_size + 1, max_x2))
+        y2 = random.randint(y1 + min_box_size, max(y1 + min_box_size + 1, max_y2))
+        
         return [x1, y1, x2, y2]
 
     def generate_square_coordinates(self) -> List[int]:
         """Generate square/quadrilateral coordinates (8 points)."""
         width, height = self.image_size
-        # Generate 4 corner points for a roughly rectangular shape
-        center_x = random.randint(width // 4, 3 * width // 4)
-        center_y = random.randint(height // 4, 3 * height // 4)
+        
+        # Ensure minimum viable ranges
+        center_x = random.randint(width // 4, max(width // 4 + 1, 3 * width // 4))
+        center_y = random.randint(height // 4, max(height // 4 + 1, 3 * height // 4))
 
-        # Generate corners with some variation
-        half_width = random.randint(30, 80)
-        half_height = random.randint(20, 60)
+        # Generate corners with adaptive sizing
+        max_half_width = min(80, width // 4)
+        max_half_height = min(60, height // 4)
+        
+        half_width = random.randint(15, max(16, max_half_width))
+        half_height = random.randint(15, max(16, max_half_height))
 
         coords = []
         corners = [
@@ -159,16 +180,18 @@ class SyntheticDataGenerator:
         num_points = random.randint(3, 6)  # 3-6 points
 
         coords = []
-        # Start from a random point
-        x = random.randint(50, width - 50)
-        y = random.randint(50, height - 50)
+        # Start from a random point with adaptive margins
+        margin = min(50, width // 4)
+        x = random.randint(margin, max(margin + 1, width - margin))
+        y = random.randint(margin, max(margin + 1, height - margin))
         coords.extend([x, y])
 
         # Generate subsequent points following a rough path
         for _ in range(num_points - 1):
-            # Move in a somewhat consistent direction
-            dx = random.randint(-50, 50)
-            dy = random.randint(-30, 30)
+            # Move in a somewhat consistent direction with adaptive step size
+            max_step = min(50, width // 4)
+            dx = random.randint(-max_step, max_step)
+            dy = random.randint(-max_step // 2, max_step // 2)
             x = max(10, min(x + dx, width - 10))
             y = max(10, min(y + dy, height - 10))
             coords.extend([x, y])

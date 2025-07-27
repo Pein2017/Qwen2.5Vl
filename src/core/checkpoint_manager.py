@@ -19,20 +19,23 @@ from typing import Any, Dict, Optional
 import torch
 from transformers.models.auto.processing_auto import AutoProcessor
 
-from src.config.explicit_config import get_explicit_config
+# Removed explicit config import - config will be passed as parameter
 from src.logger_utils import get_training_logger
 
 
 class CheckpointManager:
     """Manager for model checkpoints and saving/loading operations."""
 
-    def __init__(self):
+    def __init__(self, config=None):
         """
         Initialize checkpoint manager.
+        
+        Args:
+            config: Configuration object (optional - can be passed to individual methods)
         """
         self.logger = get_training_logger()
-        self.config = get_explicit_config()
-        self.logger.info("📄 CheckpointManager using unified configuration system")
+        self.config = config
+        self.logger.info("📄 CheckpointManager initialized")
 
     def save_model_safely(
         self, trainer: Any, output_dir: str, model_path: Optional[str] = None
@@ -50,28 +53,23 @@ class CheckpointManager:
         """
         self.logger.info(f"💾 Saving model to {output_dir}...")
 
-        try:
-            # Create output directory
-            output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
+        # Validate trainer has save_model method
+        if not hasattr(trainer, "save_model"):
+            raise ValueError("Trainer must have save_model method")
 
-            # Use trainer's built-in save method
-            trainer.save_model(output_dir)
+        # Create output directory
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-            # Save additional components
-            self._save_image_processor(output_dir, model_path)
-            self._save_checkpoint_metadata(output_dir, model_path)
+        # Use trainer's built-in save method
+        trainer.save_model(output_dir)
 
-            self.logger.info(f"✅ Model saved successfully to {output_dir}")
-            return True
+        # Save additional components
+        self._save_image_processor(output_dir, model_path)
+        self._save_checkpoint_metadata(output_dir, model_path)
 
-        except Exception as e:
-            # FAIL FAST: Save failures should stop training immediately
-            self.logger.error(f"❌ Failed to save model: {e}")
-            self.logger.error(
-                "🚨 FAIL FAST: Model save failed - stopping training to prevent data loss"
-            )
-            raise RuntimeError(f"Model save failed: {e}") from e
+        self.logger.info(f"✅ Model saved successfully to {output_dir}")
+        return True
 
     # REMOVED: _fallback_save_model method - FAIL FAST approach
     # Save failures should stop training immediately
@@ -80,67 +78,85 @@ class CheckpointManager:
         self, output_dir: str, model_path: Optional[str] = None
     ) -> None:
         """Save image processor to output directory."""
+        # Use provided model_path or get from config with validation
+        if model_path is None:
+            if self.config is None:
+                raise ValueError(
+                    "Config is required when model_path is not provided. "
+                    "Initialize CheckpointManager with config or provide model_path."
+                )
+                
+            if not hasattr(self.config, "model_path"):
+                raise ValueError("Config missing required attribute: model_path")
+                
+            model_path = self.config.model_path
+            
+        if not model_path:
+            raise ValueError("model_path cannot be empty")
+
+        # Load processor with validation
         try:
-            # Use provided model_path or fall back to config
-            source_path = model_path
-            if source_path is None:
-                if self.config is None:
-                    self.logger.warning(
-                        "⚠️  Config is None, skipping image processor save"
-                    )
-                    return
-                source_path = self.config.model_path
-
-            processor = AutoProcessor.from_pretrained(source_path)
-
-            # Check if image processor exists and is not None
-            if (
-                not hasattr(processor, "image_processor")
-                or processor.image_processor is None
-            ):
-                self.logger.warning("⚠️  Image processor is None, skipping save")
-                return
-
-            processor.image_processor.save_pretrained(output_dir)
-            self.logger.info(f"💾 Image processor saved to: {output_dir}")
-
+            processor = AutoProcessor.from_pretrained(model_path)
         except Exception as e:
-            self.logger.warning(f"⚠️  Failed to save image processor: {e}")
+            raise RuntimeError(f"Failed to load processor from {model_path}: {e}") from e
+
+        # Validate image processor exists
+        if not hasattr(processor, "image_processor"):
+            raise ValueError(f"Processor from {model_path} missing image_processor attribute")
+            
+        if processor.image_processor is None:
+            raise ValueError(f"Processor from {model_path} has None image_processor")
+
+        # Save image processor
+        processor.image_processor.save_pretrained(output_dir)
+        self.logger.info(f"💾 Image processor saved to: {output_dir}")
 
     def _save_checkpoint_metadata(
         self, output_dir: str, model_path: Optional[str] = None
     ) -> None:
         """Save checkpoint metadata for tracking."""
-        try:
-            # Use provided model_path or fall back to config
-            if model_path is None:
-                if self.config is None:
-                    self.logger.warning(
-                        "⚠️  Config is None, skipping checkpoint metadata save"
-                    )
-                    return
-                model_path = self.config.model_path
+        # Use provided model_path or get from config with validation
+        if model_path is None:
+            if self.config is None:
+                raise ValueError(
+                    "Config is required when model_path is not provided. "
+                    "Initialize CheckpointManager with config or provide model_path."
+                )
+                
+            if not hasattr(self.config, "model_path"):
+                raise ValueError("Config missing required attribute: model_path")
+                
+            model_path = self.config.model_path
+            
+        if not model_path:
+            raise ValueError("model_path cannot be empty")
+            
+        # Validate config has required attributes
+        if self.config is None:
+            raise ValueError("Config is required for checkpoint metadata")
+            
+        if not hasattr(self.config, "coordinate_tokens_enabled"):
+            raise ValueError("Config missing required attribute: coordinate_tokens_enabled")
 
-            metadata = {
-                "checkpoint_type": "bbu_training",
-                "config_system": "unified",
-                "model_architecture": "Qwen2.5-VL-BBU",
-                "training_framework": "transformers_bbu_custom",
-                "creation_timestamp": str(
-                    torch.cuda.Event().query() if torch.cuda.is_available() else "cpu"
-                ),
-                "model_path": model_path,
-                "coordinate_tokens_enabled": self.config.coordinate_tokens_enabled,
-            }
+        # Create metadata with explicit values
+        metadata = {
+            "checkpoint_type": "bbu_training",
+            "config_system": "unified",
+            "model_architecture": "Qwen2.5-VL-BBU",
+            "training_framework": "transformers_bbu_custom",
+            "creation_timestamp": str(
+                torch.cuda.Event().query() if torch.cuda.is_available() else "cpu"
+            ),
+            "model_path": model_path,
+            "coordinate_tokens_enabled": self.config.coordinate_tokens_enabled,
+        }
 
-            metadata_path = Path(output_dir) / "checkpoint_metadata.json"
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
+        # Save metadata to file
+        metadata_path = Path(output_dir) / "checkpoint_metadata.json"
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
 
-            self.logger.info(f"📋 Checkpoint metadata saved to: {metadata_path}")
-
-        except Exception as e:
-            self.logger.warning(f"⚠️  Failed to save checkpoint metadata: {e}")
+        self.logger.info(f"📋 Checkpoint metadata saved to: {metadata_path}")
 
     def validate_checkpoint(self, checkpoint_path: str) -> bool:
         """

@@ -1,45 +1,48 @@
-# Configuration Guide
+# Configuration System Guide (2025 Architecture)
 
-Comprehensive configuration reference for the Qwen2.5-VL BBU fine-tuning system.
+Comprehensive configuration reference for the Qwen2.5-VL BBU fine-tuning system with the current modular architecture.
 
-## 📋 Configuration Overview
+## 📋 Configuration Overview (Current System)
 
-The system uses a YAML configuration structure with domain-specific sections that are automatically validated and type-checked.
+The system uses a unified configuration approach with the DirectConfig system for backward compatibility and ease of use.
 
-### Loading and Access
+### Current Configuration Architecture
+
+#### DirectConfig System (`src/config/global_config.py`)
+**Primary approach** - Flat configuration with 149+ parameters for comprehensive control.
+
 ```python
-# Initialize once at startup
-from src.config.global_config import init_config
-config = init_config("configs/base_flat_det.yaml")
+# Initialize once at startup (automatic in training scripts)
+from src.config import get_config
+config = get_config()  # Returns DirectConfig instance
 
 # Access anywhere in codebase
-from src.config.global_config import config
 learning_rate = config.learning_rate
 model_path = config.model_path
+detection_enabled = config.detection_enabled
 ```
+
+**Key Features**:
+- **Flat parameter access**: All parameters accessible as `config.parameter_name`
+- **Type validation**: Automatic type checking and conversion
+- **Backward compatibility**: Works with existing configuration files
+- **Global access**: Available throughout the codebase via `get_config()`
 
 ---
 
 ## 🎯 Quick Start Templates
 
-### 1. Coordinate Token Training (Recommended)
+### 1. Detection Training (Current Recommended)
 ```yaml
-# configs/coordinate_training.yaml
+# configs/detection_training.yaml
 model_path: "/path/to/qwen2.5-vl-7b-instruct"
 train_data_path: "data/train.jsonl"
 val_data_path: "data/val.jsonl"
 
-# Coordinate Token Settings
+# Detection and Token Settings
+detection_enabled: true
 coordinate_tokens_enabled: true
-coordinate_config_max_coord_value: 2048
-coordinate_lr: 1e-4
-coordinate_loss_weight: 1.0
-regular_loss_weight: 1.0
-soft_expectation_temperature: 1.0
-
-# Focal Loss (for coordinate tokens)
-focal_loss_alpha: 0.25
-focal_loss_gamma: 2.0
+max_coord_value: 2048
 
 # Training Settings
 learning_rate: 1e-5
@@ -48,6 +51,16 @@ per_device_train_batch_size: 2
 gradient_accumulation_steps: 4
 warmup_ratio: 0.1
 lr_scheduler_type: "cosine"
+
+# Teacher-Student Learning
+teacher_ratio: 0.3
+teacher_loss_weight: 0.3
+student_loss_weight: 1.0
+
+# Model Settings
+model_max_length: 120000
+attn_implementation: "flash_attention_2"
+torch_dtype: "bfloat16"
 
 # Model Settings
 model_max_length: 8192
@@ -223,25 +236,65 @@ language: "chinese"                          # REQUIRED: "chinese" | "english"
 
 ## 🎯 Coordinate Token Configuration
 
-### Core Coordinate Settings
-```yaml
-# Coordinate token system
-coordinate_tokens_enabled: true              # REQUIRED: Enable coordinate tokens
-coordinate_config_max_coord_value: 2048      # REQUIRED: Maximum coordinate value
-coordinate_lr: 1e-4                          # REQUIRED: Coordinate token learning rate
+⚠️ **CRITICAL:** The coordinate token system has two distinct modes. Choose the appropriate mode for your use case.
 
-# Loss weights
-coordinate_loss_weight: 1.0                  # REQUIRED: Weight for coordinate loss
-regular_loss_weight: 1.0                     # REQUIRED: Weight for regular tokens
+### Standard Mode (Recommended for Most Users)
+```yaml
+# === COORDINATE TOKEN SETTINGS ===
+coordinate_tokens_enabled: false             # Standard mode: coordinates as integers
+max_coord_value: 2048                        # Coordinate bounds [0, 2047]
+
+# === MODEL SETTINGS ===
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+```
+
+**Features:**
+- ✅ Minimal vocabulary extension (+4 geometry tokens)
+- ✅ Uses integer coordinates: `[150,10,211,35]`
+- ✅ Format: `"<|object_ref_start|>desc:xxxxx<|object_ref_end|>,<|box_start|>[150,10,211,35]<|box_end|>"`
+- ✅ Compatible with pretrained model weights
+- ✅ **Production ready** - Fully stable and tested
+
+### Coordinate Mode (Advanced/Research)
+```yaml
+# === COORDINATE TOKEN SETTINGS ===
+coordinate_tokens_enabled: true              # Coordinate mode: coordinates as tokens
+max_coord_value: 2048                        # Coordinate token range [0, 2047]
+
+# === COORDINATE-SPECIFIC SETTINGS ===
+coordinate_loss_weight: 1.0                  # Weight for coordinate token loss
+regular_loss_weight: 1.0                     # Weight for regular token loss
+soft_expectation_temperature: 1.0            # Temperature for coordinate prediction
+
+# === MODEL SETTINGS ===
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+
+# === OPTIONAL LOSS SETTINGS ===
 focal_loss_weight: 0.1                       # OPTIONAL: Weight for focal loss
 l1_loss_weight: 0.1                          # OPTIONAL: Weight for L1 loss
 giou_loss_weight: 0.1                        # OPTIONAL: Weight for GIoU loss
-
-# Loss parameters
-soft_expectation_temperature: 1.0            # REQUIRED: Softmax temperature
 focal_loss_alpha: 0.25                       # OPTIONAL: Focal loss alpha
 focal_loss_gamma: 2.0                        # OPTIONAL: Focal loss gamma
 ```
+
+**Features:**
+- ✅ Extended vocabulary (+2052 tokens: 4 geometry + 2048 coordinate)
+- ✅ Uses coordinate tokens: `[<|coord_150|>,<|coord_10|>,<|coord_211|>,<|coord_35|>]`
+- ✅ Format: `"<|object_ref_start|>desc:xxxxx<|object_ref_end|>,<|box_start|>[<|coord_150|>,<|coord_10|>,<|coord_211|>,<|coord_35|>]<|box_end|>"`
+- ✅ Sequence-based coordinate prediction
+- ⚠️ **Known limitation:** HuggingFace trainer compatibility issue
+
+### Required Parameters for Both Modes
+
+**Mandatory:**
+- `coordinate_tokens_enabled`: Boolean flag for mode selection
+- `max_coord_value`: Maximum coordinate value (typically 2048)
+- `model_path`: Path to Qwen2.5-VL model
+
+**Additional for Coordinate Mode:**
+- `coordinate_loss_weight`: Loss weighting for coordinate tokens
+- `regular_loss_weight`: Loss weighting for non-coordinate tokens
+- `soft_expectation_temperature`: Temperature parameter
 
 **Validation Rules:**
 - `coordinate_config_max_coord_value` must be power of 2

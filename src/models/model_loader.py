@@ -209,6 +209,9 @@ def load_model_and_processor_unified(
                     coordinate_config=coordinate_config,
                     attn_implementation=effective_attn_impl,
                     config=config,
+                    use_cache=config.use_cache_inference
+                    if for_inference
+                    else config.use_cache,
                 )
 
                 # CRITICAL: For coordinate token models, ensure vocabulary consistency
@@ -273,6 +276,10 @@ def load_model_and_processor_unified(
 
                 # For inference, we MUST use the same generation interface
                 if for_inference:
+                    # Set model to eval mode for inference
+                    model.eval()
+                    logger.info("🔧 Model set to eval mode for inference")
+
                     # Ensure generate() works consistently
                     if not hasattr(model, "generate"):
                         raise ModelLoadingError(
@@ -343,6 +350,11 @@ def load_model_and_processor_unified(
                         types.MethodType(set_detection_enabled, model),
                     )
                     model.set_detection_enabled(False)
+
+                # Set model to eval mode for inference
+                if for_inference:
+                    model.eval()
+                    logger.info("🔧 Base model set to eval mode for inference")
 
                 logger.info("✅ Base model loaded successfully")
 
@@ -567,6 +579,9 @@ def load_model_and_processor_unified(
                 )
 
             logger.info("✅ Simple Token Manager initialized successfully!")
+
+            # Return the fully configured model, tokenizer, and processor
+            return model, tokenizer, image_processor
         else:
             logger.info("ℹ️ Coordinate tokens disabled - using standard format")
 

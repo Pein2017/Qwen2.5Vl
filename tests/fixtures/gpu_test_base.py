@@ -37,6 +37,7 @@ class GPUAwareTestCase(unittest.TestCase):
     _cached_models = {}
     _model_load_count = 0
     MAX_MODEL_LOADS_PER_TEST = 1  # Limit model loads per test method
+    MAX_CACHED_MODELS = 2  # Limit total cached models to save memory
 
     @classmethod
     def setUpClass(cls):
@@ -131,6 +132,13 @@ class GPUAwareTestCase(unittest.TestCase):
             self._model_load_count += 1
             return model, tokenizer, processor
 
+        # If cache is full, clear oldest model to make space
+        if len(self._cached_models) >= self.MAX_CACHED_MODELS:
+            oldest_key = next(iter(self._cached_models))
+            model_to_remove, tokenizer_to_remove, processor_to_remove = self._cached_models.pop(oldest_key)
+            TestUtils.cleanup_model_references(model_to_remove, tokenizer_to_remove, processor_to_remove)
+            logger.info(f"🗑️ Removed cached model: {oldest_key} (cache full)")
+
         # Check GPU memory availability
         if not TestUtils.check_gpu_memory_available(required_mb=2000.0):
             TestUtils.force_gpu_memory_cleanup(verbose=True)
@@ -152,7 +160,7 @@ class GPUAwareTestCase(unittest.TestCase):
             # Cache model if cache key provided
             if cache_key:
                 self._cached_models[cache_key] = (model, tokenizer, processor)
-                logger.info(f"💾 Cached model: {cache_key}")
+                logger.info(f"💾 Cached model: {cache_key} (cache size: {len(self._cached_models)})")
             else:
                 # Add to cleanup list if not cached
                 self.models_to_cleanup.append((model, tokenizer, processor))

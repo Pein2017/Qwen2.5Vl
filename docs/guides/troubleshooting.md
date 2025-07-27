@@ -1,26 +1,26 @@
-# Troubleshooting Guide
+# Troubleshooting Guide (2025 Modular Architecture)
 
-Comprehensive problem-solving guide for the Qwen2.5-VL BBU fine-tuning project. Organized by symptoms for fast resolution.
+Comprehensive problem-solving guide for the Qwen2.5-VL BBU fine-tuning project with the current modular architecture. Organized by symptoms for fast resolution.
 
 ## 🚨 Emergency Quick Reference
 
 ### 30-Second Checklist
 1. **Environment activated?** `conda activate ms`
 2. **CUDA visible?** `echo $CUDA_VISIBLE_DEVICES`
-3. **Data pipeline completed?** Check `data/` directory exists
-4. **Configuration valid?** Check YAML syntax and paths
-5. **Logs available?** Check `run.log` for detailed errors
+3. **Data pipeline completed?** Check `data/` directory exists with train.jsonl, val.jsonl
+4. **Configuration valid?** Check YAML syntax and paths in config file
+5. **Modular components working?** Check imports from `src.training`, `src.models`, etc.
 
-### Critical Error Patterns → Quick Fixes
+### Critical Error Patterns → Quick Fixes (2025 Architecture)
 | **Symptom** | **Quick Fix** | **Category** |
 |-------------|---------------|--------------|
-| `AttributeError: module 'torch.library' has no attribute 'wrap_triton'` | Apply Flash Attention patch | [Flash Attention](#flash-attention-issues) |
-| `split_with_sizes expects 128 but got 288` | Apply mRoPE dimension fix | [Model Architecture](#model-architecture-issues) |
-| `shape '[0, 4, -1]' is invalid for input of size 1280` | Fix image embedding shapes | [Model Architecture](#model-architecture-issues) |
-| `'list' object has no attribute 'get'` | Run `python data_conversion/clean_raw_json.py` | [Data Pipeline](#data-pipeline-issues) |
-| `coordinate_loss` always 0 | Check bbox format in data | [Training Issues](#training-issues) |
+| `ModuleNotFoundError: No module named 'src.training'` | Check PYTHONPATH and run from project root | [Module Import](#module-import-issues) |
+| `AttributeError: 'DirectConfig' object has no attribute 'X'` | Check config parameter name in DirectConfig | [Configuration](#configuration-issues) |
+| `TrainingCoordinator setup failed` | Check model and tokenizer initialization | [Training System](#training-system-issues) |
+| `LossManager compute_total_loss failed` | Check input format and model outputs | [Loss Computation](#loss-computation-issues) |
+| `ModelLoader failed to load model` | Check model path and detection_enabled setting | [Model Loading](#model-loading-issues) |
+| `PipelineManager stage X failed` | Check data_conversion pipeline logs | [Data Pipeline](#data-pipeline-issues) |
 | `CUDA out of memory` | Reduce batch size: `per_device_train_batch_size: 1` | [Memory Issues](#memory-issues) |
-| `BOX BOX BOX` in outputs | Use detection pipeline, not `model.generate()` | [Inference Issues](#inference-issues) |
 
 ## Environment Issues
 

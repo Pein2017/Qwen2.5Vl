@@ -24,6 +24,7 @@ import torch
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from src.config import TrainingConfig, CoordinateConfig
 from src.logger_utils import get_training_logger
 from src.training.loss_manager import LossManager
 from src.training.parameter_manager import ParameterGroupManager
@@ -42,90 +43,73 @@ class TrainingCoordinator:
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizerBase,
-        config_obj=None,
+        training_config: TrainingConfig,
+        coordinate_config: CoordinateConfig,
     ):
         """
-        Initialize training coordinator.
+        Initialize training coordinator with typed domain configs.
 
         Args:
             model: The complete model
             tokenizer: Tokenizer for processing
-            config_obj: Configuration object
+            training_config: Training-specific configuration
+            coordinate_config: Coordinate token configuration
         """
         self.model = model
         self.tokenizer = tokenizer
         self.logger = get_training_logger()
 
-        # Get configuration - no fallback to global config
-        if config_obj is None:
-            raise ValueError(
-                "config_obj must be provided - no default configuration allowed"
-            )
-
-        self.config = config_obj
-        self.logger.debug(f"🔍 COORDINATOR: Using provided config object")
-
-        # DEBUG: Log critical config values
-        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
+        # Store typed domain configs
+        self.training_config = training_config
+        self.coordinate_config = coordinate_config
+        
+        self.logger.debug(f"🔍 COORDINATOR: Using typed domain configs")
         self.logger.debug(
-            f"🔍 COORDINATOR: coordinate_tokens_enabled = {coordinate_tokens_enabled}"
+            f"🔍 COORDINATOR: coordinate_tokens_enabled = {coordinate_config.coordinate_tokens_enabled}"
         )
-        self.logger.debug(f"🔍 COORDINATOR: config object id = {id(self.config)}")
-
-        # Validate required configuration parameters
-        self._validate_required_config()
 
         # Initialize managers
         self.loss_manager = self._create_loss_manager()
         self.parameter_manager = self._create_parameter_manager()
 
-        # Training state - all from config
+        # Training state - all from typed configs
         self.current_epoch = 0
         self.global_step = 0
-        self.detection_training_enabled = self.config.coordinate_tokens_enabled
+        self.detection_training_enabled = self.coordinate_config.coordinate_tokens_enabled
         self._training_metrics = {}
 
-        self.logger.info("✅ Training coordinator initialized")
-        self.logger.info("   Using unified configuration from config.yaml")
+        self.logger.info("✅ Training coordinator initialized with typed configs")
+        self.logger.info("   Using domain-specific configuration classes")
 
-    def _validate_required_config(self):
-        """Validate that all required configuration parameters are present."""
-        required_params = [
-            "weight_decay",
-            "coordinate_lr",
-        ]
-
-        # Check for coordinate tokens enabled
-        if not hasattr(self.config, "coordinate_tokens_enabled"):
-            required_params.append("coordinate_tokens_enabled")
-
-        missing_params = []
-        for param in required_params:
-            if not hasattr(self.config, param):
-                missing_params.append(param)
-
-        if missing_params:
-            raise ValueError(
-                f"Missing required configuration parameters: {missing_params}"
-            )
+    # Domain configs have built-in validation - no additional validation needed
 
     def _create_loss_manager(self) -> LossManager:
         """Create and configure loss manager."""
-        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
         return LossManager(
             tokenizer=self.tokenizer,
             model=self.model,
-            teacher_loss_weight=self.config.teacher_loss_weight,
-            student_loss_weight=self.config.student_loss_weight,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
+            teacher_loss_weight=self.training_config.teacher_loss_weight,
+            student_loss_weight=self.training_config.student_loss_weight,
+            coordinate_tokens_enabled=self.coordinate_config.coordinate_tokens_enabled,
         )
 
     def _create_parameter_manager(self) -> ParameterGroupManager:
         """Create and configure parameter manager."""
+        # Create a basic config object for parameter manager backward compatibility
+        # TODO: Refactor ParameterGroupManager to use domain configs
+        from types import SimpleNamespace
+        legacy_config = SimpleNamespace()
+        legacy_config.weight_decay = self.training_config.weight_decay
+        legacy_config.vision_lr = self.training_config.vision_lr
+        legacy_config.merger_lr = self.training_config.merger_lr
+        legacy_config.llm_lr = self.training_config.llm_lr
+        legacy_config.coordinate_lr = self.training_config.coordinate_lr
+        legacy_config.adapter_lr = self.training_config.adapter_lr
+        
         return ParameterGroupManager(
             model=self.model,
-            base_weight_decay=self.config.weight_decay,
-            config=self.config,
+            base_weight_decay=self.training_config.weight_decay,
+            config=legacy_config,
         )
 
     def setup_training(self) -> Dict[str, Any]:
@@ -328,33 +312,28 @@ class TrainingCoordinator:
         param_warnings = self.parameter_manager.validate_configuration()
         warnings.extend(param_warnings)
 
-        # Validate coordinate token configuration - no defaults
-        coordinate_enabled = self.config.coordinate_tokens_enabled
-        if coordinate_enabled and self.config.coordinate_lr <= 0:
+        # Validate coordinate token configuration
+        coordinate_enabled = self.coordinate_config.coordinate_tokens_enabled
+        if coordinate_enabled and self.training_config.coordinate_lr <= 0:
             warnings.append(
                 "Coordinate tokens enabled but coordinate_lr is 0 - coordinate tokens will not be trained"
             )
 
-        # Validate teacher-student configuration - no defaults
-        if self.config.teacher_ratio > 0 and self.config.num_teacher_samples == 0:
-            warnings.append(
-                "Teacher ratio > 0 but num_teacher_samples is 0 - no teachers will be used"
-            )
+        # Additional validation could be added for teacher-student here if needed
 
         return warnings
 
     def _validate_coordinate_token_config(self) -> bool:
         """Validate coordinate token configuration and return if enabled."""
         try:
-            # No defaults - all values must be explicitly configured
-            coordinate_enabled = self.config.coordinate_tokens_enabled
-            coordinate_lr = self.config.coordinate_lr
+            # Use domain configs - already validated
+            coordinate_enabled = self.coordinate_config.coordinate_tokens_enabled
+            coordinate_lr = self.training_config.coordinate_lr
 
             self.logger.debug(
                 f"🔍 CONFIG_DEBUG: coordinate_tokens_enabled = {coordinate_enabled}"
             )
             self.logger.debug(f"🔍 CONFIG_DEBUG: coordinate_lr = {coordinate_lr}")
-            self.logger.debug(f"🔍 CONFIG_DEBUG: config type = {type(self.config)}")
 
             if coordinate_enabled:
                 # Additional validation
@@ -370,9 +349,6 @@ class TrainingCoordinator:
                 self.logger.debug("ℹ️ Coordinate tokens disabled in configuration")
                 return False
 
-        except AttributeError as e:
-            self.logger.error(f"❌ Missing required coordinate token config: {e}")
-            return False
         except Exception as e:
             self.logger.error(f"❌ Error validating coordinate token config: {e}")
             return False

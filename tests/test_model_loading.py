@@ -79,11 +79,19 @@ class TestModelLoading(GPUAwareTestCase):
         """Set up for each individual test."""
         # Call parent setup for GPU management
         super().setUp()
+        # Additional memory cleanup for model loading tests
+        if torch.cuda.is_available():
+            import gc
+            gc.collect()
 
     def tearDown(self):
         """Clean up after each test."""
         # Call parent cleanup for GPU management
         super().tearDown()
+        # Additional memory cleanup for model loading tests
+        if torch.cuda.is_available():
+            import gc
+            gc.collect()
 
     def test_standard_model_loading(self):
         """Test loading base model without coordinate tokens."""

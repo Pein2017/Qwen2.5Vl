@@ -7,7 +7,6 @@ Streamlined loss computation without excessive validation and accumulation compl
 from typing import Any, Dict, Tuple
 
 import torch
-import torch.nn.functional as F
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src.logger_utils import get_training_logger
@@ -152,31 +151,12 @@ class LossManager:
                     f"Model is returning 0.0 loss! Check model forward pass."
                 )
         else:
-            # EXPOSE ERROR: This should never happen in training!
-            labels = inputs["labels"] if "labels" in inputs else None
-            self.logger.error(f"🚨 LOSS COMPUTATION FALLBACK TRIGGERED!")
-            self.logger.error(
-                f"   - model_outputs.loss is None: {not hasattr(model_outputs, 'loss') or model_outputs.loss is None}"
+            # FAIL FAST: This should never happen when labels are provided - no fallback
+            raise RuntimeError(
+                "Model outputs missing 'loss' attribute when labels are provided. "
+                "This indicates the model is not computing loss correctly. "
+                "Ensure labels are passed to the model's forward method."
             )
-            self.logger.error(f"   - labels present: {labels is not None}")
-            if labels is not None:
-                self.logger.error(f"   - labels shape: {labels.shape}")
-                total_loss = F.cross_entropy(
-                    model_outputs.logits.view(-1, model_outputs.logits.size(-1)),
-                    labels.view(-1),
-                    ignore_index=-100,
-                )
-                self.logger.error(
-                    f"   - Computed fallback loss: {total_loss.item():.6f}"
-                )
-            else:
-                self.logger.error(
-                    f"   - NO LABELS FOUND - Setting loss to 0.0 (THIS IS WRONG!)"
-                )
-                total_loss = torch.tensor(0.0, device=model_outputs.logits.device)
-                raise RuntimeError(
-                    "Training loss is 0.0 because no labels found in inputs! This means data loading is broken."
-                )
 
         # Clean loss separation: LLM loss vs Coordinate loss components
         loss_components = {}

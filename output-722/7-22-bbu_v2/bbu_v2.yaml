@@ -1,0 +1,111 @@
+# =============================================================================
+# BBU Qwen2.5-VL Training Configuration - DirectConfig Schema
+# =============================================================================
+# This configuration aligns exactly with the DirectConfig schema.
+# Every parameter matches the required fields in src/config/global_config.py
+
+# === MODEL SETTINGS (REQUIRED) ===
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+model_size: "3B"
+model_max_length: 120000
+attn_implementation: "flash_attention_2"
+torch_dtype: "bfloat16"
+use_cache: false
+use_cache_inference: true
+model_hidden_size: 3584
+model_num_layers: 28
+model_num_attention_heads: 28
+model_vocab_size: 151665
+
+# === TRAINING SETTINGS (REQUIRED) ===
+num_train_epochs: 500
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 0.000005
+vision_lr: 5e-7
+merger_lr: 5e-5
+llm_lr: 5e-6
+coordinate_lr: 0.0
+adapter_lr: 0.0
+warmup_ratio: 0.1
+weight_decay: 0.0001
+max_grad_norm: 0.5
+lr_scheduler_type: "cosine"
+gradient_checkpointing: true
+bf16: true
+fp16: false
+use_flash_attention: true
+mixed_precision: "bf16"
+
+# === DATA SETTINGS (REQUIRED) ===
+train_data_path: "data/ds_v2_full/train.jsonl"
+val_data_path: "data/ds_v2_full/val.jsonl"
+data_root: "data/ds_v2_full"
+max_total_length: 12000
+teacher_pool_file: "data/ds_v2_full/teacher_pool.jsonl"
+num_teacher_samples: 1
+collator_type: "packed"
+teacher_ratio: 0.7
+max_examples: 1
+language: "chinese"
+
+# === EVALUATION SETTINGS (REQUIRED) ===
+eval_strategy: "steps"
+eval_steps: 1
+save_strategy: "no"
+save_steps: 1
+save_total_limit: 1
+
+# === LOGGING SETTINGS (REQUIRED) ===
+logging_steps: 1
+logging_dir: "logs"
+log_level: "INFO"
+report_to: "tensorboard"
+disable_tqdm: true
+verbose: false
+
+# === TRAINING CONTROL (REQUIRED) ===
+detection_freeze_epochs: 0
+
+# === COORDINATE TOKEN CONFIGURATION (REQUIRED) ===
+coordinate_tokens_enabled: false
+max_coord_value: 2048
+coordinate_loss_weight: 0.05
+regular_loss_weight: 1.0
+
+# === ESSENTIAL SETTINGS (REQUIRED) ===
+remove_unused_columns: false
+
+# === DATALOADER PERFORMANCE SETTINGS (REQUIRED) ===
+dataloader_num_workers: 4
+pin_memory: true
+prefetch_factor: 2
+
+# === OUTPUT SETTINGS (REQUIRED) ===
+output_dir: "output-722"
+run_name: "7-22-bbu_v2"
+tb_dir: "tb"
+
+# === TEACHER-STUDENT LOSS WEIGHTS (REQUIRED) ===
+teacher_loss_weight: 0.3
+student_loss_weight: 1.0
+
+# === VISION PROCESSING PARAMETERS (REQUIRED) ===
+patch_size: 14
+merge_size: 2
+temporal_patch_size: 2
+
+# === TRAINING CONTROL FLAGS (REQUIRED) ===
+training_prompt_style: true
+use_consistent_prompts: true
+
+
+# =============================================================================
+# NOTES:
+# - Configuration cleaned up and aligned with ExplicitDirectConfig schema
+# - All unused coordinate token configuration fields removed
+# - All training stability settings removed (not in ExplicitDirectConfig)
+# - Field order matches src/config/explicit_config.py ExplicitDirectConfig dataclass
+# - All parameters are explicitly defined with no fallbacks
+# =============================================================================

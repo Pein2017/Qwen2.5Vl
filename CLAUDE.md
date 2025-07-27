@@ -1,38 +1,40 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
-This is a Qwen2.5-VL fine-tuning project for BBU (Base-Band Unit) equipment detection and captioning. The project implements end-to-end training of a vision-language model for dense object detection with natural language descriptions in both English and Chinese.
+Qwen2.5-VL fine-tuning project for BBU (Base-Band Unit) equipment detection and captioning with the following key features:
 
-This implementation has evolved significantly beyond standard Qwen2.5-VL fine-tuning, featuring:
+- **Multi-modal Vision-Language Integration**: End-to-end training for dense object detection with natural language descriptions in English/Chinese
 - **Coordinate Token System**: Soft expectation regression with automatic bbox→token conversion
-- **Multi-task Training**: Teacher-student learning with span-based loss splitting  
-- **Modular Architecture**: Refactored from monolithic to component-based design
+- **Multi-task Training**: Teacher-student learning with span-based loss splitting
+- **Modular Architecture**: Component-based design with separation of concerns
 - **Enhanced Loss Management**: Mode-aware coordinate vs standard LLM loss computation
 
-## Environment Setup
+## Environment Requirements
 
-The project requires:
-- Conda environment: `ms`
-- CUDA_VISIBLE_DEVICES for GPU selection
-- HF_HOME for model cache (typically `/data3/Qwen2.5-VL-main/model_cache`)
+- **Conda Environment**: `ms` (MUST be activated before running any scripts)
+- **Python Path**: Always use `/root/miniconda3/envs/ms/bin/python` directly
+- **Environment Variables**:
+  - `CUDA_VISIBLE_DEVICES` for GPU selection
+  - `HF_HOME` for model cache (typically `/data3/Qwen2.5-VL-main/model_cache`)
+- **Network Constraints**: Located in China, cannot access foreign websites (GitHub, Google, HuggingFace)
 
-**Important Reminders:**
-- We need to activate `ms` virtual environment, remember this.
-- **NEW**: Directly use `/root/miniconda3/envs/ms/bin/python` to avoid conda activation inconsistencies
-- Always use the full path to Python in the `ms` environment to ensure package consistency
-- Located in China, cannot access foreign websites like `github` `google` `huggingface`
+## Key Documentation
 
-## Memory Log
+- **Architecture**: `docs/ARCHITECTURE.md` for system overview
+- **Mental Model**: `docs/MENTAL_MODEL.md` for high-level understanding
+- **Project Map**: `docs/PROJECT_MAP.md` for codebase navigation
+- **Data Migration**: `docs/raw_data_v2.md`, `docs/raw_data_template_数据堂.md`
 
-### Data Migration and Annotation
-- Migrating to v2 data annotation structure
-- Reference documentation for migration:
-  * `@docs/raw_data_v2.md`
-  * `@docs/raw_data_template_数据堂.md`
-- Updated data structure to follow new V2 format as specified in referenced documentation
+## Development Guidelines
 
-### Error Handling
-- Don't use `try-except` unless necessary. Need every error to be exposed immediately
+- **Error Handling**: Don't use `try-except` unless necessary; expose errors immediately
+- **Python Execution**: Always use full path to Python in `ms` environment
+- **Code Organization**: Follow modular architecture with clear component responsibilities
+- **Configuration**: Use typed, explicit configuration with validation
+
+## Entry Points
+
+- **Training**: `python scripts/train.py --config configs/base_flat_v2.yaml`
+- **Data Processing**: `bash data_conversion/convert_dataset.sh`
+- **Inference**: `python src/inference.py --model_path /path/to/model --image_path /path/to/image`

@@ -22,16 +22,17 @@ class ConfigFactory:
 
     BASE_CONFIG_PATH = "/data3/Qwen2.5-VL-main/configs/bbu_v2.yaml"
 
-    # Test-specific overrides for fast execution
+    # Test-specific overrides for fast execution with memory efficiency
     TEST_OVERRIDES = {
-        "num_train_epochs": 2,
-        "per_device_train_batch_size": 2,
-        "per_device_eval_batch_size": 2,
-        "max_total_length": 2048,
+        "num_train_epochs": 1,
+        "per_device_train_batch_size": 2,  # Keep at 2 for collator testing
+        "per_device_eval_batch_size": 2,  # Keep at 2 for collator testing
+        "max_total_length": 1024,  # Reduced from 2048 to save memory
         "save_strategy": "no",
         "dataloader_num_workers": 0,
         "logging_steps": 1,
         "eval_steps": 1,
+        "eval_strategy": "steps",
         "disable_tqdm": True,
     }
 
@@ -183,15 +184,16 @@ class ConfigFactory:
         """
         config_data = self._load_base_config()
 
-        # Minimal overrides for fastest testing
+        # Minimal overrides for fastest testing with memory efficiency
         minimal_overrides = {
             "num_train_epochs": 1,
-            "per_device_train_batch_size": 1,
-            "per_device_eval_batch_size": 1,
-            "max_total_length": 1024,
+            "per_device_train_batch_size": 2,  # Keep at 2 for collator testing
+            "per_device_eval_batch_size": 2,  # Keep at 2 for collator testing
+            "max_total_length": 512,  # Reduced for minimal tests
             "gradient_accumulation_steps": 1,
             "logging_steps": 1,
             "eval_steps": 1,
+            "eval_strategy": "steps",
             "save_strategy": "no",
             "dataloader_num_workers": 0,
             "disable_tqdm": True,
@@ -199,6 +201,7 @@ class ConfigFactory:
             "max_coord_value": 2048,  # Always 2048 as per bbu_v2.yaml reference
             "coordinate_loss_weight": 0.05 if coordinate_enabled else 0.0,
             "coordinate_lr": 5e-6 if coordinate_enabled else 0.0,
+            "remove_unused_columns": False,  # Critical for coordinate mode compatibility
         }
 
         config_data.update(minimal_overrides)
@@ -240,8 +243,22 @@ class ConfigFactory:
 
     def _save_config(self, config_data: Dict[str, Any], config_path: Path) -> None:
         """Save configuration data to YAML file."""
+
+        # Convert Path objects to strings to avoid YAML serialization issues
+        def convert_paths_to_strings(obj):
+            if isinstance(obj, Path):
+                return str(obj)
+            elif isinstance(obj, dict):
+                return {k: convert_paths_to_strings(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_paths_to_strings(item) for item in obj]
+            else:
+                return obj
+
+        clean_config_data = convert_paths_to_strings(config_data)
+
         with open(config_path, "w") as f:
-            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(clean_config_data, f, default_flow_style=False, sort_keys=False)
 
     def cleanup_test_configs(self) -> None:
         """Remove all generated test configuration files."""

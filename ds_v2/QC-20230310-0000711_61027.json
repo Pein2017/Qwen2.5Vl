@@ -1,1 +1,1754 @@
-{"info": {"depth": 3, "width": 1440, "height": 1920}, "tagInfo": {"mode": "1", "dataId": 4419, "taskId": "47", "timestamp": 1752993169520}, "version": "4.12.46", "markResult": {"features": [{"type": "Feature", "geometry": {"coordinates": [[880.8333333333329, 140.9999999999999], [930.8333333333328, 140.9999999999999], [930.8333333333328, 202.66666666666652], [880.8333333333329, 202.66666666666652], [880.8333333333329, 140.9999999999999]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[897.4999999999997, 1734.333333333333], [947.4999999999997, 1734.333333333333], [947.4999999999997, 1789.333333333333], [897.4999999999997, 1789.333333333333], [897.4999999999997, 1734.333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[647.4999999999997, 1754.333333333333], [704.1666666666663, 1754.333333333333], [704.1666666666663, 1807.6666666666665], [647.4999999999997, 1807.6666666666665], [647.4999999999997, 1754.333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[326.1666666666665, 129.33333333333326], [388.1666666666665, 129.33333333333326], [388.1666666666665, 203.33333333333326], [326.1666666666665, 203.33333333333326], [326.1666666666665, 129.33333333333326]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[38.166666666666515, 119.33333333333326], [102.16666666666652, 119.33333333333326], [102.16666666666652, 179.33333333333326], [38.166666666666515, 179.33333333333326], [38.166666666666515, 119.33333333333326]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[1162.1666666666667, 1709.3333333333333], [1224.1666666666667, 1709.3333333333333], [1224.1666666666667, 1779.3333333333333], [1162.1666666666667, 1779.3333333333333], [1162.1666666666667, 1709.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU安装螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "install_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[1220.1666666666665, 417.33333333333326], [1320.1666666666665, 417.33333333333326], [1320.1666666666665, 579.3333333333333], [1220.1666666666665, 579.3333333333333], [1220.1666666666665, 417.33333333333326]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[866.1666666666666, 1011.3333333333333], [948.1666666666666, 1011.3333333333333], [948.1666666666666, 1063.3333333333333], [866.1666666666666, 1063.3333333333333], [866.1666666666666, 1011.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[644.1666666666667, 1209.3333333333333], [714.1666666666667, 1209.3333333333333], [714.1666666666667, 1275.3333333333333], [644.1666666666667, 1275.3333333333333], [644.1666666666667, 1209.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[810.1666666666667, 1121.3333333333333], [874.1666666666666, 1121.3333333333333], [874.1666666666666, 1255.3333333333333], [810.1666666666667, 1255.3333333333333], [810.1666666666667, 1121.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "只显示部分", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_part", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[0, 385.33333333333326], [100.16666666666652, 385.33333333333326], [100.16666666666652, 457.33333333333326], [0, 457.33333333333326], [0, 385.33333333333326]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[26.166666666666742, 1097.3333333333333], [136.16666666666674, 1097.3333333333333], [136.16666666666674, 1201.3333333333333], [26.166666666666742, 1201.3333333333333], [26.166666666666742, 1097.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "BBU端光纤插头", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "fiber_bbu", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"coordinates": [[776.1666666666667, 1747.3333333333333], [862.1666666666667, 1747.3333333333333], [862.1666666666667, 1791.3333333333333], [776.1666666666667, 1791.3333333333333], [776.1666666666667, 1747.3333333333333]], "type": "ExtentPolygon"}, "properties": {"contentZh": {"标签": "螺丝、光纤插头", "螺丝/插头是否显示完整": "显示完整", "这个螺丝/插头是什么种类": "机柜处接地螺丝", "这个螺丝/插头连接是否符合要求": ["符合要求"]}, "content": {"connect_point_situation": "connect_point_situation_complete", "connect_point_type": "cabinet_screw", "connect_point_check": ["connect_point_check_true"], "label": "connect_point", "ex_info": ""}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1181.0238095238096, 0], [1193.8809523809525, 41.333333333333144], [1046.7380952380954, 77.04761904761881], [1042.452380952381, 17.047619047618866], [1181.0238095238096, 0]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " "}, "content": {"label_text": " ", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1246.965367965368, 868.6222943722943], [1262.4199134199134, 924.0768398268397], [1194.2380952380952, 1027.7132034632032], [1170.6017316017314, 975.8950216450215], [1246.965367965368, 868.6222943722943]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "NR900-BBU-（负极）"}, "content": {"label_text": "NR900-BBU-（负极）", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1388.7835497835497, 969.5313852813852], [1402.4199134199134, 1019.5313852813852], [1238.7835497835497, 1104.0768398268397], [1219.6926406926407, 1047.7132034632032], [1388.7835497835497, 969.5313852813852]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "NR900-BBU-（正极）"}, "content": {"label_text": "NR900-BBU-（正极）", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1326.169913419913, 515.7813852813852], [1317.419913419913, 542.0313852813852], [1179.919913419913, 629.5313852813852], [1161.169913419913, 594.5313852813852], [1326.169913419913, 515.7813852813852]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " "}, "content": {"label_text": " ", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1400.991341991342, 1443.8170995670994], [1348.1341991341992, 1485.245670995671], [1230.991341991342, 1353.8170995670994], [1275.2770562770563, 1302.3885281385278], [1400.991341991342, 1443.8170995670994]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "信号线标签"}, "content": {"label_text": "信号线标签", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1132.4199134199134, 710.9599567099566], [1123.8484848484848, 876.6742424242424], [1102.4199134199134, 872.3885281385279], [1088.1341991341992, 708.1028138528137], [1132.4199134199134, 710.9599567099566]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " "}, "content": {"label_text": " ", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[979.8874458874459, 562.4534632034632], [962.7445887445887, 691.7391774891775], [923.4588744588743, 663.1677489177489], [934.8874458874458, 548.1677489177489], [979.8874458874459, 562.4534632034632]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "LED RRU3-电源线"}, "content": {"label_text": "LED RRU3-电源线", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[917.982683982683, 1803.4058441558445], [917.982683982683, 1920], [854.6493506493498, 1920], [854.6493506493498, 1810.0725108225115], [917.982683982683, 1803.4058441558445]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " "}, "content": {"label_text": " ", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[560.64935064935, 1642.8502886002886], [560.64935064935, 1698.8502886002886], [438.64935064935, 1718.8502886002886], [434.64935064935, 1666.8502886002886], [560.64935064935, 1642.8502886002886]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " "}, "content": {"label_text": " ", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[678.8715728715729, 1255.9613997113997], [679.982683982684, 1308.183621933622], [569.982683982684, 1365.9613997113997], [565.5382395382395, 1302.6280663780663], [678.8715728715729, 1255.9613997113997]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "NR900-BBU-传输光纤"}, "content": {"label_text": "NR900-BBU-传输光纤", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[821.0937950937949, 1153.7391774891776], [764.4271284271283, 1184.572510822511], [666.0937950937949, 1045.4058441558443], [719.4271284271283, 1013.7391774891777], [821.0937950937949, 1153.7391774891776]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "LRRU2-光纤"}, "content": {"label_text": "LRRU2-光纤", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[861.0937950937949, 1114.572510822511], [811.0937950937949, 1142.072510822511], [736.9271284271283, 1013.7391774891777], [793.5937950937949, 978.7391774891777], [861.0937950937949, 1114.572510822511]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "LRRU3-光纤"}, "content": {"label_text": "LRRU3-光纤", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[845.2604617604616, 998.7391774891777], [828.5937950937949, 1048.7391774891776], [748.5937950937949, 932.9058441558443], [775.2604617604616, 875.4058441558443], [845.2604617604616, 998.7391774891777]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": "LRRU1-光纤"}, "content": {"label_text": "LRRU1-光纤", "label": "label"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[913.5937950937949, 1031.2391774891776], [931.0937950937949, 1045.4058441558443], [877.7604617604616, 1167.9058441558443], [850.2604617604616, 1152.072510822511], [913.5937950937949, 1031.2391774891776]]], "type": "Square"}, "properties": {"contentZh": {"标签": "标签", "请输入标签上的文字内容": " NR900-"}, "content": {"label_text": " NR900-", "label": "label"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLLL", "coordinates": [[1317.4826839826835, 528.1836219336221], [1322.4826839826835, 403.18362193362213], [1277.4826839826835, 290.68362193362213], [1209.9826839826835, 155.68362193362213], [1184.9826839826835, 100.68362193362213], [1181.0238095238096, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_false", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLL", "coordinates": [[1302.4826839826835, 518.1836219336221], [1264.9826839826835, 423.18362193362213], [1237.4826839826835, 260.68362193362213], [1204.9826839826835, 118.18362193362213], [1181.0238095238096, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_false", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLL", "coordinates": [[1249.9826839826835, 435.68362193362213], [1199.9826839826835, 300.68362193362213], [1194.9826839826835, 198.18362193362213], [1177.4826839826835, 85.68362193362213], [1167.4826839826835, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_false", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLLLLLL", "coordinates": [[913.5937950937949, 1031.2391774891776], [857.4826839826837, 945.6836219336221], [797.4826839826837, 735.6836219336221], [757.4826839826837, 490.68362193362213], [729.9826839826837, 348.18362193362213], [684.9826839826837, 193.18362193362213], [582.4826839826837, 140.68362193362213], [392.48268398268374, 70.68362193362213], [197.48268398268374, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径合理", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_trrue", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLLLL", "coordinates": [[861.0937950937949, 1114.572510822511], [832.4826839826837, 940.6836219336221], [789.9826839826837, 768.1836219336221], [734.9826839826837, 515.6836219336221], [667.4826839826837, 253.18362193362213], [572.4826839826837, 58.183621933622135], [419.98268398268374, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径合理", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_trrue", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLLLLL", "coordinates": [[837.4826839826837, 1268.1836219336221], [822.4826839826837, 1063.1836219336221], [804.9826839826837, 900.6836219336221], [772.4826839826837, 690.6836219336221], [739.9826839826837, 455.68362193362213], [677.4826839826837, 230.68362193362213], [547.4826839826837, 65.68362193362213], [384.98268398268374, 0]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径合理", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_trrue", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineMode": 1, "lineType": "LLLLLLLLLL", "coordinates": [[669.9826839826837, 1273.1836219336221], [487.48268398268374, 1330.6836219336221], [329.98268398268374, 1378.1836219336221], [174.98268398268374, 1500.6836219336221], [142.48268398268374, 1598.1836219336221], [139.98268398268374, 1698.1836219336221], [247.48268398268374, 1793.1836219336221], [422.48268398268374, 1833.1836219336217], [579.9826839826837, 1800.6836219336221], [624.9826839826837, 1743.1836219336221]], "type": "LineString"}, "properties": {"contentZh": {"这条光纤弯曲半径是否合理": "弯曲半径合理", "标签": "光纤", "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装", "这条光纤是否被遮挡": "有遮挡"}, "content": {"fiber_radius": "fiber_radius_trrue", "fiber_block": "fiber_block_true", "label": "fiber", "ex_info": "", "fiber_protection": "fiber_protection_true/fiber_protection_metal"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[1424.14935064935, 222.35028860028933], [1440, 1705.6836219336233], [1187.4826839826833, 1712.3502886002893], [1194.9826839826835, 198.18362193362213], [1424.14935064935, 222.35028860028933]]], "type": "Square"}, "properties": {"contentZh": {"这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "无需安装", "如果有特殊情况，请具体描述": "未拍摄到品牌", "这个BBU设备是什么品牌": "华为", "标签": "BBU设备", "这个BBU设备是否显示完整": "只显示部分"}, "content": {"bbu_stituation": "bbu_stituation_part", "bbu_brand": "huawei", "label": "bbu", "bbu_equipment": "bbu_equipment_false", "ex_info": "未拍摄到品牌"}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[930.8333333333328, 202.66666666666652], [924.14935064935, 1739.0169552669563], [630.8160173160165, 1772.3502886002893], [610.8160173160165, 175.68362193362282], [930.8333333333328, 202.66666666666652]]], "type": "Square"}, "properties": {"contentZh": {"这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "机柜空间充足，需要安装/这个BBU设备未按要求配备挡风板", "这个BBU设备是什么品牌": "华为", "标签": "BBU设备", "这个BBU设备是否显示完整": "显示完整"}, "content": {"bbu_stituation": "bbu_stituation_complete", "bbu_brand": "huawei", "label": "bbu", "bbu_equipment": "bbu_equipment_true/bbu_equipment_true_false", "ex_info": ""}}}, {"type": "Feature", "geometry": {"lineType": ["LLLLL"], "coordinates": [[[350.81601731601654, 159.0169552669563], [422.48268398268374, 1833.1836219336217], [124.14935064935003, 1852.3502886002893], [0, 169.0169552669563], [350.81601731601654, 159.0169552669563]]], "type": "Square"}, "properties": {"contentZh": {"这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "机柜空间充足，需要安装/这个BBU设备未按要求配备挡风板", "这个BBU设备是什么品牌": "华为", "标签": "BBU设备", "这个BBU设备是否显示完整": "显示完整"}, "content": {"bbu_stituation": "bbu_stituation_complete", "bbu_brand": "huawei", "label": "bbu", "bbu_equipment": "bbu_equipment_true/bbu_equipment_true_false", "ex_info": ""}}}], "type": "FeatureCollection", "groupsAttr": []}}
+{
+    "info": {
+        "depth": 3,
+        "width": 1440,
+        "height": 1920
+    },
+    "tagInfo": {
+        "mode": "1",
+        "dataId": 4419,
+        "taskId": "47",
+        "timestamp": 1752993169520
+    },
+    "version": "4.12.46",
+    "markResult": {
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            880.8333333333329,
+                            140.9999999999999
+                        ],
+                        [
+                            930.8333333333328,
+                            140.9999999999999
+                        ],
+                        [
+                            930.8333333333328,
+                            202.66666666666652
+                        ],
+                        [
+                            880.8333333333329,
+                            202.66666666666652
+                        ],
+                        [
+                            880.8333333333329,
+                            140.9999999999999
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            897.4999999999997,
+                            1734.333333333333
+                        ],
+                        [
+                            947.4999999999997,
+                            1734.333333333333
+                        ],
+                        [
+                            947.4999999999997,
+                            1789.333333333333
+                        ],
+                        [
+                            897.4999999999997,
+                            1789.333333333333
+                        ],
+                        [
+                            897.4999999999997,
+                            1734.333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            647.4999999999997,
+                            1754.333333333333
+                        ],
+                        [
+                            704.1666666666663,
+                            1754.333333333333
+                        ],
+                        [
+                            704.1666666666663,
+                            1807.6666666666665
+                        ],
+                        [
+                            647.4999999999997,
+                            1807.6666666666665
+                        ],
+                        [
+                            647.4999999999997,
+                            1754.333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            326.1666666666665,
+                            129.33333333333326
+                        ],
+                        [
+                            388.1666666666665,
+                            129.33333333333326
+                        ],
+                        [
+                            388.1666666666665,
+                            203.33333333333326
+                        ],
+                        [
+                            326.1666666666665,
+                            203.33333333333326
+                        ],
+                        [
+                            326.1666666666665,
+                            129.33333333333326
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            38.166666666666515,
+                            119.33333333333326
+                        ],
+                        [
+                            102.16666666666652,
+                            119.33333333333326
+                        ],
+                        [
+                            102.16666666666652,
+                            179.33333333333326
+                        ],
+                        [
+                            38.166666666666515,
+                            179.33333333333326
+                        ],
+                        [
+                            38.166666666666515,
+                            119.33333333333326
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            1162.1666666666667,
+                            1709.3333333333333
+                        ],
+                        [
+                            1224.1666666666667,
+                            1709.3333333333333
+                        ],
+                        [
+                            1224.1666666666667,
+                            1779.3333333333333
+                        ],
+                        [
+                            1162.1666666666667,
+                            1779.3333333333333
+                        ],
+                        [
+                            1162.1666666666667,
+                            1709.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU安装螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "install_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            1220.1666666666665,
+                            417.33333333333326
+                        ],
+                        [
+                            1320.1666666666665,
+                            417.33333333333326
+                        ],
+                        [
+                            1320.1666666666665,
+                            579.3333333333333
+                        ],
+                        [
+                            1220.1666666666665,
+                            579.3333333333333
+                        ],
+                        [
+                            1220.1666666666665,
+                            417.33333333333326
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            866.1666666666666,
+                            1011.3333333333333
+                        ],
+                        [
+                            948.1666666666666,
+                            1011.3333333333333
+                        ],
+                        [
+                            948.1666666666666,
+                            1063.3333333333333
+                        ],
+                        [
+                            866.1666666666666,
+                            1063.3333333333333
+                        ],
+                        [
+                            866.1666666666666,
+                            1011.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            644.1666666666667,
+                            1209.3333333333333
+                        ],
+                        [
+                            714.1666666666667,
+                            1209.3333333333333
+                        ],
+                        [
+                            714.1666666666667,
+                            1275.3333333333333
+                        ],
+                        [
+                            644.1666666666667,
+                            1275.3333333333333
+                        ],
+                        [
+                            644.1666666666667,
+                            1209.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            810.1666666666667,
+                            1121.3333333333333
+                        ],
+                        [
+                            874.1666666666666,
+                            1121.3333333333333
+                        ],
+                        [
+                            874.1666666666666,
+                            1255.3333333333333
+                        ],
+                        [
+                            810.1666666666667,
+                            1255.3333333333333
+                        ],
+                        [
+                            810.1666666666667,
+                            1121.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "只显示部分",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_part",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            0,
+                            385.33333333333326
+                        ],
+                        [
+                            100.16666666666652,
+                            385.33333333333326
+                        ],
+                        [
+                            100.16666666666652,
+                            457.33333333333326
+                        ],
+                        [
+                            0,
+                            457.33333333333326
+                        ],
+                        [
+                            0,
+                            385.33333333333326
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            26.166666666666742,
+                            1097.3333333333333
+                        ],
+                        [
+                            136.16666666666674,
+                            1097.3333333333333
+                        ],
+                        [
+                            136.16666666666674,
+                            1201.3333333333333
+                        ],
+                        [
+                            26.166666666666742,
+                            1201.3333333333333
+                        ],
+                        [
+                            26.166666666666742,
+                            1097.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "BBU端光纤插头",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "fiber_bbu",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "coordinates": [
+                        [
+                            776.1666666666667,
+                            1747.3333333333333
+                        ],
+                        [
+                            862.1666666666667,
+                            1747.3333333333333
+                        ],
+                        [
+                            862.1666666666667,
+                            1791.3333333333333
+                        ],
+                        [
+                            776.1666666666667,
+                            1791.3333333333333
+                        ],
+                        [
+                            776.1666666666667,
+                            1747.3333333333333
+                        ]
+                    ],
+                    "type": "ExtentPolygon"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "螺丝、光纤插头",
+                        "螺丝/插头是否显示完整": "显示完整",
+                        "这个螺丝/插头是什么种类": "机柜处接地螺丝",
+                        "这个螺丝/插头连接是否符合要求": [
+                            "符合要求"
+                        ]
+                    },
+                    "content": {
+                        "connect_point_situation": "connect_point_situation_complete",
+                        "connect_point_type": "cabinet_screw",
+                        "connect_point_check": [
+                            "connect_point_check_true"
+                        ],
+                        "label": "connect_point",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1181.0238095238096,
+                                0
+                            ],
+                            [
+                                1193.8809523809525,
+                                41.333333333333144
+                            ],
+                            [
+                                1046.7380952380954,
+                                77.04761904761881
+                            ],
+                            [
+                                1042.452380952381,
+                                17.047619047618866
+                            ],
+                            [
+                                1181.0238095238096,
+                                0
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " "
+                    },
+                    "content": {
+                        "label_text": " ",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1246.965367965368,
+                                868.6222943722943
+                            ],
+                            [
+                                1262.4199134199134,
+                                924.0768398268397
+                            ],
+                            [
+                                1194.2380952380952,
+                                1027.7132034632032
+                            ],
+                            [
+                                1170.6017316017314,
+                                975.8950216450215
+                            ],
+                            [
+                                1246.965367965368,
+                                868.6222943722943
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "NR900-BBU-（负极）"
+                    },
+                    "content": {
+                        "label_text": "NR900-BBU-（负极）",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1388.7835497835497,
+                                969.5313852813852
+                            ],
+                            [
+                                1402.4199134199134,
+                                1019.5313852813852
+                            ],
+                            [
+                                1238.7835497835497,
+                                1104.0768398268397
+                            ],
+                            [
+                                1219.6926406926407,
+                                1047.7132034632032
+                            ],
+                            [
+                                1388.7835497835497,
+                                969.5313852813852
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "NR900-BBU-（正极）"
+                    },
+                    "content": {
+                        "label_text": "NR900-BBU-（正极）",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1326.169913419913,
+                                515.7813852813852
+                            ],
+                            [
+                                1317.419913419913,
+                                542.0313852813852
+                            ],
+                            [
+                                1179.919913419913,
+                                629.5313852813852
+                            ],
+                            [
+                                1161.169913419913,
+                                594.5313852813852
+                            ],
+                            [
+                                1326.169913419913,
+                                515.7813852813852
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " "
+                    },
+                    "content": {
+                        "label_text": " ",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1400.991341991342,
+                                1443.8170995670994
+                            ],
+                            [
+                                1348.1341991341992,
+                                1485.245670995671
+                            ],
+                            [
+                                1230.991341991342,
+                                1353.8170995670994
+                            ],
+                            [
+                                1275.2770562770563,
+                                1302.3885281385278
+                            ],
+                            [
+                                1400.991341991342,
+                                1443.8170995670994
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "信号线标签"
+                    },
+                    "content": {
+                        "label_text": "信号线标签",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1132.4199134199134,
+                                710.9599567099566
+                            ],
+                            [
+                                1123.8484848484848,
+                                876.6742424242424
+                            ],
+                            [
+                                1102.4199134199134,
+                                872.3885281385279
+                            ],
+                            [
+                                1088.1341991341992,
+                                708.1028138528137
+                            ],
+                            [
+                                1132.4199134199134,
+                                710.9599567099566
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " "
+                    },
+                    "content": {
+                        "label_text": " ",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                979.8874458874459,
+                                562.4534632034632
+                            ],
+                            [
+                                962.7445887445887,
+                                691.7391774891775
+                            ],
+                            [
+                                923.4588744588743,
+                                663.1677489177489
+                            ],
+                            [
+                                934.8874458874458,
+                                548.1677489177489
+                            ],
+                            [
+                                979.8874458874459,
+                                562.4534632034632
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "LED RRU3-电源线"
+                    },
+                    "content": {
+                        "label_text": "LED RRU3-电源线",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                917.982683982683,
+                                1803.4058441558445
+                            ],
+                            [
+                                917.982683982683,
+                                1920
+                            ],
+                            [
+                                854.6493506493498,
+                                1920
+                            ],
+                            [
+                                854.6493506493498,
+                                1810.0725108225115
+                            ],
+                            [
+                                917.982683982683,
+                                1803.4058441558445
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " "
+                    },
+                    "content": {
+                        "label_text": " ",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                560.64935064935,
+                                1642.8502886002886
+                            ],
+                            [
+                                560.64935064935,
+                                1698.8502886002886
+                            ],
+                            [
+                                438.64935064935,
+                                1718.8502886002886
+                            ],
+                            [
+                                434.64935064935,
+                                1666.8502886002886
+                            ],
+                            [
+                                560.64935064935,
+                                1642.8502886002886
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " "
+                    },
+                    "content": {
+                        "label_text": " ",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                678.8715728715729,
+                                1255.9613997113997
+                            ],
+                            [
+                                679.982683982684,
+                                1308.183621933622
+                            ],
+                            [
+                                569.982683982684,
+                                1365.9613997113997
+                            ],
+                            [
+                                565.5382395382395,
+                                1302.6280663780663
+                            ],
+                            [
+                                678.8715728715729,
+                                1255.9613997113997
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "NR900-BBU-传输光纤"
+                    },
+                    "content": {
+                        "label_text": "NR900-BBU-传输光纤",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                821.0937950937949,
+                                1153.7391774891776
+                            ],
+                            [
+                                764.4271284271283,
+                                1184.572510822511
+                            ],
+                            [
+                                666.0937950937949,
+                                1045.4058441558443
+                            ],
+                            [
+                                719.4271284271283,
+                                1013.7391774891777
+                            ],
+                            [
+                                821.0937950937949,
+                                1153.7391774891776
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "LRRU2-光纤"
+                    },
+                    "content": {
+                        "label_text": "LRRU2-光纤",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                861.0937950937949,
+                                1114.572510822511
+                            ],
+                            [
+                                811.0937950937949,
+                                1142.072510822511
+                            ],
+                            [
+                                736.9271284271283,
+                                1013.7391774891777
+                            ],
+                            [
+                                793.5937950937949,
+                                978.7391774891777
+                            ],
+                            [
+                                861.0937950937949,
+                                1114.572510822511
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "LRRU3-光纤"
+                    },
+                    "content": {
+                        "label_text": "LRRU3-光纤",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                845.2604617604616,
+                                998.7391774891777
+                            ],
+                            [
+                                828.5937950937949,
+                                1048.7391774891776
+                            ],
+                            [
+                                748.5937950937949,
+                                932.9058441558443
+                            ],
+                            [
+                                775.2604617604616,
+                                875.4058441558443
+                            ],
+                            [
+                                845.2604617604616,
+                                998.7391774891777
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": "LRRU1-光纤"
+                    },
+                    "content": {
+                        "label_text": "LRRU1-光纤",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                913.5937950937949,
+                                1031.2391774891776
+                            ],
+                            [
+                                931.0937950937949,
+                                1045.4058441558443
+                            ],
+                            [
+                                877.7604617604616,
+                                1167.9058441558443
+                            ],
+                            [
+                                850.2604617604616,
+                                1152.072510822511
+                            ],
+                            [
+                                913.5937950937949,
+                                1031.2391774891776
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "标签": "标签",
+                        "请输入标签上的文字内容": " NR900-"
+                    },
+                    "content": {
+                        "label_text": " NR900-",
+                        "label": "label"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLLL",
+                    "coordinates": [
+                        [
+                            1317.4826839826835,
+                            528.1836219336221
+                        ],
+                        [
+                            1322.4826839826835,
+                            403.18362193362213
+                        ],
+                        [
+                            1277.4826839826835,
+                            290.68362193362213
+                        ],
+                        [
+                            1209.9826839826835,
+                            155.68362193362213
+                        ],
+                        [
+                            1184.9826839826835,
+                            100.68362193362213
+                        ],
+                        [
+                            1181.0238095238096,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_false",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLL",
+                    "coordinates": [
+                        [
+                            1302.4826839826835,
+                            518.1836219336221
+                        ],
+                        [
+                            1264.9826839826835,
+                            423.18362193362213
+                        ],
+                        [
+                            1237.4826839826835,
+                            260.68362193362213
+                        ],
+                        [
+                            1204.9826839826835,
+                            118.18362193362213
+                        ],
+                        [
+                            1181.0238095238096,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_false",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLL",
+                    "coordinates": [
+                        [
+                            1249.9826839826835,
+                            435.68362193362213
+                        ],
+                        [
+                            1199.9826839826835,
+                            300.68362193362213
+                        ],
+                        [
+                            1194.9826839826835,
+                            198.18362193362213
+                        ],
+                        [
+                            1177.4826839826835,
+                            85.68362193362213
+                        ],
+                        [
+                            1167.4826839826835,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径不合理（弯曲半径<4cm或者成环）",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_false",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLLLLLL",
+                    "coordinates": [
+                        [
+                            913.5937950937949,
+                            1031.2391774891776
+                        ],
+                        [
+                            857.4826839826837,
+                            945.6836219336221
+                        ],
+                        [
+                            797.4826839826837,
+                            735.6836219336221
+                        ],
+                        [
+                            757.4826839826837,
+                            490.68362193362213
+                        ],
+                        [
+                            729.9826839826837,
+                            348.18362193362213
+                        ],
+                        [
+                            684.9826839826837,
+                            193.18362193362213
+                        ],
+                        [
+                            582.4826839826837,
+                            140.68362193362213
+                        ],
+                        [
+                            392.48268398268374,
+                            70.68362193362213
+                        ],
+                        [
+                            197.48268398268374,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径合理",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_trrue",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLLLL",
+                    "coordinates": [
+                        [
+                            861.0937950937949,
+                            1114.572510822511
+                        ],
+                        [
+                            832.4826839826837,
+                            940.6836219336221
+                        ],
+                        [
+                            789.9826839826837,
+                            768.1836219336221
+                        ],
+                        [
+                            734.9826839826837,
+                            515.6836219336221
+                        ],
+                        [
+                            667.4826839826837,
+                            253.18362193362213
+                        ],
+                        [
+                            572.4826839826837,
+                            58.183621933622135
+                        ],
+                        [
+                            419.98268398268374,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径合理",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_trrue",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLLLLL",
+                    "coordinates": [
+                        [
+                            837.4826839826837,
+                            1268.1836219336221
+                        ],
+                        [
+                            822.4826839826837,
+                            1063.1836219336221
+                        ],
+                        [
+                            804.9826839826837,
+                            900.6836219336221
+                        ],
+                        [
+                            772.4826839826837,
+                            690.6836219336221
+                        ],
+                        [
+                            739.9826839826837,
+                            455.68362193362213
+                        ],
+                        [
+                            677.4826839826837,
+                            230.68362193362213
+                        ],
+                        [
+                            547.4826839826837,
+                            65.68362193362213
+                        ],
+                        [
+                            384.98268398268374,
+                            0
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径合理",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_trrue",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineMode": 1,
+                    "lineType": "LLLLLLLLLL",
+                    "coordinates": [
+                        [
+                            669.9826839826837,
+                            1273.1836219336221
+                        ],
+                        [
+                            487.48268398268374,
+                            1330.6836219336221
+                        ],
+                        [
+                            329.98268398268374,
+                            1378.1836219336221
+                        ],
+                        [
+                            174.98268398268374,
+                            1500.6836219336221
+                        ],
+                        [
+                            142.48268398268374,
+                            1598.1836219336221
+                        ],
+                        [
+                            139.98268398268374,
+                            1698.1836219336221
+                        ],
+                        [
+                            247.48268398268374,
+                            1793.1836219336221
+                        ],
+                        [
+                            422.48268398268374,
+                            1833.1836219336217
+                        ],
+                        [
+                            579.9826839826837,
+                            1800.6836219336221
+                        ],
+                        [
+                            624.9826839826837,
+                            1743.1836219336221
+                        ]
+                    ],
+                    "type": "LineString"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这条光纤弯曲半径是否合理": "弯曲半径合理",
+                        "标签": "光纤",
+                        "这条光纤是否采用保护措施": "有保护措施，保护措施为/铠装",
+                        "这条光纤是否被遮挡": "有遮挡"
+                    },
+                    "content": {
+                        "fiber_radius": "fiber_radius_trrue",
+                        "fiber_block": "fiber_block_true",
+                        "label": "fiber",
+                        "ex_info": "",
+                        "fiber_protection": "fiber_protection_true/fiber_protection_metal"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                1424.14935064935,
+                                222.35028860028933
+                            ],
+                            [
+                                1440,
+                                1705.6836219336233
+                            ],
+                            [
+                                1187.4826839826833,
+                                1712.3502886002893
+                            ],
+                            [
+                                1194.9826839826835,
+                                198.18362193362213
+                            ],
+                            [
+                                1424.14935064935,
+                                222.35028860028933
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "无需安装",
+                        "如果有特殊情况，请具体描述": "未拍摄到品牌",
+                        "这个BBU设备是什么品牌": "华为",
+                        "标签": "BBU设备",
+                        "这个BBU设备是否显示完整": "只显示部分"
+                    },
+                    "content": {
+                        "bbu_stituation": "bbu_stituation_part",
+                        "bbu_brand": "huawei",
+                        "label": "bbu",
+                        "bbu_equipment": "bbu_equipment_false",
+                        "ex_info": "未拍摄到品牌"
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                930.8333333333328,
+                                202.66666666666652
+                            ],
+                            [
+                                924.14935064935,
+                                1739.0169552669563
+                            ],
+                            [
+                                630.8160173160165,
+                                1772.3502886002893
+                            ],
+                            [
+                                610.8160173160165,
+                                175.68362193362282
+                            ],
+                            [
+                                930.8333333333328,
+                                202.66666666666652
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "机柜空间充足，需要安装/这个BBU设备未按要求配备挡风板",
+                        "这个BBU设备是什么品牌": "华为",
+                        "标签": "BBU设备",
+                        "这个BBU设备是否显示完整": "显示完整"
+                    },
+                    "content": {
+                        "bbu_stituation": "bbu_stituation_complete",
+                        "bbu_brand": "huawei",
+                        "label": "bbu",
+                        "bbu_equipment": "bbu_equipment_true/bbu_equipment_true_false",
+                        "ex_info": ""
+                    }
+                }
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "lineType": [
+                        "LLLLL"
+                    ],
+                    "coordinates": [
+                        [
+                            [
+                                350.81601731601654,
+                                159.0169552669563
+                            ],
+                            [
+                                422.48268398268374,
+                                1833.1836219336217
+                            ],
+                            [
+                                124.14935064935003,
+                                1852.3502886002893
+                            ],
+                            [
+                                0,
+                                169.0169552669563
+                            ],
+                            [
+                                350.81601731601654,
+                                159.0169552669563
+                            ]
+                        ]
+                    ],
+                    "type": "Square"
+                },
+                "properties": {
+                    "contentZh": {
+                        "这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断": "机柜空间充足，需要安装/这个BBU设备未按要求配备挡风板",
+                        "这个BBU设备是什么品牌": "华为",
+                        "标签": "BBU设备",
+                        "这个BBU设备是否显示完整": "显示完整"
+                    },
+                    "content": {
+                        "bbu_stituation": "bbu_stituation_complete",
+                        "bbu_brand": "huawei",
+                        "label": "bbu",
+                        "bbu_equipment": "bbu_equipment_true/bbu_equipment_true_false",
+                        "ex_info": ""
+                    }
+                }
+            }
+        ],
+        "type": "FeatureCollection",
+        "groupsAttr": []
+    }
+}
+

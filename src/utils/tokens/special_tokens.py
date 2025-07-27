@@ -160,8 +160,8 @@ class UnifiedTokenManager:
         """Add coordinate tokens [0, max_coord_value-1] and return count added."""
         logger.info(f"➕ Adding coordinate tokens [0, {self.max_coord_value - 1}]...")
 
-        # Generate coordinate token names
-        coord_tokens = [f"<coord_{i}>" for i in range(self.max_coord_value)]
+        # Generate coordinate token names (correct format: <|coord_X|>)
+        coord_tokens = [f"<|coord_{i}|>" for i in range(self.max_coord_value)]
 
         # Check which ones need to be added
         existing_vocab = self.tokenizer.get_vocab()
@@ -215,7 +215,7 @@ class UnifiedTokenManager:
                 f"Coordinate value {coord_value} out of range [0, {self.max_coord_value})"
             )
 
-        token_name = f"<coord_{coord_value}>"
+        token_name = f"<|coord_{coord_value}|>"
         vocab = self.tokenizer.get_vocab()
 
         if token_name not in vocab:
@@ -228,11 +228,12 @@ class UnifiedTokenManager:
         Wrap coordinates with appropriate geometry tokens.
 
         Args:
-            coords: List of coordinate values
+            coords: List of coordinate values (integers or floats)
             geometry_type: "bbox", "line", or "square"
 
         Returns:
-            Token-wrapped coordinate string
+            Token-wrapped coordinate string in format:
+            "<|{geometry}_start|>[<|coord_x1|>,<|coord_x2|>,...]<|{geometry}_end|>"
         """
         # Get start/end tokens based on geometry type
         if geometry_type == "line":
@@ -245,23 +246,23 @@ class UnifiedTokenManager:
             start_token = "<|box_start|>"
             end_token = "<|box_end|>"
 
-        # Convert coordinates to coordinate tokens
-        coord_tokens = []
-        for coord in coords:
-            # Scale normalized coordinates [0,1] to coordinate token range [0, max_coord_value)
-            # Assume input coordinates are normalized to [0,1] range
-            if isinstance(coord, (int, float)) and 0 <= coord <= 1:
-                # Scale to coordinate token range
-                coord_scaled = coord * (self.max_coord_value - 1)
-                coord_int = max(0, min(int(coord_scaled), self.max_coord_value - 1))
-            else:
-                # Handle absolute coordinates or out-of-range values
+        # Convert coordinates to coordinate tokens or integers based on mode
+        if self.coord_start_id is not None:
+            # Coordinate mode: replace integers with coordinate tokens
+            coord_tokens = []
+            for coord in coords:
+                # Ensure coordinate is an integer and within range
                 coord_int = max(0, min(int(coord), self.max_coord_value - 1))
-            
-            coord_tokens.append(f"<coord_{coord_int}>")
+                coord_tokens.append(f"<|coord_{coord_int}|>")
 
-        # Join without spaces (coordinate tokens are contiguous)
-        coord_sequence = "".join(coord_tokens)
+            # Format: [<|coord_x1|>,<|coord_x2|>,...]
+            coord_sequence = "[" + ",".join(coord_tokens) + "]"
+        else:
+            # Standard mode: keep coordinates as integers
+            coord_ints = [
+                max(0, min(int(coord), self.max_coord_value - 1)) for coord in coords
+            ]
+            coord_sequence = "[" + ",".join(map(str, coord_ints)) + "]"
 
         return f"{start_token}{coord_sequence}{end_token}"
 
@@ -277,7 +278,8 @@ class UnifiedTokenManager:
             obj: Object dict with geometry and description
 
         Returns:
-            Formatted object string with tokens
+            Formatted object string in format:
+            "<|object_ref_start|>desc:xxxxx<|object_ref_end|>,<|{geometry}_start|>[coords]<|{geometry}_end|>"
         """
         # Determine geometry type and coordinates
         if "bbox_2d" in obj:
@@ -293,13 +295,14 @@ class UnifiedTokenManager:
             raise ValueError(f"Object missing geometry: {obj}")
 
         # Get description
-        description = obj.get("desc", obj.get("description", ""))
+        description = obj.get("desc", obj.get("description", obj.get("label", "")))
 
-        # Format both parts
+        # Format according to specification:
+        # "<|object_ref_start|>desc:xxxxx<|object_ref_end|>,<|{geometry}_start|>[coords]<|{geometry}_end|>"
+        wrapped_desc = f"<|object_ref_start|>desc:{description}<|object_ref_end|>"
         wrapped_coords = self.wrap_coordinates(coords, geometry_type)
-        wrapped_desc = self.wrap_description(description)
 
-        return f"{wrapped_coords}{wrapped_desc}"
+        return f"{wrapped_desc},{wrapped_coords}"
 
     def compute_coordinate_losses(self, logits, labels, bbox_spans=None):
         """
@@ -401,7 +404,7 @@ class SimpleCoordinateManager:
             "Config",
             (),
             {
-                "enable_coordinate_tokens": True,
+                "enable_coordinate_tokens": False,  # Will be updated based on vocabulary
                 "max_coord_value": max_coord_value,
                 "box_start_id": None,
                 "box_end_id": None,
@@ -428,23 +431,98 @@ class SimpleCoordinateManager:
         if box_end_token in vocab:
             self.config.box_end_id = vocab[box_end_token]
 
-        # Look for coordinate tokens
-        coord_0_token = "<coord_0>"
+        # Look for coordinate tokens (correct format: <|coord_0|>)
+        coord_0_token = "<|coord_0|>"
         if coord_0_token in vocab:
             self.coord_start_id = vocab[coord_0_token]
             self.coord_end_id = self.coord_start_id + self.max_coord_value
+            self.config.enable_coordinate_tokens = True  # Enable coordinate mode
             logger.info(
                 f"🎯 Found coordinate tokens: range [{self.coord_start_id}, {self.coord_end_id})"
             )
         else:
+            self.coord_start_id = None
+            self.coord_end_id = None
+            self.config.enable_coordinate_tokens = False  # Use standard mode
             logger.warning(
                 "⚠️ Coordinate tokens not found in vocabulary - coordinate features disabled"
             )
 
+    def wrap_coordinates(self, coords: list, geometry_type: str = "bbox") -> str:
+        """
+        Wrap coordinates with appropriate geometry tokens.
+
+        Args:
+            coords: List of coordinate values (integers)
+            geometry_type: "bbox", "line", or "square"
+
+        Returns:
+            Token-wrapped coordinate string
+        """
+        # Get start/end tokens based on geometry type
+        if geometry_type == "line":
+            start_token = "<|line_start|>"
+            end_token = "<|line_end|>"
+        elif geometry_type == "square":
+            start_token = "<|square_start|>"
+            end_token = "<|square_end|>"
+        else:  # bbox (default)
+            start_token = "<|box_start|>"
+            end_token = "<|box_end|>"
+
+        # Convert coordinates based on mode
+        if self.coord_start_id is not None:
+            # Coordinate mode: replace integers with coordinate tokens
+            coord_tokens = []
+            for coord in coords:
+                coord_int = max(0, min(int(coord), self.max_coord_value - 1))
+                coord_tokens.append(f"<|coord_{coord_int}|>")
+            coord_sequence = "[" + ",".join(coord_tokens) + "]"
+        else:
+            # Standard mode: keep coordinates as integers
+            coord_ints = [
+                max(0, min(int(coord), self.max_coord_value - 1)) for coord in coords
+            ]
+            coord_sequence = "[" + ",".join(map(str, coord_ints)) + "]"
+
+        return f"{start_token}{coord_sequence}{end_token}"
+
+    def format_object(self, obj: dict) -> str:
+        """
+        Format a complete object with coordinates and description.
+
+        Args:
+            obj: Object dict with geometry and description
+
+        Returns:
+            Formatted object string in format:
+            "<|object_ref_start|>desc:xxxxx<|object_ref_end|>,<|{geometry}_start|>[coords]<|{geometry}_end|>"
+        """
+        # Determine geometry type and coordinates
+        if "bbox_2d" in obj:
+            coords = obj["bbox_2d"]
+            geometry_type = "bbox"
+        elif "line" in obj:
+            coords = obj["line"]
+            geometry_type = "line"
+        elif "square" in obj:
+            coords = obj["square"]
+            geometry_type = "square"
+        else:
+            raise ValueError(f"Object missing geometry: {obj}")
+
+        # Get description
+        description = obj.get("desc", obj.get("description", obj.get("label", "")))
+
+        # Format according to specification
+        wrapped_desc = f"<|object_ref_start|>desc:{description}<|object_ref_end|>"
+        wrapped_coords = self.wrap_coordinates(coords, geometry_type)
+
+        return f"{wrapped_desc},{wrapped_coords}"
+
     def convert_json_to_coordinate_format(self, json_string: str) -> str:
         """
         Convert JSON format to coordinate token format.
-        Returns JSON string as fallback if coordinate tokens are not available.
         """
         if self.coord_start_id is None:
             logger.debug("🎯 Coordinate tokens not available, returning JSON format")
@@ -452,34 +530,30 @@ class SimpleCoordinateManager:
 
         try:
             import json
-            # Parse the JSON string to extract objects
+
             objects = json.loads(json_string)
-            
+
             if not isinstance(objects, list):
-                logger.debug("🎯 JSON is not a list, returning original format")
                 return json_string
-            
+
             # Convert each object to coordinate token format
             coordinate_formatted_objects = []
             for obj in objects:
                 if not isinstance(obj, dict):
                     continue
-                    
+
                 try:
                     formatted_obj = self.format_object(obj)
                     coordinate_formatted_objects.append(formatted_obj)
                 except (ValueError, KeyError) as e:
-                    logger.debug(f"🎯 Failed to format object {obj}: {e}, keeping as JSON")
-                    # If formatting fails, keep the object in JSON format
+                    logger.debug(f"🎯 Failed to format object {obj}: {e}")
                     coordinate_formatted_objects.append(json.dumps(obj))
-            
-            # Join all formatted objects with spaces
+
             result = " ".join(coordinate_formatted_objects)
-            logger.debug(f"🎯 Successfully converted JSON to coordinate format: {len(coordinate_formatted_objects)} objects")
             return result
-            
+
         except (json.JSONDecodeError, Exception) as e:
-            logger.debug(f"🎯 Failed to parse JSON or convert to coordinate format: {e}, returning original")
+            logger.debug(f"🎯 Failed to convert to coordinate format: {e}")
             return json_string
 
 

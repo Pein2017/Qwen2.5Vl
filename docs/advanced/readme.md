@@ -1,37 +1,40 @@
-# Advanced Topics Index
+# Advanced Topics Index (2025 Modular Architecture)
 
-This directory contains detailed technical documentation for advanced features and implementation details of the Qwen2.5-VL BBU fine-tuning project.
+This directory contains detailed technical documentation for advanced features and implementation details of the Qwen2.5-VL BBU fine-tuning project with the current modular architecture.
 
 ## Available Topics
 
 ### [Collator Notes](collator_notes.md)
-- **Focus**: Packed sequence collation internals
-- **Key Topics**: Memory efficiency, boundary masking, position ID handling
+- **Focus**: Data collation for multi-geometry training
+- **Key Topics**: BBU-specific collation, coordinate token handling, batch processing
 - **Audience**: Developers working on data loading optimization
+- **Status**: Updated for current architecture
 
-### [PEFT Adapter](peft_adapter.md)  
+### [PEFT Adapter](peft_adapter.md)
 - **Focus**: Parameter-Efficient Fine-Tuning integration
-- **Key Topics**: LoRA adapter configuration, training efficiency
+- **Key Topics**: LoRA adapter configuration with coordinate tokens, training efficiency
 - **Audience**: Researchers exploring efficient training methods
+- **Status**: Compatible with current model wrapper
 
 ### [Teacher-Student Learning](teacher_student.md)
-- **Focus**: Teacher-student training methodology
-- **Key Topics**: Loss splitting, span-based learning, teacher pool selection
+- **Focus**: Teacher-student training methodology in modular system
+- **Key Topics**: LossManager implementation, span-based learning, teacher pool selection
 - **Audience**: ML engineers implementing multi-task learning
+- **Status**: Updated for TrainingCoordinator and LossManager
 
 ## Related Documentation
 
 For comprehensive coverage of advanced topics, also see:
 
-### Main Documentation
-- [Architecture](../architecture.md) - Complete system architecture with DETR detection
-- [Critical Fixes](../critical_fixes.md) - Advanced troubleshooting and patches
-- [Lessons Learned](../lessons_learned.md) - Historical knowledge and pitfalls
+### Core Documentation
+- [Architecture](../core/architecture.md) - Complete modular system architecture
+- [Training Architecture](../core/training-architecture-2025.md) - Current training system
+- [Data Pipeline](../core/data-pipeline.md) - 5-stage processing pipeline
 
-### Specialized Topics
-- **Detection System**: Covered in [Architecture](../architecture.md#67-detr-style-detection-system-current-implementation)
-- **Model Patches**: Detailed in [Critical Fixes](../critical_fixes.md#model-implementation-fixes)
-- **Coordinate Transformations**: Explained in [Data Schema](../data_schema.md#24-3-stage-coordinate-transformation)
+### Reference Documentation
+- [API Reference](../reference/api-core-components.md) - Current modular APIs
+- [Source Code Reference](../reference/src-code-reference.md) - Current codebase structure
+- [Troubleshooting](../guides/troubleshooting.md) - Common issues with modular architecture
 
 ## Navigation Guide
 

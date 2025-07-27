@@ -1,27 +1,38 @@
-# ignore everything at root
-/*
+# ─ 1. 先屏蔽一切 ───────────────────────────
+*
 
-# keep the .gitignore itself
-!/.gitignore
+# ─ 2. 允许遍历所有目录（必要，否则 Git 不会深挖） ─
+!*/
 
-# allow these top-level dirs and everything under them
-!/src/
-!/data_conversion/
-!/data_analysis/
-!/eval/
-!/scripts/
-!/docs/
-!/ongoing_task/
-!/configs/
-!/important_demo/
-!/vis_tools/
-!/temporal/
-!/ds_v2_clean/
-!/ds_*/
+# ─ 3. 必需元文件（根级） ───────────────────
+!.gitignore
+!.gitattributes
+!.editorconfig
+!.pre-commit-config.yaml
+!*.yaml
+!ds/ds_v2_full/*.jsonl
+!docs/
 
-# allow logs & markdown at root
-!/*.log
-!/*.md
+# ─ 4. 允许的代码 / 文档类型（任何深度） ──────
+!*.py
+!*.sh
+!*.md
+!run.log
+!tests/
 
-# drop all __pycache__ dirs
+
+# ─ 5. CI / 构建脚本等（可按需删减） ─────────
+!pyproject.toml
+!requirements*.txt
+      
+
+
+# ─ 6. 永久黑名单（编译文件、缓存、系统垃圾） ─
 **/__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.DS_Store
+*.tmp
+*.swp
+Thumbs.db

@@ -7,7 +7,6 @@ Reads JSONL files and visualizes images with bounding boxes and labels.
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -16,9 +15,6 @@ from matplotlib import rcParams
 from matplotlib.font_manager import FontProperties, fontManager
 from PIL import Image, ImageDraw, ImageFont
 
-# Configure UTF-8 encoding
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
 
 # Configure Chinese font for matplotlib
 try:
@@ -78,6 +74,10 @@ def get_color_for_desc(desc: str) -> str:
 def load_jsonl(jsonl_path: str) -> List[Dict]:
     """Load data from JSONL file."""
     data = []
+    # Convert Path to string if needed
+    if not isinstance(jsonl_path, str):
+        jsonl_path = str(jsonl_path)
+
     with open(jsonl_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -87,7 +87,7 @@ def load_jsonl(jsonl_path: str) -> List[Dict]:
 
 
 def draw_bbox_with_label(
-    draw: ImageDraw.Draw, bbox: List[int], label: str, color: str, font_size: int = 20
+    draw, bbox: List[int], label: str, color: str, font_size: int = 20
 ) -> None:
     """Draw bounding box with label on image."""
     x1, y1, x2, y2 = bbox
@@ -232,7 +232,7 @@ def main():
         args.jsonl = DEFAULT_JSONL_FILE
 
     # Load data
-    samples = load_jsonl(args.jsonl)
+    samples = load_jsonl(str(args.jsonl))
     print(f"Loaded {len(samples)} samples from {args.jsonl}")
 
     # Create summary plot

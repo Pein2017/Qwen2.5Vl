@@ -280,16 +280,32 @@ class InferenceEngine:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+        # FAIL-FAST: Validate model path
         model_dir = Path(self.model_path)
         if not model_dir.exists():
             raise FileNotFoundError(f"Model path does not exist: {self.model_path}")
+        if not model_dir.is_dir():
+            raise ValueError(f"Model path is not a directory: {self.model_path}")
 
         logger.info("🔧 Loading model via UNIFIED loader (same as training)")
 
         try:
-            from src.config import config
-            from src.models.model_loader import load_model_and_processor_unified
+            # FAIL-FAST: Validate config is initialized
+            try:
+                from src.config import config
+            except ImportError:
+                raise ImportError("Failed to import config - ensure config module is available")
+                
+            # FAIL-FAST: Validate model loader is available
+            try:
+                from src.models.model_loader import load_model_and_processor_unified
+            except ImportError:
+                raise ImportError("Failed to import model_loader - ensure models module is available")
 
+            # FAIL-FAST: Validate required config attributes
+            if not hasattr(config, "coordinate_tokens_enabled"):
+                raise ValueError("config missing required attribute: coordinate_tokens_enabled")
+                
             # Detect model type based on config - coordinate tokens drive wrapper usage
             coordinate_tokens_enabled = config.coordinate_tokens_enabled
 
@@ -308,16 +324,35 @@ class InferenceEngine:
             logger.info(
                 "🔧 Forcing eager attention for inference to avoid triton issues"
             )
-            model, tokenizer, image_processor = load_model_and_processor_unified(
-                model_path=str(model_dir),
-                for_inference=True,  # ONLY difference from training
-                force_detection=False,  # Explicit value instead of None
-                attn_implementation=attn_implementation,
-            )
+            
+            # FAIL-FAST: Validate model loading with explicit error handling
+            try:
+                model, tokenizer, image_processor = load_model_and_processor_unified(
+                    model_path=str(model_dir),
+                    for_inference=True,  # ONLY difference from training
+                    force_detection=False,  # Explicit value instead of None
+                    attn_implementation=attn_implementation,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to load model and processor: {e}")
+
+            # FAIL-FAST: Validate loaded components
+            if model is None:
+                raise ValueError("Model loading failed - model is None")
+            if tokenizer is None:
+                raise ValueError("Model loading failed - tokenizer is None")
+            if image_processor is None:
+                raise ValueError("Model loading failed - image_processor is None")
 
             # Create processor-like object for compatibility with proper methods
             class UnifiedProcessor:
                 def __init__(self, tokenizer, image_processor):
+                    # FAIL-FAST: Validate required components
+                    if tokenizer is None:
+                        raise ValueError("tokenizer cannot be None")
+                    if image_processor is None:
+                        raise ValueError("image_processor cannot be None")
+                        
                     self.tokenizer = tokenizer
                     self.image_processor = image_processor
 
@@ -351,6 +386,9 @@ class InferenceEngine:
 
                 def batch_decode(self, *args, **kwargs):
                     """Pass through to tokenizer's batch_decode"""
+                    # FAIL-FAST: Validate tokenizer has batch_decode method
+                    if not hasattr(self.tokenizer, "batch_decode"):
+                        raise AttributeError("tokenizer does not have batch_decode method")
                     return self.tokenizer.batch_decode(*args, **kwargs)
 
             processor = UnifiedProcessor(tokenizer, image_processor)
@@ -379,24 +417,59 @@ class InferenceEngine:
 
     def _load_teacher_pool(self) -> List[Dict[str, Any]]:
         """Load teacher samples from teacher pool JSONL file."""
+        # FAIL-FAST: Validate teacher_pool_file
         if self.teacher_pool_file is None:
             raise ValueError("teacher_pool_file is None")
+            
         teacher_pool_path = Path(self.teacher_pool_file)
+        
+        # FAIL-FAST: Validate file exists and is a file
         if not teacher_pool_path.exists():
             raise FileNotFoundError(
                 f"Teacher pool file not found: {self.teacher_pool_file}"
             )
+        if not teacher_pool_path.is_file():
+            raise ValueError(f"Teacher pool path is not a file: {self.teacher_pool_file}")
 
         teacher_samples = []
-        with open(teacher_pool_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    sample = json.loads(line)
-                    teacher_samples.append(sample)
+        
+        # FAIL-FAST: Validate file contents with explicit error handling
+        try:
+            with open(teacher_pool_path, "r", encoding="utf-8") as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if line:
+                        try:
+                            sample = json.loads(line)
+                            
+                            # FAIL-FAST: Validate sample structure
+                            if not isinstance(sample, dict):
+                                raise ValueError(f"Line {line_num}: Sample is not a dictionary")
+                                
+                            # FAIL-FAST: Validate required fields
+                            if "images" not in sample:
+                                raise ValueError(f"Line {line_num}: Missing required field 'images'")
+                            if "objects" not in sample:
+                                raise ValueError(f"Line {line_num}: Missing required field 'objects'")
+                                
+                            # FAIL-FAST: Validate field types
+                            if not isinstance(sample["images"], list) or len(sample["images"]) == 0:
+                                raise ValueError(f"Line {line_num}: 'images' field is empty or not a list")
+                            if not isinstance(sample["objects"], list):
+                                raise ValueError(f"Line {line_num}: 'objects' field is not a list")
+                                
+                            teacher_samples.append(sample)
+                            
+                        except json.JSONDecodeError as e:
+                            raise ValueError(f"Invalid JSON at line {line_num}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to read teacher pool file: {e}")
 
+        # FAIL-FAST: Validate we have teacher samples
         if not teacher_samples:
             raise ValueError("No teacher samples found in teacher pool file")
+            
+        logger.info(f"Loaded {len(teacher_samples)} teacher samples from {self.teacher_pool_file}")
 
         return teacher_samples
 

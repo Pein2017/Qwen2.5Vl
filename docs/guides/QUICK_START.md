@@ -1,12 +1,12 @@
 # BBU Detection System - Quick Start (15 Minutes)
 
-Get up and running with the BBU detection system in 15 minutes.
+Get up and running with the BBU detection system in 15 minutes using the current modular architecture.
 
 ## 🎯 What You'll Build
 
-A vision-language model that detects BBU equipment in images and generates natural language descriptions with precise coordinates.
+A vision-language model that detects BBU equipment in images and generates natural language descriptions with precise coordinates using the object-oriented training system.
 
-**Key Innovation**: Uses "coordinate tokens" to predict bounding boxes as part of the text sequence instead of separate regression heads.
+**Key Innovation**: Uses coordinate tokens embedded in text sequences with multi-geometry support (bbox, square, line).
 
 ## ⚡ Prerequisites (2 minutes)
 
@@ -22,12 +22,21 @@ cd /data3/Qwen2.5-VL-main
 ## 🚀 Step 1: Process Data (5 minutes)
 
 ```bash
-# Process your raw data (assumes data in ds/ directory)
-bash data_conversion/convert_dataset.sh
+# Process your raw data using the 5-stage pipeline
+cd data_conversion
+bash convert_dataset.sh
+
+# Or use Python pipeline manager directly
+python pipeline_manager.py \
+    --input_dir ../ds_v2 \
+    --output_dir ../data \
+    --object_types "bbu label fiber" \
+    --resize true \
+    --val_ratio 0.1
 
 # Verify output
-ls -la data/  # Should see train.jsonl, val.jsonl
-head -1 data/train.jsonl | python -m json.tool  # Check format
+ls -la ../data/  # Should see train.jsonl, val.jsonl, teacher.jsonl
+head -1 ../data/train.jsonl | python -m json.tool  # Check format
 ```
 
 ## 🤖 Step 2: Configure Training (3 minutes)
@@ -36,16 +45,18 @@ head -1 data/train.jsonl | python -m json.tool  # Check format
 # Copy working configuration
 cp configs/base_flat_v2.yaml configs/my_training.yaml
 
-# Key settings to verify:
+# Key settings to verify in configs/my_training.yaml:
+# - detection_enabled: true
 # - coordinate_tokens_enabled: true
 # - model_path: "/path/to/qwen2.5-vl-7b-instruct"
 # - train_data_path: "data/train.jsonl"
+# - teacher_ratio: 0.3
 ```
 
 ## 🏃 Step 3: Start Training (5 minutes)
 
 ```bash
-# Quick training test
+# Quick training test using the modular trainer
 /root/miniconda3/envs/ms/bin/python scripts/train.py \
     --config configs/my_training.yaml \
     --output_dir checkpoints/quick_test \

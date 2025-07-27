@@ -1,0 +1,23 @@
+[tool.ruff.lint]
+# Enable import organization and unused variable detection
+select = ["F", "E", "W", "I"]
+ignore = ["E402","F541","E741","E501"]  # Removed F401 to detect unused imports
+
+[tool.ruff.lint.isort]
+# Import organization settings
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+# Formatting settings
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pyright]
+# Pyright configuration
+# Add your diagnostic severity overrides here
+# For example:
+# diagnosticSeverityOverrides = { reportUnusedImport = "warning", reportMissingImports = "information" }
+

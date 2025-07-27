@@ -1,52 +1,87 @@
-# 🔄 Migration Guide: Legacy to New Architecture
+# 🔄 Migration Guide: Legacy → 2025 Modular Architecture **[COMPLETE]**
 
-*Updated for refactored BBU training system*
+*Modular architecture with enhanced training system and data processing pipeline*
 
 ---
 
-## Overview
+## Migration Status: **COMPLETE** ✅
 
-The BBU training system has been refactored to provide better code organization, maintainability, and extensibility. The new architecture introduces:
+The BBU training system has completed migration to a modular architecture (2025). The current system provides:
 
-- **Domain-specific configuration** with validation
-- **Training coordinator** for better orchestration
-- **Component managers** (LossManager, ParameterGroupManager)
-- **Full backward compatibility** with the legacy system
+- **Modular Training System** (`src/training/`): BBUTrainer, TrainingCoordinator, LossManager
+- **Unified Model Loading** (`src/models/`): Consistent training-inference model loading
+- **5-Stage Data Pipeline** (`data_conversion/`): PipelineManager with object-oriented training
+- **Simplified Token Management** (`src/utils/`): Lightweight token addition approach
+- **Multi-geometry support** (`bbox_2d`, `square`, `line`) with object type filtering
+- **DirectConfig System** (`src/config/`): Unified configuration management
 
-## Quick Migration Steps
+## 2025 Modular Architecture Overview
 
-### 1. **Use New Configuration**
-```bash
-# Before (Legacy)
-python scripts/train.py --config base_flat --log_level INFO --log_verbose true
+### 1. **Legacy vs Current Architecture Comparison**
 
-# After (New System)
-python scripts/train.py --config base_flat_v2 --use-new-config --log_level INFO --log_verbose true
+**Legacy Architecture (Pre-2025)**:
+```
+Single monolithic trainer (2100+ lines)
+Scattered configuration (149+ parameters in one file)
+Complex coordinate token system
+Difficult to debug and extend
 ```
 
-### 2. **Update Launch Script**
-In `scripts/run_train.sh`, change:
-```bash
-CONFIG_NAME="base_flat"        # Legacy config
-USE_NEW_CONFIG=false          # Use legacy system
+**Current Modular Architecture (2025)**:
 ```
-To:
-```bash
-CONFIG_NAME="base_flat_v2"    # New enhanced config
-USE_NEW_CONFIG=true           # Use new system
+src/
+├── training/          # Modular training components
+│   ├── trainer.py            # BBUTrainer
+│   ├── training_coordinator.py # Training orchestration
+│   ├── loss_manager.py       # Multi-task loss computation
+│   └── trainer_factory.py    # Factory pattern
+├── models/           # Model management
+│   ├── model_loader.py       # Unified model loading
+│   ├── wrapper.py           # Qwen25VLWithDetection
+│   └── patches.py           # Model patches
+├── core/             # Central processors
+│   ├── data_processor.py     # Data processing
+│   └── checkpoint_manager.py # Checkpoint management
+└── config/           # Configuration management
+    └── global_config.py      # DirectConfig system
 ```
 
-### 3. **Configuration Migration**
-Your existing `configs/base_flat.yaml` is preserved and continues to work. The new `configs/base_flat_v2.yaml` includes:
+### 2. **Current Training Pipeline Usage**
+```bash
+# 5-Stage Data Processing Pipeline
+cd /data3/Qwen2.5-VL-main
+bash data_conversion/convert_dataset.sh  # Uses PipelineManager
 
-**New Architecture Options:**
+# Or use Python pipeline manager directly
+python data_conversion/pipeline_manager.py \
+    --input_dir ds_v2 \
+    --output_dir data \
+    --object_types "bbu label fiber" \
+    --resize true
+
+# Modular Training System
+python scripts/train.py --config configs/base_flat_v2.yaml
+```
+
+### 3. **V2 Training Configuration**
+The V2 system uses updated configuration with multi-geometry and simple token support:
+
+**V2 Configuration Options:**
 ```yaml
-# Architecture Selection
-use_new_config_system: true
-use_training_coordinator: true
-enable_component_freezing: true
-enable_advanced_logging: true
-enable_gradient_monitoring: true
+# V2 Data Format Support
+simple_tokens_enabled: true         # Use simple token system (V2)
+coordinate_tokens_enabled: false    # Disable legacy coordinate tokens (V1)
+
+# V2 Multi-Geometry Support  
+multi_geometry_enabled: true        # Support bbox_2d, square, line geometries
+object_type_filtering: true         # Enable object-oriented training
+
+# V2 Token Configuration
+special_tokens:
+  - "<|line_start|>"                # For fiber/wire objects
+  - "<|line_end|>"
+  - "<|square_start|>"              # For rotated equipment/labels  
+  - "<|square_end|>"
 
 # Validation and Safety
 enable_config_validation: true

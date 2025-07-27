@@ -80,6 +80,7 @@ class Qwen25VLWithDetection(nn.Module):
         attn_implementation: str = "",  # Changed from None to empty string
         coordinate_config: Optional[CoordinateConfig] = None,
         config=None,
+        use_cache: bool = False,  # Add use_cache parameter for inference mode
     ) -> None:
         super().__init__()
 
@@ -106,8 +107,8 @@ class Qwen25VLWithDetection(nn.Module):
 
         # Coordinate token tracking
         self.coordinate_tokens_enabled = self.coordinate_config.enable_coordinate_tokens
-        self.original_vocab_size = None
-        self.extended_vocab_size = None
+        self.original_vocab_size: int = None
+        self.extended_vocab_size: int = None
         self.extended_embeddings = None
         self.extended_lm_head = None
 
@@ -125,40 +126,46 @@ class Qwen25VLWithDetection(nn.Module):
             from src.config import get_config
 
             config = get_config()
-            self.logger.info("📄 Using global configuration system (fallback)")
-        else:
-            self.logger.info("📄 Using explicit configuration system")
+            self.logger.info("📄 Using global configuration system")
 
         # Store config for use throughout the wrapper
         self._config = config
 
         # Determine effective attention implementation
-        effective_attn_impl = (
-            attn_implementation
-            if attn_implementation is not None
-            else config.attn_implementation
-        )
+        if attn_implementation:
+            effective_attn_impl = attn_implementation
+        elif hasattr(config, "attn_implementation"):
+            effective_attn_impl = config.attn_implementation
+        else:
+            raise ValueError(
+                "attn_implementation must be provided either directly or in config"
+            )
 
         # Load official Qwen2.5-VL model with proper configuration
-        self.base_model: Qwen2_5_VLForConditionalGeneration = (
-            Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                base_model_path,
-                torch_dtype=_get_torch_dtype(config.torch_dtype),
-                attn_implementation=effective_attn_impl,
-                device_map=None,  # Single GPU only - no multi-GPU device mapping
-                trust_remote_code=True,
-                use_cache=False,  # Disable KV cache for training to prevent CUDA errors
-            )
+        if not hasattr(config, "torch_dtype"):
+            raise ValueError("torch_dtype must be specified in config")
+
+        self.base_model: Qwen2_5_VLForConditionalGeneration = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            base_model_path,
+            torch_dtype=_get_torch_dtype(config.torch_dtype),
+            attn_implementation=effective_attn_impl,
+            device_map=None,  # Single GPU only - no multi-GPU device mapping
+            trust_remote_code=True,
+            use_cache=use_cache,  # Use provided cache setting (False for training, True for inference)
         )
 
         # Log attention implementation being used
         self.logger.info(f"🔧 Model loaded with attention: {effective_attn_impl}")
         # EXPLICIT CONFIG: Log attention implementation if available
-        attn_impl = getattr(self.base_model.config, "_attn_implementation", "not_set")
-        self.logger.info(f"🔧 Model config attn_implementation: {attn_impl}")
+        if hasattr(self.base_model.config, "_attn_implementation"):
+            attn_impl = self.base_model.config._attn_implementation
+            self.logger.info(f"🔧 Model config attn_implementation: {attn_impl}")
+        else:
+            self.logger.info(
+                "🔧 Model config does not have _attn_implementation attribute"
+            )
 
         # CRITICAL: Move base model to GPU only if NOT using DeepSpeed
-
         deepspeed_enabled = (
             os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower() == "true"
         )
@@ -617,40 +624,15 @@ class Qwen25VLWithDetection(nn.Module):
             model_inputs["inputs_embeds"] = inputs_embeds
             # Keep input_ids for shape information but mark to use inputs_embeds
 
-        # Forward through base model
-        model_inputs["labels"] = None  # Remove labels to compute loss ourselves
-        model_inputs["output_hidden_states"] = True  # Ensure we get hidden states
+        # Forward through base model - OPTIMIZATION: Let model compute built-in CE loss
+        labels = original_inputs.get("labels")
+        model_inputs["labels"] = labels  # Keep labels for built-in CE loss computation
         model_inputs["return_dict"] = True  # Ensure we get a proper output object
         outputs = self.base_model(**model_inputs)
 
-        # Use extended LM head - get hidden states from the last layer
-        # EXPLICIT CONFIG: Qwen2.5-VL outputs always have hidden_states when output_hidden_states=True
-        if outputs.hidden_states is None:
-            raise RuntimeError(
-                f"Base model outputs missing hidden_states: {type(outputs)}"
-            )
-        if not isinstance(outputs.hidden_states, (list, tuple)):
-            raise RuntimeError(
-                f"Base model hidden_states should be list/tuple, got {type(outputs.hidden_states)}"
-            )
-        if len(outputs.hidden_states) == 0:
-            raise RuntimeError("Base model hidden_states is empty")
-
-        hidden_states = outputs.hidden_states[-1]  # Last layer hidden states
-        # Use the base model's (resized) LM head directly
-        logits = self.base_model.get_output_embeddings()(hidden_states)
-
-        # Compute standard cross entropy loss if labels provided
-        loss = None
-        labels = original_inputs.get("labels")
-        if labels is not None:
-            # Standard cross entropy loss (no coordinate-aware splitting)
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss_fct = torch.nn.CrossEntropyLoss()
-            loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-            )
+        # Extract built-in loss and logits from model outputs
+        loss = outputs.loss  # Use built-in shifted cross entropy from Qwen2.5-VL
+        logits = outputs.logits
 
         # Create output with extended logits and standard loss
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
@@ -701,11 +683,12 @@ class Qwen25VLWithDetection(nn.Module):
         outputs = self.base_model(**model_inputs)
 
         # Extract the standard LLM loss computed by Qwen2.5-VL
-        llm_loss = (
-            outputs.loss
-            if outputs.loss is not None
-            else torch.tensor(0.0, device=next(self.parameters()).device)
-        )
+        if outputs.loss is not None:
+            llm_loss = outputs.loss
+        else:
+            device = next(self.parameters()).device
+            llm_loss = torch.tensor(0.0, device=device)
+
         logits = outputs.logits
 
         # Compute coordinate loss separately and combine with existing LLM loss
@@ -724,13 +707,38 @@ class Qwen25VLWithDetection(nn.Module):
                 [],  # Empty bbox_spans - internal geometry detection will be used
             )
 
-            # Extract coordinate L1 loss
-            coordinate_l1_loss = coordinate_losses.get(
-                "coordinate_loss", torch.tensor(0.0, device=llm_loss.device)
-            )
+            # Extract coordinate L1 loss - fail fast if missing
+            if "coordinate_loss" not in coordinate_losses:
+                raise ValueError(
+                    "coordinate_loss missing from coordinate_losses dictionary"
+                )
+
+            coordinate_l1_loss = coordinate_losses["coordinate_loss"]
+
+            # Validate coordinate loss is a tensor
+            if not isinstance(coordinate_l1_loss, torch.Tensor):
+                raise TypeError(
+                    f"coordinate_l1_loss must be a tensor, got {type(coordinate_l1_loss)}"
+                )
 
             # Combine LLM loss with coordinate L1 loss using simple weighting
             if coordinate_l1_loss.item() > 0:
+                # Validate coordinate manager config has required attributes
+                if not hasattr(self.coordinate_manager, "config"):
+                    raise ValueError("coordinate_manager missing config attribute")
+
+                if not hasattr(self.coordinate_manager.config, "regular_loss_weight"):
+                    raise ValueError(
+                        "coordinate_manager.config missing regular_loss_weight attribute"
+                    )
+
+                if not hasattr(
+                    self.coordinate_manager.config, "coordinate_loss_weight"
+                ):
+                    raise ValueError(
+                        "coordinate_manager.config missing coordinate_loss_weight attribute"
+                    )
+
                 combined_loss = (
                     self.coordinate_manager.config.regular_loss_weight * llm_loss
                     + self.coordinate_manager.config.coordinate_loss_weight
@@ -796,7 +804,10 @@ class Qwen25VLWithDetection(nn.Module):
         else:
             # No coordinate manager or no labels - use LLM loss only
             self.logger.debug("   No coordinate manager or labels, using LLM loss only")
-            coordinate_l1_loss = torch.tensor(0.0, device=llm_loss.device)
+            device = (
+                llm_loss.device if hasattr(llm_loss, "device") else torch.device("cpu")
+            )
+            coordinate_l1_loss = torch.tensor(0.0, device=device)
             loss = llm_loss
 
             # IMMEDIATE ERROR CHECK: Ensure loss is a tensor
@@ -821,33 +832,42 @@ class Qwen25VLWithDetection(nn.Module):
                 f"Loss variable corrupted to {type(loss)}, expected torch.Tensor"
             )
 
-        # EXPLICIT CONFIG: Qwen2.5-VL outputs always have loss attribute
-        # No hasattr check needed - standard transformer output structure
-
-        # CRITICAL FIX: Create a new output object to avoid corruption
+        # Create a new output object to avoid corruption
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
             Qwen2_5_VLCausalLMOutputWithPast,
         )
 
         # Create new output object with correct values
-        # EXPLICIT CONFIG: Standard transformer outputs have these attributes
+        # Validate all required attributes exist
+        if not hasattr(outputs, "logits"):
+            raise ValueError("outputs missing required attribute: logits")
+
+        # Extract optional attributes with validation
+        hidden_states = getattr(outputs, "hidden_states", None)
+        past_key_values = getattr(outputs, "past_key_values", None)
+        attentions = getattr(outputs, "attentions", None)
+
+        # Create new output object with correct values
         new_outputs = Qwen2_5_VLCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
-            hidden_states=outputs.hidden_states,
-            past_key_values=getattr(outputs, "past_key_values", None),
-            attentions=getattr(outputs, "attentions", None),
+            hidden_states=hidden_states,
+            past_key_values=past_key_values,
+            attentions=attentions,
         )
 
         # CRITICAL FIX: Attach coordinate losses to the NEW output object
         # This was the root cause - losses were attached to old outputs but new outputs was returned
         self._attach_coordinate_losses_to_outputs(new_outputs)
 
-        # NOTE: _last_coordinate_losses is now stored immediately after computation (line 852-861)
-        # This ensures loss manager can access them via fallback in the same forward pass
-
         # IMMEDIATE VALIDATION: Ensure coordinate losses are properly attached to new output
         # EXPLICIT CONFIG: _config is set during initialization
+        if not hasattr(self, "_config"):
+            raise ValueError("_config not initialized")
+
+        if not hasattr(self._config, "coordinate_tokens_enabled"):
+            raise ValueError("_config missing coordinate_tokens_enabled attribute")
+
         if self._config.coordinate_tokens_enabled:
             required_attrs = [
                 "_llm_loss",
@@ -902,8 +922,6 @@ class Qwen25VLWithDetection(nn.Module):
         self, loss_components: Dict[str, float]
     ):
         """Update loss tracking components with geometry-organized structure."""
-        self._ensure_loss_tracking_initialized()
-
         # EXPLICIT CONFIG: Validate required loss components are present
         required_loss_keys = [
             "llm_loss",
@@ -1671,6 +1689,7 @@ class Qwen25VLWithDetection(nn.Module):
         coordinate_config: Optional[CoordinateConfig] = None,
         attn_implementation: str = None,
         config=None,
+        use_cache: bool = False,  # Add use_cache parameter
         **kwargs,
     ):
         """
@@ -1710,6 +1729,7 @@ class Qwen25VLWithDetection(nn.Module):
             attn_implementation=attn_implementation,
             coordinate_config=coordinate_config,
             config=config,
+            use_cache=use_cache,  # Pass use_cache parameter
         )
 
         # Load coordinate token extensions if they exist

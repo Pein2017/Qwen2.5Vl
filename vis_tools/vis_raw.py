@@ -1,9 +1,30 @@
 #!/usr/bin/env python3
 """
-Visualize the raw data exported from 数据堂, the *.json file.
+Visualize the latest JSONL data format with multi-geometry support.
 
-This script loads raw annotation JSON files and visualizes bounding boxes
-with labels on the corresponding images. Supports both English and Chinese labels.
+This script loads JSONL annotation files and visualizes different geometry types:
+- bbox_2d: Traditional rectangular bounding boxes [x1, y1, x2, y2]
+- squar    def get_main_category(self, description: str) -> str:
+        Extract main category from description (part before first comma).
+        return description.split(",")[0].strip() if description else "Unknown"
+
+    def draw_objects_on_axis(
+        self, ax, image_array: np.ndarray, objects: List[Dict], title: str
+    ):
+        Draw multi-geometry objects on a matplotlib axis.
+        ax.imshow(image_array)
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.axis("off")
+
+        # First pass: collect all unique main categories
+        for obj in objects:
+            description = obj.get("description", "Unknown")
+            main_category = self.get_main_category(description)
+            self.unique_descriptions.add(main_category)
+            if main_category not in self.description_colors:
+                color_idx = len(self.description_colors) % len(self.label_color_palette)
+                self.description_colors[main_category] = self.label_color_palette[color_idx]ls (四边形) [x1, y1, x2, y2, x3, y3, x4, y4]
+- line: Line segments (线段) [x1, y1, x2, y2, x3, y3, ...]
 
 Configure the settings below and run the script directly.
 """
@@ -12,41 +33,32 @@ Configure the settings below and run the script directly.
 # CONFIGURATION - MODIFY THESE SETTINGS
 # =============================================================================
 
-# Image paths to visualize (relative to BASE_DIR)
-# Add or remove image paths as needed
-IMAGE_PATHS = [
-    "ds/QC-20230225-0000414_19823.jpeg",
-]
-
-# Optional: Corresponding annotation paths (if not provided, will auto-detect)
-# Leave as None to enable auto-detection based on image filenames
-# Or specify exact paths like: ["ds/file1.json", "ds/file2.json", ...]
-ANNOTATION_PATHS = None
+# JSONL file path to visualize (relative to BASE_DIR)
+JSONL_PATH = "temp_invalid.jsonl"
 
 # Output directory for visualizations
-OUTPUT_DIR = "raw_visualizations"
-
-# Language preference for labels
-# "zh" = Chinese labels (标签 field)
-# "en" = English labels (label field)
-LANGUAGE = "zh"
+OUTPUT_DIR = "invalid_visualizations"
 
 # Base directory for resolving relative paths
 BASE_DIR = "."
 
-# Maximum number of images to process (-1 for all images in IMAGE_PATHS)
-MAX_IMAGES = -1
+# Maximum number of samples to process (-1 for all samples)
+MAX_SAMPLES = 10
+
+# Show different geometry types with different colors
+SHOW_GEOMETRY_LEGEND = True
 
 # =============================================================================
 # IMPORTS AND SETUP
 # =============================================================================
 
+# Configure UTF-8 encoding
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
@@ -55,9 +67,6 @@ from matplotlib import rcParams
 from matplotlib.font_manager import FontProperties, fontManager
 from PIL import Image
 
-# Configure UTF-8 encoding
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -77,15 +86,25 @@ except Exception as e:
     logger.warning(f"Failed to configure Chinese font: {e}")
 
 
-class RawDataVisualizer:
-    """Visualizes raw annotation data from 数据堂 format."""
+class MultiGeometryVisualizer:
+    """Visualizes JSONL data with multi-geometry support (bbox_2d, square, line)."""
 
     def __init__(self, base_dir: str = "."):
         self.base_dir = Path(base_dir)
-        self.color_palette = [
-            "#FF6B6B",
-            "#4ECDC4",
-            "#45B7D1",
+
+        # Track unique descriptions and their colors
+        self.unique_descriptions = set()
+        self.description_colors = {}
+
+        # Geometry-specific styles (for shape outlines only)
+        self.geometry_styles = {
+            "bbox_2d": {"linewidth": 2, "linestyle": "-"},
+            "square": {"linewidth": 2, "linestyle": "--"},
+            "line": {"linewidth": 3, "linestyle": "-"},
+        }
+
+        # Label color palette for different descriptions
+        self.label_color_palette = [
             "#96CEB4",
             "#FFEAA7",
             "#DDA0DD",
@@ -108,6 +127,9 @@ class RawDataVisualizer:
             "#FCF3CF",
             "#EBDEF0",
             "#D1F2EB",
+            "#FFB6C1",
+            "#98FB98",
+            "#87CEEB",
         ]
         self.label_to_color = {}
 
@@ -120,7 +142,15 @@ class RawDataVisualizer:
             path_candidates = [
                 image_path,
                 self.base_dir / image_path,
-                self.base_dir / "ds" / Path(image_path).name,
+                self.base_dir / "data" / "ds_v2_full" / image_path,
+                self.base_dir
+                / "data"
+                / "ds_v2_full"
+                / "images"
+                / Path(image_path).name,
+                self.base_dir / "data" / "ds_v2" / image_path,
+                self.base_dir / "data" / "ds_v2" / "images" / Path(image_path).name,
+                self.base_dir / "images" / Path(image_path).name,
                 Path(image_path),
             ]
 
@@ -141,187 +171,252 @@ class RawDataVisualizer:
             logger.error(f"Failed to load image {image_path}: {e}")
             return None, None
 
-    def load_raw_annotation(self, json_path: str) -> Optional[Dict]:
-        """Load raw annotation JSON file."""
+    def load_jsonl_file(self, jsonl_path: str) -> List[Dict]:
+        """Load JSONL file and return list of samples."""
         try:
             abs_path = (
-                self.base_dir / json_path
-                if not Path(json_path).is_absolute()
-                else Path(json_path)
+                self.base_dir / jsonl_path
+                if not Path(jsonl_path).is_absolute()
+                else Path(jsonl_path)
             )
 
             if not abs_path.exists():
-                logger.error(f"Annotation file not found: {abs_path}")
-                return None
+                logger.error(f"JSONL file not found: {abs_path}")
+                return []
 
+            samples = []
             with open(abs_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        sample = json.loads(line)
+                        samples.append(sample)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse line {line_num}: {e}")
+                        continue
 
-            logger.info(f"Loaded annotation file: {abs_path}")
-            return data
+            logger.info(f"Loaded {len(samples)} samples from: {abs_path}")
+            return samples
 
         except Exception as e:
-            logger.error(f"Failed to load annotation {json_path}: {e}")
-            return None
+            logger.error(f"Failed to load JSONL {jsonl_path}: {e}")
+            return []
 
-    def extract_bboxes_from_raw(
-        self, annotation_data: Dict, lang: str = "zh"
-    ) -> List[Dict]:
+    def extract_objects_from_sample(self, sample: Dict) -> List[Dict]:
         """
-        Extract bounding boxes from raw annotation format.
+        Extract objects from JSONL sample format.
 
         Args:
-            annotation_data: Raw annotation data (could be single feature or FeatureCollection)
-            lang: Language preference ("zh" for Chinese, "en" for English)
+            sample: JSONL sample with 'objects' field containing multi-geometry annotations
 
         Returns:
-            List of bbox dictionaries with format: {"bbox_2d": [x1, y1, x2, y2], "label": str}
+            List of object dictionaries with geometry and description
         """
-        bboxes = []
+        objects = []
 
-        # Handle the specific 数据堂 format
-        features = []
+        if "objects" not in sample:
+            logger.warning("No 'objects' field found in sample")
+            return objects
 
-        # First try markResult.features (main annotation data)
-        if "markResult" in annotation_data and isinstance(
-            annotation_data["markResult"], dict
-        ):
-            mark_result = annotation_data["markResult"]
-            if mark_result.get("type") == "FeatureCollection":
-                features = mark_result.get("features", [])
-                logger.info(f"Found {len(features)} features in markResult")
-
-        # Fallback to direct FeatureCollection format
-        elif annotation_data.get("type") == "FeatureCollection":
-            features = annotation_data.get("features", [])
-            logger.info(f"Found {len(features)} features in direct FeatureCollection")
-
-        # Fallback to single feature format
-        elif annotation_data.get("geometry"):
-            features = [annotation_data]
-            logger.info("Found single feature format")
-
-        if not features:
-            logger.warning("No features found in annotation data")
-            return bboxes
-
-        for feature in features:
+        for obj in sample["objects"]:
             try:
-                # Extract geometry
-                geometry = feature.get("geometry", {})
-                if geometry.get("type") != "ExtentPolygon":
+                # Extract geometry information
+                geometry_info = {}
+                geometry_type = None
+
+                # Check for different geometry types
+                if "bbox_2d" in obj:
+                    geometry_type = "bbox_2d"
+                    geometry_info["bbox_2d"] = obj["bbox_2d"]
+                elif "square" in obj:
+                    geometry_type = "square"
+                    geometry_info["square"] = obj["square"]
+                elif "line" in obj:
+                    geometry_type = "line"
+                    geometry_info["line"] = obj["line"]
+                else:
+                    logger.warning(f"Unknown geometry type in object: {obj}")
                     continue
 
-                coordinates = geometry.get("coordinates", [])
-                if not coordinates or len(coordinates) < 4:
-                    continue
+                # Extract description
+                description = obj.get("desc", "Unknown")
 
-                # Convert polygon coordinates to bbox
-                # coordinates format: [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]
-                x_coords = [point[0] for point in coordinates]
-                y_coords = [point[1] for point in coordinates]
+                # Create object entry
+                obj_entry = {
+                    "geometry_type": geometry_type,
+                    "description": description,
+                    **geometry_info,
+                }
 
-                x1, x2 = min(x_coords), max(x_coords)
-                y1, y2 = min(y_coords), max(y_coords)
-
-                # Extract label based on language preference
-                properties = feature.get("properties", {})
-                label = "Unknown"
-
-                if lang == "zh" and "contentZh" in properties:
-                    # Chinese label
-                    content_zh = properties["contentZh"]
-                    if isinstance(content_zh, dict) and "标签" in content_zh:
-                        label = content_zh["标签"]
-                    elif isinstance(content_zh, str):
-                        label = content_zh
-                elif "content" in properties:
-                    # English label
-                    content = properties["content"]
-                    if isinstance(content, dict) and "label" in content:
-                        label = content["label"]
-                    elif isinstance(content, str):
-                        label = content
-
-                bboxes.append(
-                    {"bbox_2d": [int(x1), int(y1), int(x2), int(y2)], "label": label}
-                )
+                objects.append(obj_entry)
 
             except Exception as e:
-                logger.warning(f"Failed to process feature: {e}")
+                logger.warning(f"Failed to process object: {e}")
                 continue
 
-        return bboxes
+        return objects
 
     def get_label_color(self, label: str) -> str:
         """Get consistent color for a label."""
         if label not in self.label_to_color:
             # Assign new color
-            color_idx = len(self.label_to_color) % len(self.color_palette)
-            self.label_to_color[label] = self.color_palette[color_idx]
+            color_idx = len(self.label_to_color) % len(self.label_color_palette)
+            self.label_to_color[label] = self.label_color_palette[color_idx]
         return self.label_to_color[label]
 
-    def draw_bboxes_on_axis(
-        self, ax, image_array: np.ndarray, bboxes: List[Dict], title: str
+    def draw_objects_on_axis(
+        self, ax, image_array: np.ndarray, objects: List[Dict], title: str
     ):
-        """Draw bounding boxes on a matplotlib axis."""
+        """Draw multi-geometry objects on a matplotlib axis."""
         ax.imshow(image_array)
         ax.set_title(title, fontsize=12, fontweight="bold")
         ax.axis("off")
 
-        for bbox_info in bboxes:
-            bbox = bbox_info.get("bbox_2d", [])
-            label = bbox_info.get("label", "Unknown")
+        # First pass: collect all unique descriptions
+        for obj in objects:
+            description = obj.get("description", "Unknown")
+            self.unique_descriptions.add(description)
+            if description not in self.description_colors:
+                color_idx = len(self.description_colors) % len(self.label_color_palette)
+                self.description_colors[description] = self.label_color_palette[
+                    color_idx
+                ]
 
-            if len(bbox) != 4:
-                continue
+        # Second pass: draw objects with consistent colors
+        for obj in objects:
+            geometry_type = obj.get("geometry_type", "unknown")
+            description = obj.get("description", "Unknown")
+            color = self.description_colors[description]
 
-            x1, y1, x2, y2 = bbox
-            width = x2 - x1
-            height = y2 - y1
+            # Draw based on geometry type with consistent colors
+            if geometry_type == "bbox_2d":
+                self._draw_bbox_2d(ax, obj, color)
+            elif geometry_type == "square":
+                self._draw_square(ax, obj, color)
+            elif geometry_type == "line":
+                self._draw_line(ax, obj, color)
 
-            # Get color for this label
-            color = self.get_label_color(label)
+    def _draw_bbox_2d(self, ax, obj: Dict, color: str):
+        """Draw rectangular bounding box."""
+        bbox = obj.get("bbox_2d", [])
+        if len(bbox) != 4:
+            return
 
-            # Draw rectangle
-            rect = patches.Rectangle(
-                (x1, y1),
-                width,
-                height,
-                linewidth=2,
-                edgecolor=color,
-                facecolor="none",
-                alpha=0.8,
-            )
-            ax.add_patch(rect)
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
 
-            # Add label text
-            ax.text(
-                x1,
-                y1 - 5,
-                label,
-                fontsize=8,
-                color=color,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-                verticalalignment="top",
-            )
+        # Draw rectangle with geometry-specific style
+        style = self.geometry_styles["bbox_2d"]
+        rect = patches.Rectangle(
+            (x1, y1),
+            width,
+            height,
+            linewidth=style["linewidth"],
+            linestyle=style["linestyle"],
+            edgecolor=color,
+            facecolor="none",
+            alpha=0.8,
+        )
+        ax.add_patch(rect)
 
-    def create_legend(self, fig, bboxes: List[Dict]):
-        """Create a legend showing label colors and counts."""
-        # Count labels
-        label_counts = {}
-        for bbox_info in bboxes:
-            label = bbox_info.get("label", "Unknown")
-            label_counts[label] = label_counts.get(label, 0) + 1
+    def _draw_square(self, ax, obj: Dict, color: str):
+        """Draw quadrilateral (四边形)."""
+        square = obj.get("square", [])
+        if len(square) != 8:
+            return
 
-        # Create legend elements
+        # Convert to coordinate pairs
+        coords = [(square[i], square[i + 1]) for i in range(0, 8, 2)]
+
+        # Create polygon with geometry-specific style
+        style = self.geometry_styles["square"]
+        polygon = patches.Polygon(
+            coords,
+            linewidth=style["linewidth"],
+            linestyle=style["linestyle"],
+            edgecolor=color,
+            facecolor="none",
+            alpha=0.8,
+        )
+        ax.add_patch(polygon)
+
+    def _draw_line(self, ax, obj: Dict, color: str):
+        """Draw line segment (线段)."""
+        line = obj.get("line", [])
+        if len(line) < 4 or len(line) % 2 != 0:
+            return
+
+        # Convert to coordinate pairs
+        coords = [(line[i], line[i + 1]) for i in range(0, len(line), 2)]
+
+        # Extract x and y coordinates
+        x_coords = [coord[0] for coord in coords]
+        y_coords = [coord[1] for coord in coords]
+
+        # Draw line with geometry-specific style
+        style = self.geometry_styles["line"]
+        ax.plot(
+            x_coords,
+            y_coords,
+            color=color,
+            linewidth=style["linewidth"],
+            linestyle=style["linestyle"],
+            alpha=0.8,
+            marker="o",
+            markersize=4,
+        )
+
+    def create_legend(
+        self, fig, objects: List[Dict], show_geometry_legend: bool = True
+    ):
+        """Create a legend showing descriptions and geometry types."""
         legend_elements = []
-        for label in sorted(label_counts.keys()):
-            count = label_counts[label]
-            color = self.get_label_color(label)
+
+        # Group objects by description and count occurrences
+        description_counts = {}
+        for obj in objects:
+            description = obj.get("description", "Unknown")
+            description_counts[description] = description_counts.get(description, 0) + 1
+
+        # Create legend elements for descriptions
+        for description in sorted(description_counts.keys()):
+            count = description_counts[description]
+            color = self.description_colors[description]
             legend_elements.append(
-                patches.Patch(color=color, label=f"{label} ({count})")
+                patches.Patch(
+                    facecolor=color,
+                    alpha=0.3,
+                    edgecolor=color,
+                    label=f"{description} ({count})",
+                )
             )
+
+        if show_geometry_legend:
+            # Add geometry type indicators
+            geometry_labels = {
+                "bbox_2d": "矩形 (Rectangle)",
+                "square": "四边形 (Quadrilateral)",
+                "line": "线段 (Line Segment)",
+            }
+
+            # Add separator in legend
+            legend_elements.append(patches.Patch(color="none", label=""))
+
+            # Add geometry style indicators
+            for geometry_type, label in geometry_labels.items():
+                style = self.geometry_styles[geometry_type]
+                legend_elements.append(
+                    patches.Patch(
+                        facecolor="none",
+                        edgecolor="gray",
+                        linewidth=style["linewidth"],
+                        linestyle=style["linestyle"],
+                        label=label,
+                    )
+                )
 
         # Place legend outside the plot area
         if legend_elements:
@@ -331,57 +426,60 @@ class RawDataVisualizer:
                 bbox_to_anchor=(0.98, 0.5),
                 fontsize=10,
                 framealpha=0.9,
+                title="Objects & Geometry Types",
             )
 
-    def visualize_single_image(
-        self, image_path: str, annotation_path: str, output_dir: str, lang: str = "zh"
+    def visualize_single_sample(
+        self, sample: Dict, output_dir: str, sample_idx: int = 0
     ) -> bool:
         """
-        Visualize a single image with its raw annotations.
+        Visualize a single JSONL sample with its multi-geometry annotations.
 
         Args:
-            image_path: Path to the image file
-            annotation_path: Path to the annotation JSON file
+            sample: JSONL sample dictionary
             output_dir: Output directory for visualization
-            lang: Language preference for labels
+            sample_idx: Sample index for naming
 
         Returns:
             True if successful, False otherwise
         """
+        # Extract image path
+        images = sample.get("images", [])
+        if not images:
+            logger.warning("No images found in sample")
+            return False
+
+        image_path = images[0]  # Use first image
+
         # Load image
-        image_array, image_size = self.load_image_safe(image_path)
+        image_array, _ = self.load_image_safe(image_path)
         if image_array is None:
             return False
 
-        # Load annotation
-        annotation_data = self.load_raw_annotation(annotation_path)
-        if annotation_data is None:
-            return False
-
-        # Extract bboxes
-        bboxes = self.extract_bboxes_from_raw(annotation_data, lang)
-        if not bboxes:
-            logger.warning(f"No bboxes found in {annotation_path}")
+        # Extract objects
+        objects = self.extract_objects_from_sample(sample)
+        if not objects:
+            logger.warning(f"No objects found in sample")
             return False
 
         # Create visualization
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+        fig, ax = plt.subplots(1, 1, figsize=(15, 10))
 
-        # Draw image with bboxes
+        # Draw image with objects
         image_name = Path(image_path).name
-        self.draw_bboxes_on_axis(
+        self.draw_objects_on_axis(
             ax,
             image_array,
-            bboxes,
-            f"Raw Annotations: {image_name} ({len(bboxes)} objects)",
+            objects,
+            f"Multi-Geometry Annotations: {image_name} ({len(objects)} objects)",
         )
 
         # Create legend
-        self.create_legend(fig, bboxes)
+        self.create_legend(fig, objects, SHOW_GEOMETRY_LEGEND)
 
         # Set overall title
         fig.suptitle(
-            f"Raw Data Visualization: {image_name}", fontsize=16, fontweight="bold"
+            f"JSONL Data Visualization: {image_name}", fontsize=16, fontweight="bold"
         )
 
         # Adjust layout to accommodate legend
@@ -389,7 +487,9 @@ class RawDataVisualizer:
 
         # Save visualization
         os.makedirs(output_dir, exist_ok=True)
-        output_filename = f"{Path(image_name).stem}_raw_visualization.png"
+        output_filename = (
+            f"sample_{sample_idx:03d}_{Path(image_name).stem}_visualization.png"
+        )
         output_path = os.path.join(output_dir, output_filename)
 
         plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -398,111 +498,111 @@ class RawDataVisualizer:
         logger.info(f"Saved visualization: {output_path}")
         return True
 
-    def visualize_batch(
-        self,
-        image_annotation_pairs: List[Tuple[str, str]],
-        output_dir: str,
-        lang: str = "zh",
+    def visualize_jsonl_batch(
+        self, samples: List[Dict], output_dir: str, max_samples: int = -1
     ) -> int:
         """
-        Visualize multiple image-annotation pairs.
+        Visualize multiple JSONL samples.
 
         Args:
-            image_annotation_pairs: List of (image_path, annotation_path) tuples
+            samples: List of JSONL sample dictionaries
             output_dir: Output directory for visualizations
-            lang: Language preference for labels
+            max_samples: Maximum number of samples to process (-1 for all)
 
         Returns:
             Number of successful visualizations
         """
         success_count = 0
 
-        for i, (image_path, annotation_path) in enumerate(image_annotation_pairs):
-            logger.info(
-                f"Processing {i + 1}/{len(image_annotation_pairs)}: {image_path}"
-            )
+        # Limit samples if specified
+        if max_samples > 0:
+            samples = samples[:max_samples]
 
-            if self.visualize_single_image(
-                image_path, annotation_path, output_dir, lang
-            ):
+        for i, sample in enumerate(samples):
+            logger.info(f"Processing sample {i + 1}/{len(samples)}")
+
+            if self.visualize_single_sample(sample, output_dir, i):
                 success_count += 1
 
         return success_count
 
 
-def auto_detect_annotation_path(image_path: str, base_dir: str = ".") -> Optional[str]:
-    """Auto-detect annotation file path for a given image path."""
-    image_path_obj = Path(image_path)
-    image_name = image_path_obj.stem  # e.g., "QC-20230216-0000243_120932"
-    image_dir = image_path_obj.parent  # e.g., "ds"
+def find_jsonl_files(base_dir: str = ".") -> List[str]:
+    """Find JSONL files in the base directory."""
+    base_path = Path(base_dir)
+    jsonl_files = []
 
-    # Look for JSON file with same basename in same directory
-    annotation_candidates = [
-        f"{image_name}.json",  # Same basename
-        image_dir / f"{image_name}.json",  # Same directory
-        f"annotations/{image_name}.json",
-        f"labels/{image_name}.json",
-    ]
+    # Look for JSONL files in common locations
+    search_patterns = ["*.jsonl", "data/**/*.jsonl", "**/*.jsonl"]
 
-    for candidate in annotation_candidates:
-        candidate_path = Path(base_dir) / candidate
-        if candidate_path.exists():
-            return str(candidate)
+    for pattern in search_patterns:
+        for jsonl_file in base_path.glob(pattern):
+            if jsonl_file.is_file():
+                jsonl_files.append(str(jsonl_file.relative_to(base_path)))
 
-    return None
+    return sorted(list(set(jsonl_files)))  # Remove duplicates and sort
 
 
 def main():
     """Main entry point using configuration from top of file."""
-    print("🚀 Raw Data Visualization Tool")
-    print(f"📄 Processing {len(IMAGE_PATHS)} images")
+    print("🚀 Multi-Geometry JSONL Visualization Tool")
+    print(f"📄 JSONL file: {JSONL_PATH}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
-    print(f"🌐 Language: {'Chinese' if LANGUAGE == 'zh' else 'English'}")
     print(f"📂 Base directory: {BASE_DIR}")
-
-    # Prepare image-annotation pairs
-    image_annotation_pairs = []
-
-    # Determine which images to process
-    images_to_process = IMAGE_PATHS[:MAX_IMAGES] if MAX_IMAGES > 0 else IMAGE_PATHS
-
-    if ANNOTATION_PATHS:
-        # Use provided annotation paths
-        if len(ANNOTATION_PATHS) != len(images_to_process):
-            logger.error("Number of images and annotations must match")
-            return 1
-
-        image_annotation_pairs = list(zip(images_to_process, ANNOTATION_PATHS))
-    else:
-        # Auto-detect annotation files
-        for image_path in images_to_process:
-            annotation_path = auto_detect_annotation_path(image_path, BASE_DIR)
-
-            if annotation_path:
-                image_annotation_pairs.append((image_path, annotation_path))
-            else:
-                logger.warning(f"No annotation file found for {image_path}")
-
-    if not image_annotation_pairs:
-        logger.error("No valid image-annotation pairs found")
-        return 1
+    print(f"🔢 Max samples: {'All' if MAX_SAMPLES == -1 else MAX_SAMPLES}")
 
     # Initialize visualizer
-    visualizer = RawDataVisualizer(BASE_DIR)
+    visualizer = MultiGeometryVisualizer(BASE_DIR)
+
+    # Load JSONL file
+    jsonl_file_path = JSONL_PATH
+    if not Path(jsonl_file_path).is_absolute():
+        # Try to find the JSONL file
+        if not (Path(BASE_DIR) / jsonl_file_path).exists():
+            print(f"⚠️  JSONL file not found at {jsonl_file_path}")
+            print("🔍 Searching for JSONL files...")
+
+            available_jsonl = find_jsonl_files(BASE_DIR)
+            if available_jsonl:
+                print("📋 Available JSONL files:")
+                for i, jsonl_file in enumerate(available_jsonl):
+                    print(f"   {i + 1}. {jsonl_file}")
+
+                # Use the first one if JSONL_PATH matches any
+                for jsonl_file in available_jsonl:
+                    if Path(jsonl_file).name == Path(JSONL_PATH).name:
+                        jsonl_file_path = jsonl_file
+                        print(f"✅ Using: {jsonl_file_path}")
+                        break
+                else:
+                    # Use the first available one
+                    jsonl_file_path = available_jsonl[0]
+                    print(f"✅ Using first available: {jsonl_file_path}")
+            else:
+                logger.error("No JSONL files found")
+                return 1
+
+    samples = visualizer.load_jsonl_file(jsonl_file_path)
+    if not samples:
+        logger.error("No samples loaded from JSONL file")
+        return 1
+
+    print(f"📊 Loaded {len(samples)} samples")
 
     # Visualize samples
-    success_count = visualizer.visualize_batch(
-        image_annotation_pairs, OUTPUT_DIR, LANGUAGE
-    )
+    success_count = visualizer.visualize_jsonl_batch(samples, OUTPUT_DIR, MAX_SAMPLES)
 
     # Print summary
     print(f"\n{'=' * 60}")
-    print(f"RAW DATA VISUALIZATION SUMMARY")
+    print(f"MULTI-GEOMETRY VISUALIZATION SUMMARY")
     print(f"{'=' * 60}")
-    print(f"Total image-annotation pairs: {len(image_annotation_pairs)}")
+    print(f"Total samples: {len(samples)}")
+    print(
+        f"Processed samples: {min(len(samples), MAX_SAMPLES) if MAX_SAMPLES > 0 else len(samples)}"
+    )
     print(f"✅ Successful visualizations: {success_count}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
-    print(f"🌐 Language: {'Chinese' if LANGUAGE == 'zh' else 'English'}")
+    print(f"🎨 Geometry legend: {'Enabled' if SHOW_GEOMETRY_LEGEND else 'Disabled'}")
     print(f"{'=' * 60}")
 
     return 0

@@ -1,6 +1,6 @@
 # BBU Detection System Architecture
 
-This document provides a comprehensive overview of the BBU detection system architecture, from high-level concepts to detailed component implementations.
+This document provides a comprehensive overview of the BBU detection system architecture, reflecting the current modular refactored codebase structure.
 
 ---
 
@@ -14,10 +14,11 @@ This overview provides a high-level understanding of the BBU detection system ar
 
 #### What This System Does
 The BBU detection system is a specialized vision-language model that:
-- **Detects BBU equipment** in images with high accuracy
-- **Generates natural language descriptions** of detected equipment
-- **Predicts structured coordinates** using innovative coordinate tokens
-- **Supports both English and Chinese** descriptions
+- **Detects BBU equipment** in images with high accuracy using multi-geometry support (bbox, square, line)
+- **Generates natural language descriptions** of detected equipment with hierarchical attributes
+- **Predicts structured coordinates** using coordinate tokens embedded in text sequences
+- **Supports object-oriented training** with flexible equipment type combinations
+- **Processes Chinese BBU annotations** with automatic hierarchical description formatting
 
 #### Key Innovation: Coordinate Token System
 Instead of using traditional regression heads for coordinate prediction, this system embeds coordinates directly into the language sequence:
@@ -29,7 +30,7 @@ Our System: "BBU设备: <|box_start|><coord_10><coord_20><coord_100><coord_200><
 
 ### 🏗️ Architecture Evolution
 
-#### From Monolithic to Modular
+#### From Monolithic to Modular (2025 Refactoring)
 
 **Before (Legacy):**
 ```
@@ -39,12 +40,14 @@ Scattered detection components
 Difficult to debug and extend
 ```
 
-**After (Current):**
+**After (Current Modular Architecture):**
 ```
-Modular components with clear responsibilities
-Domain-specific configuration management
-Centralized training coordination
-Easy to test, debug, and extend
+src/
+├── training/          # Modular training components
+├── models/           # Model management and loading
+├── core/             # Central factories and processors
+├── config/           # Configuration management
+└── utils/            # Utilities and token management
 ```
 
 #### Core Design Principles
@@ -84,63 +87,80 @@ graph TD
 4. **Loss Computation**: Multi-component loss with coordinate, focal, L1, and GIoU components
 5. **Parameter Updates**: Differential learning rates for base model vs coordinate tokens
 
-### 🧩 Core Component Architecture
+### 🧩 Core Component Architecture (2025 Modular Structure)
 
-#### Training System Components
+#### Training System (`src/training/`)
 
-| Component | Purpose | Key Features |
-|-----------|---------|--------------|
-| **TrainingCoordinator** | Orchestrates training | Multi-task coordination, component delegation |
-| **LossManager** | Computes all losses | Coordinate loss, teacher-student splitting |
-| **ParameterManager** | Manages learning rates | Differential rates for coordinate tokens |
-| **BBUTrainer** | Enhanced HF Trainer | Robust logging, validation, checkpointing |
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **BBUTrainer** | `trainer.py` | Enhanced HuggingFace Trainer | Multi-component loss logging, robust validation, teacher-student support |
+| **TrainingCoordinator** | `training_coordinator.py` | Training orchestration | Multi-task coordination, state management, component delegation |
+| **LossManager** | `loss_manager.py` | Multi-task loss computation | LLM loss + coordinate L1 loss, teacher-student splitting |
+| **ParameterManager** | `parameter_manager.py` | Learning rate management | Differential rates for coordinate tokens vs base model |
+| **TrainerFactory** | `trainer_factory.py` | Trainer creation | Factory pattern for different training configurations |
+| **Callbacks** | `callbacks.py` | Training monitoring | Progress tracking, stability monitoring |
+| **Stability** | `stability.py` | Training stability utilities | Gradient monitoring, loss validation |
 
-#### Model System Components
+#### Model System (`src/models/`)
 
-| Component | Purpose | Key Features |
-|-----------|---------|--------------|
-| **Qwen25VLWithDetection** | Main model wrapper | Coordinate token integration, loss computation |
-| **ModelLoader** | Model loading & validation | Patches, compatibility checks |
-| **CoordinateTokenManager** | Coordinate token operations | Soft expectation regression, bbox conversion |
-| **ModelFactory** | Model creation | Configuration-driven instantiation |
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **Qwen25VLWithDetection** | `wrapper.py` | Main model wrapper | Coordinate token support, extended vocabulary, detection capabilities |
+| **ModelLoader** | `model_loader.py` | Unified model loading | Training-inference consistency, automatic patch application |
+| **Patches** | `patches.py` | Model enhancements | mRoPE fix, Flash Attention 2, memory optimization |
 
-#### Data Processing Components
+#### Core System (`src/core/`)
 
-| Component | Purpose | Key Features |
-|-----------|---------|--------------|
-| **DataProcessor** | Dataset creation & validation | BBU-specific processing, teacher-student data |
-| **ChatProcessor** | Format conversion | JSON to chat format with coordinate tokens |
-| **TeacherPool** | Teacher-student learning | High-quality teacher samples management |
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **DataProcessor** | `data_processor.py` | Unified data pipeline | Dataset creation, collator setup, teacher pool integration |
+| **CheckpointManager** | `checkpoint_manager.py` | Model saving/loading | Checkpoint management, recovery utilities |
+
+#### Configuration System (`src/config/`)
+
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **GlobalConfig** | `global_config.py` | Configuration management | Unified config access, validation, type checking |
+
+#### Utilities (`src/utils/`)
+
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **SimpleTokenManager** | `simple_token_manager.py` | Token management | Lightweight token addition, ms-swift inspired approach |
+| **CoordinateTokenManager** | `coordinate_token_manager.py` | Coordinate token operations | Legacy coordinate token handling (still used) |
+| **ResponseParser** | `response_parser.py` | Response parsing | Robust parsing of model outputs |
+| **Prompt** | `prompt.py` | Prompt engineering | BBU-specific prompt templates |
 
 ### 🎯 Coordinate Token Innovation
 
-#### Mathematical Foundation
-The system uses **soft expectation regression** for coordinate prediction:
+#### Current Implementation (2025)
+The system uses **coordinate tokens** embedded directly in text sequences:
 
 ```python
-# Instead of direct regression:
-coordinates = regression_head(features)  # Traditional approach
+# Traditional approach:
+"BBU设备" + regression_head → [10, 20, 100, 200]
 
-# We use soft expectation:
-P(coord_value = v) = softmax(logits_v / temperature)
-expected_coord = Σ(v * P(coord_value = v))  # Our approach
+# Our approach:
+"BBU设备: <|box_start|><coord_10><coord_20><coord_100><coord_200><|box_end|>"
 ```
 
-#### Benefits Over Traditional Approaches
-1. **Smooth Gradients**: Continuous probability distributions
-2. **Uncertainty Modeling**: Full distribution over coordinate values
-3. **Natural Integration**: Coordinates as part of language sequence
-4. **Temperature Control**: Adjustable prediction sharpness
+#### Token System Architecture
+1. **Simple Token Manager**: Lightweight token addition using ms-swift approach
+2. **Extended Vocabulary**: Original vocab + coordinate tokens (0-2047)
+3. **Multi-Geometry Support**: bbox_2d, square (quadrilateral), line (multi-point)
+4. **Hierarchical Descriptions**: Chinese format with comma/slash hierarchy
 
-#### Multi-Component Loss System
+#### Current Loss System (Simplified)
 ```python
+# LossManager computes two main components:
 total_loss = (
-    regular_loss_weight * regular_loss +      # Standard LLM loss
-    coordinate_loss_weight * coordinate_loss + # Soft expectation loss
-    focal_loss_weight * focal_loss +          # Hard example focus
-    l1_loss_weight * l1_loss +               # Geometric accuracy
-    giou_loss_weight * giou_loss             # Intersection over Union
+    llm_loss +           # Standard language modeling loss
+    coordinate_l1_loss   # L1 loss for coordinate accuracy
 )
+
+# Teacher-student differentiation:
+teacher_loss = llm_loss * teacher_ratio
+student_loss = (llm_loss + coordinate_l1_loss) * student_ratio
 ```
 
 ### ⚙️ Configuration Architecture

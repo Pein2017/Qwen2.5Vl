@@ -1,6 +1,6 @@
-# Qwen2.5-VL BBU Fine-tuning Project
+# Qwen2.5-VL Multi-modal AI for Engineering Quality Inspection
 
-This project implements end-to-end fine-tuning of Qwen2.5-VL for BBU (Base-Band Unit) equipment detection and captioning. The system features sophisticated multi-task training with teacher-student learning and DETR-style object detection, supporting both English and Chinese annotations.
+This project implements an end-to-end AI quality inspection system using the Qwen2.5-VL multi-modal vision-language model. The system specializes in BBU (Base-Band Unit) equipment detection and captioning with sophisticated object detection and natural language descriptions.
 
 ## 🚀 Quick Start
 
@@ -40,73 +40,136 @@ python -m src.training.trainer --config configs/base_flat_v2.yaml
 python src/inference.py --model_path path/to/checkpoint --image_path path/to/image.jpg
 ```
 
-## 📋 Project Structure
+## 📋 Project Architecture
+
+The project uses a modular architecture with clear separation of concerns:
 
 ```
-├── data_conversion/           # Data processing pipeline
-│   ├── convert_dataset.sh    # Main pipeline script
-│   ├── unified_processor.py  # Core processing engine
-│   └── utils/                # Processing utilities
-├── src/                      # Training and inference code
-│   ├── training/             # Training system
-│   ├── detection/            # DETR-style detection
-│   ├── models/               # Model management
-│   └── inference.py          # Inference engine
-├── configs/                  # Configuration files
-├── docs/                     # Documentation
-└── eval/                     # Evaluation scripts
+src/
+├── core/                      # Central factory classes and managers
+│   ├── model_factory.py       # Centralized model creation and configuration
+│   ├── data_processor.py      # Unified data processing and dataset creation  
+│   └── checkpoint_manager.py  # Model saving/loading and checkpoint management
+├── config/                    # Configuration system
+│   ├── global_config.py       # Legacy DirectConfig system  
+│   └── domain_configs.py      # Domain-specific configuration classes
+├── training/                  # Modular training components
+│   ├── trainer.py             # Main BBU trainer implementation
+│   ├── training_coordinator.py # Training orchestration and state management
+│   ├── loss_manager.py        # Multi-task loss computation (LM + detection)
+│   ├── parameter_manager.py   # Parameter grouping for differential learning rates
+│   └── callbacks.py           # Training callbacks and monitoring
+├── models/                    # Model architecture and integration
+│   ├── model_loader.py        # Unified model loader
+│   ├── wrapper.py             # Qwen2.5-VL wrapper with coordinate tokens
+│   └── patches.py             # Model patches and optimizations
+├── utils/                     # Support utilities
+│   ├── simple_token_manager.py # Simple token handling system (ms-swift approach)
+│   ├── coordinate_token_manager.py # Coordinate token system
+│   ├── prompt.py              # Prompt templates and conversation formatting
+│   └── response_parser.py     # Output parsing and validation
+├── data.py                    # BBUDataset with multi-geometry support
+├── chat_processor.py          # Conversation building with token integration
+├── teacher_pool.py            # Teacher demonstration management
+└── inference.py               # Production inference with Flash Attention 2
 ```
 
 ## 🎯 Key Features
 
-### Advanced Data Processing
-- **5-Stage Pipeline**: JSON cleaning → Token mapping → Sample processing → Validation → Summary
-- **Multi-Format Support**: Handles both `dataList` and `markResult` JSON formats
-- **Coordinate Transformation**: 3-stage system with EXIF orientation, dimension rescaling, and smart resize
-- **Teacher-Student Selection**: Intelligent teacher pool creation for improved training
+### Multi-modal Vision-Language Integration
 
-### Sophisticated Training System
-- **Multi-Task Learning**: Combined VLM training with object detection
-- **DETR-Style Detection**: Hungarian matching with dynamic loss weighting
-- **Teacher-Student Learning**: Span-based loss splitting for enhanced learning
-- **Model Patches**: mRoPE integration, Flash Attention 2, and visual processing fixes
+- **Dynamic Resolution Processing**: Handles images of different sizes with absolute time encoding
+- **Multi-Geometry Support**: Processes various geometric annotations including:
+  - `bbox_2d`: Standard bounding boxes for BBU equipment and components
+  - `square`: Four-point polygons for arbitrary shape annotations (e.g., labels)
+  - `line`: Multi-point paths for cable/fiber annotations
 
-### Production-Ready Features
-- **Fail-Fast Validation**: Comprehensive error detection and prevention
-- **Unified Configuration**: Type-safe configuration system with environment support
-- **Robust Inference**: Standalone inference engine with batch processing
-- **Comprehensive Logging**: Detailed progress tracking and error reporting
+### Advanced Training System
 
-## 📚 Documentation
+- **Teacher-Student Learning**: Uses demonstration examples to guide model learning
+- **Multi-Task Training**: Combines language modeling and object detection objectives
+- **Simple Token System**: Lightweight token addition using standard HuggingFace infrastructure
+- **Coordinate Tokens**: Special tokens for handling geometric object information
 
-### Getting Started
-- [Getting Started Guide](docs/getting_started.md) - Step-by-step tutorial for new contributors (includes project overview)
-- [Architecture](docs/architecture.md) - Technical architecture and design decisions
+### Data Processing Pipeline
 
-### Data Processing
-- [Data Schema](docs/data_schema.md) - Input/output formats and pipeline details (includes JSON cleaning)
-- [Runbook](docs/runbook.md) - Operational procedures and workflows
+- **Hierarchical Annotations**: Processes tree-like structure of object annotations
+- **Conversation Format**: Converts annotations to natural conversation format
+- **Fail-Fast Validation**: Comprehensive error detection with detailed messages
+- **Multi-Format Support**: Processes both raw JSON and structured JSONL formats
 
-### Training & Models
-- [Configuration Guide](docs/configuration.md) - Parameter settings and optimization
-- [Teacher-Student Learning](docs/advanced/teacher_student.md) - Advanced training techniques
-- [Testing Guide](docs/testing.md) - Testing procedures and validation workflows
+### Optimized Inference Engine
 
-### Troubleshooting
-- [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
-- [Critical Fixes](docs/critical_fixes.md) - Comprehensive bug fixes and solutions (consolidated)
-- [Lessons Learned](docs/lessons_learned.md) - Historical knowledge and pitfalls
+- **Flash Attention 2**: Always-on optimization for efficient inference
+- **KV Cache**: Optimized key-value caching for faster generation
+- **Batch Processing**: Native support for multiple images in a batch
+- **Teacher-Guided Inference**: Optional demonstration examples to guide generation
+
+## 📚 Implementation Details
+
+### Token System
+
+The project implements two complementary token systems:
+
+```python
+# Simple Token Approach (ms-swift inspired)
+"<|box_start|>100, 200, 300, 400<|box_end|> <|object_ref_start|>BBU设备<|object_ref_end|>"
+"<|square_start|>150, 10, 211, 35, 218, 16, 166, 0<|square_end|> <|object_ref_start|>标签<|object_ref_end|>"
+"<|line_start|>579, 1385, 679, 1451, 764, 1444<|line_end|> <|object_ref_start|>光纤<|object_ref_end|>"
+```
+
+### Data Format
+
+The system uses a rich multi-geometry format for representing objects:
+
+```json
+{
+  "images": ["images/QC-20230217-0000279_19621.jpeg"],
+  "objects": [
+    {"bbox_2d": [264, 144, 326, 201], "desc": "螺丝、光纤插头/BBU安装螺丝,显示完整,符合要求"},
+    {"square": [704, 487, 670, 554, 973, 644, 993, 590], "desc": "标签/4G-RRU3-光纤"},
+    {"line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721], "desc": "光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管"}
+  ],
+  "width": 532,
+  "height": 728
+}
+```
+
+### Object Types Supported
+
+The system recognizes the following equipment types:
+
+- **Equipment**: `bbu` (BBU设备), `bbu_shield` (挡风板)
+- **Hardware**: `connect_point` (螺丝、光纤插头), `label` (标签)
+- **Cables**: `fiber` (光纤), `wire` (电线)
+
+### Model Loading
+
+Unified model loading ensures training-inference consistency:
+
+```python
+from src.models.model_loader import load_model_and_processor_unified
+
+model, tokenizer, image_processor = load_model_and_processor_unified(
+    config,
+    for_inference=False,
+    deepspeed_enabled=True
+)
+```
 
 ## 🛠️ Development
 
-### Code Structure
-The project follows a modular architecture with clear separation of concerns:
-- **Data Processing**: Centralized in `data_conversion/` with unified interfaces
-- **Training**: Modular training system in `src/training/` with configurable components
-- **Detection**: DETR-style detection head in `src/detection/` with Hungarian matching
-- **Models**: Unified model management in `src/models/` with patching system
+### Working with the Codebase
+
+The project follows these development principles:
+
+1. **Fail-Fast Validation**: Explicit error reporting rather than silent fallbacks
+2. **Modular Components**: Clear separation of concerns with focused responsibilities
+3. **Unified Configuration**: Type-safe configuration with explicit parameters
+4. **Training-Inference Consistency**: Same model loading and processing pipeline
 
 ### Testing
+
 ```bash
 # Run the test suite
 python -m pytest eval/test_all_evaluations.py
@@ -115,55 +178,32 @@ python -m pytest eval/test_all_evaluations.py
 python data_conversion/simple_validate.py
 ```
 
-### Configuration
-The project uses a sophisticated configuration system supporting:
-- Type-safe configuration with dataclasses
-- Environment variable integration
-- Domain-specific parameter groups
-- Automatic validation and defaults
+### Memory Optimization
 
-## 🔧 Advanced Usage
+The system implements several memory optimization techniques:
 
-### Custom Data Formats
-The pipeline supports extending to new annotation formats by:
-1. Adding format handlers in `data_conversion/core_modules.py`
-2. Updating the unified processor configuration
-3. Adding validation rules in `utils/validators.py`
-
-### Model Customization
-Extend the model system by:
-1. Adding new detection heads in `src/detection/`
-2. Implementing custom loss functions in `src/training/loss_manager.py`
-3. Adding model patches in `src/models/patches.py`
-
-### Performance Optimization
-- **Memory Management**: Gradient checkpointing and mixed precision training
-- **Data Loading**: Optimized collation and batch processing
-- **Inference**: Batch processing and caching for production workloads
+- **Packed Data Collator**: Removes padding for efficient memory usage
+- **Flash Attention**: High-speed attention kernel for improved throughput
+- **Gradient Checkpointing**: Trades computation for memory efficiency
 
 ## 🚨 Important Notes
 
 ### Environment Requirements
-- **Always activate the `ms` conda environment** before running any scripts
-- **Set CUDA_VISIBLE_DEVICES** appropriately for your GPU configuration
-- **Configure HF_HOME** for model cache management
+- **Always use the `ms` conda environment** before running any scripts
+- **Note that the project is located in China** and cannot access foreign websites like GitHub, Google, or HuggingFace
+- **Configure CUDA devices** appropriately for your GPU setup
 
-### Data Pipeline Caveats
-- **Coordinate Systems**: The pipeline handles complex coordinate transformations - see [lessons learned](docs/lessons_learned.md)
-- **Image Formats**: EXIF orientation handling is critical for annotation accuracy
-- **Validation**: Always run pipeline validation before training
-
-### Training Stability
-- **Loss Balancing**: Detection and VLM losses are dynamically weighted
-- **Gradient Clipping**: Implemented to prevent training instability
-- **Checkpointing**: Regular checkpointing with validation metrics
+### Model Capabilities
+- **Multi-Geometry Detection**: Specialized for equipment, components, and cables
+- **Quality Assessment**: Automatically identifies installation issues
+- **Hierarchical Descriptions**: Structured output format for integration with quality systems
 
 ## 📊 Performance
 
-### Benchmarks
-- **Data Processing**: ~1000 images/minute on modern hardware
-- **Training**: Support for multi-GPU training with gradient accumulation
-- **Inference**: Real-time inference on single images, batch processing for datasets
+### Inspection Capabilities
+- **Component Detection**: High accuracy identification of BBU components
+- **Quality Assessment**: Automated verification of installation standards
+- **Documentation Match**: Validation of labels against installation documentation
 
 ### Resource Requirements
 - **GPU Memory**: 24GB+ recommended for training (depends on batch size)
@@ -172,10 +212,10 @@ Extend the model system by:
 
 ## 🤝 Contributing
 
-1. Read the [Getting Started Guide](docs/getting_started.md)
-2. Check the [Architecture Documentation](docs/architecture.md)
-3. Review [Critical Fixes](docs/critical_fixes.md) for known issues
-4. Follow the fail-fast development philosophy
+1. Review the existing code structure before making changes
+2. Follow the fail-fast development philosophy
+3. Prefer refactoring over file duplication
+4. Keep code DRY, transparent, and consistent
 5. Update documentation for any changes
 
 ## 📄 License

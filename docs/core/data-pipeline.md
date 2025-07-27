@@ -1,68 +1,85 @@
-# Data Schema & Conversion Pipeline
+# Data Schema & Conversion Pipeline - V2 Multi-Geometry Format
 
-> **Purpose:** Define the JSONL formats used by the training pipeline and document how raw vendor annotations are converted using the current unified processing system.
+> **Purpose:** Define the V2 JSONL formats with multi-geometry support used by the training pipeline and document how raw vendor annotations are converted using the object-oriented processing system.
+
+> **Migration Status**: **COMPLETE** - Fully migrated from V1 to V2 data format with multi-geometry support (bbox_2d, square, line)
 
 ---
 
-## 1. Current JSONL Format (Training Data)
+## 1. V2 Multi-Geometry JSONL Format (Training Data)
 
-### 1.1 Teacher-Student JSONL Structure
+### 1.1 V2 Multi-Geometry Sample Structure
 ```jsonc
 {
-  "teachers": [
+  "images": ["images/QC-20230217-0000279_19621.jpeg"],
+  "objects": [
     {
-      "images": ["ds_output/img001.jpeg"],
-      "objects": [
-        {
-          "bbox_2d": [x1, y1, x2, y2], 
-          "description": "螺丝连接点/BBU安装螺丝/连接正确",
-          "object_type": "螺丝连接点",
-          "property": "BBU安装螺丝", 
-          "extra_info": "连接正确"
-        }
-      ]
+      "bbox_2d": [264, 144, 326, 201],
+      "desc": "螺丝、光纤插头/BBU安装螺丝,显示完整,符合要求"
+    },
+    {
+      "square": [704, 487, 670, 554, 973, 644, 993, 590],
+      "desc": "标签/4G-RRU3-光纤"
+    },
+    {
+      "line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721],
+      "desc": "光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管"
     }
   ],
-  "student": {
-    "images": ["ds_output/img002.jpeg"],
-    "objects": [
-      {
-        "bbox_2d": [x1, y1, x2, y2],
-        "description": "螺丝连接点/BBU安装螺丝/连接正确",
-        "object_type": "螺丝连接点", 
-        "property": "BBU安装螺丝",
-        "extra_info": "连接正确"
-      }
-    ]
-  }
+  "width": 532,
+  "height": 728
 }
 ```
 
-### 1.2 Data Format Rules
-1. **Coordinates**: `bbox_2d` contains absolute pixel coordinates `[x1, y1, x2, y2]` after 3-stage coordinate transformation
-2. **Descriptions**: Natural language Chinese phrases with structured decomposition
-3. **Teacher Ratio**: 70% of samples include teachers (configurable via `teacher_ratio`)
-4. **Path References**: All image paths reference `ds_output/` directory for consistency
-5. **Field Standardization**: `desc` → `description`, `contentZh` → structured fields
+### 1.2 V2 Geometry Types Supported
+- **`bbox_2d`**: Standard rectangular bounding box `[x1, y1, x2, y2]`
+- **`square`**: Rotated/perspective quadrilateral `[x1, y1, x2, y2, x3, y3, x4, y4]`  
+- **`line`**: Multi-point line/curve `[x1, y1, x2, y2, ..., xN, yN]` (variable length)
+
+### 1.3 V2 Data Format Rules
+1. **Multi-Geometry Coordinates**: Each object has one geometry type (`bbox_2d`, `square`, or `line`) with absolute pixel coordinates after transformation pipeline
+2. **Hierarchical Descriptions**: Chinese descriptions use comma/slash hierarchy: `object_type/attributes,level1,level2/conditional_details`
+3. **Geometry Constraints**: Line objects (fiber/wire) use `line` geometry; equipment/labels use `bbox_2d`/`square`
+4. **Object-Oriented Processing**: Filter training by object types (`bbu`, `label`, `fiber`, etc.) for specialized training
+5. **Image Dimensions**: Include `width` and `height` for coordinate validation and scaling
 
 ### 1.3 Language Support
 - **Chinese Format**: `object_type/property/extra_info` (compact)
 - **English Format**: `object_type:value;property:value` (structured)
 - **Token Mapping**: Automatic Chinese-to-English mapping when enabled
 
-## 2. Current Unified Conversion Pipeline
+## 2. V2 Object-Oriented Conversion Pipeline (Current Architecture)
 
-### 2.1 Pipeline Architecture (5-Stage Process)
+### 2.1 V2 Pipeline Architecture - 5-Stage Processing System
 ```
-Raw Data (ds/) → convert_dataset.sh (Pipeline Manager) → ① JSON Cleaning
-                                                      → ② Token Mapping (Optional)
-                                                      → ③ Unified Processing
-                                                      → ④ Output Validation
-                                                      → ⑤ Summary Generation
-                                                      → Processed Data (data/)
+V2 Raw Data (ds_v2/) → PipelineManager → ① Clean Raw JSON Files
+                                       → ② Apply Token Mapping (optional)
+                                       → ③ Process Samples (UnifiedProcessor)
+                                       → ④ Validate Output
+                                       → ⑤ Generate Summary Report
+                                       → V2 Training Data (data/)
 ```
 
-#### Stage 1: JSON Cleaning Pipeline
+#### Core Pipeline Components
+
+| Component | File | Purpose | Key Features |
+|-----------|------|---------|--------------|
+| **PipelineManager** | `pipeline_manager.py` | Pipeline orchestration | 5-stage processing, error handling, progress tracking |
+| **UnifiedProcessor** | `unified_processor.py` | Core processing engine | Multi-geometry support, object-oriented training |
+| **CoordinateManager** | `coordinate_manager.py` | Coordinate transformations | EXIF handling, smart resize, geometry processing |
+| **FlexibleTaxonomyProcessor** | `flexible_taxonomy_processor.py` | V2 annotation processing | Hierarchical descriptions, attribute extraction |
+
+#### Supported Object Types & Geometries (Object-Oriented Training)
+| Object Type | Chinese Label | Geometry | Usage | Training Combinations |
+|-------------|---------------|----------|-------|----------------------|
+| `bbu` | BBU设备 | `bbox_2d`/`square` | Equipment detection | Individual or combined |
+| `bbu_shield` | 挡风板 | `bbox_2d`/`square` | Shield detection | With bbu for equipment model |
+| `connect_point` | 螺丝、光纤插头 | `bbox_2d`/`square` | Connection hardware | Hardware-focused training |
+| `label` | 标签 | `bbox_2d`/`square` | Text recognition | Text model training |
+| `fiber` | 光纤 | `line` | Fiber cable routing | Cable system training |
+| `wire` | 电线 | `line` | Wire management | With fiber for cable model |
+
+#### Stage 1b: JSON Cleaning Pipeline  
 The `clean_raw_json.py` component addresses data quality issues by:
 
 **Purpose**:
@@ -103,43 +120,54 @@ python data_conversion/clean_raw_json.py input_dir output_dir --lang en
 python data_conversion/clean_raw_json.py input_dir output_dir --lang both
 ```
 
-### 2.2 Pipeline Orchestration
-The pipeline is managed by `pipeline_manager.py` with the following components:
+### 2.2 5-Stage Pipeline Processing Details
 
-| Stage | Component | Responsibility |
-|-------|-----------|---------------|
-| **Stage 1** | `clean_raw_json.py` | Strips unnecessary metadata, preserves essential structure |
-| **Stage 2** | `TokenMapper` (optional) | Maps Chinese terms to English for standardization |
-| **Stage 3** | `unified_processor.py` | Core processing with `SampleExtractor` and `UnifiedProcessor` |
-| **Stage 4** | `DataValidator` | Validates structure, coordinates, and set overlaps |
-| **Stage 5** | `SummaryGenerator` | Creates processing summary and label vocabulary |
+#### Stage 1: Clean Raw JSON Files (`clean_raw_json.py`)
+**Purpose**: Remove unnecessary metadata and optimize file size for processing
 
-### 2.3 Unified Processing System
-The core processing is handled by `unified_processor.py`:
+**What Gets Preserved**:
+- **`info`**: Image dimensions (`width`, `height`, `depth`)
+- **`tagInfo`**: Task metadata (`mode`, `dataId`, `taskId`, `timestamp`)
+- **`version`**: JSON format version
+- **`markResult`**: Complete annotation structure with geometry and properties
 
-```python
-class UnifiedProcessor:
-    """Main orchestrator for the complete data processing workflow"""
-    
-    def process_dataset(self):
-        # Extract samples from cleaned JSON
-        samples = self.sample_extractor.extract_samples()
-        
-        # Apply 3-stage coordinate transformation
-        processed_samples = self.process_samples(samples)
-        
-        # Filter using label hierarchy
-        filtered_samples = self.filter_by_hierarchy(processed_samples)
-        
-        # Split into train/val/teacher sets
-        train, val, teachers = self.split_and_select(filtered_samples)
-        
-        # Generate final JSONL files
-        self.write_outputs(train, val, teachers)
-```
+**What Gets Removed**:
+- Statistical summaries, quality control metadata, workflow tracking
+- Administrative fields not needed for training
+- **Performance Impact**: ~85% file size reduction (24KB → 2-3KB)
 
-### 2.4 3-Stage Coordinate Transformation
-Each bounding box undergoes sophisticated coordinate transformation:
+#### Stage 2: Apply Token Mapping (Optional)
+**Purpose**: Convert Chinese tokens to English equivalents when needed
+- Skipped for Chinese-only processing
+- Uses token mapping files for bilingual support
+
+#### Stage 3: Process Samples (`UnifiedProcessor`)
+**Core Processing Engine** with integrated components:
+
+| Sub-Component | Purpose | Key Features |
+|---------------|---------|--------------|
+| **HierarchicalProcessor** | V2 annotation processing | Chinese-only mode, object type filtering |
+| **ImageProcessor** | Image transformations | EXIF handling, smart resize |
+| **TeacherSelector** | Teacher pool creation | Geometry diversity weighting |
+| **DataSplitter** | Train/validation split | Configurable ratios, seeded splitting |
+
+#### Stage 4: Validate Output
+**Purpose**: Ensure data quality and format compliance
+- File existence and format validation
+- Coordinate range checking
+- Sample count verification
+
+#### Stage 5: Generate Summary Report
+**Purpose**: Provide processing statistics and quality metrics
+- Processing time and throughput
+- Object type distribution
+- Error summary and recommendations
+
+### 2.3 Coordinate Transformation Pipeline (`CoordinateManager`)
+The coordinate transformation system handles multi-geometry processing:
+
+#### 3-Stage Coordinate Transformation
+Each geometry (bbox, square, line) undergoes sophisticated coordinate transformation:
 
 1. **EXIF Orientation Compensation**
    ```python
@@ -162,6 +190,39 @@ Each bounding box undergoes sophisticated coordinate transformation:
    new_size = smart_resize(original_size, factor=28)
    coords = apply_smart_resize_scaling(coords, original_size, new_size)
    ```
+
+#### Multi-Geometry Support
+- **bbox_2d**: `[x1, y1, x2, y2]` - Standard rectangular bounding boxes
+- **square**: `[x1, y1, x2, y2, x3, y3, x4, y4]` - Rotated/perspective quadrilaterals
+- **line**: `[x1, y1, x2, y2, ..., xN, yN]` - Multi-point lines (variable length)
+
+### 2.4 Object-Oriented Training System
+The pipeline supports flexible object type combinations for progressive learning:
+
+#### Training Combinations
+```bash
+# Individual object type training
+OBJECT_TYPES="bbu"           # Equipment detection only
+OBJECT_TYPES="label"         # Text recognition only
+OBJECT_TYPES="fiber"         # Fiber cable routing only
+
+# Combined training
+OBJECT_TYPES="bbu bbu_shield"    # Equipment model
+OBJECT_TYPES="fiber wire"        # Cable system model
+OBJECT_TYPES="full"              # All object types
+```
+
+#### Hierarchical Description Processing
+Chinese descriptions use comma/slash hierarchy format:
+```
+object_type/attributes,level1,level2/conditional_details
+```
+
+Example:
+```
+"螺丝、光纤插头/BBU安装螺丝,显示完整,符合要求"
+"光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管"
+```
 
 ### 2.5 Data Validation and Quality Assurance
 The pipeline includes comprehensive validation:

@@ -84,12 +84,31 @@ class StabilityMetrics:
 
     def is_unstable(self) -> bool:
         """Check if training is becoming unstable."""
-        # Get config with defaults for stability parameters
+        # Get config with explicit validation
         from src.config import get_config
 
         config = get_config()
 
-        # EXPLICIT CONFIG: All stability parameters are required and validated at config load
+        # Validate required stability parameters exist in config
+        required_params = [
+            "max_consecutive_nan",
+            "max_consecutive_zero",
+            "nan_monitoring_window",
+            "max_nan_ratio",
+        ]
+
+        missing_params = []
+        for param in required_params:
+            if not hasattr(config, param):
+                missing_params.append(param)
+
+        if missing_params:
+            raise ValueError(
+                f"Missing required stability parameters in config: {missing_params}. "
+                f"These parameters must be explicitly configured."
+            )
+
+        # Extract stability parameters with explicit validation
         max_consecutive_nan = config.max_consecutive_nan
         max_consecutive_zero = config.max_consecutive_zero
         nan_monitoring_window = config.nan_monitoring_window
@@ -134,10 +153,24 @@ class StabilityMonitor:
         self.logger = logger or get_stability_logger()
         self.metrics = StabilityMetrics()
 
-        # Get config with defaults
+        # Get config with explicit validation
         self.config = get_config()
 
-        # EXPLICIT CONFIG: learning_rate and max_grad_norm are required and validated at config load
+        # Validate required configuration parameters
+        required_params = ["learning_rate", "max_grad_norm"]
+
+        missing_params = []
+        for param in required_params:
+            if not hasattr(self.config, param):
+                missing_params.append(param)
+
+        if missing_params:
+            raise ValueError(
+                f"Missing required stability parameters in config: {missing_params}. "
+                f"These parameters must be explicitly configured."
+            )
+
+        # Store original values for recovery
         self.original_lr = self.config.learning_rate
         self.current_lr = self.original_lr
         self.original_grad_clip = self.config.max_grad_norm
@@ -222,10 +255,26 @@ class StabilityMonitor:
         Returns:
             True if recovery was attempted, False otherwise
         """
-        # EXPLICIT CONFIG: recovery parameters are required and validated at config load
-        nan_recovery_enabled = self.config.nan_recovery_enabled
+        # Validate required configuration parameters
+        required_params = [
+            "nan_recovery_enabled",
+            "learning_rate_reduction_factor",
+            "gradient_clip_reduction_factor",
+        ]
+
+        missing_params = []
+        for param in required_params:
+            if not hasattr(self.config, param):
+                missing_params.append(param)
+
+        if missing_params:
+            raise ValueError(
+                f"Missing required recovery parameters in config: {missing_params}. "
+                f"These parameters must be explicitly configured."
+            )
 
         # Skip recovery if disabled
+        nan_recovery_enabled = self.config.nan_recovery_enabled
         if not nan_recovery_enabled:
             self.logger.info("⚠️ NaN recovery disabled in config - skipping recovery")
             return False
@@ -235,9 +284,8 @@ class StabilityMonitor:
             f"⚠️ Attempting recovery #{self.metrics.recovery_attempts} for training instability"
         )
 
-        # EXPLICIT CONFIG: recovery factors are required and validated at config load
+        # Extract recovery parameters with explicit validation
         learning_rate_reduction_factor = self.config.learning_rate_reduction_factor
-        gradient_clip_reduction_factor = self.config.gradient_clip_reduction_factor
 
         # 1. Reduce learning rate
         if optimizer is not None:

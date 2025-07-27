@@ -96,9 +96,7 @@ class DataProcessor:
 
         # Update coordinate token ranges after tokenizer extension
         if coordinate_tokens_enabled:
-            self.logger.info(
-                "🎯 Updating coordinate token ranges in chat processor..."
-            )
+            self.logger.info("🎯 Updating coordinate token ranges in chat processor...")
             self.chat_processor._update_coordinate_token_ranges()
 
         if coordinate_tokens_enabled:
@@ -134,7 +132,7 @@ class DataProcessor:
         data_config = self._get_data_config()
 
         # Create training dataset
-        train_dataset = BBUDataset(
+        base_train_dataset = BBUDataset(
             data_path=data_config["train_data_path"],
             chat_processor=self.chat_processor,
             teacher_pool_manager=self.teacher_pool_manager,
@@ -144,7 +142,7 @@ class DataProcessor:
         )
 
         # Create evaluation dataset (no teachers)
-        eval_dataset = BBUDataset(
+        base_eval_dataset = BBUDataset(
             data_path=data_config["val_data_path"],
             chat_processor=self.chat_processor,
             teacher_pool_manager=None,  # No teachers for evaluation
@@ -153,10 +151,17 @@ class DataProcessor:
             config=self.config,
         )
 
+        # Return datasets directly (temporarily disable wrapper for debugging)
+        # TODO: Re-enable TrainerCompatibleDataset wrapper after fixing compatibility issues
+        # from src.data import TrainerCompatibleDataset
+        # train_dataset = TrainerCompatibleDataset(base_train_dataset)
+        # eval_dataset = TrainerCompatibleDataset(base_eval_dataset)
+
         self.logger.info(
-            f"✅ Datasets created: Train={len(train_dataset)}, Eval={len(eval_dataset)}"
+            f"✅ Datasets created: Train={len(base_train_dataset)}, Eval={len(base_eval_dataset)}"
         )
-        return train_dataset, eval_dataset
+        self.logger.info("🛡️ Datasets returned directly (wrapper temporarily disabled)")
+        return base_train_dataset, base_eval_dataset
 
     def create_data_collator(self) -> Any:
         """
@@ -169,7 +174,7 @@ class DataProcessor:
 
         collator_type = self.config.collator_type
 
-        data_collator = create_data_collator(self.tokenizer, collator_type)
+        data_collator = create_data_collator(collator_type, self.tokenizer)
         self.logger.info(f"✅ Data collator created: {collator_type}")
         return data_collator
 

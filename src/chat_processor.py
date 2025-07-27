@@ -52,37 +52,62 @@ class ChatProcessor:
             tokenizer: Qwen2.5-VL tokenizer
             image_processor: Qwen2.5-VL image processor
         """
+        # FAIL-FAST: Validate required parameters
+        if tokenizer is None:
+            raise ValueError("tokenizer cannot be None")
+        if image_processor is None:
+            raise ValueError("image_processor cannot be None")
+            
         self.tokenizer = tokenizer
         self.image_processor = image_processor
 
-        # Store data root from passed config
+        # FAIL-FAST: Validate config access
         if "config" in kwargs and kwargs["config"] is not None:
             config = kwargs["config"]
-            self.data_root = Path(config.data_root)
         else:
-            # Fallback to global config if no config passed
-            config = get_config()
-            self.data_root = Path(config.data_root)
+            # Validate global config is initialized
+            try:
+                from src.config import get_config
+                config = get_config()
+            except RuntimeError as e:
+                raise RuntimeError(f"No valid configuration provided and global config not initialized: {e}")
+        
+        # FAIL-FAST: Validate required config attributes
+        if not hasattr(config, "data_root"):
+            raise ValueError("Configuration missing required attribute: data_root")
+            
+        self.data_root = Path(config.data_root)
 
-        # ---------------- Optional kwargs ----------------
+        # ---------------- Required parameters ----------------
+        # FAIL-FAST: coordinate_tokens_enabled must be explicitly provided
+        if "coordinate_tokens_enabled" not in kwargs:
+            raise ValueError(
+                "coordinate_tokens_enabled must be explicitly provided in kwargs"
+            )
+        coordinate_enabled = kwargs["coordinate_tokens_enabled"]
+
+        # ---------------- Optional kwargs with explicit handling ----------------
         # Many call-sites (trainer / inference) pass extra kwargs such as
         # merge_size, max_length, use_training_prompts, language …
         # We keep only what is actually needed to stay compatible.
-        self.use_training_prompts: bool = kwargs.get("use_training_prompts", False)
 
-        # Prefer explicit arg over global config
-        self.language: str = kwargs.get("language", config.language)
+        # use_training_prompts with explicit default
+        self.use_training_prompts = kwargs.get("use_training_prompts", False)
+
+        # FAIL-FAST: Validate language configuration
+        if "language" in kwargs:
+            self.language = kwargs["language"]
+        elif hasattr(config, "language"):
+            self.language = config.language
+        else:
+            raise ValueError("language must be provided in kwargs or config")
 
         # Initialize special tokens (vision-only)
         self.tokens = SpecialTokens()
 
         # Initialize unified coordinate token manager
-        coordinate_enabled = kwargs.get("coordinate_tokens_enabled", None)
-        if coordinate_enabled is None:
-            raise ValueError("coordinate_tokens_enabled must be set in the config file")
-
         if coordinate_enabled:
-            # EXPLICIT CONFIG: No fallback - max_coord_value must be provided
+            # FAIL-FAST: max_coord_value must be provided when coordinate tokens are enabled
             if "max_coord_value" not in kwargs:
                 raise ValueError(
                     "max_coord_value must be provided when coordinate tokens are enabled. "
@@ -93,9 +118,9 @@ class ChatProcessor:
             self.coordinate_config = {
                 "enable_coordinate_tokens": True,
                 "max_coord_value": kwargs["max_coord_value"],
-                "coordinate_loss_weight": 1.0,
-                "regular_loss_weight": 1.0,
-                "soft_expectation_temperature": 1.0,
+                "coordinate_loss_weight": kwargs.get("coordinate_loss_weight", 1.0),
+                "regular_loss_weight": kwargs.get("regular_loss_weight", 1.0),
+                "soft_expectation_temperature": kwargs.get("soft_expectation_temperature", 1.0),
             }
 
             # Initialize placeholders - will be set up later when model is available
@@ -222,7 +247,10 @@ class ChatProcessor:
         messages.append(ChatMessage(role="system", content=self.system_prompt))
 
         # 2) Learning instruction if teachers are present --------------------------------
-        teachers: Sequence[Dict[str, Any]] = sample.get("teachers", [])
+        # FAIL-FAST: Validate sample structure
+        if "teachers" not in sample:
+            raise ValueError("Sample must contain 'teachers' field (can be empty list)")
+        teachers: Sequence[Dict[str, Any]] = sample["teachers"]
 
         if teachers:
             from src.utils.prompt import get_learning_instruction
@@ -245,6 +273,10 @@ class ChatProcessor:
 
         # 3) Teacher examples --------------------------------------------------------------
         for i, teacher in enumerate(teachers):
+            # FAIL-FAST: Validate teacher structure
+            if "objects" not in teacher:
+                raise ValueError(f"Teacher {i} must contain 'objects' field")
+
             # User uploads a teacher example image with clear context
             if self.language == "chinese":
                 if len(teachers) == 1:
@@ -262,13 +294,22 @@ class ChatProcessor:
             messages.append(ChatMessage(role="user", content=user_content))
 
             # Assistant returns detection JSON with learning context
-            objects = teacher.get("objects", [])
+            objects = teacher["objects"]
             sorted_objects = self._sort_objects_by_position(objects)
             assistant_response = self._format_objects_response(sorted_objects)
             messages.append(ChatMessage(role="assistant", content=assistant_response))
 
         # 3) Student target ---------------------------------------------------------------
-        student = sample.get("student", sample)
+        # FAIL-FAST: Validate student structure
+        if "student" not in sample:
+            # If no explicit student field, the sample itself is the student
+            student = sample
+        else:
+            student = sample["student"]
+
+        # FAIL-FAST: Validate student structure
+        if "objects" not in student:
+            raise ValueError("Student must contain 'objects' field")
 
         # Add transitional instruction if teachers were provided
         if teachers:
@@ -284,7 +325,7 @@ class ChatProcessor:
 
         messages.append(ChatMessage(role="user", content=target_content))
 
-        student_objects = student.get("objects", [])
+        student_objects = student["objects"]
         sorted_student_objects = self._sort_objects_by_position(student_objects)
         student_response = self._format_objects_response(sorted_student_objects)
         messages.append(ChatMessage(role="assistant", content=student_response))
@@ -296,10 +337,28 @@ class ChatProcessor:
 
         image_paths: list[str] = []
 
-        for teacher in sample.get("teachers", []):
-            image_paths.extend(teacher.get("images", []))
+        # FAIL-FAST: Validate sample structure
+        if "teachers" not in sample:
+            raise ValueError("Sample must contain 'teachers' field (can be empty list)")
 
-        image_paths.extend(sample.get("student", sample).get("images", []))
+        for teacher in sample["teachers"]:
+            # FAIL-FAST: Validate teacher structure
+            if "images" not in teacher:
+                raise ValueError("Teacher must contain 'images' field")
+            image_paths.extend(teacher["images"])
+
+        # FAIL-FAST: Get student sample with validation
+        if "student" not in sample:
+            # If no explicit student field, the sample itself is the student
+            student = sample
+        else:
+            student = sample["student"]
+
+        # FAIL-FAST: Validate student structure
+        if "images" not in student:
+            raise ValueError("Student must contain 'images' field")
+
+        image_paths.extend(student["images"])
 
         return image_paths
 
@@ -321,25 +380,46 @@ class ChatProcessor:
 
         json_objects = []
         for obj in objects:
+            # FAIL-FAST: Validate object structure - must have at least one geometry type
+            if not any(key in obj for key in ["bbox_2d", "square", "line"]):
+                raise ValueError(
+                    f"Object must contain at least one geometry type (bbox_2d, square, or line): {obj}"
+                )
+
             # Extract geometry data - support multiple formats
             if "bbox_2d" in obj:
+                # FAIL-FAST: Validate description field
+                if "desc" not in obj:
+                    raise ValueError(
+                        f"Object with bbox_2d must contain 'desc' field: {obj}"
+                    )
+
                 json_obj = {
                     "bbox_2d": obj["bbox_2d"],
-                    "label": obj.get("desc", "unknown"),
+                    "label": obj["desc"],
                 }
             elif "square" in obj:
+                # FAIL-FAST: Validate description field
+                if "desc" not in obj:
+                    raise ValueError(
+                        f"Object with square must contain 'desc' field: {obj}"
+                    )
+
                 json_obj = {
                     "square": obj["square"],
-                    "label": obj.get("desc", "unknown"),
+                    "label": obj["desc"],
                 }
             elif "line" in obj:
-                json_obj = {"line": obj["line"], "label": obj.get("desc", "unknown")}
+                # FAIL-FAST: Validate description field
+                if "desc" not in obj:
+                    raise ValueError(
+                        f"Object with line must contain 'desc' field: {obj}"
+                    )
+
+                json_obj = {"line": obj["line"], "label": obj["desc"]}
             else:
-                # Fallback - create empty bbox
-                json_obj = {
-                    "bbox_2d": [0, 0, 0, 0],
-                    "label": obj.get("desc", "unknown"),
-                }
+                # This should never happen due to the initial validation
+                raise ValueError(f"Object has no recognized geometry type: {obj}")
 
             json_objects.append(json_obj)
 
@@ -427,14 +507,26 @@ class ChatProcessor:
         processor do its real preprocessing and read the `image_grid_thw`
         metadata that the model itself will consume during the forward pass.
         """
+        # FAIL-FAST: Validate image processor has required attributes
+        if not hasattr(self.image_processor, "preprocess"):
+            raise AttributeError("Image processor must have 'preprocess' method")
+
         # Run the *actual* preprocessing pipeline for a single image.  This is
         # comparatively cheap (<1 ms for 896×1344) and guarantees the grid is
         # consistent with training/inference.
         processed = self.image_processor.preprocess([image], return_tensors="pt")
 
+        # FAIL-FAST: Validate processed output contains required fields
+        if "image_grid_thw" not in processed:
+            raise ValueError("Image processor did not return required 'image_grid_thw' field")
+        
         grid_thw = processed["image_grid_thw"][0]  # (t, h, w)
 
-        merge_size = getattr(self.image_processor, "merge_size", 2)
+        # FAIL-FAST: Require merge_size to be explicitly defined
+        if not hasattr(self.image_processor, "merge_size"):
+            raise ValueError("Image processor must have 'merge_size' attribute defined")
+        merge_size = self.image_processor.merge_size
+
         tokens_per_merge = merge_size**2
 
         # Number of flattened patch tokens after the spatial-merge step that
@@ -451,20 +543,60 @@ class ChatProcessor:
         The bounding boxes are converted from absolute pixel coordinates to the
         *normalised* \[0,1] range expected by the detection loss.
         """
-        student = sample.get("student", sample)
-        student_objects = student.get("objects", [])
+        # FAIL-FAST: Validate sample and image_dims
+        if not isinstance(sample, dict):
+            raise TypeError(f"Sample must be a dictionary, got {type(sample)}")
+            
+        if not image_dims:
+            return []  # No images, no ground truth objects
+
+        # FAIL-FAST: Validate student structure
+        if "student" not in sample:
+            # If no explicit student field, the sample itself is the student
+            student = sample
+        else:
+            student = sample["student"]
+            if not isinstance(student, dict):
+                raise TypeError(f"Student must be a dictionary, got {type(student)}")
+
+        # FAIL-FAST: Validate student structure
+        if "objects" not in student:
+            raise ValueError("Student must contain 'objects' field")
+        
+        student_objects = student["objects"]
+        if not isinstance(student_objects, list):
+            raise TypeError(f"Objects must be a list, got {type(student_objects)}")
 
         # The last image in the list corresponds to the student.
-        if not image_dims or not student_objects:
+        if not student_objects:
             return []
 
         student_image_dims = image_dims[-1]
         width, height = student_image_dims
 
         normalized_objects: list[GroundTruthObject] = []
-        for obj in student_objects:
+        for i, obj in enumerate(student_objects):
+            # FAIL-FAST: Validate object is a dictionary
+            if not isinstance(obj, dict):
+                raise TypeError(f"Object {i} must be a dictionary, got {type(obj)}")
+                
             # Extract geometry coordinates - support multiple formats
             box = None
+            geometry_type = None
+
+            # FAIL-FAST: Validate object structure - must have at least one geometry type
+            if not any(key in obj for key in ["bbox_2d", "square", "line"]):
+                raise ValueError(
+                    f"Object {i} must contain at least one geometry type (bbox_2d, square, or line): {obj}"
+                )
+
+            # FAIL-FAST: Validate description field
+            if "desc" not in obj:
+                raise ValueError(f"Object {i} must contain 'desc' field: {obj}")
+            desc = obj["desc"]
+            if not isinstance(desc, str):
+                raise TypeError(f"Object {i} description must be a string, got {type(desc)}")
+
             if "bbox_2d" in obj:
                 box = obj["bbox_2d"]
                 geometry_type = "bbox"
@@ -490,50 +622,30 @@ class ChatProcessor:
                     box = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
                     geometry_type = "line"
 
-            desc = obj.get("desc")
+            # FAIL-FAST: Validate box extraction succeeded
+            if box is None:
+                raise ValueError(f"Failed to extract valid geometry from object {i}: {obj}")
 
-            if box is None or desc is None:
-                logger.error(f"Invalid object - missing geometry or description: {obj}")
-                continue  # Skip invalid objects instead of crashing
-
-            # Validate box format and coordinates
+            # FAIL-FAST: Validate box format
             if not (isinstance(box, list) and len(box) == 4):
-                logger.error(f"Invalid box format: {box} for object: {obj}")
-                continue
+                raise ValueError(f"Invalid box format for object {i}: {box}")
 
             # Ensure coordinates are within image bounds
             x1, y1, x2, y2 = box
 
-            # Check for degenerate boxes (zero width or height)
-            if x1 > x2 or y1 > y2:
-                logger.warning(
-                    f"Degenerate box with zero area: {box} for image size {width}x{height}. "
-                    f"Adjusting to minimum valid size."
+            # FAIL-FAST: Check for degenerate boxes (zero width or height)
+            if x1 >= x2 or y1 >= y2:
+                raise ValueError(
+                    f"Degenerate box with zero area for object {i}: {box} for image size {width}x{height}. "
+                    f"Box coordinates must satisfy x1 < x2 and y1 < y2."
                 )
-                # Ensure minimum 1-pixel box
-                if x1 >= x2:
-                    x2 = min(x1 + 1, width)
-                if y1 >= y2:
-                    y2 = min(y1 + 1, height)
 
-            # Check for out-of-bounds coordinates
-            if not (
-                0 <= x1 < width
-                and 0 <= y1 < height
-                and 0 < x2 <= width
-                and 0 < y2 <= height
-            ):
-                logger.warning(
-                    f"Out-of-bounds box: {box} for image size {width}x{height}. "
-                    f"Clamping to image bounds."
+            # FAIL-FAST: Check for out-of-bounds coordinates
+            if not (0 <= x1 < width and 0 <= y1 < height and 0 < x2 <= width and 0 < y2 <= height):
+                raise ValueError(
+                    f"Out-of-bounds box for object {i}: {box} for image size {width}x{height}. "
+                    f"Box coordinates must be within image bounds."
                 )
-                # Clamp coordinates to image bounds
-                x1 = max(0, min(x1, width - 1))
-                y1 = max(0, min(y1, height - 1))
-                x2 = max(x1 + 1, min(x2, width))
-                y2 = max(y1 + 1, min(y2, height))
-
-            box = [x1, y1, x2, y2]
 
             normalized_box = [
                 box[0] / width,

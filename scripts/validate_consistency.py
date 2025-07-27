@@ -105,8 +105,8 @@ def validate_teacher_student_config():
     print(f"   ✅ Student weight: {config.student_loss_weight}")
 
     # Check detection configuration
-    if hasattr(config, "coordinate_tokens_enabled"):
-        print(f"   ✅ Coordinate tokens enabled: {config.coordinate_tokens_enabled}")
+    if hasattr(config, "coordinate_config_enable_coordinate_tokens"):
+        print(f"   ✅ Coordinate tokens enabled: {config.coordinate_config_enable_coordinate_tokens}")
     else:
         print(f"   ⚠️  Detection enabled not set")
 

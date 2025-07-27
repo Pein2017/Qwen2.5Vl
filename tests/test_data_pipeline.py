@@ -201,7 +201,16 @@ class TestDataPipeline(GPUAwareTestCase):
         train_dataset, _ = data_processor.create_datasets()
         collator = create_data_collator("standard", tokenizer)
 
-        self.assertIsInstance(collator, StandardDataCollator)
+        # Check if we got the wrapper or the direct collator
+        from src.data import TrainerCompatibleDataCollator
+
+        if isinstance(collator, TrainerCompatibleDataCollator):
+            # Unwrap to get the actual collator for testing
+            actual_collator = collator.base_collator
+            self.assertIsInstance(actual_collator, StandardDataCollator)
+        else:
+            # Direct collator (wrapper disabled)
+            self.assertIsInstance(collator, StandardDataCollator)
 
         # Test batch collation
         batch_samples = [train_dataset[i] for i in range(min(3, len(train_dataset)))]
@@ -272,7 +281,16 @@ class TestDataPipeline(GPUAwareTestCase):
         train_dataset, _ = data_processor.create_datasets()
         collator = create_data_collator("packed", tokenizer)
 
-        self.assertIsInstance(collator, PackedDataCollator)
+        # Check if we got the wrapper or the direct collator
+        from src.data import TrainerCompatibleDataCollator
+
+        if isinstance(collator, TrainerCompatibleDataCollator):
+            # Unwrap to get the actual collator for testing
+            actual_collator = collator.base_collator
+            self.assertIsInstance(actual_collator, PackedDataCollator)
+        else:
+            # Direct collator (wrapper disabled)
+            self.assertIsInstance(collator, PackedDataCollator)
 
         # Test batch collation
         batch_samples = [train_dataset[i] for i in range(min(3, len(train_dataset)))]
@@ -355,11 +373,11 @@ class TestDataPipeline(GPUAwareTestCase):
 
         # Standard collator
         with self.test_utils.measure_time("Standard collator performance"):
-            standard_batch = standard_collator(batch_samples)
+            _ = standard_collator(batch_samples)
 
         # Packed collator
         with self.test_utils.measure_time("Packed collator performance"):
-            packed_batch = packed_collator(batch_samples)
+            _ = packed_collator(batch_samples)
 
         # Calculate efficiencies
         sequence_lengths = [sample["input_ids"].shape[-1] for sample in batch_samples]

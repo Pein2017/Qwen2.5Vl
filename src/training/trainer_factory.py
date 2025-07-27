@@ -14,6 +14,7 @@ Key Features:
 
 from transformers.training_args import TrainingArguments
 
+from src.config import CoordinateConfig, TrainingConfig
 from src.core import CheckpointManager, DataProcessor
 from src.logger_utils import get_training_logger
 
@@ -37,14 +38,11 @@ def create_trainer_with_coordinator(
     logger = get_training_logger()
     logger.info("🏭 Creating trainer with new coordinator system...")
 
-    # Use explicit configuration if provided, otherwise fall back to global config
+    # Config is required - no fallback system
     if config is None:
-        from src.config import get_config
-
-        config = get_config()
-        logger.info("📄 Using global configuration system (fallback)")
+        raise ValueError("Config must be provided - no fallback system available")
     else:
-        logger.info("📄 Using explicit configuration system")
+        logger.info("📄 Using BBU configuration system")
 
     cfg = config
 
@@ -70,10 +68,18 @@ def create_trainer_with_coordinator(
     logger.info("📦 Creating data collator...")
     data_collator = data_processor.create_data_collator()
 
+    # Create domain configs for training coordinator
+    logger.info("🎯 Creating domain configs...")
+    training_config = TrainingConfig.from_bbu_config(config)
+    coordinate_config = CoordinateConfig.from_bbu_config(config)
+
     # Create training coordinator
     logger.info("🎯 Creating training coordinator...")
     coordinator = TrainingCoordinator(
-        model=model, tokenizer=tokenizer, config_obj=config
+        model=model,
+        tokenizer=tokenizer,
+        training_config=training_config,
+        coordinate_config=coordinate_config,
     )
 
     # Setup training
@@ -121,13 +127,14 @@ def safe_save_model_for_hf_trainer(trainer: BBUTrainer, output_dir: str):
         trainer: The trainer instance
         output_dir: Directory to save the model
     """
+    # Get config from the trainer
+    if hasattr(trainer, "cfg") and trainer.cfg:
+        config = trainer.cfg
+    else:
+        raise RuntimeError("Config not available - trainer not properly initialized")
+
     # Use CheckpointManager for centralized saving logic
-    checkpoint_manager = CheckpointManager()
-
-    # Get model path from explicit config to pass to checkpoint manager
-    from src.config.explicit_config import get_explicit_config
-
-    config = get_explicit_config()
+    checkpoint_manager = CheckpointManager(config)
     model_path = config.model_path
 
     success = checkpoint_manager.save_model_safely(trainer, output_dir, model_path)

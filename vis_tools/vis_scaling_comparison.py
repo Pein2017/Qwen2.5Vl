@@ -18,18 +18,18 @@ SAMPLE_ID = "QC-20230225-0000414_19823"
 
 # Input paths
 TRAINING_DATA_PATH = "data/all_samples.jsonl"  # Training data with rescaled annotations
-RAW_CLEANED_DIR = "ds_output"                  # Directory with raw cleaned images and JSON
-BASE_DIR = "."                                 # Base directory
+RAW_CLEANED_DIR = "ds_output"  # Directory with raw cleaned images and JSON
+BASE_DIR = "."  # Base directory
 
 # Output settings
-OUTPUT_DIR = "scaling_comparisons"             # Where to save visualizations
+OUTPUT_DIR = "scaling_comparisons"  # Where to save visualizations
 OUTPUT_FILENAME = f"{SAMPLE_ID}_training_vs_raw.jpeg"  # Output file name
 
 # Visualization settings
-FIGURE_SIZE = (20, 10)                        # Figure size (width, height)
-DPI = 300                                     # Output resolution
-FONT_SIZE_TITLE = 14                          # Title font size
-FONT_SIZE_LABEL = 8                           # Label font size
+FIGURE_SIZE = (20, 10)  # Figure size (width, height)
+DPI = 300  # Output resolution
+FONT_SIZE_TITLE = 14  # Title font size
+FONT_SIZE_LABEL = 8  # Label font size
 
 # ============================================================================
 # IMPLEMENTATION - No need to modify below this line
@@ -49,9 +49,6 @@ from matplotlib import rcParams
 from matplotlib.font_manager import FontProperties, fontManager
 from PIL import Image
 
-# Configure UTF-8 encoding
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -79,7 +76,7 @@ class TrainingVsRawVisualizer:
         # Fixed color palette for consistent visualization
         self.color_palette = [
             "#FF6B6B",  # Red - for 螺丝连接点
-            "#4ECDC4",  # Teal - for 标签贴纸  
+            "#4ECDC4",  # Teal - for 标签贴纸
             "#45B7D1",  # Blue - for bbu基带处理单元
             "#96CEB4",  # Green - for 挡风板
             "#FFEAA7",  # Yellow - for 线缆
@@ -97,11 +94,11 @@ class TrainingVsRawVisualizer:
         # Pre-assign colors to main object types for consistency
         self.fixed_label_colors = {
             "螺丝连接点": "#FF6B6B",
-            "标签贴纸": "#4ECDC4", 
+            "标签贴纸": "#4ECDC4",
             "bbu基带处理单元": "#45B7D1",
             "挡风板": "#96CEB4",
             "线缆": "#FFEAA7",
-            "机柜空间": "#DDA0DD"
+            "机柜空间": "#DDA0DD",
         }
         self.label_to_color = {}
 
@@ -111,10 +108,12 @@ class TrainingVsRawVisualizer:
         for main_type, color in self.fixed_label_colors.items():
             if main_type in label:
                 return color
-        
+
         # For other labels, assign consistently
         if label not in self.label_to_color:
-            used_colors = set(self.fixed_label_colors.values()) | set(self.label_to_color.values())
+            used_colors = set(self.fixed_label_colors.values()) | set(
+                self.label_to_color.values()
+            )
             available_colors = [c for c in self.color_palette if c not in used_colors]
             if available_colors:
                 self.label_to_color[label] = available_colors[0]
@@ -127,12 +126,12 @@ class TrainingVsRawVisualizer:
     def load_training_sample(self, sample_id: str, jsonl_path: str) -> Optional[Dict]:
         """Load training sample data from JSONL file."""
         try:
-            with open(jsonl_path, 'r', encoding='utf-8') as f:
+            with open(jsonl_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    
+
                     try:
                         sample = json.loads(line)
                         # Check if this sample contains our target image
@@ -143,10 +142,10 @@ class TrainingVsRawVisualizer:
                                 return sample
                     except json.JSONDecodeError:
                         continue
-            
+
             logger.error(f"Training sample not found for {sample_id}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Failed to load training data from {jsonl_path}: {e}")
             return None
@@ -155,17 +154,17 @@ class TrainingVsRawVisualizer:
         """Load raw cleaned data from ds_output JSON file."""
         try:
             json_path = Path(raw_dir) / f"{sample_id}.json"
-            
+
             if not json_path.exists():
                 logger.error(f"Raw cleaned JSON not found: {json_path}")
                 return None
-            
-            with open(json_path, 'r', encoding='utf-8') as f:
+
+            with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             logger.info(f"Loaded raw cleaned data for {sample_id}")
             return data
-            
+
         except Exception as e:
             logger.error(f"Failed to load raw cleaned data: {e}")
             return None
@@ -173,49 +172,51 @@ class TrainingVsRawVisualizer:
     def extract_objects_from_raw_data(self, raw_data: Dict) -> List[Dict]:
         """Extract objects from raw cleaned data format."""
         objects = []
-        
+
         if "markResult" in raw_data and "features" in raw_data["markResult"]:
             features = raw_data["markResult"]["features"]
             logger.info(f"Processing {len(features)} raw features")
-            
+
             for i, feature in enumerate(features):
                 try:
                     # Extract geometry coordinates
                     geometry = feature.get("geometry", {})
                     if geometry.get("type") != "ExtentPolygon":
                         continue
-                    
+
                     coordinates = geometry.get("coordinates", [])
                     if not coordinates or len(coordinates) < 4:
                         continue
-                    
+
                     # Convert polygon to bbox
                     x_coords = [pt[0] for pt in coordinates]
                     y_coords = [pt[1] for pt in coordinates]
                     bbox = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
-                    
+
                     # Extract Chinese label
                     properties = feature.get("properties", {})
                     content_zh = properties.get("contentZh", {})
-                    
+
                     label = "Unknown"
                     # Try different label keys
                     for key in ["标签贴纸", "标签"]:
                         if key in content_zh and content_zh[key]:
                             label = content_zh[key]
                             break
-                    
+
                     objects.append({"bbox_2d": bbox, "desc": label})
-                    logger.debug(f"Raw feature {i+1}: {label}")
-                    
+                    logger.debug(f"Raw feature {i + 1}: {label}")
+
                 except Exception as e:
                     logger.warning(f"Failed to process raw feature {i}: {e}")
                     continue
-        
+
         logger.info(f"Extracted {len(objects)} objects from raw data")
         return objects
 
-    def load_image_safe(self, image_path: str) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]:
+    def load_image_safe(
+        self, image_path: str
+    ) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]:
         """Safely load image and return array and dimensions."""
         try:
             abs_path = (
@@ -237,7 +238,9 @@ class TrainingVsRawVisualizer:
             logger.error(f"Failed to load image {image_path}: {e}")
             return None, None
 
-    def draw_bboxes_on_axis(self, ax, image_array: np.ndarray, objects: List[Dict], title: str):
+    def draw_bboxes_on_axis(
+        self, ax, image_array: np.ndarray, objects: List[Dict], title: str
+    ):
         """Draw bounding boxes on a matplotlib axis."""
         ax.imshow(image_array)
         ax.set_title(title, fontsize=FONT_SIZE_TITLE, fontweight="bold", pad=10)
@@ -270,7 +273,9 @@ class TrainingVsRawVisualizer:
             ax.add_patch(rect)
 
             # Add numbered label
-            label_text = f"{i+1}. {label[:25]}..." if len(label) > 25 else f"{i+1}. {label}"
+            label_text = (
+                f"{i + 1}. {label[:25]}..." if len(label) > 25 else f"{i + 1}. {label}"
+            )
             ax.text(
                 x1,
                 y1 - 8,
@@ -279,88 +284,92 @@ class TrainingVsRawVisualizer:
                 color=color,
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.9),
                 verticalalignment="top",
-                fontweight="bold"
+                fontweight="bold",
             )
 
-    def create_comparison_visualization(self, sample_id: str, training_jsonl: str, raw_dir: str, output_dir: str) -> bool:
+    def create_comparison_visualization(
+        self, sample_id: str, training_jsonl: str, raw_dir: str, output_dir: str
+    ) -> bool:
         """Create training vs raw cleaned comparison visualization."""
         logger.info(f"Creating comparison visualization for {sample_id}")
-        
+
         # Load training data
         training_sample = self.load_training_sample(sample_id, training_jsonl)
         if not training_sample:
             return False
-        
+
         # Load raw cleaned data
         raw_data = self.load_raw_cleaned_data(sample_id, raw_dir)
         if not raw_data:
             return False
-        
+
         # Extract objects
         training_objects = training_sample.get("objects", [])
         raw_objects = self.extract_objects_from_raw_data(raw_data)
-        
+
         if not training_objects and not raw_objects:
             logger.warning("No objects found in either training or raw data")
             return False
-        
+
         # Get image paths and dimensions
         training_images = training_sample.get("images", [])
         if not training_images:
             logger.error("No training images found")
             return False
-        
+
         training_image_path = training_images[0]
         training_width = training_sample.get("width", 0)
         training_height = training_sample.get("height", 0)
-        
+
         # Raw cleaned image path
         raw_image_path = f"{raw_dir}/{sample_id}.jpeg"
-        
+
         # Load images
         raw_image, raw_size = self.load_image_safe(raw_image_path)
         training_image, _ = self.load_image_safe(training_image_path)
-        
-        if raw_image is None or training_image is None:
-            logger.error("Failed to load images")
+
+        if raw_image is None or training_image is None or raw_size is None:
+            logger.error("Failed to load images or get valid dimensions")
             return False
-        
+
         # Create figure with two subplots
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=FIGURE_SIZE)
-        
+
         # Draw raw cleaned image with raw annotations
         self.draw_bboxes_on_axis(
             ax1,
             raw_image,
             raw_objects,
-            f'Raw Cleaned ({raw_size[0]}×{raw_size[1]})\n{len(raw_objects)} objects with polished annotations'
+            f"Raw Cleaned ({raw_size[0]}×{raw_size[1]})\n{len(raw_objects)} objects with polished annotations",
         )
-        
+
         # Draw training rescaled image with training annotations
         self.draw_bboxes_on_axis(
             ax2,
             training_image,
             training_objects,
-            f'Training Rescaled ({training_width}×{training_height})\n{len(training_objects)} objects ready for training'
+            f"Training Rescaled ({training_width}×{training_height})\n{len(training_objects)} objects ready for training",
         )
-        
+
         # Set overall title
-        fig.suptitle(f'Training vs Raw Cleaned Comparison: {sample_id}', fontsize=16, fontweight='bold')
-        
+        fig.suptitle(
+            f"Training vs Raw Cleaned Comparison: {sample_id}",
+            fontsize=16,
+            fontweight="bold",
+        )
+
         # Create legend with all unique labels
         all_labels = set()
         for obj in raw_objects + training_objects:
             all_labels.add(obj.get("desc", "Unknown"))
-        
+
         if all_labels:
             legend_elements = []
             for label in sorted(all_labels):
                 color = self.get_label_color(label)
                 display_label = label[:30] + "..." if len(label) > 30 else label
-                legend_elements.append(
-                    patches.Patch(color=color, label=display_label)
-                )
-            
+                legend_elements.append(patches.Patch(color=color, label=display_label))
+
             # Place legend on the right side
             fig.legend(
                 handles=legend_elements,
@@ -369,25 +378,29 @@ class TrainingVsRawVisualizer:
                 fontsize=8,
                 framealpha=0.9,
                 title="Object Types",
-                title_fontsize=10
+                title_fontsize=10,
             )
-        
+
         # Adjust layout
-        plt.subplots_adjust(left=0.05, right=0.85, top=0.92, bottom=0.08, hspace=0.3, wspace=0.1)
-        
+        plt.subplots_adjust(
+            left=0.05, right=0.85, top=0.92, bottom=0.08, hspace=0.3, wspace=0.1
+        )
+
         # Save visualization
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, OUTPUT_FILENAME)
-        
-        plt.savefig(output_path, dpi=DPI, bbox_inches='tight', format='jpeg', facecolor='white')
+
+        plt.savefig(
+            output_path, dpi=DPI, bbox_inches="tight", format="jpeg", facecolor="white"
+        )
         plt.close()
-        
+
         logger.info(f"✅ Saved comparison visualization: {output_path}")
-        
+
         # Print summary
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"TRAINING VS RAW CLEANED COMPARISON")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"Sample ID: {sample_id}")
         print(f"")
         print(f"Raw Cleaned:")
@@ -400,10 +413,18 @@ class TrainingVsRawVisualizer:
         print(f"  Objects: {len(training_objects)}")
         print(f"  Format: Final training data")
         print(f"")
-        print(f"Scale factors: x={training_width/raw_size[0]:.4f}, y={training_height/raw_size[1]:.4f}")
+
+        # Only print scale factors if we have valid dimensions
+        if raw_size and training_width > 0 and training_height > 0:
+            print(
+                f"Scale factors: x={training_width / raw_size[0]:.4f}, y={training_height / raw_size[1]:.4f}"
+            )
+        else:
+            print("Scale factors: Cannot calculate (missing dimensions)")
+
         print(f"Output: {output_path}")
-        print(f"{'='*80}")
-        
+        print(f"{'=' * 80}")
+
         return True
 
 
@@ -414,27 +435,24 @@ def main():
     print(f"📂 Raw cleaned data: {RAW_CLEANED_DIR}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
     print("")
-    
+
     # Validate input paths
     if not os.path.exists(TRAINING_DATA_PATH):
         logger.error(f"Training data file not found: {TRAINING_DATA_PATH}")
         return 1
-    
+
     if not os.path.exists(RAW_CLEANED_DIR):
         logger.error(f"Raw cleaned directory not found: {RAW_CLEANED_DIR}")
         return 1
-    
+
     # Initialize visualizer
     visualizer = TrainingVsRawVisualizer(BASE_DIR)
-    
+
     # Create comparison visualization
     success = visualizer.create_comparison_visualization(
-        SAMPLE_ID, 
-        TRAINING_DATA_PATH, 
-        RAW_CLEANED_DIR, 
-        OUTPUT_DIR
+        SAMPLE_ID, TRAINING_DATA_PATH, RAW_CLEANED_DIR, OUTPUT_DIR
     )
-    
+
     if success:
         print(f"🎉 Visualization completed successfully!")
         print(f"📁 Check output: {OUTPUT_DIR}/{OUTPUT_FILENAME}")

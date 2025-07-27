@@ -10,7 +10,7 @@ import logging
 import os
 import shutil
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
 import matplotlib.patches as patches
@@ -30,7 +30,9 @@ INPUT_FILE = "exp_det_coordinates/715-det_coordinates/val/inference/predictions.
 OUTPUT_DIR = "715-det-coordinates-val"
 BASE_PATH = "."
 MAX_SAMPLES = None  # Set to a number to limit samples, or None for all
-SAMPLE_INDICES = None  # Set to list of indices [0, 1, 2, 5] or None for all
+SAMPLE_INDICES: Optional[List[int]] = (
+    None  # Set to list of indices [0, 1, 2, 5] or None for all
+)
 #
 # Examples:
 # - Process all samples: SAMPLE_INDICES = None, MAX_SAMPLES = None
@@ -186,7 +188,9 @@ def parse_bbox_data(bbox_str: str) -> List[Dict[str, Any]]:
     return objs
 
 
-def load_image_safe(image_path: str, base_path: str = ".") -> Tuple[np.ndarray, bool]:
+def load_image_safe(
+    image_path: str, base_path: str = "."
+) -> Tuple[Optional[np.ndarray], bool]:
     """
     Safely load image with fallback options.
 
@@ -270,20 +274,19 @@ def draw_bboxes(ax, bbox_data: List[Dict], color_map: Dict[str, str], title: str
         )
 
 
-def create_legend(
-    fig, color_map: Dict[str, str], bbox_counts: Dict[str, Tuple[int, int]]
-):
+def create_legend(fig, color_map: Dict[str, str], bbox_counts: Dict[str, List[int]]):
     """
     Create a legend showing label colors and counts.
 
     Args:
         fig: Matplotlib figure
         color_map: Mapping from label to color
-        bbox_counts: Mapping from label to (ground_truth_count, prediction_count)
+        bbox_counts: Mapping from label to [ground_truth_count, prediction_count]
     """
     legend_elements = []
     for label in sorted(color_map.keys()):
-        gt_count, pred_count = bbox_counts.get(label, (0, 0))
+        counts = bbox_counts.get(label, [0, 0])
+        gt_count, pred_count = counts[0], counts[1]
         legend_label = f"{label} (GT: {gt_count}, Pred: {pred_count})"
         legend_elements.append(
             patches.Patch(color=color_map[label], label=legend_label)
@@ -426,7 +429,7 @@ def main():
     print(f"✅ Loaded {len(samples)} samples")
 
     # Determine which samples to process
-    if SAMPLE_INDICES:
+    if SAMPLE_INDICES and isinstance(SAMPLE_INDICES, list):
         indices = SAMPLE_INDICES
         samples_to_process = [samples[i] for i in indices if 0 <= i < len(samples)]
         print(f"📋 Processing specific samples: {indices}")

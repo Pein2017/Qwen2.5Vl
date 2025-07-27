@@ -1,52 +1,131 @@
-# Core Components API Reference
+# Core Components API Reference (2025 Modular Architecture)
 
-Quick reference for essential APIs in `src/core/`, `src/models/`, `src/training/`, and `src/utils/`.
+Quick reference for essential APIs in the current modular structure: `src/training/`, `src/models/`, `src/core/`, `src/config/`, and `src/utils/`.
 
-## 🏭 Core Factories & Processors
+## 🏋️ Training System (`src/training/`)
 
-### DataProcessor (`src/core/data_processor.py`)
+### BBUTrainer (`src/training/trainer.py`)
 ```python
-# Quick Setup
-processor = DataProcessor(tokenizer, image_processor)
-train_ds, eval_ds = processor.create_datasets()
-collator = processor.create_data_collator()
+# Enhanced HuggingFace Trainer with multi-component loss logging
+from src.training.trainer import BBUTrainer
 
-# One-liner
-train_ds, eval_ds, collator = DataProcessor.create_datasets_and_collator(tokenizer, image_processor)
+trainer = BBUTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    data_collator=data_collator,
+    cfg=config,  # DirectConfig instance
+    image_processor=image_processor,
+    training_coordinator=coordinator  # Optional
+)
+
+# Train with automatic loss component tracking
+trainer.train()
 ```
 
-**Key Config**: `train_data_path`, `val_data_path`, `coordinate_tokens_enabled`
+**Key Features**: Multi-component loss logging, teacher-student support, robust validation
 
-### CheckpointManager (`src/core/checkpoint_manager.py`)
+### TrainingCoordinator (`src/training/training_coordinator.py`)
 ```python
-# Save model safely
-manager = CheckpointManager()
-success = manager.save_model_safely(trainer, "/path/to/checkpoint")
+# Training orchestration for multi-task learning
+from src.training.training_coordinator import TrainingCoordinator
 
-# Validate checkpoint
-is_valid = manager.validate_checkpoint("/path/to/checkpoint")
-info = manager.get_checkpoint_info("/path/to/checkpoint")
+coordinator = TrainingCoordinator(
+    model=model,
+    tokenizer=tokenizer,
+    config_obj=config
+)
+coordinator.setup_training()
 ```
 
-**Key Features**: HF compatibility, coordinate token extensions, integrity validation
+**Key Features**: Multi-task coordination, state management, component delegation
 
-## 🤖 Model Components
+### LossManager (`src/training/loss_manager.py`)
+```python
+# Multi-task loss computation
+from src.training.loss_manager import LossManager
+
+loss_manager = LossManager(
+    tokenizer=tokenizer,
+    model=model,
+    teacher_loss_weight=0.3,
+    student_loss_weight=1.0
+)
+
+# Compute losses
+total_loss, loss_components = loss_manager.compute_total_loss(inputs, model_outputs)
+```
+
+**Key Features**: LLM + coordinate L1 loss, teacher-student splitting
+
+### TrainerFactory (`src/training/trainer_factory.py`)
+```python
+# Factory pattern for trainer creation
+from src.training.trainer_factory import create_trainer_with_coordinator
+
+trainer = create_trainer_with_coordinator(training_args)
+```
+
+**Key Features**: Unified trainer creation, automatic component setup
+
+## 🤖 Model System (`src/models/`)
+
+### ModelLoader (`src/models/model_loader.py`)
+```python
+# Unified model loading for training and inference
+from src.models.model_loader import load_model_and_processor_unified
+
+model, tokenizer, image_processor = load_model_and_processor_unified(
+    model_path=config.model_path,
+    for_inference=False,
+    attn_implementation=config.attn_implementation
+)
+```
+
+**Key Features**: Training-inference consistency, automatic token initialization, patch application
 
 ### Qwen25VLWithDetection (`src/models/wrapper.py`)
 ```python
-# Load with coordinate support
-model = Qwen25VLWithDetection.from_pretrained(
-    model_path="/path/to/model",
-    tokenizer=tokenizer,
-    coordinate_config=coord_config
-)
+# Main model wrapper with detection capabilities
+# (Usually created automatically by ModelLoader)
 
-# Forward pass
+# Forward pass with coordinate token support
 outputs = model(**inputs)  # Auto-detects coordinate vs standard mode
-text = model.generate(**kwargs)
 ```
 
-**Key Features**: Auto vocabulary extension, coordinate loss computation, pretrained weight preservation
+**Key Features**: Extended vocabulary, coordinate token support, multi-geometry handling
+
+### Patches (`src/models/patches.py`)
+```python
+# Applied automatically by ModelLoader
+# Includes: mRoPE fix, Flash Attention 2, memory optimization
+```
+
+## 🏭 Core System (`src/core/`)
+
+### DataProcessor (`src/core/data_processor.py`)
+```python
+# Unified data processing pipeline
+from src.core.data_processor import DataProcessor
+
+processor = DataProcessor(tokenizer, image_processor, model)
+train_dataset, eval_dataset = processor.create_datasets()
+data_collator = processor.create_data_collator()
+```
+
+**Key Features**: Dataset creation, collator setup, teacher pool integration
+
+### CheckpointManager (`src/core/checkpoint_manager.py`)
+```python
+# Model saving and loading utilities
+from src.core.checkpoint_manager import CheckpointManager
+
+manager = CheckpointManager()
+success = manager.save_model_safely(trainer, "/path/to/checkpoint")
+```
+
+**Key Features**: Checkpoint management, recovery utilities
 
 ## 🎯 Training Orchestration
 

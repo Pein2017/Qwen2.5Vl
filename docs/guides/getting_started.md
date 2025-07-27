@@ -1,9 +1,8 @@
-# Getting Started Guide
+# Getting Started Guide (2025 Modular Architecture)
 
-This guide provides step-by-step instructions for new contributors to get up and running with the Qwen2.5-VL BBU fine-tuning project.
+This guide provides step-by-step instructions for new contributors to get up and running with the Qwen2.5-VL BBU fine-tuning project using the current modular architecture.
 
 ## Prerequisites
-
 
 ### Network Considerations
 - This project is designed for use in China and cannot access foreign websites like GitHub, Google, or HuggingFace directly
@@ -40,10 +39,15 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, De
 python -c "import transformers, PIL, numpy, torch; print('All packages available')"
 ```
 
-## Step 2: Understanding the Project
+## Step 2: Understanding the Current Architecture
 
-### 2.1 Project Overview (30-Second TL;DR)
-We fine-tune **Qwen-2.5-VL-3B** end-to-end for *simultaneous* dense object detection **and** captioning in BBU rooms. A modular, coordinator-based training system has replaced the original monolithic script, providing better structure and maintainability while remaining fully backward compatible.
+### 2.1 Project Overview (2025 Edition)
+We fine-tune **Qwen-2.5-VL-7B** end-to-end for *simultaneous* multi-geometry object detection **and** captioning in BBU rooms. The system now features a **modular architecture** with clear separation of concerns:
+
+- **Training System** (`src/training/`): BBUTrainer, TrainingCoordinator, LossManager
+- **Model System** (`src/models/`): Unified model loading, patches, wrapper
+- **Data Processing** (`data_conversion/`): 5-stage pipeline with object-oriented training
+- **Configuration** (`src/config/`): Unified DirectConfig system
 
 ### 2.2 Canonical Data Schema
 The project uses a teacher-student training format with this structure:

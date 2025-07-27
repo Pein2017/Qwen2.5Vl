@@ -17,7 +17,6 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.config import get_config
 from src.logger_utils import get_data_logger
 
 
@@ -43,16 +42,45 @@ class TeacherPoolManager:
             FileNotFoundError: If the teacher pool file doesn't exist
             ValueError: If the teacher pool file is empty or contains invalid data
         """
+        # FAIL-FAST: Validate teacher_pool_file
+        if not teacher_pool_file:
+            raise ValueError("teacher_pool_file cannot be empty")
+
         self.teacher_pool_file = Path(teacher_pool_file)
-        self.data_root = Path(data_root) if data_root else None
+
+        # FAIL-FAST: Validate teacher_pool_file exists
+        if not self.teacher_pool_file.exists():
+            raise FileNotFoundError(f"Teacher pool file not found: {teacher_pool_file}")
+        if not self.teacher_pool_file.is_file():
+            raise ValueError(f"Teacher pool path is not a file: {teacher_pool_file}")
+
+        # Validate data_root if provided
+        if data_root:
+            data_root_path = Path(data_root)
+            if not data_root_path.exists():
+                raise FileNotFoundError(f"Data root directory not found: {data_root}")
+            if not data_root_path.is_dir():
+                raise ValueError(f"Data root is not a directory: {data_root}")
+            self.data_root = data_root_path
+        else:
+            self.data_root = None
 
         # Load teacher samples from teacher_pool.jsonl (already clean format)
         self.teacher_samples = self._load_teacher_samples_from_jsonl()
 
+        # FAIL-FAST: Validate teacher samples were loaded
+        if not self.teacher_samples:
+            raise ValueError(
+                f"No valid teacher samples loaded from {teacher_pool_file}"
+            )
+
         # Derive image path list for convenience
-        self.teacher_image_paths = [
-            sample["images"][0] for sample in self.teacher_samples
-        ]
+        try:
+            self.teacher_image_paths = [
+                sample["images"][0] for sample in self.teacher_samples
+            ]
+        except (KeyError, IndexError) as e:
+            raise ValueError(f"Invalid teacher sample structure: {e}")
 
         logger.info("✅ TeacherPoolManager initialized:")
         logger.info(f"   Teacher pool file: {teacher_pool_file}")
@@ -201,18 +229,35 @@ def create_teacher_pool_manager(config=None) -> TeacherPoolManager:
         ValueError: If teacher_pool_file is not specified in config
         Various exceptions from TeacherPoolManager initialization
     """
+    # FAIL-FAST: Validate config is available
     if config is None:
-        config = get_config()
+        try:
+            from src.config import get_config
 
-    # Get teacher pool file path from config
-    if not hasattr(config, "teacher_pool_file") or not config.teacher_pool_file:
+            config = get_config()
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"No valid configuration provided and global config not initialized: {e}"
+            )
+
+    # FAIL-FAST: Validate required config attributes
+    if not hasattr(config, "teacher_pool_file"):
         raise ValueError("No teacher_pool_file specified in config")
+    if not config.teacher_pool_file:
+        raise ValueError("teacher_pool_file in config cannot be empty")
 
-    # Create teacher pool manager
-    teacher_pool_manager = TeacherPoolManager(
-        teacher_pool_file=config.teacher_pool_file,
-        data_root=config.data_root,
-    )
+    if not hasattr(config, "data_root"):
+        raise ValueError("No data_root specified in config")
+
+    # Create teacher pool manager with explicit error handling
+    try:
+        teacher_pool_manager = TeacherPoolManager(
+            teacher_pool_file=config.teacher_pool_file,
+            data_root=config.data_root,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        raise ValueError(f"Failed to initialize TeacherPoolManager: {e}")
+
     logger.info(
         f"Created teacher pool manager with {len(teacher_pool_manager)} samples"
     )
