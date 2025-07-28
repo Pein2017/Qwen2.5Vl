@@ -399,7 +399,12 @@ class CoordinateManager:
             ):
                 updated_obj = obj.copy()
                 updated_obj["bbox_2d"] = transformed_bbox
-                updated_objects.append(updated_obj)
+
+                # Apply coordinate normalization after transformation
+                normalized_obj = CoordinateManager.normalize_object_coordinates(
+                    updated_obj, final_width, final_height
+                )
+                updated_objects.append(normalized_obj)
             else:
                 logger.warning(
                     f"Dropping invalid bbox after transformation: {transformed_bbox}"
@@ -1016,6 +1021,340 @@ class CoordinateManager:
                 f"Invalid square coordinates: expected 8 values, got {len(square_coords)}"
             )
             return []
+
+    # =========================================================================
+    # COORDINATE NORMALIZATION METHODS
+    # =========================================================================
+
+    @staticmethod
+    def normalize_object_coordinates(
+        obj: Dict[str, Any], width: int, height: int
+    ) -> Dict[str, Any]:
+        """
+        Normalize coordinates within an object preserving native geometry format.
+
+        Args:
+            obj: Object with geometry (bbox_2d, line, or square) and description
+            width: Image width for bounds checking
+            height: Image height for bounds checking
+
+        Returns:
+            Object with normalized coordinates in the same geometry format
+        """
+        normalized_obj = obj.copy()
+
+        if "bbox_2d" in obj:
+            normalized_obj["bbox_2d"] = CoordinateManager.normalize_bbox_coordinates(
+                obj["bbox_2d"], width, height
+            )
+        elif "line" in obj:
+            normalized_obj["line"] = CoordinateManager.normalize_line_coordinates(
+                obj["line"], width, height
+            )
+        elif "square" in obj:
+            normalized_obj["square"] = CoordinateManager.normalize_square_coordinates(
+                obj["square"], width, height
+            )
+        else:
+            logger.warning(f"Object missing geometry type: {obj}")
+
+        return normalized_obj
+
+    @staticmethod
+    def normalize_bbox_coordinates(
+        bbox_coords: List[float], width: int, height: int
+    ) -> List[int]:
+        """
+        Normalize bounding box coordinates ensuring proper ordering.
+
+        Args:
+            bbox_coords: [x1, y1, x2, y2] coordinates
+            width: Image width for bounds checking
+            height: Image height for bounds checking
+
+        Returns:
+            Normalized coordinates as [x1, y1, x2, y2] with x1 < x2, y1 < y2
+        """
+        if len(bbox_coords) != 4:
+            logger.warning(
+                f"Invalid bbox coordinates: expected 4 values, got {len(bbox_coords)}"
+            )
+            return [0, 0, 1, 1]
+
+        x1, y1, x2, y2 = bbox_coords
+
+        # Ensure proper ordering: x1 < x2, y1 < y2
+        x_min, x_max = min(x1, x2), max(x1, x2)
+        y_min, y_max = min(y1, y2), max(y1, y2)
+
+        # Clamp to image bounds
+        x_min = max(0, min(x_min, width - 1))
+        x_max = max(0, min(x_max, width - 1))
+        y_min = max(0, min(y_min, height - 1))
+        y_max = max(0, min(y_max, height - 1))
+
+        # Handle degenerate cases
+        if x_min == x_max:
+            if x_max < width - 1:
+                x_max += 1
+            else:
+                x_min = max(0, x_min - 1)
+
+        if y_min == y_max:
+            if y_max < height - 1:
+                y_max += 1
+            else:
+                y_min = max(0, y_min - 1)
+
+        return [int(x_min), int(y_min), int(x_max), int(y_max)]
+
+    @staticmethod
+    def normalize_line_coordinates(
+        line_coords: List[float], width: int, height: int
+    ) -> List[int]:
+        """
+        Normalize line coordinates with canonical ordering and degenerate handling.
+
+        Args:
+            line_coords: [x1, y1, x2, y2, ...] coordinate pairs
+            width: Image width for bounds checking
+            height: Image height for bounds checking
+
+        Returns:
+            Normalized coordinates with canonical ordering and padding for degenerate cases
+        """
+        if len(line_coords) < 4 or len(line_coords) % 2 != 0:
+            logger.warning(
+                f"Invalid line coordinates: expected even number of coordinates (>=4), got {len(line_coords)}"
+            )
+            return [0, 0, 1, 0]
+
+        # Extract points
+        points = [
+            (line_coords[i], line_coords[i + 1]) for i in range(0, len(line_coords), 2)
+        ]
+
+        # Apply canonical ordering
+        ordered_points = CoordinateManager._canonical_line_ordering(points)
+
+        # Clamp to image bounds
+        clamped_points = []
+        for x, y in ordered_points:
+            x_clamped = max(0, min(int(x), width - 1))
+            y_clamped = max(0, min(int(y), height - 1))
+            clamped_points.append((x_clamped, y_clamped))
+
+        # Handle degenerate cases (horizontal/vertical lines)
+        if len(clamped_points) == 2:  # Simple line
+            clamped_points = CoordinateManager._handle_degenerate_line(
+                clamped_points, width, height
+            )
+
+        # Flatten back to coordinate list
+        normalized_coords = []
+        for x, y in clamped_points:
+            normalized_coords.extend([x, y])
+
+        return normalized_coords
+
+    @staticmethod
+    def normalize_square_coordinates(
+        square_coords: List[float], width: int, height: int
+    ) -> List[int]:
+        """
+        Normalize square coordinates with canonical vertex ordering.
+
+        Args:
+            square_coords: [x1, y1, x2, y2, x3, y3, x4, y4] square vertices
+            width: Image width for bounds checking
+            height: Image height for bounds checking
+
+        Returns:
+            Normalized coordinates with canonical vertex ordering
+        """
+        if len(square_coords) != 8:
+            logger.warning(
+                f"Invalid square coordinates: expected 8 values, got {len(square_coords)}"
+            )
+            return [0, 0, 1, 0, 1, 1, 0, 1]
+
+        # Clamp all coordinates to image bounds
+        normalized_coords = []
+        for i in range(0, 8, 2):
+            x = max(0, min(square_coords[i], width - 1))
+            y = max(0, min(square_coords[i + 1], height - 1))
+            normalized_coords.extend([x, y])
+
+        # Convert to points for canonical ordering
+        points = [
+            (normalized_coords[i], normalized_coords[i + 1]) for i in range(0, 8, 2)
+        ]
+        ordered_points = CoordinateManager._canonical_square_ordering(points)
+
+        # Flatten back to coordinate list
+        return [int(coord) for point in ordered_points for coord in point]
+
+    @staticmethod
+    def _canonical_line_ordering(
+        points: List[Tuple[float, float]],
+    ) -> List[Tuple[float, float]]:
+        """
+        Establish canonical ordering for line points.
+
+        For 2-point lines: order by x-coordinate first, then y-coordinate for consistency
+        For multi-point lines: establish canonical direction while preserving path structure
+
+        Args:
+            points: List of (x, y) coordinate tuples
+
+        Returns:
+            Points in canonical order with consistent direction
+        """
+        if len(points) == 2:
+            # Simple line: order lexicographically (x first, then y)
+            p1, p2 = points
+            if p1[0] < p2[0] or (p1[0] == p2[0] and p1[1] <= p2[1]):
+                return [p1, p2]
+            else:
+                return [p2, p1]
+        else:
+            # Multi-point polyline: establish canonical direction
+            # This addresses directional ambiguity where the same physical cable/wire
+            # can be traced in either direction by different annotators
+            return CoordinateManager._normalize_polyline_direction(points)
+
+    @staticmethod
+    def _normalize_polyline_direction(
+        points: List[Tuple[float, float]],
+    ) -> List[Tuple[float, float]]:
+        """
+        Normalize multi-point line direction to establish canonical ordering.
+
+        This addresses directional ambiguity where the same physical cable/wire
+        can be traced in either direction by different annotators, producing
+        semantically equivalent but different coordinate sequences.
+
+        Strategy:
+        1. Preserve path structure (don't reorder intermediate points)
+        2. Establish consistent direction by choosing canonical starting point
+        3. Use deterministic rule: start from topmost point (lowest y),
+           then leftmost point (lowest x) if tied
+        4. If path needs reversal to meet criteria, reverse entire sequence
+
+        Args:
+            points: List of (x, y) coordinate tuples representing the path
+
+        Returns:
+            Points with canonical direction established
+        """
+        if len(points) < 2:
+            return points
+
+        # Find the canonical starting point (topmost, then leftmost)
+        canonical_start = min(points, key=lambda p: (p[1], p[0]))
+
+        # Check if the current path already starts with the canonical point
+        current_start = points[0]
+        current_end = points[-1]
+
+        # If current start is already the canonical point, keep as-is
+        if current_start == canonical_start:
+            return points
+
+        # If current end is the canonical point, reverse the path
+        elif current_end == canonical_start:
+            return list(reversed(points))
+
+        # If canonical point is in the middle, choose direction based on endpoints
+        # Compare the endpoints and start from the one that's more "canonical"
+        # (topmost-leftmost between start and end)
+        start_priority = (current_start[1], current_start[0])  # (y, x)
+        end_priority = (current_end[1], current_end[0])  # (y, x)
+
+        if start_priority <= end_priority:
+            # Current start is more canonical than current end
+            return points
+        else:
+            # Current end is more canonical than current start
+            return list(reversed(points))
+
+    @staticmethod
+    def _handle_degenerate_line(
+        points: List[Tuple[int, int]], width: int, height: int
+    ) -> List[Tuple[int, int]]:
+        """
+        Handle degenerate lines by adding minimal padding.
+
+        Args:
+            points: List of 2 points representing a line
+            width: Image width
+            height: Image height
+
+        Returns:
+            Points with padding applied to prevent degenerate bounding boxes
+        """
+        if len(points) != 2:
+            return points
+
+        (x1, y1), (x2, y2) = points
+
+        # Check for horizontal line (y1 == y2)
+        if y1 == y2:
+            # Add vertical padding
+            if y1 > 0:
+                y1 -= 1
+            if y2 < height - 1:
+                y2 += 1
+            else:
+                # If we can't expand down, expand up
+                if y1 > 0:
+                    y1 -= 1
+
+        # Check for vertical line (x1 == x2)
+        elif x1 == x2:
+            # Add horizontal padding
+            if x1 > 0:
+                x1 -= 1
+            if x2 < width - 1:
+                x2 += 1
+            else:
+                # If we can't expand right, expand left
+                if x1 > 0:
+                    x1 -= 1
+
+        return [(x1, y1), (x2, y2)]
+
+    @staticmethod
+    def _canonical_square_ordering(
+        points: List[Tuple[float, float]],
+    ) -> List[Tuple[int, int]]:
+        """
+        Apply canonical ordering to square vertices.
+
+        Args:
+            points: List of (x, y) vertex coordinates
+
+        Returns:
+            Points ordered starting from top-left, clockwise
+        """
+        if len(points) != 4:
+            raise ValueError(f"Square must have exactly 4 points: {points}")
+
+        # Find top-left point (minimum y, then minimum x)
+        top_left = min(points, key=lambda p: (p[1], p[0]))
+
+        # For now, use a simple approach: start from top-left and maintain relative positions
+        # This is a simplified implementation - a full implementation would compute
+        # the actual clockwise ordering based on geometric relationships
+
+        # Find the index of top-left point
+        top_left_idx = points.index(top_left)
+
+        # Reorder starting from top-left
+        # This maintains the original sequence but starts from the canonical point
+        ordered_points = points[top_left_idx:] + points[:top_left_idx]
+
+        return [(int(p[0]), int(p[1])) for p in ordered_points]
 
 
 # Merged from utils/transformations.py - FormatConverter class
