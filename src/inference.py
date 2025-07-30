@@ -146,6 +146,7 @@ class InferenceEngine:
         Note:
             Flash Attention 2 and KV cache are always enabled and cannot be disabled.
             The script will raise an error if the environment doesn't support these features.
+            Multi-geometry parsing is automatically enabled based on coordinate_tokens_enabled in config.
         """
         self.device = device
         self.model_path = model_path
@@ -260,12 +261,41 @@ class InferenceEngine:
         # ALWAYS create ChatProcessor to ensure consistent prompt formatting
         from src.chat_processor import ChatProcessor
 
-        self.chat_processor = ChatProcessor(
-            tokenizer=self.processor.tokenizer,
-            image_processor=self.processor.image_processor,
-            use_training_prompts=True,  # Use training prompts to match training pipeline
-            language=self.language,
+        # Detect coordinate tokens configuration for ChatProcessor
+        coordinate_tokens_enabled = self._detect_coordinate_tokens_enabled()
+        logger.info(
+            f"🔍 ChatProcessor initialization: coordinate_tokens_enabled={coordinate_tokens_enabled}"
         )
+
+        # Get max_coord_value from config if coordinate tokens are enabled
+        chat_processor_kwargs = {
+            "tokenizer": self.processor.tokenizer,
+            "image_processor": self.processor.image_processor,
+            "use_training_prompts": True,  # Use training prompts to match training pipeline
+            "language": self.language,
+            "coordinate_tokens_enabled": coordinate_tokens_enabled,
+        }
+
+        if coordinate_tokens_enabled:
+            # Get config to extract max_coord_value
+            try:
+                from src.config import get_config
+
+                config = get_config()
+                if hasattr(config, "max_coord_value"):
+                    chat_processor_kwargs["max_coord_value"] = config.max_coord_value
+                    logger.info(
+                        f"🎯 ChatProcessor: Using max_coord_value={config.max_coord_value}"
+                    )
+                else:
+                    raise ValueError(
+                        "max_coord_value not found in config but coordinate tokens are enabled"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Failed to get max_coord_value from config: {e}")
+                raise
+
+        self.chat_processor = ChatProcessor(**chat_processor_kwargs)
 
         if self.teacher_samples:
             logger.info("✅ Initialized ChatProcessor for teacher-guided inference")
@@ -292,20 +322,28 @@ class InferenceEngine:
         try:
             # FAIL-FAST: Validate config is initialized
             try:
-                from src.config import config
+                from src.config import get_config
+
+                config = get_config()
             except ImportError:
-                raise ImportError("Failed to import config - ensure config module is available")
-                
+                raise ImportError(
+                    "Failed to import config - ensure config module is available"
+                )
+
             # FAIL-FAST: Validate model loader is available
             try:
                 from src.models.model_loader import load_model_and_processor_unified
             except ImportError:
-                raise ImportError("Failed to import model_loader - ensure models module is available")
+                raise ImportError(
+                    "Failed to import model_loader - ensure models module is available"
+                )
 
             # FAIL-FAST: Validate required config attributes
             if not hasattr(config, "coordinate_tokens_enabled"):
-                raise ValueError("config missing required attribute: coordinate_tokens_enabled")
-                
+                raise ValueError(
+                    "config missing required attribute: coordinate_tokens_enabled"
+                )
+
             # Detect model type based on config - coordinate tokens drive wrapper usage
             coordinate_tokens_enabled = config.coordinate_tokens_enabled
 
@@ -324,7 +362,7 @@ class InferenceEngine:
             logger.info(
                 "🔧 Forcing eager attention for inference to avoid triton issues"
             )
-            
+
             # FAIL-FAST: Validate model loading with explicit error handling
             try:
                 model, tokenizer, image_processor = load_model_and_processor_unified(
@@ -352,7 +390,7 @@ class InferenceEngine:
                         raise ValueError("tokenizer cannot be None")
                     if image_processor is None:
                         raise ValueError("image_processor cannot be None")
-                        
+
                     self.tokenizer = tokenizer
                     self.image_processor = image_processor
 
@@ -388,7 +426,9 @@ class InferenceEngine:
                     """Pass through to tokenizer's batch_decode"""
                     # FAIL-FAST: Validate tokenizer has batch_decode method
                     if not hasattr(self.tokenizer, "batch_decode"):
-                        raise AttributeError("tokenizer does not have batch_decode method")
+                        raise AttributeError(
+                            "tokenizer does not have batch_decode method"
+                        )
                     return self.tokenizer.batch_decode(*args, **kwargs)
 
             processor = UnifiedProcessor(tokenizer, image_processor)
@@ -420,19 +460,21 @@ class InferenceEngine:
         # FAIL-FAST: Validate teacher_pool_file
         if self.teacher_pool_file is None:
             raise ValueError("teacher_pool_file is None")
-            
+
         teacher_pool_path = Path(self.teacher_pool_file)
-        
+
         # FAIL-FAST: Validate file exists and is a file
         if not teacher_pool_path.exists():
             raise FileNotFoundError(
                 f"Teacher pool file not found: {self.teacher_pool_file}"
             )
         if not teacher_pool_path.is_file():
-            raise ValueError(f"Teacher pool path is not a file: {self.teacher_pool_file}")
+            raise ValueError(
+                f"Teacher pool path is not a file: {self.teacher_pool_file}"
+            )
 
         teacher_samples = []
-        
+
         # FAIL-FAST: Validate file contents with explicit error handling
         try:
             with open(teacher_pool_path, "r", encoding="utf-8") as f:
@@ -441,25 +483,38 @@ class InferenceEngine:
                     if line:
                         try:
                             sample = json.loads(line)
-                            
+
                             # FAIL-FAST: Validate sample structure
                             if not isinstance(sample, dict):
-                                raise ValueError(f"Line {line_num}: Sample is not a dictionary")
-                                
+                                raise ValueError(
+                                    f"Line {line_num}: Sample is not a dictionary"
+                                )
+
                             # FAIL-FAST: Validate required fields
                             if "images" not in sample:
-                                raise ValueError(f"Line {line_num}: Missing required field 'images'")
+                                raise ValueError(
+                                    f"Line {line_num}: Missing required field 'images'"
+                                )
                             if "objects" not in sample:
-                                raise ValueError(f"Line {line_num}: Missing required field 'objects'")
-                                
+                                raise ValueError(
+                                    f"Line {line_num}: Missing required field 'objects'"
+                                )
+
                             # FAIL-FAST: Validate field types
-                            if not isinstance(sample["images"], list) or len(sample["images"]) == 0:
-                                raise ValueError(f"Line {line_num}: 'images' field is empty or not a list")
+                            if (
+                                not isinstance(sample["images"], list)
+                                or len(sample["images"]) == 0
+                            ):
+                                raise ValueError(
+                                    f"Line {line_num}: 'images' field is empty or not a list"
+                                )
                             if not isinstance(sample["objects"], list):
-                                raise ValueError(f"Line {line_num}: 'objects' field is not a list")
-                                
+                                raise ValueError(
+                                    f"Line {line_num}: 'objects' field is not a list"
+                                )
+
                             teacher_samples.append(sample)
-                            
+
                         except json.JSONDecodeError as e:
                             raise ValueError(f"Invalid JSON at line {line_num}: {e}")
         except Exception as e:
@@ -468,8 +523,10 @@ class InferenceEngine:
         # FAIL-FAST: Validate we have teacher samples
         if not teacher_samples:
             raise ValueError("No teacher samples found in teacher pool file")
-            
-        logger.info(f"Loaded {len(teacher_samples)} teacher samples from {self.teacher_pool_file}")
+
+        logger.info(
+            f"Loaded {len(teacher_samples)} teacher samples from {self.teacher_pool_file}"
+        )
 
         return teacher_samples
 
@@ -1040,15 +1097,136 @@ class InferenceEngine:
             return responses
 
     def _process_model_response(self, response: str) -> str:
-        """Process model response based on model type."""
-        if not hasattr(self, "coordinate_tokens_enabled"):
-            logger.warning("⚠️ Model type not detected - returning raw response")
-            return response
+        """Process model response based on model type and configuration."""
+        # Detect coordinate tokens configuration from global config
+        coordinate_tokens_enabled = self._detect_coordinate_tokens_enabled()
 
-        # The coordinate token model is generating JSON format directly
-        # No coordinate token conversion needed for this implementation
+        # Log multi-geometry parsing configuration (only once per engine instance)
+        if not hasattr(self, "_multi_geometry_logged"):
+            if coordinate_tokens_enabled:
+                logger.info(
+                    "🎯 Multi-geometry parsing: ENABLED (coordinate tokens detected)"
+                )
+                logger.info(
+                    "🎯 Output format: formatted (geometry_type:caption[coords])"
+                )
+            else:
+                logger.info(
+                    "🎯 Multi-geometry parsing: DISABLED (no coordinate tokens)"
+                )
+            self._multi_geometry_logged = True
+
+        # Try to parse multi-geometry tokens if coordinate tokens are enabled
+        if coordinate_tokens_enabled:
+            parsed_objects = self._parse_multi_geometry_response(response)
+            if parsed_objects:
+                # Convert to the requested format: 'geometry_type:caption_text'
+                formatted_outputs = []
+                for obj in parsed_objects:
+                    if "formatted_output" in obj:
+                        formatted_outputs.append(obj["formatted_output"])
+                    else:
+                        # Fallback formatting
+                        geometry_type = obj.get("geometry_type", "unknown")
+                        caption = obj.get("caption", obj.get("description", ""))
+                        formatted_outputs.append(f"{geometry_type}:{caption}")
+
+                result = " | ".join(
+                    formatted_outputs
+                )  # Join multiple objects with separator
+                logger.debug(f"📄 Multi-geometry parsed response: {result}")
+                return result
+
+        # Fallback: Return raw response for non-coordinate models or when no multi-geometry tokens found
         logger.debug(f"📄 Model response (first 100 chars): {response[:100]}...")
         return response
+
+    def _parse_multi_geometry_response(self, response: str) -> List[Dict[str, Any]]:
+        """Parse multi-geometry token response using the response parser."""
+        try:
+            # Import and use the response parser
+            from src.utils.response_parser import ResponseParser
+
+            parser = ResponseParser()
+
+            # Detect coordinate tokens configuration
+            coordinate_tokens_enabled = self._detect_coordinate_tokens_enabled()
+
+            # Set the coordinate tokens flag on the parser for use in parsing
+            parser._coordinate_tokens_enabled = coordinate_tokens_enabled
+
+            logger.debug(
+                f"🎯 Using coordinate_tokens_enabled={coordinate_tokens_enabled} for parsing"
+            )
+
+            # Use the new multi-geometry token parsing method directly
+            objects = parser._parse_multi_geometry_tokens(
+                response, coordinate_tokens_enabled
+            )
+
+            if objects:
+                logger.debug(
+                    f"✅ Successfully parsed {len(objects)} multi-geometry objects"
+                )
+                return objects
+            else:
+                logger.debug("🔍 No multi-geometry tokens found in response")
+                return []
+
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to parse multi-geometry response: {e}")
+            return []
+
+    def _detect_coordinate_tokens_enabled(self) -> bool:
+        """
+        Detect if coordinate tokens are enabled in the current model configuration.
+
+        Returns:
+            bool: True if coordinate tokens are enabled, False otherwise
+        """
+        try:
+            # Primary method: Check the global config (loaded via _init_config)
+            try:
+                from src.config import get_config
+
+                config = get_config()
+                if hasattr(config, "coordinate_tokens_enabled"):
+                    coordinate_enabled = config.coordinate_tokens_enabled
+                    logger.debug(
+                        f"🔍 Coordinate tokens from global config: {coordinate_enabled}"
+                    )
+                    return coordinate_enabled
+            except ImportError:
+                logger.debug("🔍 Global config not available")
+
+            # Fallback 1: Check the model config
+            if hasattr(self.model, "config") and hasattr(
+                self.model.config, "coordinate_tokens_enabled"
+            ):
+                coordinate_enabled = self.model.config.coordinate_tokens_enabled
+                logger.debug(
+                    f"🔍 Coordinate tokens from model config: {coordinate_enabled}"
+                )
+                return coordinate_enabled
+
+            # Fallback 2: Check if coordinate tokens exist in the tokenizer vocabulary
+            if hasattr(self, "processor") and hasattr(self.processor, "tokenizer"):
+                vocab = self.processor.tokenizer.get_vocab()
+                has_coord_tokens = "<|coord_0|>" in vocab
+                logger.debug(
+                    f"🔍 Coordinate token detection via tokenizer vocab: {has_coord_tokens}"
+                )
+                return has_coord_tokens
+
+            # Default: assume coordinate tokens are not enabled
+            logger.debug(
+                "🔍 Could not detect coordinate tokens configuration, defaulting to False"
+            )
+            return False
+
+        except Exception as e:
+            logger.warning(f"⚠️ Error detecting coordinate tokens configuration: {e}")
+            return False
 
     def run_inference_on_jsonl(
         self,
@@ -1155,17 +1333,36 @@ class InferenceEngine:
                                 else f"sample_{sample_idx}"
                             )
 
-                            # Format ground truth
+                            # Format ground truth - support all geometry types
                             objects = target.get("objects", [])
                             ground_truth_objects = []
                             for obj in objects:
-                                bbox = obj.get("bbox_2d", obj.get("bbox", []))
                                 desc = obj.get(
                                     "desc", obj.get("description", obj.get("label", ""))
                                 )
-                                if bbox and desc:
+
+                                # Extract geometry based on available type
+                                geometry_data = None
+                                geometry_type = None
+
+                                if "bbox_2d" in obj and obj["bbox_2d"]:
+                                    geometry_data = obj["bbox_2d"]
+                                    geometry_type = "bbox_2d"
+                                elif (
+                                    "bbox" in obj and obj["bbox"]
+                                ):  # Fallback for legacy format
+                                    geometry_data = obj["bbox"]
+                                    geometry_type = "bbox_2d"
+                                elif "square" in obj and obj["square"]:
+                                    geometry_data = obj["square"]
+                                    geometry_type = "square"
+                                elif "line" in obj and obj["line"]:
+                                    geometry_data = obj["line"]
+                                    geometry_type = "line"
+
+                                if geometry_data and desc and geometry_type:
                                     ground_truth_objects.append(
-                                        {"bbox_2d": bbox, "label": desc}
+                                        {geometry_type: geometry_data, "label": desc}
                                     )
 
                             ground_truth = json.dumps(

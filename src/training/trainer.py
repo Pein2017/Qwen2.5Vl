@@ -38,7 +38,6 @@ This design guarantees that training and evaluation logging are independent and
 that reported training losses are correctly averaged per step.
 """
 
-import time
 from typing import (
     Any,
     Dict,
@@ -55,13 +54,13 @@ from transformers import (
     PreTrainedTokenizerBase,
     Trainer,
 )
-from transformers.models.auto.processing_auto import AutoProcessor
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
 
 from src.config import BBUConfig
 from src.data import BBUDataset, create_data_collator
 from src.logger_utils import get_training_logger
 from src.models.wrapper import DummyOptim
+from src.training.training_state_manager import TrainingStateManager
 from src.utils.schema import GroundTruthObject
 from src.utils.tokens.special_tokens import SpecialTokens
 
@@ -102,40 +101,20 @@ class BBUTrainer(Trainer):
         # upstream library code and keeps backward-compatibility for any
         # external calls that expect `trainer.tokenizer` to exist.
         # --------------------------------------------------------------
-        # Support legacy alias where callers used `config=` keyword.
-        if cfg is None and "config" in kwargs:
-            cfg = kwargs.pop("config")
 
         self.tokenizer_ref = kwargs.get("tokenizer")
 
         # ------------------------------------------------------------------
-        # Resolve configuration
-        # Priority:
-        #   1) Explicit `cfg` argument passed by caller
-        #   2) Global singleton initialised via src.config.init_config()
-        # Fail fast if neither is available.
+        # Resolve configuration - EXPLICIT CONFIG REQUIRED
+        # No fallback patterns - fail fast if config not provided
         # ------------------------------------------------------------------
-
-        # Check if global configuration is initialized
-        _global_cfg: Optional[BBUConfig] = None
-        try:
-            from src.config import get_config
-
-            _global_cfg = get_config()
-        except RuntimeError:
-            # Global config not initialized
-            _global_cfg = None
-
-        if cfg is not None:
-            self.config = cfg
-        elif _global_cfg is not None:
-            self.config = _global_cfg
-        else:
-            raise RuntimeError(
-                "BBUConfig not provided to BBUTrainer and global config has "
-                "not been initialised. Call src.config.init_config() before "
-                "creating the trainer or pass cfg=<BBUConfig>."
+        if cfg is None:
+            raise ValueError(
+                "BBUConfig must be explicitly provided to BBUTrainer. "
+                "No fallback to global config allowed."
             )
+
+        self.config = cfg
 
         super().__init__(*args, **kwargs)
 
@@ -152,71 +131,51 @@ class BBUTrainer(Trainer):
         object.__setattr__(self, "tokenizer", self.tokenizer_ref)
         self.image_processor = image_processor
 
-        # Integration with new training coordinator system
+        # Training coordinator is required - no legacy system support
+        if training_coordinator is None:
+            raise ValueError(
+                "Training coordinator is required. Legacy training system has been removed."
+            )
+
         self.training_coordinator = training_coordinator
-        self._use_coordinator = training_coordinator is not None
+        self.logger.info("🎯 Using training coordinator system")
 
-        # Initialize loss tracking variables (shared between coordinator and legacy)
-        self._current_lm_loss: float = 0.0
-        self._current_teacher_lm_loss: float = 0.0
-
-        # Coordinate loss validation tracking - zero tolerance for missing coordinate tokens
-        self._step_count: int = 0
-        self._current_student_lm_loss: float = 0.0
-        self._current_bbox_loss: float = 0.0
-        self._current_objectness_loss: float = 0.0
-
-        # ACCUMULATORS for per-step average logging with gradient accumulation
-        self._accumulated_lm_loss: float = 0.0
-        self._accumulated_teacher_lm_loss: float = 0.0
-        self._accumulated_student_lm_loss: float = 0.0
-        self._accumulated_objectness_loss: float = 0.0
-
-        # Counter for the number of *micro-batches* processed since the last log.
-        # This is needed for both coordinator and legacy systems
+        # Counter for micro-batches processed since last log (still needed for coordinator integration)
         self._micro_batch_count: int = 0
-
-        if self._use_coordinator:
-            self.logger.info("🎯 Using new training coordinator system")
-            # Detection loss is handled by coordinator via coordinate tokens
-        else:
-            self.logger.info("📄 Using legacy training system")
-            # Legacy system: manual loss tracking
-
-            # Detection is now handled via coordinate tokens
-            self.detection_loss = None
-
-            # Validate required configuration attributes
-            if not hasattr(self.config, "coordinate_tokens_enabled"):
-                raise ValueError(
-                    "coordinate_tokens_enabled must be explicitly configured in config"
-                )
-
-            # Initialize coordinate token loss accumulators if coordinate tokens are enabled
-            coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-            if coordinate_tokens_enabled:
-                self.logger.info("🎯 Initializing clean coordinate token loss tracking")
-                self._current_focal_loss: float = 0.0
-                self._current_l1_loss: float = 0.0
-                self._current_giou_loss: float = 0.0
-                self._accumulated_focal_loss: float = 0.0
-                self._accumulated_l1_loss: float = 0.0
-                self._accumulated_giou_loss: float = 0.0
-
-                # Initialize additional accumulators for coordinate loss tracking
-                self._accumulated_coordinate_loss: float = 0.0
-                self._accumulated_regular_loss: float = 0.0
-                self._accumulated_coord_l1_loss: float = 0.0
-                self._accumulated_coord_giou_loss: float = 0.0
-
-        # Cache for per-step weight / grad norms (populated in training_step)
-        self._norm_cache: Dict[str, float] = {}
 
         # Initialize optimizer step tracking
         self._optimizer_step_wrapped: bool = False
 
+        # Initialize accumulated loss tracking for training state manager
+        self._accumulated_lm_loss: float = 0.0
+        self._accumulated_teacher_lm_loss: float = 0.0
+        self._accumulated_student_lm_loss: float = 0.0
+        self._accumulated_coordinate_loss: float = 0.0
+        self._accumulated_focal_loss: float = 0.0
+        self._accumulated_regular_loss: float = 0.0
+
         # CRITICAL: Ensure tokenizer has correct padding_side for Flash Attention
         self._fix_tokenizer_padding_side()
+
+        # Initialize unified training state manager (consolidates metrics, evaluation, parameters)
+        self.training_state_manager = TrainingStateManager(
+            config=self.config,
+            model=self.model,
+            trainer=self,
+            training_coordinator=self.training_coordinator,
+            base_weight_decay=getattr(self.args, "weight_decay", 0.0),
+            logger=self.logger,
+        )
+
+        # Initialize enhanced checkpoint manager
+        from src.core.checkpoint_manager import CheckpointManager
+
+        self.checkpoint_manager = CheckpointManager(
+            config=self.config,
+            tokenizer=self.tokenizer_ref,
+            image_processor=self.image_processor,
+            logger=self.logger,
+        )
 
     def _fix_tokenizer_padding_side(self):
         """Ensure all tokenizer references have correct padding_side for Flash Attention."""
@@ -284,516 +243,57 @@ class BBUTrainer(Trainer):
     def _save(
         self, output_dir: Optional[str] = None, state_dict: Optional[dict] = None
     ) -> None:
-        """Save checkpoint in **sharded** form.
-
-        1. Always save the *base* Qwen2.5-VL model with `max_shard_size` so
-           enormous weights are split across multiple files (faster I/O).
-        2. Save the coordinate token enhanced model.
-        3. Tokenizer / processor and training args are stored with standard
-           Transformers helpers.
-        """
-
-        import json
-        import os
-
-        import torch
-
+        """Save checkpoint using enhanced checkpoint manager."""
         if output_dir is None:
             output_dir = self.args.output_dir
-        os.makedirs(output_dir, exist_ok=True)
 
-        # --- 1. Save complete model (sharded) including visual components ---
-        # CRITICAL FIX: Save the full model, not just base_model
-        # For Qwen2.5-VL, visual tower is part of the main model, not base_model
-        if (
-            not hasattr(self.model, "coordinate_tokens_enabled")
-            or not self.model.coordinate_tokens_enabled
-        ):
-            # For coordinate tokens disabled, save the full Qwen2.5-VL model
-            self.logger.info(
-                "💾 Saving complete Qwen2.5-VL model with visual tower (sharded)…"
-            )
-            model_to_save = self.model
-        else:
-            # For coordinate tokens enabled, save the enhanced model
-            self.logger.info("💾 Saving base Qwen2.5-VL model (sharded)…")
-            # EXPLICIT CONFIG: Use base_model if available, otherwise use the model itself
-            model_to_save = (
-                self.model.base_model
-                if hasattr(self.model, "base_model")
-                else self.model
-            )
-
-        model_to_save.save_pretrained(
-            output_dir, max_shard_size="2GB", safe_serialization=True
+        # Use the enhanced checkpoint manager for all checkpoint operations
+        self.checkpoint_manager.save_checkpoint(
+            model=self.model,
+            output_dir=output_dir,
+            training_args=self.args,
+            state_dict=state_dict,
         )
 
-        # --- 2. Save tokenizer & processor ---------------------------------
-        if self.tokenizer_ref is not None:
-            self.logger.info("💾 Saving tokenizer...")
-            self.tokenizer_ref.save_pretrained(output_dir)
+    # NOTE: _ensure_coordinate_tokens_persisted method moved to CheckpointManager.persist_coordinate_tokens()
 
-        if self.image_processor is None:
-            raise RuntimeError(
-                "Image processor is None - cannot save preprocessor config!"
-            )
+    # NOTE: _copy_essential_files_from_base_model method moved to CheckpointManager.copy_base_model_files()
 
-        self.logger.info("💾 Saving image processor...")
+    # NOTE: _verify_saved_checkpoint method moved to CheckpointManager.verify_checkpoint_integrity()
 
-        # Load base config from pretrained model and only override specific values
-        # This prevents corruption of other config values
-        from src.config import config as global_config
+    # NOTE: _validate_tokenizer_model_consistency method moved to CheckpointManager.validate_model_consistency()
 
-        # EXPLICIT: Access model_path without fallback
-        if not hasattr(global_config, "model_path"):
-            raise ValueError(
-                "global_config missing 'model_path' attribute. "
-                "Ensure model_path is explicitly set in configuration."
-            )
+    # Coordinate token parameter detection moved to ParameterGroupManager - no duplication
 
-        base_model_path = global_config.model_path
-        if base_model_path is None or base_model_path == "":
-            raise ValueError("model_path cannot be None or empty in global config")
-
-        base_preproc_path = os.path.join(base_model_path, "preprocessor_config.json")
-
-        if os.path.exists(base_preproc_path):
-            with open(base_preproc_path, "r", encoding="utf-8") as f:
-                ip_cfg = json.load(f)
-        else:
-            raise RuntimeError(
-                f"Base preprocessor config not found: {base_preproc_path}"
-            )
-
-        # ONLY override the values that might have changed during training
-        # (min_pixels and max_pixels from vision_process.py)
-        if hasattr(self.image_processor, "min_pixels"):
-            ip_cfg["min_pixels"] = self.image_processor.min_pixels
-        if hasattr(self.image_processor, "max_pixels"):
-            ip_cfg["max_pixels"] = self.image_processor.max_pixels
-
-        # Verify all other critical attributes exist
-        critical_attrs = [
-            "patch_size",
-            "temporal_patch_size",
-            "merge_size",
-            "image_mean",
-            "image_std",
-        ]
-        for attr_name in critical_attrs:
-            if attr_name not in ip_cfg:
-                raise RuntimeError(
-                    f"Critical attribute missing from preprocessor config: {attr_name}"
-                )
-
-        # Make sure output_dir is a string
-        output_dir_str = str(output_dir) if output_dir is not None else ""
-
-        with open(
-            os.path.join(output_dir_str, "preprocessor_config.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(ip_cfg, f, indent=2, ensure_ascii=False)
-
-        self.logger.info(
-            f"   ✅ Image processor config saved with {len(ip_cfg)} parameters (preserving base config)"
-        )
-
-        # Detection is now handled via coordinate tokens
-
-        # --- 4. Copy essential files from base model -------------------
-        self._copy_essential_files_from_base_model(output_dir)
-
-        # --- 5. Save training args ----------------------------------------
-        # Make sure output_dir is a string
-        output_dir_str = str(output_dir) if output_dir is not None else ""
-        torch.save(self.args, os.path.join(output_dir_str, "training_args.bin"))
-
-        # --- 6. Verify visual components were saved -------------------
-        self._verify_saved_checkpoint(output_dir)
-
-        self.logger.info(f"✅ Checkpoint saved successfully → {output_dir}")
-
-    def _copy_essential_files_from_base_model(self, output_dir: str) -> None:
-        """Copy essential files from base model to match pretrained model structure."""
-        import os
-        import shutil
-
-        from src.config import config as global_config
-
-        self.logger.info("💾 Copying essential files from base model...")
-
-        # EXPLICIT CONFIG: model_path is required and validated at config load
-        base_model_path = global_config.model_path
-        if not os.path.exists(base_model_path):
-            raise RuntimeError(f"Base model path not found: {base_model_path}")
-
-            # Files to copy from pretrained model directory structure
-        essential_files = [
-            "generation_config.json",
-        ]
-
-        # Optional files for full compatibility (not required for functionality)
-        optional_files = [
-            "chat_template.json",  # Not used - we have custom system prompts
-            "LICENSE",
-            "README.md",
-        ]
-
-        # Copy essential files
-        missing_source_files = []
-        # Make sure paths are strings
-        base_model_path_str = (
-            str(base_model_path) if base_model_path is not None else ""
-        )
-        output_dir_str = str(output_dir) if output_dir is not None else ""
-
-        for file_name in essential_files:
-            file_name_str = str(file_name)
-            src_path = os.path.join(base_model_path_str, file_name_str)
-            dst_path = os.path.join(output_dir_str, file_name_str)
-
-            if os.path.exists(src_path) and not os.path.exists(dst_path):
-                shutil.copy2(src_path, dst_path)
-                self.logger.info(f"   ✅ Copied {file_name}")
-            elif os.path.exists(dst_path):
-                self.logger.info(f"   ✅ {file_name} already exists")
-            else:
-                self.logger.error(f"   ❌ {file_name} not found in base model")
-                missing_source_files.append(file_name)
-
-        if missing_source_files:
-            raise RuntimeError(
-                f"Essential files missing from base model {base_model_path}: {missing_source_files}"
-            )
-
-        # Copy optional files (best effort, don't fail if missing)
-        for file_name in optional_files:
-            file_name_str = str(file_name)
-            src_path = os.path.join(base_model_path_str, file_name_str)
-            dst_path = os.path.join(output_dir_str, file_name_str)
-
-            if os.path.exists(dst_path):
-                self.logger.info(f"   ✅ {file_name} already exists (optional)")
-            elif os.path.exists(src_path):
-                shutil.copy2(src_path, dst_path)
-                self.logger.info(f"   ✅ Copied {file_name} (optional)")
-            else:
-                self.logger.info(
-                    f"   ℹ️ Optional file {file_name} not found in base model"
-                )
-
-    def _verify_saved_checkpoint(self, output_dir: str) -> None:
-        """Verify that all necessary components were saved in the checkpoint."""
-        import os
-
-        from safetensors import safe_open
-
-        self.logger.info("🔍 Verifying saved checkpoint components...")
-
-        # Check essential files exist
-        essential_files = [
-            "config.json",
-            "tokenizer_config.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-        ]
-
-        missing_files = []
-        for file_name in essential_files:
-            file_path = os.path.join(output_dir, file_name)
-            if os.path.exists(file_path):
-                self.logger.info(f"   ✅ {file_name} exists")
-            else:
-                self.logger.error(f"   ❌ {file_name} MISSING")
-                missing_files.append(file_name)
-
-        if missing_files:
-            raise RuntimeError(f"Essential checkpoint files missing: {missing_files}")
-
-        # Check model weights and verify visual components
-        safetensor_files = [
-            f for f in os.listdir(output_dir) if f.endswith(".safetensors")
-        ]
-        if not safetensor_files:
-            raise RuntimeError("No safetensor model files found in checkpoint!")
-
-        self.logger.info(f"   ✅ Found {len(safetensor_files)} safetensor files")
-
-        # Check for visual tower weights in the first safetensor file
-        first_file = os.path.join(output_dir, safetensor_files[0])
-        visual_keys = []
-        total_keys = 0
-
-        with safe_open(first_file, framework="pt", device="cpu") as f:
-            all_keys = list(f.keys())
-            total_keys = len(all_keys)
-
-            # Check for visual parameters
-            for key in all_keys:
-                if "visual" in key:
-                    visual_keys.append(key)
-
-        self.logger.info(f"   ✅ Total parameters saved: {total_keys}")
-
-        # SAFE FALLBACK: Vision tower check for wrapped models
-        if not visual_keys:
-            # Check if we're dealing with a wrapped model that stores visual components differently
-            wrapped_visual_keys = [
-                key
-                for key in all_keys
-                if "base_model" in key and "visual" in key.lower()
-            ]
-            if wrapped_visual_keys:
-                self.logger.info(
-                    f"   ✅ Found visual parameters in wrapped model: {len(wrapped_visual_keys)}"
-                )
-                visual_keys = wrapped_visual_keys
-            else:
-                self.logger.warning(
-                    "⚠️ No visual tower parameters found in checkpoint! "
-                    "This may indicate the model is wrapped or uses a different structure. "
-                    "Proceeding with caution - verify model loads correctly."
-                )
-
-        self.logger.info(f"   ✅ Visual tower parameters found: {len(visual_keys)}")
-        self.logger.info(f"      Examples: {visual_keys[:3]}...")
-
-    def _is_coordinate_token_parameter(
-        self, param_name: str, param: torch.nn.Parameter
-    ) -> bool:
-        """
-        Check if a parameter is a coordinate token parameter.
-
-        Args:
-            param_name: Name of the parameter
-            param: The parameter tensor
-
-        Returns:
-            True if this is a coordinate token parameter
-        """
-        # 1. Check for explicit coordinate token modules
-        if any(
-            pattern in param_name
-            for pattern in [
-                "extended_embeddings",
-                "extended_lm_head",
-                "coordinate_tokens",
-                "coord_tokens",
-                "coordinate_head",
-            ]
-        ):
-            return True
-
-        # 2. Check if model has coordinate tokens enabled and this is an extended embedding/LM head
-        if (
-            hasattr(self.model, "coordinate_tokens_enabled")
-            and self.model.coordinate_tokens_enabled
-        ):
-            # Check if this is the input embeddings or LM head that contains coordinate tokens
-            if any(
-                pattern in param_name
-                for pattern in [
-                    "embed_tokens.weight",  # Input embeddings
-                    "lm_head.weight",  # Output LM head
-                ]
-            ):
-                # Verify this parameter actually has extended vocabulary
-                return self._is_extended_vocabulary_parameter(param_name, param)
-
-        # 3. Check for coordinate-specific parameter patterns
-        if any(
-            pattern in param_name.lower()
-            for pattern in [
-                "coordinate",
-                "coord_",
-                "bbox",
-                "detection_head",
-            ]
-        ):
-            return True
-
-        return False
-
-    def _is_extended_vocabulary_parameter(
-        self, param_name: str, param: torch.nn.Parameter
-    ) -> bool:
-        """
-        Check if a parameter has extended vocabulary size (indicating coordinate tokens).
-
-        Args:
-            param_name: Parameter name to check
-            param: The parameter tensor
-
-        Returns:
-            True if parameter has extended vocabulary size
-        """
-        try:
-            # EXPLICIT CONFIG: Check if model has coordinate token information
-            if hasattr(self.model, "original_vocab_size") and hasattr(
-                self.model, "extended_vocab_size"
-            ):
-                # EXPLICIT CONFIG: These attributes are set during model initialization
-                original_size = self.model.original_vocab_size
-                extended_size = self.model.extended_vocab_size
-
-                # For embedding parameters, check the first dimension (vocab size)
-                if "embed_tokens.weight" in param_name and param.dim() >= 2:
-                    actual_vocab_size = param.shape[0]
-                    return (
-                        actual_vocab_size == extended_size
-                        and extended_size > original_size
-                    )
-
-                # For LM head parameters, check the output dimension
-                if "lm_head.weight" in param_name and param.dim() >= 2:
-                    actual_vocab_size = param.shape[0]  # Output vocab size
-                    return (
-                        actual_vocab_size == extended_size
-                        and extended_size > original_size
-                    )
-
-            return False
-        except Exception:
-            return False
-
-    def init_param_groups(self) -> None:
-        """
-        Initializes parameter groups for differential learning rate.
-
-        This method categorizes all trainable parameters into 'vision', 'merger',
-        and 'llm' groups. It will raise a ValueError if any
-        trainable parameters cannot be categorized, ensuring that all parts of
-        the model are explicitly handled.
-        """
-        self.logger.info(
-            "🔧 Initializing parameter groups for differential learning rate..."
-        )
-
-        param_groups_with_names = {
-            "vision": [],
-            "merger": [],
-            "llm": [],
-            "coordinate": [],  # For coordinate token parameters
-            "others": [],  # For uncategorized parameters
-        }
-
-        for name, param in self.model.named_parameters():
-            if not param.requires_grad:
-                continue
-
-            # Correct parameter name matching based on the model's structure.
-            # The order is critical: check for the most specific names first.
-            # Check for coordinate token parameters first (highest priority)
-            if self._is_coordinate_token_parameter(name, param):
-                param_groups_with_names["coordinate"].append((name, param))
-            # "merger" is part of the vision tower, so check for it *before* "visual".
-            elif "merger" in name:
-                param_groups_with_names["merger"].append((name, param))
-            elif "visual" in name:
-                param_groups_with_names["vision"].append((name, param))
-            # Language model parameters are in the main 'model' and 'lm_head'.
-            elif "model." in name or ".model." in name or "lm_head" in name:
-                param_groups_with_names["llm"].append((name, param))
-            else:
-                param_groups_with_names["others"].append((name, param))
-
-        # Check for uncategorized parameters and raise an error if any are found.
-        if param_groups_with_names["others"]:
-            other_param_names = [name for name, _ in param_groups_with_names["others"]]
-            self.logger.error(
-                f"❌ Found {len(other_param_names)} unexpected trainable parameters that could not be categorized:"
-            )
-            for name in other_param_names:
-                self.logger.error(f"   - {name}")
-            raise ValueError(
-                "Uncategorized trainable parameters found. All parameters must be explicitly "
-                "assigned to a learning rate group (vision, merger, llm)."
-            )
-
-        # Remove the (now empty) 'others' group
-        del param_groups_with_names["others"]
-
-        # Store for optimizer creation (without names)
-        self._param_groups = {
-            group: [p for _, p in params]
-            for group, params in param_groups_with_names.items()
-        }
-        self._param_names = list(self._param_groups.keys())
-
-        # Log the parameter distribution
-        for group, params in self._param_groups.items():
-            num_params = sum(p.numel() for p in params)
-            if num_params > 0:
-                self.logger.info(
-                    f"   - Group '{group}': {len(params)} tensors, {num_params / 1e6:.2f}M params"
-                )
+    # Parameter grouping logic moved to ParameterGroupManager - no duplication
 
     def create_optimizer(self) -> Union[Optimizer, DummyOptim]:
         """
-        Create the optimizer with differential learning rates if configured.
+        Create the optimizer using training state manager's parameter management.
         """
-        # --------------------------------------------------------------
-        # Ensure parameter groups are initialised *before* the first call
-        # to HF Trainer's optimiser builder.  If they are missing at this
-        # point we compute them on-the-fly so that the very first optimiser
-        # contains the correct learning-rate buckets.
-        # --------------------------------------------------------------
-
         if not self.config.use_differential_lr:
             self.logger.info("🚀 Differential LR disabled → using standard optimizer…")
-            self.optimizer = super().create_optimizer()
+            self.optimizer = super(BBUTrainer, self).create_optimizer()
             self._wrap_optimizer_step()
             return self.optimizer
 
-        # Differential LR *enabled* — make sure param groups exist
-        if not hasattr(self, "_param_groups"):
-            self.logger.info(
-                "🔧 _param_groups not found – running init_param_groups() now…"
-            )
-            self.init_param_groups()
+        # Use training state manager for differential LR
+        self.logger.info(
+            "🚀 Creating optimizer with differential learning rates via training state manager..."
+        )
 
-        self.logger.info("🚀 Creating optimizer with differential learning rates...")
-
-        lr_map = {
-            "vision": self.config.vision_lr,
-            "merger": self.config.merger_lr,
-            "llm": self.config.llm_lr,
-            "coordinate": self.config.coordinate_lr,
-        }
-
-        optimizer_grouped_parameters = []
-        for group_name, params in self._param_groups.items():
-            if params:
-                lr = lr_map[group_name]
-                optimizer_grouped_parameters.append(
-                    {
-                        "params": params,
-                        "lr": lr,
-                    }
-                )
-                self.logger.info(f"   - Group '{group_name}' assigned LR: {lr}")
+        # Get parameter groups from training state manager
+        optimizer_groups = self.training_state_manager.create_optimizer_groups()
 
         optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(
             self.args, self.model
         )
 
-        # The scheduler is responsible for applying the learning rate schedule to each
-        # parameter group. The optimizer should be initialized with the per-group
-        # learning rates, and the scheduler will correctly update them based on its
-        # schedule (e.g., cosine annealing).
-        #
-        # The base `learning_rate` in `optimizer_kwargs` serves as a default for any
-        # parameters that are not explicitly assigned to a group, which is not the
-        # case here but is harmless to leave in. The per-group `lr` will take
-        # precedence.
-        self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
-
-        self._wrap_optimizer_step()  # Capture grad norms before zero_grad
+        self.optimizer = optimizer_cls(optimizer_groups, **optimizer_kwargs)
+        self._wrap_optimizer_step()
 
         self.logger.info(
-            "✅ Optimizer with differential learning rates created successfully."
+            "✅ Optimizer with differential learning rates created successfully via coordinator."
         )
         return self.optimizer
 
@@ -827,10 +327,10 @@ class BBUTrainer(Trainer):
 
         def step_with_norm_capture(*args, **kwargs):  # type: ignore[override]
             try:
-                self._norm_cache = self._capture_grad_weight_norms()
+                norm_metrics = self._capture_grad_weight_norms()
+                self.training_state_manager.cache_norm_metrics(norm_metrics)
             except Exception as exc:
                 self.logger.warning(f"⚠️ Failed to capture weight/grad norms: {exc}")
-                self._norm_cache = {}
 
             return original_step(*args, **kwargs)
 
@@ -852,183 +352,11 @@ class BBUTrainer(Trainer):
 
         norms: Dict[str, float] = {}
 
-        # Detection head removed - using coordinate tokens instead
-        module_map = {
-            # Legacy detection head modules removed
-        }
-
-        # Build a quick lookup for named_modules once to avoid O(N²) search
-        named_modules = dict(self.model.named_modules())
-
-        for key, module_path in module_map.items():
-            module = None
-            # Prefer exact match first; fallback to suffix match for robustness
-            if module_path in named_modules:
-                module = named_modules[module_path]
-            else:
-                for name, mod in named_modules.items():
-                    if name.endswith(module_path):
-                        module = mod
-                        break
-
-            if module is None:
-                # Skip if the module does not exist (e.g., detection disabled)
-                continue
-
-            first_param = next(module.parameters())
-            weight_sq: torch.Tensor = torch.zeros((), device=first_param.device)  # type: ignore[arg-type]
-            grad_sq: torch.Tensor = torch.zeros_like(weight_sq)
-            param_cnt: int = 0
-
-            for p in module.parameters():
-                weight_sq += p.data.norm(2).pow(2)
-                if p.grad is not None:
-                    grad_sq += p.grad.norm(2).pow(2)
-                param_cnt += 1
-
-            if param_cnt == 0:
-                continue
-
-            # All-reduce for distributed so we get *global* norms, even with ZeRO
-            vec = torch.stack(
-                [
-                    weight_sq,
-                    grad_sq,
-                    torch.tensor(float(param_cnt), device=weight_sq.device),
-                ]
-            )
-            if torch.distributed.is_initialized():
-                torch.distributed.all_reduce(vec, op=torch.distributed.ReduceOp.SUM)
-
-            total_params = vec[2].item()
-            norms[f"wn/{key}"] = (vec[0].sqrt() / total_params).item()
-            norms[f"gn/{key}"] = (vec[1].sqrt() / total_params).item()
-
+        # Legacy detection head module mapping removed - coordinate tokens handle detection
+        # No module-specific norm capture needed for coordinate token approach
         return norms
 
-    def _compute_teacher_student_losses(
-        self,
-        logits: torch.Tensor,
-        labels: Optional[torch.Tensor],
-        inputs: Dict[str, Any],
-        requires_grad: bool = True,
-    ) -> tuple[float, float]:
-        """
-        Compute separate losses for teacher and student spans.
-
-        Uses the same shifting logic as the total LM loss computation,
-        so the returned losses are directly comparable to the total LM loss.
-
-        Args:
-            logits: Model output logits [batch_size, sequence_length, vocab_size]
-            labels: Ground truth labels [batch_size, sequence_length]
-            inputs: Batch inputs containing span information
-            requires_grad: Whether to create tensors with gradients (True for training, False for evaluation)
-
-        Returns:
-            Tuple of (teacher_loss, student_loss) as float values
-        """
-        if labels is None:
-            return 0.0, 0.0
-
-        # Get spans from inputs (may be None for backward compatibility)
-        teacher_spans = inputs["teacher_assistant_spans"]
-        student_spans = inputs["student_assistant_spans"]
-
-        if teacher_spans is None or student_spans is None:
-            # No spans available, split not possible
-            return 0.0, 0.0
-
-        # CRITICAL: Apply the same shifting as the total LM loss computation
-        # The model predicts next tokens, so we shift logits[:-1] vs labels[1:]
-        batch_size, seq_len, vocab_size = logits.shape
-        shift_logits = logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
-        shift_labels = labels[..., 1:].contiguous()  # [batch, seq_len-1]
-
-        # Flatten shifted logits and labels for easier indexing
-        flat_logits = shift_logits.view(
-            -1, vocab_size
-        )  # [batch_size * (seq_len-1), vocab_size]
-        flat_labels = shift_labels.view(-1)  # [batch_size * (seq_len-1)]
-
-        # Adjust sequence length for shifted data
-        shifted_seq_len = seq_len - 1
-
-        # Create loss function - use MEAN reduction to match the total LM loss
-        loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")
-
-        # Collect indices for teacher and student tokens
-        # NOTE: Spans are in original coordinates, but we need to adjust for shifting
-        teacher_indices = []
-        student_indices = []
-
-        for batch_idx in range(batch_size):
-            # Teacher spans for this sample
-            for start, end in teacher_spans[batch_idx]:
-                for pos in range(start, end):
-                    # Shift adjustment: original pos becomes pos-1 in shifted sequence
-                    # We predict token at pos using logits[pos-1], so spans shift left by 1
-                    shifted_pos = pos - 1
-                    if (
-                        0 <= shifted_pos < shifted_seq_len
-                    ):  # Safety check for shifted bounds
-                        flat_idx = batch_idx * shifted_seq_len + shifted_pos
-                        teacher_indices.append(flat_idx)
-
-            # Student spans for this sample
-            for start, end in student_spans[batch_idx]:
-                for pos in range(start, end):
-                    # Shift adjustment: original pos becomes pos-1 in shifted sequence
-                    shifted_pos = pos - 1
-                    if (
-                        0 <= shifted_pos < shifted_seq_len
-                    ):  # Safety check for shifted bounds
-                        flat_idx = batch_idx * shifted_seq_len + shifted_pos
-                        student_indices.append(flat_idx)
-
-        # Compute teacher loss (with gradients for potential reweighting)
-        teacher_loss_tensor = torch.tensor(
-            0.0, device=logits.device, requires_grad=requires_grad
-        )
-        teacher_loss_float = 0.0
-        if teacher_indices:
-            teacher_indices_tensor = torch.tensor(teacher_indices, device=logits.device)
-            teacher_logits = flat_logits[teacher_indices_tensor]
-            teacher_labels = flat_labels[teacher_indices_tensor]
-
-            # Only compute loss on tokens that are not ignored
-            valid_mask = teacher_labels != -100
-            if valid_mask.any():
-                # Keep tensor with gradients for potential reweighting
-                teacher_loss_tensor = loss_fn(
-                    teacher_logits[valid_mask], teacher_labels[valid_mask]
-                )
-                teacher_loss_float = teacher_loss_tensor.detach().item()
-
-        # Compute student loss (with gradients for potential reweighting)
-        student_loss_tensor = torch.tensor(
-            0.0, device=logits.device, requires_grad=requires_grad
-        )
-        student_loss_float = 0.0
-        if student_indices:
-            student_indices_tensor = torch.tensor(student_indices, device=logits.device)
-            student_logits = flat_logits[student_indices_tensor]
-            student_labels = flat_labels[student_indices_tensor]
-
-            # Only compute loss on tokens that are not ignored
-            valid_mask = student_labels != -100
-            if valid_mask.any():
-                # Keep tensor with gradients for potential reweighting
-                student_loss_tensor = loss_fn(
-                    student_logits[valid_mask], student_labels[valid_mask]
-                )
-                student_loss_float = student_loss_tensor.detach().item()
-
-        # Store tensors for potential gradient reweighting (future enhancement)
-        self._teacher_loss_tensor = teacher_loss_tensor
-        self._student_loss_tensor = student_loss_tensor
-
-        return teacher_loss_float, student_loss_float
+    # Teacher-student loss computation moved to LossManager - no duplication
 
     def _compute_loss_with_coordinator(
         self,
@@ -1148,7 +476,9 @@ class BBUTrainer(Trainer):
             self.logger.warning(
                 "⚠️ No training coordinator available for loss computation, using fallback method"
             )
-            return super().compute_loss(model, inputs, return_outputs=return_outputs)
+            return super(BBUTrainer, self).compute_loss(
+                model, inputs, return_outputs=return_outputs
+            )
 
         # During evaluation, detach the loss to avoid gradient issues with logging
         if not model.training and hasattr(total_loss, "detach"):
@@ -1161,7 +491,6 @@ class BBUTrainer(Trainer):
         self._current_lm_loss = (
             self._current_teacher_lm_loss + self._current_student_lm_loss
         )  # For legacy compatibility
-        # objectness_loss removed - not needed for coordinate token system
         # bbox_* and caption_loss duplicates removed - use individual components instead
         # Add coordinate token loss components with new naming - NO DEFAULTS, FAIL FAST
         if (
@@ -1226,93 +555,52 @@ class BBUTrainer(Trainer):
         Returns:
             Loss tensor or tuple of (loss, outputs)
         """
-        # Use coordinator for enhanced loss computation if available
-        if (
-            self._use_coordinator
-            and hasattr(self, "training_coordinator")
-            and self.training_coordinator is not None
-        ):
-            # Let coordinator handle loss computation with multi-loss support
-            if hasattr(self.training_coordinator, "compute_loss"):
-                # Filter inputs for base model compatibility
-                model_inputs = inputs
-                # EXPLICIT CONFIG: detection_enabled is set during model initialization
-                if hasattr(model, "detection_enabled") and not model.detection_enabled:
-                    # For base model, exclude packed collator and custom fields
-                    excluded_keys = [
-                        "cu_seqlens",
-                        "image_counts_per_sample",
-                        "ground_truth_objects",
-                        "teacher_assistant_spans",
-                        "student_assistant_spans",
-                    ]
-                    model_inputs = {
-                        k: v for k, v in inputs.items() if k not in excluded_keys
-                    }
-                    self.logger.debug(
-                        f"🔍 Filtered inputs for base model: {list(model_inputs.keys())}"
-                    )
-                elif not hasattr(model, "detection_enabled"):
-                    # Assume it's a base model if no detection_enabled attribute
-                    excluded_keys = [
-                        "cu_seqlens",
-                        "image_counts_per_sample",
-                        "ground_truth_objects",
-                        "teacher_assistant_spans",
-                        "student_assistant_spans",
-                    ]
-                    model_inputs = {
-                        k: v for k, v in inputs.items() if k not in excluded_keys
-                    }
-                    self.logger.debug(
-                        f"🔍 Filtered inputs for standard model: {list(model_inputs.keys())}"
-                    )
+        # Use coordinator for loss computation (coordinator is mandatory)
+        if not hasattr(self.training_coordinator, "compute_loss"):
+            raise ValueError(
+                "Training coordinator must have compute_loss method. "
+                "Legacy loss computation has been removed."
+            )
 
-                # First get model outputs, then pass to coordinator
-                model_outputs = model(**model_inputs)
-                loss, _ = self.training_coordinator.compute_loss(
-                    model_outputs, inputs, is_training=model.training
-                )
-                # Return loss (and outputs if requested)
-                return (loss, model_outputs) if return_outputs else loss
-            else:
-                self.logger.warning(
-                    "Training coordinator doesn't have compute_loss method, falling back to standard loss"
-                )
+        # Filter inputs for base model compatibility
+        model_inputs = inputs
+        # EXPLICIT CONFIG: detection_enabled is set during model initialization
+        if hasattr(model, "detection_enabled") and not model.detection_enabled:
+            # For base model, exclude packed collator and custom fields
+            excluded_keys = [
+                "cu_seqlens",
+                "max_seqlen",
+                "image_counts_per_sample",
+                "ground_truth_objects",
+                "teacher_assistant_spans",
+                "student_assistant_spans",
+            ]
+            model_inputs = {k: v for k, v in inputs.items() if k not in excluded_keys}
+            self.logger.debug(
+                f"🔍 Filtered inputs for base model: {list(model_inputs.keys())}"
+            )
+        elif not hasattr(model, "detection_enabled"):
+            # Assume it's a base model if no detection_enabled attribute
+            excluded_keys = [
+                "cu_seqlens",
+                "max_seqlen",
+                "image_counts_per_sample",
+                "ground_truth_objects",
+                "teacher_assistant_spans",
+                "student_assistant_spans",
+            ]
+            model_inputs = {k: v for k, v in inputs.items() if k not in excluded_keys}
+            self.logger.debug(
+                f"🔍 Filtered inputs for standard model: {list(model_inputs.keys())}"
+            )
 
-        # Fall back to standard loss computation
-        if (
-            hasattr(self, "label_smoother")
-            and self.label_smoother is not None
-            and "labels" in inputs
-        ):
-            labels = inputs.pop("labels")
-        else:
-            labels = None
-
-        outputs = model(**inputs)
-
-        # Save past state if it exists
-        if self.args.past_index >= 0:
-            self._past = outputs[self.args.past_index]
-
-        if labels is not None:
-            if hasattr(self, "label_smoother") and self.label_smoother is not None:
-                loss = self.label_smoother(outputs, labels)
-            else:
-                # Standard behavior: model outputs loss directly
-                loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
-        else:
-            # No labels provided, check if model computes loss internally
-            if isinstance(outputs, dict) and "loss" in outputs:
-                loss = outputs["loss"]
-            else:
-                # No internal loss computation
-                raise ValueError(
-                    "No labels provided and model does not compute loss internally"
-                )
-
-        return (loss, outputs) if return_outputs else loss
+        # First get model outputs, then pass to coordinator
+        model_outputs = model(**model_inputs)
+        loss, _ = self.training_coordinator.compute_loss(
+            model_outputs, inputs, is_training=model.training
+        )
+        # Return loss (and outputs if requested)
+        return (loss, model_outputs) if return_outputs else loss
 
     def _maybe_log_save_evaluate(
         self,
@@ -1326,386 +614,52 @@ class BBUTrainer(Trainer):
         learning_rate: Optional[float] = None,
     ) -> None:
         """
-        Log metrics with averaging for gradient accumulation.
+        Log metrics with averaging for gradient accumulation using MetricsManager.
+
+        This method has been refactored to use the MetricsManager for all metrics
+        handling, reducing complexity and improving maintainability.
         """
-        if self.control.should_log:
-            # Define num_micro_batches for both coordinator and legacy paths
-            num_micro_batches = max(1, self._micro_batch_count)
+        # Use TrainingStateManager for training metrics logging
+        logged_metrics = self.training_state_manager.log_training_metrics(
+            tr_loss=tr_loss,
+            grad_norm=grad_norm,
+            model=model,
+            trial=trial,
+            epoch=epoch,
+            ignore_keys_for_eval=ignore_keys_for_eval,
+            start_time=start_time,
+            learning_rate=learning_rate,
+            control=self.control,
+            state=self.state,
+            args=self.args,
+            micro_batch_count=self._micro_batch_count,
+        )
 
-            # NEW: Use training coordinator for loss averaging if available
-            if (
-                self._use_coordinator
-                and self.training_coordinator is not None
-                and hasattr(self.training_coordinator, "get_averaged_losses_and_reset")
-            ):
-                component_logs = (
-                    self.training_coordinator.get_averaged_losses_and_reset()
-                )
+        # Log the metrics if they were generated
+        if logged_metrics:
+            # Use the custom log method for differential learning rates
+            final_logs = self.training_state_manager.log_metrics_batch(
+                logs=logged_metrics,
+                lr_scheduler=self.lr_scheduler,
+                args=self.args,
+            )
 
-                # Validate required keys in component_logs
-                if "loss" not in component_logs:
-                    raise ValueError(
-                        "Coordinator must provide 'loss' in component_logs"
-                    )
+            # Call the parent Trainer.log() method to actually log to wandb/tensorboard
+            super(BBUTrainer, self).log(final_logs)
 
-                total_avg_loss = component_logs["loss"]
+            # Reset training state manager metrics after logging
+            self.training_state_manager.reset_metrics_state()
 
-                # CRITICAL FIX: Ensure coordinate losses are always included in coordinator logs
-                # Even if they come from the coordinator, we need to validate they're present
-                # Validate coordinate_tokens_enabled is present in config
-                if not hasattr(self.config, "coordinate_tokens_enabled"):
-                    raise ValueError(
-                        "coordinate_tokens_enabled must be explicitly configured in config"
-                    )
+            # Reset micro batch count (now handled by metrics manager)
+            self._micro_batch_count = 0
 
-                coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-                if coordinate_tokens_enabled:
-                    # Simplified validation - only require coordinate L1 loss
-                    required_coord_losses = [
-                        "coordinate_l1_loss",
-                    ]
-                    missing_coord_losses = []
-
-                    for key in required_coord_losses:
-                        if key not in component_logs:
-                            missing_coord_losses.append(key)
-
-                    if missing_coord_losses:
-                        raise RuntimeError(
-                            f"Coordinate tokens enabled but coordinator missing required losses: {missing_coord_losses}. "
-                            f"This indicates training coordinator is not properly computing coordinate losses."
-                        )
-
-                    # DEBUG: Log all available keys in component_logs
-                    self.logger.debug(
-                        f"🔍 TRAINER: Available component_logs keys: {list(component_logs.keys())}"
-                    )
-
-                    # Log coordinate loss values for debugging
-                    total_coord_loss = sum(
-                        component_logs.get(key, 0.0) for key in required_coord_losses
-                    )
-                    self.logger.debug(f"🔍 TRAINER: Simplified coordinate losses:")
-                    self.logger.debug(
-                        f"   coordinate_l1_loss: {component_logs.get('coordinate_l1_loss', 0.0)}"
-                    )
-                    self.logger.debug(f"   total_coord_loss: {total_coord_loss}")
-
-                    # STRICT VALIDATION: All samples must have students, students must have coordinate losses
-                    self._step_count += 1
-
-                    # Validate student_lm_loss and teacher_lm_loss are present
-                    if "student_lm_loss" not in component_logs:
-                        raise ValueError(
-                            "Coordinator must provide 'student_lm_loss' in component_logs"
-                        )
-                    if "teacher_lm_loss" not in component_logs:
-                        raise ValueError(
-                            "Coordinator must provide 'teacher_lm_loss' in component_logs"
-                        )
-
-                    student_lm_loss = component_logs["student_lm_loss"]
-                    teacher_lm_loss = component_logs["teacher_lm_loss"]
-
-                    # Every sample must have student portion (students do detection)
-                    if student_lm_loss == 0.0 and (
-                        not hasattr(self.args, "local_rank")
-                        or self.args.local_rank <= 0
-                    ):
-                        self.logger.error(
-                            f"❌ TRAINER: CRITICAL ERROR at step {self._step_count}"
-                        )
-                        self.logger.error(
-                            "❌ No student samples found - ALL samples must have student portions!"
-                        )
-                        self.logger.error(
-                            "❌ Expected: Every sample has student, some samples also have teachers"
-                        )
-                        self.logger.error(f"❌ Debug info:")
-                        self.logger.error(f"   Step: {self._step_count}")
-                        self.logger.error(f"   Student LM loss: {student_lm_loss}")
-                        self.logger.error(f"   Teacher LM loss: {teacher_lm_loss}")
-                        raise RuntimeError(
-                            f"CRITICAL: No student samples found at step {self._step_count}. "
-                            f"All training samples must have student portions for detection."
-                        )
-
-                    # Every student sample must have coordinate losses (students do detection)
-                    # Use small threshold to handle floating point precision issues
-                    coord_loss_threshold = 1e-6
-
-                    # Check if we're in a testing environment (integration tests)
-                    # Integration tests with synthetic data may not generate proper coordinate tokens
-                    is_integration_test = hasattr(
-                        self.args, "output_dir"
-                    ) and "pipeline_test" in str(self.args.output_dir)
-
-                    if (
-                        total_coord_loss < coord_loss_threshold
-                        and student_lm_loss > 0.0
-                        and not is_integration_test  # Skip validation for integration tests
-                        and (
-                            not hasattr(self.args, "local_rank")
-                            or self.args.local_rank <= 0
-                        )
-                    ):
-                        self.logger.error(
-                            f"❌ TRAINER: CRITICAL ERROR at step {self._step_count}"
-                        )
-                        self.logger.error(
-                            "❌ Student samples present but all coordinate losses are ZERO!"
-                        )
-                        self.logger.error(
-                            "❌ Students must have coordinate losses when coordinate tokens are enabled"
-                        )
-                        self.logger.error("❌ Possible causes:")
-                        self.logger.error(
-                            "   1. Data preprocessing failed to generate coordinate tokens"
-                        )
-                        self.logger.error(
-                            "   2. Chat processor is not properly formatting coordinate tokens"
-                        )
-                        self.logger.error(
-                            "   3. UnifiedTokenManager coordinate token addition failed"
-                        )
-                        self.logger.error("   4. Coordinate token vocabulary mismatch")
-                        self.logger.error(
-                            "   5. Model wrapper not computing coordinate losses"
-                        )
-                        self.logger.error(f"❌ Debug info:")
-                        self.logger.error(f"   Step: {self._step_count}")
-                        self.logger.error(
-                            f"   Available loss keys: {list(component_logs.keys())}"
-                        )
-                        self.logger.error(
-                            f"   LLM loss: {component_logs.get('llm_loss', 'MISSING')}"
-                        )
-                        self.logger.error(f"   Student LM loss: {student_lm_loss}")
-                        self.logger.error(f"   Teacher LM loss: {teacher_lm_loss}")
-                        self.logger.error(
-                            f"   Total coordinate loss: {total_coord_loss}"
-                        )
-                        self.logger.error(f"   Threshold: {coord_loss_threshold}")
-                        self.logger.error(
-                            f"   Expected coordinate losses: {required_coord_losses}"
-                        )
-                        self.logger.error(f"   Individual coordinate losses:")
-                        for loss_name in required_coord_losses:
-                            loss_value = component_logs.get(loss_name, "MISSING")
-                            self.logger.error(f"     {loss_name}: {loss_value}")
-
-                        # This is a legitimate error - raise exception
-                        raise RuntimeError(
-                            f"CRITICAL: Student samples present (student_lm_loss={student_lm_loss}) but all coordinate losses are below threshold ({total_coord_loss} < {coord_loss_threshold}) at step {self._step_count}. "
-                            f"This indicates a serious bug in data preprocessing or chat processing. "
-                            f"Student samples must have coordinate tokens when coordinate_tokens_enabled=true."
-                        )
-            else:
-                # LEGACY: Original loss averaging logic
-                # The `tr_loss` from the Trainer is an accumulated value.
-                # We re-compute the loss from our own averaged components to ensure
-                # correct, per-step reporting consistent with the docstring.
-                # Average the accumulated component losses
-
-                # Average the accumulated component losses across *all* micro-batches
-                # seen since the last log, independent of the gradient-accumulation
-                # configuration.
-                avg_lm_loss = self._accumulated_lm_loss / num_micro_batches
-                avg_teacher_lm_loss = (
-                    self._accumulated_teacher_lm_loss / num_micro_batches
-                )
-                avg_student_lm_loss = (
-                    self._accumulated_student_lm_loss / num_micro_batches
-                )
-                total_avg_loss = avg_lm_loss
-
-                component_logs: Dict[str, float] = {
-                    "lm_loss": avg_lm_loss,
-                    "teacher_lm_loss": avg_teacher_lm_loss,
-                    "student_lm_loss": avg_student_lm_loss,
-                }
-
-                # Add coordinate token losses if available (new detection system)
-                # ALWAYS log coordinate losses when coordinate tokens are enabled, even if zero
-                if not hasattr(self.config, "coordinate_tokens_enabled"):
-                    raise ValueError(
-                        "coordinate_tokens_enabled must be explicitly configured in config"
-                    )
-                coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-                if coordinate_tokens_enabled:
-                    # Validate required accumulators exist
-                    required_accumulators = [
-                        "_accumulated_coordinate_loss",
-                        "_accumulated_focal_loss",
-                        "_accumulated_regular_loss",
-                        "_accumulated_coord_l1_loss",
-                        "_accumulated_coord_giou_loss",
-                    ]
-
-                    missing_accumulators = []
-                    for attr in required_accumulators:
-                        if not hasattr(self, attr):
-                            missing_accumulators.append(attr)
-
-                    if missing_accumulators:
-                        raise RuntimeError(
-                            f"Coordinate tokens enabled but trainer missing required accumulators: {missing_accumulators}. "
-                            f"This indicates coordinate loss accumulation is not working correctly."
-                        )
-
-                    # Extract with clean naming - NO duplicates or unused losses
-                    component_logs["regular_loss"] = (
-                        self._accumulated_regular_loss / num_micro_batches
-                    )
-
-                    # Only add coordinate losses if they're non-zero (student samples)
-                    if self._accumulated_focal_loss > 0:
-                        component_logs["coord_focal_loss"] = (
-                            self._accumulated_focal_loss / num_micro_batches
-                        )
-                    if self._accumulated_coord_l1_loss > 0:
-                        component_logs["coord_l1_loss"] = (
-                            self._accumulated_coord_l1_loss / num_micro_batches
-                        )
-                    if self._accumulated_coord_giou_loss > 0:
-                        component_logs["coord_giou_loss"] = (
-                            self._accumulated_coord_giou_loss / num_micro_batches
-                        )
-                    # Clean coordinate loss logging - only essential info
-
-            # Legacy bbox detection loss logging removed - using coordinate tokens instead
-            avg_objectness_loss = self._accumulated_objectness_loss / num_micro_batches
-            if avg_objectness_loss > 0:
-                component_logs["objectness_loss"] = avg_objectness_loss
-                total_avg_loss += avg_objectness_loss
-
-            # Define logging order: 'loss', 'grad_norm', then components
-            logs: Dict[str, float] = {}
-            logs["loss"] = total_avg_loss
-
-            if grad_norm is not None:
-                logs["grad_norm"] = (
-                    grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm
-                )
-
-            logs.update(component_logs)
-
-            # ------------------------------------------------------------------
-            # Additional diagnostics: weight- and **gradient** norms.  For the
-            # **train** phase we capture these in ``_wrap_optimizer_step`` *before*
-            # DeepSpeed/Accelerate zero the grads.  If the cache is empty (e.g.,
-            # during evaluation), we fall back to a best-effort recomputation –
-            # grad norms will be zero in that case, which is expected.
-            # ------------------------------------------------------------------
-
-            if self._norm_cache:
-                logs.update(self._norm_cache)
-                # Clear after use so we don't accidentally reuse stale values.
-                self._norm_cache = {}
-            else:
-                # Detection head removed - using coordinate tokens instead
-                module_names = {
-                    # Legacy detection head modules removed
-                }
-
-                for log_key, module_path in module_names.items():
-                    module = None
-                    for name, m in model.named_modules():
-                        if name.endswith(module_path):
-                            module = m
-                            break
-                    if module is None:
-                        continue  # Skip if module missing (e.g., detection disabled)
-                    with torch.no_grad():
-                        weight_sq, grad_sq, param_cnt = 0.0, 0.0, 0
-                        for p in module.parameters():
-                            weight_sq += p.data.norm(2).pow(2)
-                            if p.grad is not None:
-                                grad_sq += p.grad.norm(2).pow(2)
-                            param_cnt += 1
-
-                        device = next(module.parameters()).device
-                        vec = torch.tensor(
-                            [weight_sq, grad_sq, float(param_cnt)],
-                            device=device,
-                            dtype=torch.float32,
-                        )
-                        if torch.distributed.is_initialized():
-                            torch.distributed.all_reduce(
-                                vec, op=torch.distributed.ReduceOp.SUM
-                            )
-
-                        total_params = vec[2].item()
-                        if total_params > 0:
-                            logs[f"wn/{log_key}"] = (
-                                vec[0].sqrt() / total_params
-                            ).item()
-                            logs[f"gn/{log_key}"] = (
-                                vec[1].sqrt() / total_params
-                            ).item()
-
-            # Add ETA and remaining time
-            if self.state.max_steps > 0:
-                current_step = self.state.global_step
-                if current_step > 0:
-                    elapsed_time = time.time() - start_time
-                    avg_time_per_step = elapsed_time / current_step
-                    remaining_steps = self.state.max_steps - current_step
-                    remaining_time_s = remaining_steps * avg_time_per_step
-
-                    logs["remaining_hr"] = round(remaining_time_s / 3600, 3)
-
-            self.log(logs)
-
-            # Reset accumulators after logging (only when not using coordinator)
-            # The coordinator handles its own accumulator management
-            if not self._use_coordinator:
-                self._accumulated_lm_loss = 0.0
-                self._accumulated_teacher_lm_loss = 0.0
-                self._accumulated_student_lm_loss = 0.0
-                self._accumulated_objectness_loss = 0.0
-
-                # Validate coordinate token loss accumulators exist if coordinate tokens are enabled
-                if (
-                    hasattr(self.config, "coordinate_tokens_enabled")
-                    and self.config.coordinate_tokens_enabled
-                ):
-                    # Validate required accumulators exist
-                    required_accumulators = [
-                        "_accumulated_coordinate_loss",
-                        "_accumulated_focal_loss",
-                        "_accumulated_regular_loss",
-                        "_accumulated_coord_l1_loss",
-                        "_accumulated_coord_giou_loss",
-                    ]
-
-                    missing_accumulators = []
-                    for attr in required_accumulators:
-                        if not hasattr(self, attr):
-                            missing_accumulators.append(attr)
-
-                    if missing_accumulators:
-                        raise RuntimeError(
-                            f"Coordinate tokens enabled but trainer missing required accumulators: {missing_accumulators}. "
-                            f"This indicates coordinate loss accumulation is not working correctly."
-                        )
-
-                    # Reset coordinate token loss accumulators
-                    self._accumulated_coordinate_loss = 0.0
-                    self._accumulated_focal_loss = 0.0
-                    self._accumulated_regular_loss = 0.0
-                    self._accumulated_coord_l1_loss = 0.0
-                    self._accumulated_coord_giou_loss = 0.0
-
-                # Also reset the micro-batch counter so the next logging window
-                # starts fresh.
-                self._micro_batch_count = 0
-
+        # Handle evaluation if needed
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
 
+        # Handle checkpointing if needed
         if self.control.should_save:
-            self._save_checkpoint(model, trial)
+            self._save()
             self.control = self.callback_handler.on_save(
                 self.args, self.state, self.control
             )
@@ -1720,20 +674,17 @@ class BBUTrainer(Trainer):
 
         Note: This issue is resolved by setting remove_unused_columns=False in configuration.
         """
+        # Integrated dataloader creation (from DataLoaderManager)
         if self.train_dataset is None:
             raise ValueError("Trainer: training requires a train_dataset.")
 
-        from torch.utils.data import DataLoader
-
-        # Define seed_worker locally if not available
-        def seed_worker(worker_id):
-            """Worker init function to set random seed for each worker."""
+        # Worker init function for reproducibility
+        def setup_dataloader_workers(worker_id: int) -> None:
+            worker_seed = torch.initial_seed() % 2**32
             import random
 
             import numpy as np
-            import torch
 
-            worker_seed = torch.initial_seed() % 2**32
             np.random.seed(worker_seed)
             random.seed(worker_seed)
 
@@ -1749,8 +700,10 @@ class BBUTrainer(Trainer):
         if not isinstance(self.train_dataset, torch.utils.data.IterableDataset):
             dataloader_params["sampler"] = self._get_train_sampler()
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
-            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["worker_init_fn"] = setup_dataloader_workers
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        from torch.utils.data import DataLoader
 
         return self.accelerator.prepare(
             DataLoader(self.train_dataset, **dataloader_params)
@@ -1767,17 +720,17 @@ class BBUTrainer(Trainer):
 
         eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
 
-        from torch.utils.data import DataLoader
+        # Integrated dataloader creation (from DataLoaderManager)
+        if eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
 
-        # Define seed_worker locally if not available
-        def seed_worker(worker_id):
-            """Worker init function to set random seed for each worker."""
+        # Worker init function for reproducibility
+        def setup_dataloader_workers(worker_id: int) -> None:
+            worker_seed = torch.initial_seed() % 2**32
             import random
 
             import numpy as np
-            import torch
 
-            worker_seed = torch.initial_seed() % 2**32
             np.random.seed(worker_seed)
             random.seed(worker_seed)
 
@@ -1793,67 +746,30 @@ class BBUTrainer(Trainer):
         if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
             dataloader_params["sampler"] = self._get_eval_sampler(eval_dataset)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
-            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["worker_init_fn"] = setup_dataloader_workers
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        from torch.utils.data import DataLoader
 
         return self.accelerator.prepare(DataLoader(eval_dataset, **dataloader_params))
 
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Log `logs` on the various objects watching training.
-        This method is overridden to support logging of differential learning rates.
+
+        This method is overridden to support logging of differential learning rates
+        using the MetricsManager for enhanced functionality.
         """
-        # Remove the generic learning rate from the logs.
-        logs.pop("learning_rate", None)
+        # Use TrainingStateManager for comprehensive log processing
+        final_logs = self.training_state_manager.log_metrics_batch(
+            logs=logs,
+            lr_scheduler=self.lr_scheduler,
+            args=self.args,
+            start_time=start_time,
+        )
 
-        # Log the learning rate for each parameter group.
-        if self.lr_scheduler is not None:
-            try:
-                # Check scheduler type and handle appropriately
-                scheduler_class_name = self.lr_scheduler.__class__.__name__
-
-                if scheduler_class_name == "DummyScheduler":
-                    # Validate DummyScheduler has lr attribute
-                    if not hasattr(self.lr_scheduler, "lr"):
-                        raise ValueError("DummyScheduler missing lr attribute")
-                    logs["learning_rate"] = self.lr_scheduler.lr
-                elif hasattr(self.lr_scheduler, "get_last_lr"):
-                    # Standard schedulers with get_last_lr method
-                    last_lr = self.lr_scheduler.get_last_lr()
-
-                    # Validate _param_names exists and has correct length
-                    if not hasattr(self, "_param_names"):
-                        raise ValueError(
-                            "_param_names not initialized - call init_param_groups() first"
-                        )
-
-                    if len(last_lr) != len(self._param_names):
-                        self.logger.warning(
-                            f"Learning rate groups ({len(last_lr)}) don't match parameter groups ({len(self._param_names)})"
-                        )
-                        # Log all learning rates without group names
-                        for i, lr in enumerate(last_lr):
-                            logs[f"lr/group_{i}"] = lr
-                    else:
-                        # Log learning rates with group names
-                        for i, (group_name, group_lr) in enumerate(
-                            zip(self._param_names, last_lr)
-                        ):
-                            logs[f"lr/{group_name}"] = group_lr
-                else:
-                    # Fallback for scheduler types that don't have get_last_lr
-                    # Validate args has learning_rate attribute
-                    if not hasattr(self.args, "learning_rate"):
-                        raise ValueError("args missing learning_rate attribute")
-                    logs["learning_rate"] = self.args.learning_rate
-            except Exception as e:
-                # Log error but don't fail training because of logging issue
-                self.logger.warning(f"Error getting learning rate: {e}")
-                # Validate args has learning_rate attribute
-                if hasattr(self.args, "learning_rate"):
-                    logs["learning_rate"] = self.args.learning_rate
-
-        super().log(logs, start_time)
+        # Call the parent Trainer.log() method to actually log to wandb/tensorboard
+        super(BBUTrainer, self).log(final_logs, start_time)
 
     def _extract_ground_truth_objects(self, inputs):
         """Extracts ground truth objects from inputs if they exist."""
@@ -1865,7 +781,7 @@ class BBUTrainer(Trainer):
                 gt_objects = [
                     obj
                     if isinstance(obj, GroundTruthObject)
-                    else GroundTruthObject(bbox_2d=obj["bbox_2d"], desc=obj["desc"])
+                    else GroundTruthObject(bbox=obj["bbox_2d"], description=obj["desc"])
                     for obj in raw_objs
                 ]
                 self.logger.debug(
@@ -1939,197 +855,20 @@ class BBUTrainer(Trainer):
         """
         Enhanced prediction step that includes detection loss logging during evaluation.
         """
-        # Store original state for restoration
-        original_training = model.training
-
-        # Set model to eval mode
-        model.eval()
-
-        # Use the same compute_loss logic but with eval prefix
-        with torch.no_grad():
-            # Fix Flash Attention padding issue during evaluation
-            original_padding_side = None
-            tokenizer_to_fix = None
-
-            # Try multiple tokenizer references
-            if hasattr(self, "tokenizer_ref") and hasattr(
-                self.tokenizer_ref, "padding_side"
-            ):
-                tokenizer_to_fix = self.tokenizer_ref
-            elif hasattr(self, "tokenizer") and hasattr(self.tokenizer, "padding_side"):
-                tokenizer_to_fix = self.tokenizer
-            elif (
-                hasattr(self, "data_collator")
-                and hasattr(self.data_collator, "tokenizer")
-                and hasattr(self.data_collator.tokenizer, "padding_side")
-            ):
-                tokenizer_to_fix = self.data_collator.tokenizer
-
-            if tokenizer_to_fix is not None:
-                original_padding_side = tokenizer_to_fix.padding_side
-                tokenizer_to_fix.padding_side = "left"
-                self.logger.debug(
-                    f"🔧 Fixed tokenizer padding_side for evaluation: {original_padding_side} -> left"
-                )
-
-            # Temporarily modify the loss info prefix for evaluation
-            # EXPLICIT CONFIG: _loss_prefix is initialized in __init__
-            old_prefix = getattr(
-                self, "_loss_prefix", ""
-            )  # Keep getattr for backward compatibility
-            self._loss_prefix = "eval"
-
-            try:
-                # Use our enhanced compute_loss method
-                if prediction_loss_only:
-                    loss = self.compute_loss(model, inputs)
-                    return (loss, None, None)
-                else:
-                    loss, outputs = self.compute_loss(
-                        model, inputs, return_outputs=True
-                    )
-
-                    # Extract logits for evaluation metrics
-                    if isinstance(outputs, dict):
-                        logits = tuple(
-                            v
-                            for k, v in outputs.items()
-                            if k not in (ignore_keys or []) + ["loss"]
-                        )
-                        # Convert to tensor for proper type compatibility
-                        if logits and len(logits) == 1:
-                            logits = logits[0]  # Unwrap single-item tuple
-                    else:
-                        logits = (
-                            outputs[1:] if hasattr(outputs, "__getitem__") else outputs
-                        )
-                        # Handle non-tuple logits
-                        if not isinstance(logits, tuple):
-                            logits = logits
-
-                    # Extract labels if available
-                    labels = None
-                    if hasattr(self, "label_names") and len(self.label_names) > 0:
-                        labels = tuple(inputs.get(name) for name in self.label_names)
-                        if len(labels) == 1:
-                            labels = labels[0]
-
-                    # Ensure return values match expected types in signature
-                    if not isinstance(loss, (torch.Tensor, type(None))):
-                        loss = torch.tensor(loss) if loss is not None else None
-
-                    return (loss, logits, labels)
-
-            finally:
-                # Restore original padding side if it was changed
-                if original_padding_side is not None and tokenizer_to_fix is not None:
-                    tokenizer_to_fix.padding_side = original_padding_side
-                    self.logger.debug(
-                        f"🔧 Restored tokenizer padding_side: left -> {original_padding_side}"
-                    )
-
-                # Restore original prefix and training state
-                self._loss_prefix = old_prefix
-                model.train(original_training)
+        return self.training_state_manager.predict_batch(
+            model=model,
+            inputs=inputs,
+            prediction_loss_only=prediction_loss_only,
+            ignore_keys=ignore_keys,
+        )
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
         """Override evaluation to include individual loss components in metrics."""
-        # Save training accumulators to prevent interference from evaluation
-        saved_accumulators = {
-            "lm": self._accumulated_lm_loss,
-            "teacher_lm": self._accumulated_teacher_lm_loss,
-            "student_lm": self._accumulated_student_lm_loss,
-            "objectness": self._accumulated_objectness_loss,
-            "coordinate": self._accumulated_coordinate_loss
-            if hasattr(self, "_accumulated_coordinate_loss")
-            else 0.0,
-            "focal": self._accumulated_focal_loss
-            if hasattr(self, "_accumulated_focal_loss")
-            else 0.0,
-            "regular": self._accumulated_regular_loss
-            if hasattr(self, "_accumulated_regular_loss")
-            else 0.0,
-        }
-
-        # Reset accumulators before evaluation
-        self._accumulated_lm_loss = 0.0
-        self._accumulated_teacher_lm_loss = 0.0
-        self._accumulated_student_lm_loss = 0.0
-        self._accumulated_objectness_loss = 0.0
-        # Add coordinate token loss accumulators (ensure they exist)
-        if not hasattr(self, "_accumulated_coordinate_loss"):
-            self._accumulated_coordinate_loss = 0.0
-        if not hasattr(self, "_accumulated_focal_loss"):
-            self._accumulated_focal_loss = 0.0
-        if not hasattr(self, "_accumulated_regular_loss"):
-            self._accumulated_regular_loss = 0.0
-
-        # Reset coordinate token loss accumulators
-        self._accumulated_coordinate_loss = 0.0
-        self._accumulated_focal_loss = 0.0
-        self._accumulated_regular_loss = 0.0
-
-        # Run base evaluation. This will call compute_loss and populate our accumulators.
-        metrics = super().evaluate(
+        return self.training_state_manager.run_evaluation(
             eval_dataset=eval_dataset,
             ignore_keys=ignore_keys,
             metric_key_prefix=metric_key_prefix,
         )
-
-        # Compute average component losses over all evaluation batches
-        eval_loader = self.get_eval_dataloader(eval_dataset)
-        num_batches = len(eval_loader)
-
-        if num_batches > 0:
-            # Always log LM loss components
-            metrics[f"{metric_key_prefix}_lm_loss"] = round(
-                self._accumulated_lm_loss / num_batches, 4
-            )
-
-            # Always log teacher and student losses during evaluation
-            metrics[f"{metric_key_prefix}_teacher_lm_loss"] = round(
-                self._accumulated_teacher_lm_loss / num_batches, 4
-            )
-            metrics[f"{metric_key_prefix}_student_lm_loss"] = round(
-                self._accumulated_student_lm_loss / num_batches, 4
-            )
-
-            # Add coordinate token loss metrics (new detection system)
-            if (
-                hasattr(self, "_accumulated_coordinate_loss")
-                and self._accumulated_coordinate_loss > 0
-            ):
-                metrics[f"{metric_key_prefix}_coordinate_loss"] = round(
-                    self._accumulated_coordinate_loss / num_batches, 4
-                )
-            if (
-                hasattr(self, "_accumulated_focal_loss")
-                and self._accumulated_focal_loss > 0
-            ):
-                metrics[f"{metric_key_prefix}_focal_loss"] = round(
-                    self._accumulated_focal_loss / num_batches, 4
-                )
-            # regular_loss removed - using clean llm_loss instead
-
-            # Legacy bbox metrics removed - using clean coordinate losses instead
-            if self._accumulated_objectness_loss > 0:
-                metrics[f"{metric_key_prefix}_objectness_loss"] = round(
-                    self._accumulated_objectness_loss / num_batches, 4
-                )
-
-        # Restore training accumulators
-        self._accumulated_lm_loss = saved_accumulators["lm"]
-        self._accumulated_teacher_lm_loss = saved_accumulators["teacher_lm"]
-        self._accumulated_student_lm_loss = saved_accumulators["student_lm"]
-        self._accumulated_objectness_loss = saved_accumulators["objectness"]
-        self._accumulated_coordinate_loss = saved_accumulators["coordinate"]
-        self._accumulated_focal_loss = saved_accumulators["focal"]
-        if hasattr(self, "_accumulated_regular_loss"):
-            self._accumulated_regular_loss = saved_accumulators.get("regular", 0.0)
-
-        # Note: metrics are already logged by super().evaluate() call above
-        # No need to log again to avoid duplication
-        return metrics
 
     # ------------------------------------------------------------------
     # 🆕  Helper – unpack 1×T *packed* batches back to regular B×S tensors
@@ -2309,14 +1048,22 @@ def setup_model_and_tokenizer() -> Tuple[
     """
     logger = get_training_logger()
     logger.info("🔧 Setting up model with UNIFIED loading mechanism...")
-    from src.config import config
+    from src.config import get_config
+
+    try:
+        global_config = get_config()
+    except RuntimeError as e:
+        raise ValueError(
+            "Global configuration not initialized. "
+            "Ensure init_config() is called before training starts."
+        ) from e
 
     try:
         from src.models.model_loader import load_model_and_processor_unified
 
         # Use unified loader with training mode
         model, tokenizer, image_processor = load_model_and_processor_unified(
-            model_path=config.model_path if hasattr(config, "model_path") else None,
+            model_path=global_config.model_path,
             for_inference=False,  # Training mode
         )
 
@@ -2326,115 +1073,6 @@ def setup_model_and_tokenizer() -> Tuple[
     except Exception as e:
         logger.error(f"❌ Training model setup failed: {e}")
         raise RuntimeError(f"Failed to setup model for training: {e}")
-
-    # 2. TOKENIZER & PROCESSOR SETUP
-    from data_conversion.vision_process import MAX_PIXELS
-
-    # =========================================================================
-    logger.info("🔧 Initializing tokenizer and processor...")
-
-    # Load the processor, which includes the tokenizer and image processor
-    processor = AutoProcessor.from_pretrained(
-        config.model_path,
-        trust_remote_code=True,
-        use_fast=False,
-        max_pixels=MAX_PIXELS,
-    )
-
-    # Extract tokenizer from processor and fix padding_side
-    tokenizer = processor.tokenizer
-    if tokenizer.padding_side != "left":
-        logger.warning(
-            f"🔧 [LEGACY PATH] Fixing tokenizer padding_side: {tokenizer.padding_side} -> left"
-        )
-        tokenizer.padding_side = "left"
-    logger.info(f"[LEGACY PATH] Tokenizer padding side: {tokenizer.padding_side}")
-
-    # Load model using unified loader for consistency
-    logger.info("🔧 Loading model using unified mechanism...")
-    try:
-        from src.models.model_loader import load_model_and_processor_unified
-
-        model, _, _ = load_model_and_processor_unified(
-            model_path=config.model_path,
-            for_inference=False,  # Training mode
-        )
-    except Exception as model_load_error:
-        logger.error(f"❌ Failed to load model via unified loader: {model_load_error}")
-        raise RuntimeError(f"Legacy path model loading failed: {model_load_error}")
-
-    # Set image processor params from config
-    # The image processor is already pre-scaled to the correct resolution
-    # during data preparation, so we use the rescaled values, not the defaults.
-    logger.info("🔧 Overriding default image processor pixel values...")
-    image_processor = processor.image_processor
-
-    # CRITICAL: Use pixel constraints from data_conversion/vision_process.py
-    # Our training data was preprocessed with these specific constraints
-    try:
-        from data_conversion.vision_process import MAX_PIXELS, MIN_PIXELS
-
-        # Apply the exact same pixel constraints used during data conversion
-        image_processor.min_pixels = MIN_PIXELS  # 4 * 28 * 28 = 3136
-        image_processor.max_pixels = MAX_PIXELS  # 512 * 28 * 28 = 401408
-
-        # Also set size constraints if the processor supports them
-        if hasattr(image_processor, "size"):
-            if isinstance(image_processor.size, dict):
-                image_processor.size["min_pixels"] = MIN_PIXELS
-                image_processor.size["max_pixels"] = MAX_PIXELS
-            else:
-                image_processor.size = {
-                    "min_pixels": MIN_PIXELS,
-                    "max_pixels": MAX_PIXELS,
-                }
-
-        # Verify vision processing parameters match config (fail-fast if mismatch)
-        if image_processor.patch_size != config.patch_size:
-            raise ValueError(
-                f"Image processor patch_size ({image_processor.patch_size}) != config ({config.patch_size})"
-            )
-        if image_processor.merge_size != config.merge_size:
-            raise ValueError(
-                f"Image processor merge_size ({image_processor.merge_size}) != config ({config.merge_size})"
-            )
-        if image_processor.temporal_patch_size != config.temporal_patch_size:
-            raise ValueError(
-                f"Image processor temporal_patch_size ({image_processor.temporal_patch_size}) != config ({config.temporal_patch_size})"
-            )
-
-        logger.info(
-            f"✅ Image processor configured with data_conversion pixel constraints:"
-        )
-        logger.info(f"   min_pixels: {image_processor.min_pixels}")
-        logger.info(f"   max_pixels: {image_processor.max_pixels}")
-        logger.info(f"   patch_size: {image_processor.patch_size}")
-        logger.info(f"   merge_size: {image_processor.merge_size}")
-        logger.info(f"   temporal_patch_size: {image_processor.temporal_patch_size}")
-
-    except ImportError as e:
-        logger.error(f"❌ Failed to import from data_conversion/vision_process.py: {e}")
-        raise RuntimeError("Cannot proceed without vision_process pixel constraints")
-
-    # Disable caching and optionally enable gradient checkpointing on the base model
-    base_model = model.base_model if hasattr(model, "base_model") else model
-    base_model.config.use_cache = False
-    if config.gradient_checkpointing:
-        if hasattr(base_model, "enable_input_require_grads"):
-            base_model.enable_input_require_grads()
-        else:
-
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-
-            base_model.get_input_embeddings().register_forward_hook(
-                make_inputs_require_grad
-            )
-
-    # Apply training parameter settings
-    set_model_training_params(model)
-    logger.info("✅ Model setup complete")
-    return model, tokenizer, image_processor
 
 
 def setup_data_module(
@@ -2449,7 +1087,15 @@ def setup_data_module(
 
     # Create chat processor with training context
     from src.chat_processor import ChatProcessor
-    from src.config import config
+    from src.config import get_config
+
+    try:
+        config = get_config()
+    except RuntimeError as e:
+        raise ValueError(
+            "Global configuration not initialized. "
+            "Ensure init_config() is called before training starts."
+        ) from e
 
     # Use consistent prompt style for training and evaluation to prevent distribution mismatch
     # EXPLICIT: Check for prompt configuration without fallbacks
@@ -2525,7 +1171,8 @@ def setup_data_module(
     # Create training dataset with detailed prompts and teacher support
     train_dataset = BBUDataset(
         data_path=config.train_data_path,
-        chat_processor=train_chat_processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         teacher_pool_manager=teacher_pool_manager,
         teacher_ratio=teacher_ratio,
         is_training=True,  # Training context
@@ -2537,7 +1184,8 @@ def setup_data_module(
 
     val_dataset = BBUDataset(
         data_path=config.val_data_path,
-        chat_processor=eval_chat_processor,
+        tokenizer=tokenizer,
+        image_processor=image_processor,
         teacher_pool_manager=val_teacher_manager,
         teacher_ratio=val_teacher_ratio,
         is_training=False,  # Evaluation context
@@ -2603,7 +1251,6 @@ def test_enhanced_logging() -> None:
         "focal_loss": 0.3,
         "l1_loss": 0.8,
         "giou_loss": 0.2,
-        "objectness_loss": 0.3,
     }
 
     # Test prefix handling - no prefix for training, eval_ for evaluation

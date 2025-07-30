@@ -15,7 +15,7 @@ Key Features:
 from transformers.training_args import TrainingArguments
 
 from src.config import CoordinateConfig, TrainingConfig
-from src.core import CheckpointManager, DataProcessor
+from src.core import DataProcessor
 from src.logger_utils import get_training_logger
 
 from .trainer import BBUTrainer
@@ -104,10 +104,11 @@ def create_trainer_with_coordinator(
     # Log training setup summary
     status = coordinator.get_status_summary()
     logger.info("📊 Training Setup Summary:")
+    param_stats = trainer.training_state_manager.get_parameter_statistics()
+    logger.info(f"   Trainable parameters: {param_stats['trainable_parameters']:,}")
     logger.info(
-        f"   Trainable parameters: {status['parameter_statistics']['trainable_parameters']:,}"
+        f"   Enabled components: {', '.join(param_stats['enabled_components'])}"
     )
-    logger.info(f"   Enabled components: {', '.join(status['enabled_components'])}")
     logger.info(
         f"   Detection training: {'enabled' if status['training_state']['detection_training_enabled'] else 'disabled'}"
     )
@@ -117,46 +118,3 @@ def create_trainer_with_coordinator(
         logger.warning(f"⚠️  {warning}")
 
     return trainer
-
-
-def safe_save_model_for_hf_trainer(trainer: BBUTrainer, output_dir: str):
-    """
-    Safely save model with proper HuggingFace compatibility.
-
-    Args:
-        trainer: The trainer instance
-        output_dir: Directory to save the model
-    """
-    # Get config from the trainer
-    if hasattr(trainer, "cfg") and trainer.cfg:
-        config = trainer.cfg
-    else:
-        raise RuntimeError("Config not available - trainer not properly initialized")
-
-    # Use CheckpointManager for centralized saving logic
-    checkpoint_manager = CheckpointManager(config)
-    model_path = config.model_path
-
-    success = checkpoint_manager.save_model_safely(trainer, output_dir, model_path)
-    if not success:
-        raise RuntimeError(f"Failed to save model to {output_dir}")
-
-
-# Convenience function for backward compatibility
-def create_trainer(
-    training_args: TrainingArguments, use_new_system: bool = False
-) -> BBUTrainer:
-    """
-    Create trainer with optional new system support.
-
-    Args:
-        training_args: HuggingFace training arguments
-        use_new_system: Whether to use new coordinator-based system
-
-    Returns:
-        Configured BBUTrainer instance
-    """
-    if use_new_system:
-        return create_trainer_with_coordinator(training_args)
-    else:
-        raise ValueError("Legacy system is no longer supported")

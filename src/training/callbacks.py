@@ -33,13 +33,8 @@ class BestCheckpointCallback(TrainerCallback):
         self.greater_is_better = greater_is_better
         self.best_checkpoints: List[Tuple[float, str]] = []
 
-        # Initialize logger with fallback
-        try:
-            self.logger = get_training_logger()
-        except Exception:
-            import logging
-
-            self.logger = logging.getLogger("training")
+        # Initialize logger - no fallback patterns
+        self.logger = get_training_logger()
 
         self.logger.info(
             f"🔄 BestCheckpointCallback initialized: "
@@ -57,10 +52,6 @@ class BestCheckpointCallback(TrainerCallback):
         **kwargs,
     ):
         """Called after evaluation - this is where we create best checkpoint copies."""
-        if self.logger is None:
-            from src.logger_utils import get_callback_logger
-
-            self.logger = get_callback_logger()
 
         # Get the evaluation metrics
         logs = kwargs.get("logs", {})

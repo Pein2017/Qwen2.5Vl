@@ -29,9 +29,13 @@ from transformers.training_args import TrainingArguments
 
 from src.config import init_config, load_config
 from src.core.data_processor import DataProcessor
+from src.data import create_data_collator
 from src.logger_utils import configure_global_logging, get_logger
 from src.models.model_loader import load_model_and_processor_unified
 from src.training.trainer_factory import create_trainer_with_coordinator
+from src.utils.tokens.special_tokens import (
+    create_unified_token_manager,
+)
 from tests.fixtures import ConfigFactory, SyntheticDataGenerator, TestUtils
 
 
@@ -454,6 +458,126 @@ class TestIntegration(unittest.TestCase):
                     raise
 
         logger.info("✅ Error recovery and edge cases test passed")
+
+    def test_coordinate_token_training_integration(self):
+        """Test coordinate token training with full pipeline integration."""
+        logger.info("🧪 Testing coordinate token training integration")
+
+        # Create configuration for coordinate mode
+        config_path = self.config_factory.create_coordinate_enabled_config(
+            self.data_root, "standard"
+        )
+        self.test_files_to_cleanup.append(config_path)
+
+        # Initialize configuration
+        init_config(config_path)
+        config = load_config(config_path)
+
+        # Verify coordinate tokens are enabled
+        self.assertTrue(
+            config.coordinate_tokens_enabled,
+            "Coordinate tokens must be enabled for this test",
+        )
+
+        # Load model and processor
+        model_path = config.model_path
+        attn_implementation = config.attn_implementation
+
+        # Load model
+        model, tokenizer, image_processor = load_model_and_processor_unified(
+            model_path=model_path,
+            attn_implementation=attn_implementation,
+            force_detection=True,  # Ensure coordinate token support
+        )
+
+        # Create data processor with teacher sampling for student-teacher testing
+        data_processor = DataProcessor(
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            model=model,
+            config=config,
+        )
+
+        # Create datasets
+        train_dataset, eval_dataset = data_processor.create_datasets()
+
+        # Get a sample from the dataset
+        sample = train_dataset[0]
+
+        # Verify the sample has input_ids and labels
+        self.assertIn("input_ids", sample)
+        self.assertIn("labels", sample)
+
+        # Check that coordinate tokens are correctly present in the input_ids
+        input_ids = sample["input_ids"]
+
+        # Get coordinate token range using UnifiedTokenManager
+        coord_manager = create_unified_token_manager(
+            tokenizer=tokenizer, model=model, max_coord_value=config.max_coord_value
+        )
+        coord_start, coord_end = coord_manager.get_coordinate_token_range()
+
+        # Check if there are any coordinate tokens in the input_ids
+        coord_mask = torch.logical_and(input_ids >= coord_start, input_ids < coord_end)
+        num_coord_tokens = coord_mask.sum().item()
+
+        # We expect at least some coordinate tokens to be present
+        self.assertGreater(
+            num_coord_tokens,
+            0,
+            f"Expected coordinate tokens in input_ids but found none. "
+            f"Check that the chat processor is correctly formatting coordinate tokens.",
+        )
+
+        logger.info(f"✅ Found {num_coord_tokens} coordinate tokens in input_ids")
+
+        # Move model to GPU
+        model.to("cuda")
+
+        # Create batch from sample
+        batch_samples = [sample]
+
+        # Create a collator
+        collator = create_data_collator(config.collator_type, tokenizer)
+
+        # Collate samples
+        batch = collator(batch_samples)
+
+        # Move batch to GPU
+        batch = {k: v.to("cuda") if torch.is_tensor(v) else v for k, v in batch.items()}
+
+        # Forward pass to compute losses
+        with torch.no_grad():
+            outputs = model(**batch)
+
+        # Check that loss is computed
+        self.assertIn("loss", outputs)
+
+        # Check if the model has _last_coordinate_losses attribute
+        self.assertTrue(
+            hasattr(model, "_last_coordinate_losses"),
+            "Model missing _last_coordinate_losses attribute",
+        )
+
+        # Get coordinate losses from model
+        coordinate_losses = model.get_last_coordinate_losses()
+
+        # Verify coordinate losses exist and are non-zero
+        self.assertIn("_coordinate_l1_loss", coordinate_losses)
+        coordinate_l1_loss = coordinate_losses["_coordinate_l1_loss"]
+
+        # Coordinate loss should be non-zero
+        self.assertGreater(
+            coordinate_l1_loss.item(),
+            0.0,
+            "Coordinate L1 loss is zero, which indicates coordinate tokens are not being processed correctly",
+        )
+
+        logger.info(f"✅ Coordinate L1 loss: {coordinate_l1_loss.item():.6f}")
+
+        # Clean up GPU memory
+        del model
+        torch.cuda.empty_cache()
 
     def _execute_complete_pipeline(
         self, config_path: str, test_name: str

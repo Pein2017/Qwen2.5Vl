@@ -134,7 +134,8 @@ class DataProcessor:
         # Create training dataset
         base_train_dataset = BBUDataset(
             data_path=data_config["train_data_path"],
-            chat_processor=self.chat_processor,
+            tokenizer=self.tokenizer,
+            image_processor=self.image_processor,
             teacher_pool_manager=self.teacher_pool_manager,
             teacher_ratio=data_config["teacher_ratio"],
             is_training=True,
@@ -144,7 +145,8 @@ class DataProcessor:
         # Create evaluation dataset (no teachers)
         base_eval_dataset = BBUDataset(
             data_path=data_config["val_data_path"],
-            chat_processor=self.chat_processor,
+            tokenizer=self.tokenizer,
+            image_processor=self.image_processor,
             teacher_pool_manager=None,  # No teachers for evaluation
             teacher_ratio=data_config["val_teacher_ratio"],
             is_training=False,

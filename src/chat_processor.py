@@ -10,7 +10,6 @@ from torchtyping import TensorType
 # Runtime & shape-checking ----------------------------------------------
 from typeguard import typechecked
 
-from src.config import get_config
 from src.logger_utils import get_chat_logger
 
 # Legacy coordinate processor removed - using unified coordinate manager
@@ -57,7 +56,7 @@ class ChatProcessor:
             raise ValueError("tokenizer cannot be None")
         if image_processor is None:
             raise ValueError("image_processor cannot be None")
-            
+
         self.tokenizer = tokenizer
         self.image_processor = image_processor
 
@@ -68,14 +67,17 @@ class ChatProcessor:
             # Validate global config is initialized
             try:
                 from src.config import get_config
+
                 config = get_config()
             except RuntimeError as e:
-                raise RuntimeError(f"No valid configuration provided and global config not initialized: {e}")
-        
+                raise RuntimeError(
+                    f"No valid configuration provided and global config not initialized: {e}"
+                )
+
         # FAIL-FAST: Validate required config attributes
         if not hasattr(config, "data_root"):
             raise ValueError("Configuration missing required attribute: data_root")
-            
+
         self.data_root = Path(config.data_root)
 
         # ---------------- Required parameters ----------------
@@ -120,7 +122,9 @@ class ChatProcessor:
                 "max_coord_value": kwargs["max_coord_value"],
                 "coordinate_loss_weight": kwargs.get("coordinate_loss_weight", 1.0),
                 "regular_loss_weight": kwargs.get("regular_loss_weight", 1.0),
-                "soft_expectation_temperature": kwargs.get("soft_expectation_temperature", 1.0),
+                "soft_expectation_temperature": kwargs.get(
+                    "soft_expectation_temperature", 1.0
+                ),
             }
 
             # Initialize placeholders - will be set up later when model is available
@@ -138,7 +142,10 @@ class ChatProcessor:
         self.system_prompt = self._build_system_prompt()
 
     def _update_coordinate_token_ranges(self):
-        """Initialize coordinate manager and update token ranges after tokenizer extension."""
+        """Initialize coordinate manager and update token ranges after tokenizer extension.
+
+        Enhanced with comprehensive validation and error handling for coordinate token setup.
+        """
         if not hasattr(self, "coordinate_config") or not self.coordinate_config:
             logger.debug(
                 "🎯 No coordinate configuration - skipping coordinate manager setup"
@@ -149,32 +156,111 @@ class ChatProcessor:
         # Note: We still don't have a model, but we can initialize without resizing embeddings
         logger.info("🎯 Initializing coordinate manager with current tokenizer...")
 
-        # Create a simple coordinate manager without model resizing
-        from src.utils.tokens.special_tokens import SimpleCoordinateManager
+        try:
+            # Create a simple coordinate manager without model resizing
+            from src.utils.tokens.special_tokens import SimpleCoordinateManager
 
-        self.coordinate_manager = SimpleCoordinateManager(
-            tokenizer=self.tokenizer,
-            max_coord_value=self.coordinate_config["max_coord_value"],
-        )
+            self.coordinate_manager = SimpleCoordinateManager(
+                tokenizer=self.tokenizer,
+                max_coord_value=self.coordinate_config["max_coord_value"],
+            )
 
-        # Set token manager for backward compatibility
-        self.token_manager = self.coordinate_manager
+            # Set token manager for backward compatibility
+            self.token_manager = self.coordinate_manager
 
-        logger.info("✅ Coordinate manager initialized successfully")
-        logger.info(f"   max_coord_value: {self.coordinate_config['max_coord_value']}")
-        logger.info(f"   Language: {self.language}")
-        logger.info(f"   Output format: Coordinate tokens + JSON fallback")
+            # Enhanced validation: Verify coordinate manager initialization
+            self._validate_coordinate_manager_initialization()
+
+            logger.info("✅ Coordinate manager initialized successfully")
+            logger.info(
+                f"   max_coord_value: {self.coordinate_config['max_coord_value']}"
+            )
+            logger.info(f"   Language: {self.language}")
+            logger.info(f"   Output format: Coordinate tokens + JSON fallback")
+
+        except Exception as e:
+            # FAIL-FAST: If coordinate manager initialization fails, raise detailed error
+            logger.error(f"❌ Coordinate manager initialization failed: {e}")
+            logger.error(f"   Config: {self.coordinate_config}")
+            logger.error(f"   Tokenizer vocab size: {len(self.tokenizer.get_vocab())}")
+            raise RuntimeError(
+                f"Failed to initialize coordinate manager for coordinate token mode. "
+                f"This is required when coordinate_tokens_enabled=True. Error: {e}"
+            ) from e
 
         # Default context
         self._current_context: str = "training"
+
+    def _validate_coordinate_manager_initialization(self) -> None:
+        """
+        Validate that coordinate manager was properly initialized with all required components.
+
+        Raises:
+            RuntimeError: If validation fails
+        """
+        # Basic existence check
+        if not self.coordinate_manager:
+            raise RuntimeError("Coordinate manager is None after initialization")
+
+        # Check essential attributes are set
+        required_attrs = ["tokenizer", "max_coord_value", "config"]
+        for attr in required_attrs:
+            if not hasattr(self.coordinate_manager, attr):
+                raise RuntimeError(
+                    f"Coordinate manager missing required attribute: {attr}"
+                )
+
+        # Check configuration is valid
+        config = self.coordinate_manager.config
+        if not hasattr(config, "enable_coordinate_tokens"):
+            raise RuntimeError(
+                "Coordinate manager config missing enable_coordinate_tokens"
+            )
+
+        # Use our helper for general coordinate manager validation
+        try:
+            self._validate_coordinate_manager("initialization validation")
+        except RuntimeError as e:
+            raise RuntimeError(f"Coordinate manager validation failed: {e}") from e
+
+        # Check if coordinate tokens are available in vocabulary
+        has_tokens = self.coordinate_manager.has_coordinate_tokens()
+        vocab = self.tokenizer.get_vocab()
+        coord_0_token = "<|coord_0|>"
+
+        if coord_0_token in vocab:
+            if not has_tokens:
+                raise RuntimeError(
+                    "Coordinate tokens found in vocabulary but coordinate manager reports they are not available. "
+                    "This indicates a mismatch in token detection logic."
+                )
+
+            # Log successful validation
+            logger.info(
+                f"✅ Coordinate token validation passed: "
+                f"range [{self.coordinate_manager.coord_start_id}, {self.coordinate_manager.coord_end_id}) "
+                f"covers {self.coordinate_manager.coord_end_id - self.coordinate_manager.coord_start_id} tokens"
+            )
+        else:
+            # Coordinate tokens not found in vocabulary
+            if has_tokens:
+                raise RuntimeError(
+                    "Coordinate manager reports tokens are available but <|coord_0|> not found in vocabulary. "
+                    "This indicates a critical inconsistency."
+                )
+
+            logger.warning(
+                "⚠️ Coordinate tokens not found in vocabulary. "
+                "Chat processor will fall back to JSON format. "
+                "To use coordinate token mode, ensure tokens are properly added during model initialization."
+            )
 
     def _build_system_prompt(self) -> str:
         """Build system prompt with pure JSON format for object detection."""
 
         # Use the proper prompt selection function
-        base_prompt = get_system_prompt(
-            use_training_prompt=self.use_training_prompts, language=self.language
-        )
+        task_type = "training" if self.use_training_prompts else "evaluation"
+        base_prompt = get_system_prompt(language=self.language, task_type=task_type)
 
         # Get few shot section based on language
         if self.language == "chinese":
@@ -256,9 +342,7 @@ class ChatProcessor:
             from src.utils.prompt import get_learning_instruction
 
             learning_instruction = get_learning_instruction(
-                num_teachers=len(teachers),
                 language=self.language,
-                use_training_prompt=self.use_training_prompts,
             )
             if learning_instruction.strip():
                 messages.append(ChatMessage(role="user", content=learning_instruction))
@@ -373,79 +457,494 @@ class ChatProcessor:
 
         return sorted(objects, key=sort_key)
 
+    def _create_json_object(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a standardized JSON object from an object with geometry data.
+
+        Args:
+            obj: Object dictionary containing geometry data
+
+        Returns:
+            Standardized JSON object with geometry and label
+
+        Raises:
+            ValueError: If object structure is invalid
+        """
+        # FAIL-FAST: Validate object structure - must have at least one geometry type
+        if not any(key in obj for key in ["bbox_2d", "square", "line"]):
+            raise ValueError(
+                f"Object must contain at least one geometry type (bbox_2d, square, or line): {obj}"
+            )
+
+        # Extract geometry data - support multiple formats
+        if "bbox_2d" in obj:
+            # FAIL-FAST: Validate description field
+            if "desc" not in obj:
+                raise ValueError(
+                    f"Object with bbox_2d must contain 'desc' field: {obj}"
+                )
+
+            json_obj = {
+                "bbox_2d": obj["bbox_2d"],
+                "label": obj["desc"],
+            }
+        elif "square" in obj:
+            # FAIL-FAST: Validate description field
+            if "desc" not in obj:
+                raise ValueError(f"Object with square must contain 'desc' field: {obj}")
+
+            json_obj = {
+                "square": obj["square"],
+                "label": obj["desc"],
+            }
+        elif "line" in obj:
+            # FAIL-FAST: Validate description field
+            if "desc" not in obj:
+                raise ValueError(f"Object with line must contain 'desc' field: {obj}")
+
+            json_obj = {"line": obj["line"], "label": obj["desc"]}
+        else:
+            # This should never happen due to the initial validation
+            raise ValueError(f"Object has no recognized geometry type: {obj}")
+
+        return json_obj
+
     def _format_objects_response(self, objects: List[Dict[str, Any]]) -> str:
-        """Format objects into appropriate format (JSON or coordinate tokens)."""
+        """Format objects into appropriate format (JSON or coordinate tokens).
+
+        Enhanced with robust coordinate token conversion and fallback mechanisms.
+        """
         if not objects:
             return "[]"
 
         json_objects = []
         for obj in objects:
-            # FAIL-FAST: Validate object structure - must have at least one geometry type
-            if not any(key in obj for key in ["bbox_2d", "square", "line"]):
-                raise ValueError(
-                    f"Object must contain at least one geometry type (bbox_2d, square, or line): {obj}"
-                )
-
-            # Extract geometry data - support multiple formats
-            if "bbox_2d" in obj:
-                # FAIL-FAST: Validate description field
-                if "desc" not in obj:
-                    raise ValueError(
-                        f"Object with bbox_2d must contain 'desc' field: {obj}"
-                    )
-
-                json_obj = {
-                    "bbox_2d": obj["bbox_2d"],
-                    "label": obj["desc"],
-                }
-            elif "square" in obj:
-                # FAIL-FAST: Validate description field
-                if "desc" not in obj:
-                    raise ValueError(
-                        f"Object with square must contain 'desc' field: {obj}"
-                    )
-
-                json_obj = {
-                    "square": obj["square"],
-                    "label": obj["desc"],
-                }
-            elif "line" in obj:
-                # FAIL-FAST: Validate description field
-                if "desc" not in obj:
-                    raise ValueError(
-                        f"Object with line must contain 'desc' field: {obj}"
-                    )
-
-                json_obj = {"line": obj["line"], "label": obj["desc"]}
-            else:
-                # This should never happen due to the initial validation
-                raise ValueError(f"Object has no recognized geometry type: {obj}")
-
-            json_objects.append(json_obj)
+            json_objects.append(self._create_json_object(obj))
 
         # Format as JSON first
         json_response = json.dumps(
             json_objects, ensure_ascii=False, separators=(",", ": ")
         )
 
-        # Convert to coordinate token format if enabled
+        # Convert to coordinate token format if enabled with enhanced reliability
+        logger.debug(
+            f"🔍 COORDINATE CHECK: coordinate_manager={self.coordinate_manager is not None}"
+        )
+        if self.coordinate_manager:
+            logger.debug(
+                f"🔍 COORDINATE CHECK: enable_coordinate_tokens={self.coordinate_manager.config.enable_coordinate_tokens}"
+            )
+
         if (
             self.coordinate_manager
             and self.coordinate_manager.config.enable_coordinate_tokens
         ):
-            coordinate_response = (
-                self.coordinate_manager.convert_json_to_coordinate_format(json_response)
-            )
-            logger.debug(
-                f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format"
-            )
-            logger.debug(f"   📋 JSON response: {json_response}")
-            logger.debug(f"   🎯 Coordinate response: {coordinate_response}")
-            return coordinate_response
+            try:
+                # Enhanced coordinate conversion with validation
+                coordinate_response = (
+                    self._convert_to_coordinate_format_with_validation(
+                        json_response, json_objects
+                    )
+                )
+
+                logger.debug(
+                    f"🎯 COORDINATE TOKENS: Enabled - converting JSON to coordinate format"
+                )
+                logger.debug(f"   📋 JSON response: {json_response}")
+                logger.debug(f"   🎯 Coordinate response: {coordinate_response}")
+                return coordinate_response
+
+            except Exception as e:
+                # FAIL-FAST: Log the error and fall back to JSON if coordinate conversion fails
+                logger.error(f"❌ Coordinate token conversion failed: {e}")
+                logger.error(f"   📋 Falling back to JSON format: {json_response}")
+                # Instead of falling back silently, raise the error to surface issues
+                raise RuntimeError(
+                    f"Coordinate token conversion failed for objects: {json_objects}. "
+                    f"Original error: {e}"
+                ) from e
         else:
             logger.debug(f"🎯 COORDINATE TOKENS: Disabled - returning JSON format")
             logger.debug(f"   📋 JSON response: {json_response}")
             return json_response
+
+    def _convert_to_coordinate_format_with_validation(
+        self, json_response: str, json_objects: List[Dict[str, Any]]
+    ) -> str:
+        """
+        Convert JSON to coordinate format with enhanced validation and error handling.
+
+        Args:
+            json_response: JSON string representation
+            json_objects: Parsed JSON objects for validation
+
+        Returns:
+            Coordinate token formatted string
+
+        Raises:
+            RuntimeError: If coordinate token conversion fails validation
+        """
+        # Validate coordinate manager
+        self._validate_coordinate_manager("coordinate token conversion")
+
+        # Pre-validation: Check coordinate manager has valid token ranges
+        if not self.coordinate_manager.has_coordinate_tokens():
+            raise RuntimeError(
+                "Coordinate tokens not available in vocabulary. "
+                "Ensure coordinate tokens were properly added during model initialization."
+            )
+
+        # Enhanced pre-validation: Check objects can be converted to coordinates
+        logger.debug(
+            f"🎯 Pre-validating {len(json_objects)} objects for coordinate conversion"
+        )
+
+        for i, obj in enumerate(json_objects):
+            try:
+                self._validate_coordinate_ranges(obj, i)
+            except Exception as e:
+                logger.error(f"❌ Pre-validation failed for object {i}: {obj}")
+                raise RuntimeError(f"Pre-validation failed for object {i}: {e}") from e
+
+        logger.debug("✅ All objects passed pre-validation")
+
+        # Perform the actual conversion using the coordinate manager
+        try:
+            logger.debug(
+                f"🔄 Converting JSON to coordinate format: {json_response[:100]}..."
+            )
+            coordinate_response = (
+                self.coordinate_manager.convert_json_to_coordinate_format(json_response)
+            )
+            logger.debug(
+                f"✅ Conversion completed, result length: {len(coordinate_response)}"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Coordinate manager conversion failed: {e}")
+            logger.error(f"   📄 Input JSON: {json_response}")
+            raise RuntimeError(f"Coordinate manager conversion failed: {e}") from e
+
+        # Post-conversion validation: Ensure coordinate tokens were actually generated
+        if coordinate_response == json_response:
+            raise RuntimeError(
+                "Coordinate token conversion produced identical output to JSON input. "
+                "This indicates the conversion process failed silently."
+            )
+
+        # Enhanced validation: Check that we have expected number of coordinate tokens
+        expected_coord_count = 0
+        for obj in json_objects:
+            # Count coordinates in each object
+            for geom_key in ["bbox_2d", "line", "square"]:
+                if geom_key in obj and isinstance(obj[geom_key], list):
+                    expected_coord_count += len(obj[geom_key])
+                    break
+
+        actual_coord_count = coordinate_response.count("<|coord_")
+        if actual_coord_count != expected_coord_count:
+            logger.warning(
+                f"⚠️ Coordinate token count mismatch: expected {expected_coord_count}, "
+                f"found {actual_coord_count} in result"
+            )
+            # Don't fail for count mismatch, just warn
+
+        # Validate the output contains expected coordinate token patterns
+        try:
+            self._validate_coordinate_token_output(coordinate_response)
+        except Exception as e:
+            logger.error(f"❌ Post-conversion validation failed: {e}")
+            logger.error(f"   📄 Coordinate response: {coordinate_response[:200]}...")
+            raise RuntimeError(f"Post-conversion validation failed: {e}") from e
+
+        logger.debug(
+            f"✅ Coordinate conversion validation complete: "
+            f"{len(json_objects)} objects → {actual_coord_count} coordinate tokens"
+        )
+
+        return coordinate_response
+
+    def _validate_geometry_type(
+        self, obj: Dict[str, Any], obj_index: int
+    ) -> Tuple[str, List]:
+        """
+        Validate and extract geometry type and coordinates from an object.
+
+        Args:
+            obj: Object dictionary containing geometry coordinates
+            obj_index: Index of object for error reporting
+
+        Returns:
+            Tuple of (geometry_type, coordinates)
+
+        Raises:
+            ValueError: If geometry type is invalid or missing
+        """
+        # Check for available geometry types
+        available_geom_types = []
+        for geom_key in ["bbox_2d", "square", "line"]:
+            if geom_key in obj:
+                available_geom_types.append(geom_key)
+
+        if not available_geom_types:
+            raise ValueError(
+                f"Object {obj_index} has no valid geometry coordinates. "
+                f"Expected one of: bbox_2d, square, line. Found keys: {list(obj.keys())}"
+            )
+
+        if len(available_geom_types) > 1:
+            logger.warning(
+                f"⚠️ Object {obj_index} has multiple geometry types: {available_geom_types}. "
+                f"Using first available: {available_geom_types[0]}"
+            )
+
+        # Use the first available geometry type
+        geometry_type = available_geom_types[0]
+        coords = obj[geometry_type]
+
+        # Enhanced coordinate structure validation
+        if not isinstance(coords, list):
+            raise ValueError(
+                f"Object {obj_index} {geometry_type} coordinates must be a list, got {type(coords)}: {coords}"
+            )
+
+        if not coords:
+            raise ValueError(
+                f"Object {obj_index} {geometry_type} coordinate list is empty"
+            )
+
+        # Validate coordinate count for each geometry type
+        if geometry_type == "bbox_2d":
+            if len(coords) != 4:
+                raise ValueError(
+                    f"Object {obj_index} bbox_2d expected 4 coordinates [x1, y1, x2, y2], "
+                    f"got {len(coords)}: {coords}"
+                )
+        elif geometry_type == "square":
+            if len(coords) != 8:
+                raise ValueError(
+                    f"Object {obj_index} square expected 8 coordinates [x1, y1, x2, y2, x3, y3, x4, y4], "
+                    f"got {len(coords)}: {coords}"
+                )
+        elif geometry_type == "line":
+            if len(coords) < 4 or len(coords) % 2 != 0:
+                raise ValueError(
+                    f"Object {obj_index} line expected ≥4 coordinates with even count (x,y pairs), "
+                    f"got {len(coords)}: {coords}"
+                )
+
+        return geometry_type, coords
+
+    def _validate_coordinate_ranges(self, obj: Dict[str, Any], obj_index: int) -> None:
+        """
+        Validate that all coordinate values in an object are within valid range with enhanced checks.
+
+        Args:
+            obj: Object dictionary containing geometry coordinates
+            obj_index: Index of object for error reporting
+
+        Raises:
+            ValueError: If coordinate values are invalid
+        """
+        # Validate coordinate manager
+        self._validate_coordinate_manager("coordinate validation")
+        max_coord = self.coordinate_manager.max_coord_value
+
+        # Extract coordinates based on geometry type with enhanced validation
+        geometry_type, coords = self._validate_geometry_type(obj, obj_index)
+
+        # Enhanced coordinate value validation
+        valid_coords = []
+        for i, coord in enumerate(coords):
+            try:
+                # Enhanced type conversion with better error handling
+                if isinstance(coord, str):
+                    coord_str = coord.strip()
+                    if not coord_str:
+                        raise ValueError("Empty coordinate string")
+
+                    # Handle decimals and negative numbers
+                    try:
+                        coord_float = float(coord_str)
+                    except ValueError as e:
+                        raise ValueError(
+                            f"Cannot convert '{coord}' to number: {e}"
+                        ) from e
+                else:
+                    coord_float = float(coord)
+
+                coord_int = int(coord_float)
+
+                # Enhanced range validation with specific error messages
+                if coord_int < 0:
+                    raise ValueError(
+                        f"Object {obj_index} {geometry_type}[{i}] coordinate {coord_int} "
+                        f"is negative. Coordinates must be non-negative integers >= 0."
+                    )
+
+                if coord_int >= max_coord:
+                    raise ValueError(
+                        f"Object {obj_index} {geometry_type}[{i}] coordinate {coord_int} "
+                        f"exceeds maximum value {max_coord - 1}. "
+                        f"Valid range: [0, {max_coord - 1}]. "
+                        f"Check max_coord_value configuration ({max_coord})."
+                    )
+
+                # Additional validation for coordinate token mode
+                if self.coordinate_manager.has_coordinate_tokens():
+                    # Verify this coordinate can be mapped to a valid token
+                    if (
+                        self.coordinate_manager.coord_start_id is not None
+                        and self.coordinate_manager.coord_end_id is not None
+                    ):
+                        expected_token_id = (
+                            self.coordinate_manager.coord_start_id + coord_int
+                        )
+                        if expected_token_id >= self.coordinate_manager.coord_end_id:
+                            raise ValueError(
+                                f"Object {obj_index} {geometry_type}[{i}] coordinate {coord_int} "
+                                f"maps to token ID {expected_token_id} which exceeds coordinate token range "
+                                f"[{self.coordinate_manager.coord_start_id}, {self.coordinate_manager.coord_end_id}). "
+                                f"This indicates a vocabulary-configuration mismatch."
+                            )
+
+                valid_coords.append(coord_int)
+
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Object {obj_index} {geometry_type}[{i}] has invalid coordinate value '{coord}': {e}"
+                ) from e
+
+        # Log successful validation for debugging
+        logger.debug(
+            f"✅ Object {obj_index} coordinate validation passed: "
+            f"{geometry_type}={valid_coords} (range: [0, {max_coord - 1}])"
+        )
+
+    def _validate_coordinate_token_output(self, coordinate_response: str) -> None:
+        """
+        Validate that coordinate token output contains expected patterns with enhanced checks.
+
+        Args:
+            coordinate_response: Coordinate token formatted response
+
+        Raises:
+            RuntimeError: If output validation fails
+        """
+        if not coordinate_response or not coordinate_response.strip():
+            raise RuntimeError("Coordinate token output is empty or whitespace-only")
+
+        import re
+
+        # Enhanced pattern matching for coordinate tokens: <|coord_N|> where N is a number
+        coord_token_pattern = r"<\|coord_(\d+)\|>"
+        coord_token_matches = re.findall(coord_token_pattern, coordinate_response)
+
+        if not coord_token_matches:
+            raise RuntimeError(
+                f"Coordinate token output validation failed: no coordinate tokens found in output. "
+                f"Expected pattern: <|coord_N|> where N is a number. "
+                f"Output: {coordinate_response[:200]}{'...' if len(coordinate_response) > 200 else ''}"
+            )
+
+        # Validate coordinate token values are within expected range
+        max_coord = (
+            self.coordinate_manager.max_coord_value if self.coordinate_manager else 2048
+        )
+        invalid_coords = []
+
+        for coord_str in coord_token_matches:
+            try:
+                coord_value = int(coord_str)
+                if coord_value < 0 or coord_value >= max_coord:
+                    invalid_coords.append(coord_value)
+            except ValueError:
+                invalid_coords.append(coord_str)
+
+        if invalid_coords:
+            raise RuntimeError(
+                f"Coordinate token output validation failed: invalid coordinate values found: {invalid_coords}. "
+                f"Valid range: [0, {max_coord - 1}]"
+            )
+
+        # Enhanced geometry token validation
+        geometry_patterns = {
+            "box_start": r"<\|box_start\|>",
+            "box_end": r"<\|box_end\|>",
+            "line_start": r"<\|line_start\|>",
+            "line_end": r"<\|line_end\|>",
+            "square_start": r"<\|square_start\|>",
+            "square_end": r"<\|square_end\|>",
+        }
+
+        found_geometry_tokens = {}
+        for token_name, pattern in geometry_patterns.items():
+            matches = re.findall(pattern, coordinate_response)
+            if matches:
+                found_geometry_tokens[token_name] = len(matches)
+
+        if not found_geometry_tokens:
+            raise RuntimeError(
+                f"Coordinate token output validation failed: no geometry tokens found in output. "
+                f"Expected one of: {list(geometry_patterns.keys())}. "
+                f"Output: {coordinate_response[:200]}{'...' if len(coordinate_response) > 200 else ''}"
+            )
+
+        # Validate geometry token pairing (start/end tokens should match)
+        geometry_pairs = [
+            ("box_start", "box_end"),
+            ("line_start", "line_end"),
+            ("square_start", "square_end"),
+        ]
+
+        for start_token, end_token in geometry_pairs:
+            start_count = found_geometry_tokens.get(start_token, 0)
+            end_count = found_geometry_tokens.get(end_token, 0)
+
+            if start_count != end_count and start_count > 0:
+                logger.warning(
+                    f"⚠️ Geometry token pairing mismatch: {start_token}={start_count}, {end_token}={end_count}"
+                )
+
+        # Enhanced object reference token validation
+        object_ref_start_pattern = r"<\|object_ref_start\|>"
+        object_ref_end_pattern = r"<\|object_ref_end\|>"
+
+        start_refs = re.findall(object_ref_start_pattern, coordinate_response)
+        end_refs = re.findall(object_ref_end_pattern, coordinate_response)
+
+        if not start_refs:
+            raise RuntimeError(
+                f"Coordinate token output validation failed: missing <|object_ref_start|> tokens. "
+                f"Output: {coordinate_response[:200]}{'...' if len(coordinate_response) > 200 else ''}"
+            )
+
+        if len(start_refs) != len(end_refs):
+            logger.warning(
+                f"⚠️ Object reference token count mismatch: "
+                f"start={len(start_refs)}, end={len(end_refs)}"
+            )
+
+        # Additional structural validation: check for coordinate sequences within brackets
+        bracket_coord_pattern = r"\[<\|coord_\d+\|>(?:,<\|coord_\d+\|>)*\]"
+        coord_sequences = re.findall(bracket_coord_pattern, coordinate_response)
+
+        if not coord_sequences:
+            raise RuntimeError(
+                f"Coordinate token output validation failed: no valid coordinate sequences found. "
+                f"Expected pattern: [<|coord_N|>,<|coord_M|>,...]. "
+                f"Output: {coordinate_response[:200]}{'...' if len(coordinate_response) > 200 else ''}"
+            )
+
+        # Log detailed validation results
+        logger.debug(f"✅ Coordinate token output validation passed:")
+        logger.debug(f"   📊 {len(coord_token_matches)} coordinate tokens found")
+        logger.debug(f"   🔧 Geometry tokens: {found_geometry_tokens}")
+        logger.debug(
+            f"   📦 Object references: start={len(start_refs)}, end={len(end_refs)}"
+        )
+        logger.debug(f"   📐 Coordinate sequences: {len(coord_sequences)}")
+        logger.debug(f"   📏 Response length: {len(coordinate_response)} characters")
 
     def _process_images_and_tokens(
         self, conversation: List[ChatMessage], image_paths: List[str]
@@ -518,8 +1017,10 @@ class ChatProcessor:
 
         # FAIL-FAST: Validate processed output contains required fields
         if "image_grid_thw" not in processed:
-            raise ValueError("Image processor did not return required 'image_grid_thw' field")
-        
+            raise ValueError(
+                "Image processor did not return required 'image_grid_thw' field"
+            )
+
         grid_thw = processed["image_grid_thw"][0]  # (t, h, w)
 
         # FAIL-FAST: Require merge_size to be explicitly defined
@@ -546,7 +1047,7 @@ class ChatProcessor:
         # FAIL-FAST: Validate sample and image_dims
         if not isinstance(sample, dict):
             raise TypeError(f"Sample must be a dictionary, got {type(sample)}")
-            
+
         if not image_dims:
             return []  # No images, no ground truth objects
 
@@ -562,7 +1063,7 @@ class ChatProcessor:
         # FAIL-FAST: Validate student structure
         if "objects" not in student:
             raise ValueError("Student must contain 'objects' field")
-        
+
         student_objects = student["objects"]
         if not isinstance(student_objects, list):
             raise TypeError(f"Objects must be a list, got {type(student_objects)}")
@@ -579,10 +1080,6 @@ class ChatProcessor:
             # FAIL-FAST: Validate object is a dictionary
             if not isinstance(obj, dict):
                 raise TypeError(f"Object {i} must be a dictionary, got {type(obj)}")
-                
-            # Extract geometry coordinates - support multiple formats
-            box = None
-            geometry_type = None
 
             # FAIL-FAST: Validate object structure - must have at least one geometry type
             if not any(key in obj for key in ["bbox_2d", "square", "line"]):
@@ -595,69 +1092,104 @@ class ChatProcessor:
                 raise ValueError(f"Object {i} must contain 'desc' field: {obj}")
             desc = obj["desc"]
             if not isinstance(desc, str):
-                raise TypeError(f"Object {i} description must be a string, got {type(desc)}")
+                raise TypeError(
+                    f"Object {i} description must be a string, got {type(desc)}"
+                )
 
+            # Preserve native geometry format - no conversion to bounding box
+            # Coordinates should already be normalized by the data conversion pipeline
             if "bbox_2d" in obj:
-                box = obj["bbox_2d"]
-                geometry_type = "bbox"
+                coords = obj["bbox_2d"]
+                geometry_type = "bbox_2d"
+                # Validate bbox format
+                if not (isinstance(coords, list) and len(coords) == 4):
+                    raise ValueError(f"Invalid bbox_2d format for object {i}: {coords}")
+                # Coordinates should already be normalized, so x1 < x2 and y1 < y2
+                x1, y1, x2, y2 = coords
+                if x1 >= x2 or y1 >= y2:
+                    raise ValueError(
+                        f"Invalid bbox_2d coordinates for object {i}: {coords}. "
+                        f"Coordinates should be normalized during data preprocessing."
+                    )
             elif "square" in obj:
-                # Convert square (polygon) to bounding box
-                square_coords = obj["square"]
-                if len(square_coords) >= 4:
-                    # Extract min/max coordinates from polygon
-                    x_coords = [
-                        square_coords[i] for i in range(0, len(square_coords), 2)
-                    ]
-                    y_coords = [
-                        square_coords[i] for i in range(1, len(square_coords), 2)
-                    ]
-                    box = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
-                    geometry_type = "square"
+                coords = obj["square"]
+                geometry_type = "square"
+                # Validate square format (8 coordinates)
+                if not (isinstance(coords, list) and len(coords) == 8):
+                    raise ValueError(f"Invalid square format for object {i}: {coords}")
             elif "line" in obj:
-                # Convert line to bounding box
-                line_coords = obj["line"]
-                if len(line_coords) >= 4:
-                    x_coords = [line_coords[i] for i in range(0, len(line_coords), 2)]
-                    y_coords = [line_coords[i] for i in range(1, len(line_coords), 2)]
-                    box = [min(x_coords), min(y_coords), max(x_coords), max(y_coords)]
-                    geometry_type = "line"
+                coords = obj["line"]
+                geometry_type = "line"
+                # Validate line format (even number of coordinates >= 4)
+                if not (
+                    isinstance(coords, list)
+                    and len(coords) >= 4
+                    and len(coords) % 2 == 0
+                ):
+                    raise ValueError(f"Invalid line format for object {i}: {coords}")
 
-            # FAIL-FAST: Validate box extraction succeeded
-            if box is None:
-                raise ValueError(f"Failed to extract valid geometry from object {i}: {obj}")
+            # Validate coordinates are within image bounds
+            if geometry_type == "bbox_2d":
+                x1, y1, x2, y2 = coords
+                if not (
+                    0 <= x1 < width
+                    and 0 <= y1 < height
+                    and 0 < x2 <= width
+                    and 0 < y2 <= height
+                ):
+                    raise ValueError(
+                        f"bbox_2d coordinates out of bounds for object {i}: {coords} for image size {width}x{height}"
+                    )
+            else:
+                # For line and square, validate all coordinate pairs
+                for j in range(0, len(coords), 2):
+                    x, y = coords[j], coords[j + 1]
+                    if not (0 <= x < width and 0 <= y < height):
+                        raise ValueError(
+                            f"{geometry_type} coordinates out of bounds for object {i}: point ({x}, {y}) for image size {width}x{height}"
+                        )
 
-            # FAIL-FAST: Validate box format
-            if not (isinstance(box, list) and len(box) == 4):
-                raise ValueError(f"Invalid box format for object {i}: {box}")
-
-            # Ensure coordinates are within image bounds
-            x1, y1, x2, y2 = box
-
-            # FAIL-FAST: Check for degenerate boxes (zero width or height)
-            if x1 >= x2 or y1 >= y2:
-                raise ValueError(
-                    f"Degenerate box with zero area for object {i}: {box} for image size {width}x{height}. "
-                    f"Box coordinates must satisfy x1 < x2 and y1 < y2."
+            # Create normalized coordinates for the specific geometry type
+            if geometry_type == "bbox_2d":
+                # Normalize bbox coordinates to [0, 1] range
+                normalized_coords = [
+                    coords[0] / width,
+                    coords[1] / height,
+                    coords[2] / width,
+                    coords[3] / height,
+                ]
+                # Build structured GT object with bbox_2d
+                normalized_objects.append(
+                    GroundTruthObject(
+                        bbox=normalized_coords,
+                        description=desc,
+                        geometry_type="bbox_2d",
+                    )
                 )
+            else:
+                # For line and square objects, normalize all coordinate pairs
+                normalized_coords = []
+                for j in range(0, len(coords), 2):
+                    x, y = coords[j], coords[j + 1]
+                    normalized_coords.extend([x / width, y / height])
 
-            # FAIL-FAST: Check for out-of-bounds coordinates
-            if not (0 <= x1 < width and 0 <= y1 < height and 0 < x2 <= width and 0 < y2 <= height):
-                raise ValueError(
-                    f"Out-of-bounds box for object {i}: {box} for image size {width}x{height}. "
-                    f"Box coordinates must be within image bounds."
-                )
-
-            normalized_box = [
-                box[0] / width,
-                box[1] / height,
-                box[2] / width,
-                box[3] / height,
-            ]
-
-            # Build structured GT object (automatically validated)
-            normalized_objects.append(
-                GroundTruthObject(bbox_2d=normalized_box, desc=desc)
-            )
+                # Build structured GT object preserving native geometry type
+                if geometry_type == "line":
+                    normalized_objects.append(
+                        GroundTruthObject(
+                            bbox=normalized_coords,
+                            description=desc,
+                            geometry_type="line",
+                        )
+                    )
+                elif geometry_type == "square":
+                    normalized_objects.append(
+                        GroundTruthObject(
+                            bbox=normalized_coords,
+                            description=desc,
+                            geometry_type="square",
+                        )
+                    )
 
         return normalized_objects
 
@@ -712,30 +1244,8 @@ class ChatProcessor:
             add_special_tokens=False,  # we explicitly bake all special tokens into the prompt
         )
 
-        input_ids_list = tokenized["input_ids"]
-
-        # `input_ids_list` is usually a list with a single sub-list when the input is a
-        # single string.  We nevertheless handle both `[List[int]]` and `List[int]` for
-        # maximum robustness.
-        if len(input_ids_list) == 0:
-            raise RuntimeError(
-                "Tokenizer returned empty input_ids list – cannot proceed."
-            )
-
-        if isinstance(input_ids_list[0], list):
-            # Typical case: [[int, int, …]]
-            flat_ids: List[int] = input_ids_list[0]
-        else:
-            # Edge case: already flat [int, int, …]
-            flat_ids = input_ids_list  # type: ignore[assignment]
-
-        # Fail-fast if any element is None (this triggers the earlier crash in torch.tensor)
-        if any(tok is None for tok in flat_ids):
-            raise ValueError(
-                "Tokenizer produced `None` token IDs – check that all special tokens are "
-                "present in the tokenizer vocabulary. Offending IDs: "
-                f"{[tok for tok in flat_ids if tok is None]}"
-            )
+        # Flatten tokenizer output using our helper
+        flat_ids = self._flatten_tokenizer_output(tokenized["input_ids"])
 
         # Convert to tensor (1D)
         input_ids_1d = torch.tensor(flat_ids, dtype=torch.long)
@@ -766,6 +1276,26 @@ class ChatProcessor:
         labels = labels_1d.unsqueeze(0)  # (1, S)
 
         return input_ids, labels, teacher_spans, student_spans
+
+    def _tokenize_message_part(self, text: str) -> List[int]:
+        """
+        Tokenize a message part without special tokens and flatten the result.
+
+        Args:
+            text: Text to tokenize
+
+        Returns:
+            Flattened list of token IDs
+        """
+        tokens = self.tokenizer(
+            text,
+            padding=False,
+            truncation=False,
+            add_special_tokens=False,
+        )["input_ids"]
+
+        # Handle nested or flat lists
+        return self._flatten_tokenizer_output(tokens)
 
     @typechecked
     def _mask_non_assistant_tokens(
@@ -837,34 +1367,9 @@ class ChatProcessor:
             suffix_str = f"{self.tokens.IM_END}\n"
 
             # Token counts ----------------------------------------------------
-            prefix_tokens = self.tokenizer(
-                prefix_str,
-                padding=False,
-                truncation=False,
-                add_special_tokens=False,
-            )["input_ids"]
-
-            content_tokens = self.tokenizer(
-                msg.content,
-                padding=False,
-                truncation=False,
-                add_special_tokens=False,
-            )["input_ids"]
-
-            suffix_tokens = self.tokenizer(
-                suffix_str,
-                padding=False,
-                truncation=False,
-                add_special_tokens=False,
-            )["input_ids"]
-
-            # Flatten helper --------------------------------------------------
-            def _flatten(lst):
-                return lst[0] if lst and isinstance(lst[0], list) else lst
-
-            prefix_tokens = _flatten(prefix_tokens)
-            content_tokens = _flatten(content_tokens)
-            suffix_tokens = _flatten(suffix_tokens)
+            prefix_tokens = self._tokenize_message_part(prefix_str)
+            content_tokens = self._tokenize_message_part(msg.content)
+            suffix_tokens = self._tokenize_message_part(suffix_str)
 
             # Un-mask assistant *content* (+ optional suffix) -----------------
             if msg.role == "assistant" and content_tokens:
@@ -1070,29 +1575,11 @@ class ChatProcessor:
             f"   Keys: {raw_text_tokens.keys() if hasattr(raw_text_tokens, 'keys') else 'N/A'}"
         )
 
-        if "input_ids" in raw_text_tokens:
-            logger.debug(f"   Type of input_ids: {type(raw_text_tokens['input_ids'])}")
-            logger.debug(f"   Length of input_ids: {len(raw_text_tokens['input_ids'])}")
-            if len(raw_text_tokens["input_ids"]) > 0:
-                logger.debug(
-                    f"   First element type: {type(raw_text_tokens['input_ids'][0])}"
-                )
-                logger.debug(
-                    f"   First element sample: {raw_text_tokens['input_ids'][0][:10] if hasattr(raw_text_tokens['input_ids'][0], '__getitem__') else raw_text_tokens['input_ids'][0]}"
-                )
+        # Flatten tokenizer output using our helper
+        flat_text_ids = self._flatten_tokenizer_output(raw_text_tokens["input_ids"])
 
-        # Convert to tensor manually (single sequence expected)
-        # Handle both nested and flat list cases
-        input_ids = raw_text_tokens["input_ids"]
-        if input_ids and isinstance(input_ids[0], list):
-            # Nested list case: [[tokens]]
-            flat_text_ids = input_ids[0]
-        else:
-            # Flat list case: [tokens]
-            flat_text_ids = input_ids  # type: ignore[assignment]
-
+        # Convert to tensor (batch dimension of 1)
         text_input_ids = torch.tensor(flat_text_ids, dtype=torch.long).unsqueeze(0)
-
         attention_mask = torch.ones_like(text_input_ids, dtype=torch.bool)
 
         text_inputs = {"input_ids": text_input_ids, "attention_mask": attention_mask}
@@ -1156,6 +1643,90 @@ class ChatProcessor:
     def get_current_system_prompt(self) -> str:
         """Return the system prompt currently in use (helper for logging)."""
         return self.system_prompt
+
+    def _validate_coordinate_manager(self, for_operation: str = "general") -> None:
+        """
+        Validate that coordinate manager is properly initialized and configured.
+
+        Args:
+            for_operation: Description of operation requiring validation (for error messages)
+
+        Raises:
+            RuntimeError: If coordinate manager is not properly initialized or configured
+        """
+        # Check if coordinate manager exists
+        if not self.coordinate_manager:
+            raise RuntimeError(
+                f"Coordinate manager not initialized for {for_operation}"
+            )
+
+        # Check token ranges are properly set if tokens should be available
+        if self.coordinate_manager.has_coordinate_tokens():
+            if (
+                self.coordinate_manager.coord_start_id is None
+                or self.coordinate_manager.coord_end_id is None
+            ):
+                raise RuntimeError(
+                    f"Coordinate token ranges not properly initialized: "
+                    f"start_id={self.coordinate_manager.coord_start_id}, "
+                    f"end_id={self.coordinate_manager.coord_end_id}"
+                )
+
+            # Check range size matches configuration
+            token_range_size = (
+                self.coordinate_manager.coord_end_id
+                - self.coordinate_manager.coord_start_id
+            )
+            if token_range_size != self.coordinate_manager.max_coord_value:
+                logger.warning(
+                    f"⚠️ Token range size ({token_range_size}) != max_coord_value "
+                    f"({self.coordinate_manager.max_coord_value}). This may cause issues."
+                )
+
+        # Validate max_coord_value is reasonable
+        max_coord = self.coordinate_manager.max_coord_value
+        if max_coord <= 0:
+            raise RuntimeError(
+                f"Invalid max_coord_value: {max_coord}. Must be positive."
+            )
+        if max_coord > 10000:
+            logger.warning(
+                f"⚠️ Large max_coord_value detected: {max_coord}. "
+                f"This will create {max_coord} coordinate tokens in vocabulary."
+            )
+
+    def _flatten_tokenizer_output(self, token_ids) -> List[int]:
+        """
+        Flatten tokenizer output to a simple list of token ids.
+        Handles both nested lists [[int, int, ...]] and flat lists [int, int, ...].
+
+        Args:
+            token_ids: Token IDs from tokenizer, either as nested or flat list
+
+        Returns:
+            Flattened list of token IDs
+
+        Raises:
+            ValueError: If token_ids contains None values or is empty
+        """
+        if not token_ids:
+            raise ValueError("Tokenizer returned empty token_ids list")
+
+        # Handle nested list case
+        if isinstance(token_ids, list) and token_ids and isinstance(token_ids[0], list):
+            flat_ids = token_ids[0]
+        else:
+            # Already flat list case
+            flat_ids = token_ids
+
+        # Fail-fast if any element is None
+        if any(tok is None for tok in flat_ids):
+            raise ValueError(
+                "Tokenizer produced `None` token IDs – check that all special tokens are "
+                "present in the tokenizer vocabulary."
+            )
+
+        return flat_ids
 
 
 def create_chat_processor(

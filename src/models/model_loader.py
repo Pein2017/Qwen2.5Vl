@@ -191,6 +191,7 @@ def load_model_and_processor_unified(
 
                     coordinate_config = CoordinateConfig(
                         enable_coordinate_tokens=config.coordinate_tokens_enabled,
+                        coordinate_tokens_enabled=config.coordinate_tokens_enabled,  # Alias for consistency
                         max_coord_value=config.max_coord_value,
                         coordinate_loss_weight=config.coordinate_loss_weight,
                         regular_loss_weight=config.regular_loss_weight,
@@ -264,6 +265,50 @@ def load_model_and_processor_unified(
                         logger.info(
                             "✅ Set detection_enabled=True for coordinate token model"
                         )
+
+                        # CRITICAL FIX: Set coordinate token attributes on tokenizer
+                        # This fixes the issue where coordinate tokens exist but tokenizer doesn't expose them
+                        try:
+                            from src.utils.tokens.special_tokens import (
+                                SimpleCoordinateManager,
+                            )
+
+                            # Create coordinate manager to get token IDs
+                            coord_manager = SimpleCoordinateManager(
+                                tokenizer=tokenizer,
+                                max_coord_value=config.max_coord_value,
+                            )
+
+                            if coord_manager.has_coordinate_tokens():
+                                # Set coordinate token attributes on tokenizer
+                                tokenizer.coord_start_id = coord_manager.coord_start_id
+                                tokenizer.coord_end_id = coord_manager.coord_end_id
+                                tokenizer.coordinate_tokens_enabled = True
+                                tokenizer.max_coord_value = config.max_coord_value
+
+                                logger.info(
+                                    f"✅ Set coordinate token attributes on tokenizer:"
+                                )
+                                logger.info(
+                                    f"   coord_start_id: {tokenizer.coord_start_id}"
+                                )
+                                logger.info(
+                                    f"   coord_end_id: {tokenizer.coord_end_id}"
+                                )
+                                logger.info(
+                                    f"   max_coord_value: {tokenizer.max_coord_value}"
+                                )
+                            else:
+                                logger.warning(
+                                    "⚠️ Coordinate manager reports no coordinate tokens available"
+                                )
+
+                        except Exception as e:
+                            logger.error(
+                                f"❌ Failed to set coordinate token attributes on tokenizer: {e}"
+                            )
+                            # Don't fail the entire loading process, but log the issue
+
                     else:
                         logger.warning(
                             "⚠️ Model loaded without extended vocabulary - coordinate tokens may not work"
@@ -551,7 +596,19 @@ def load_model_and_processor_unified(
                 tokenizer,
                 model,
                 max_coord_value=config.max_coord_value,
+                coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             )
+
+            # CRITICAL: Validate coordinate token consistency after token manager setup
+            logger.info("🔍 Running coordinate token embedding validation...")
+            try:
+                token_manager.validate_coordinate_token_consistency()
+                logger.info("✅ Coordinate token embedding validation passed")
+            except (ValueError, RuntimeError) as e:
+                raise ModelLoadingError(
+                    f"Coordinate token embedding validation failed: {e}. "
+                    f"This indicates a vocabulary-embedding mismatch that could cause training instability."
+                )
 
             # Verify final vocabulary sizes
             final_tokenizer_size = len(tokenizer.get_vocab())
@@ -595,7 +652,19 @@ def load_model_and_processor_unified(
                 tokenizer,
                 model,
                 max_coord_value=0,  # No coordinate tokens for geometry-only mode
+                coordinate_tokens_enabled=False,  # Geometry-only mode
             )
+
+            # Validate token manager setup (will skip coordinate validation since max_coord_value=0)
+            logger.info("🔍 Running token manager validation...")
+            try:
+                token_manager.validate_coordinate_token_consistency()
+                logger.info("✅ Token manager validation passed (geometry-only mode)")
+            except (ValueError, RuntimeError) as e:
+                raise ModelLoadingError(
+                    f"Token manager validation failed: {e}. "
+                    f"This indicates a setup issue with geometry tokens."
+                )
 
             # Log the vocabulary sizes using config values
             logger.info("📊 GEOMETRY-ONLY VOCABULARY VERIFICATION:")

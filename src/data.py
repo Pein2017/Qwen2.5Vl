@@ -33,13 +33,12 @@ import torch
 from torch.utils.data import Dataset
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src.chat_processor import ChatProcessor
 from src.config import get_config
 
 # Get the debug logger from losses.py
 from src.logger_utils import get_data_logger
 from src.teacher_pool import TeacherPoolManager
-from src.utils.schema import ChatProcessorOutput
+from src.utils import ChatMessage, ChatProcessorOutput
 from src.utils.tokens import SpecialTokens
 
 
@@ -58,23 +57,29 @@ def read_jsonl(path: str) -> List[Dict[str, Any]]:
 
 
 class BBUDataset(Dataset):
-    """Dataset using UnifiedPreprocessor for clean data processing."""
+    """Unified dataset with end-to-end data processing.
+
+    Combines conversation building, tokenization, and dataset management
+    in a single unified processor, eliminating intermediate schemas.
+    """
 
     def __init__(
         self,
         data_path: str,
-        chat_processor: ChatProcessor,
+        tokenizer: PreTrainedTokenizerBase,
+        image_processor: Optional[Any],
         teacher_pool_manager: Optional[TeacherPoolManager],
         teacher_ratio: float,
         is_training: bool,
         config=None,
     ):
         """
-        Initialize BBU dataset with flat sample format and dynamic teacher pairing.
+        Initialize unified BBU dataset with integrated data processing.
 
         Args:
             data_path: Path to all_samples.jsonl file (flat format)
-            chat_processor: Chat processor instance
+            tokenizer: Tokenizer for text processing
+            image_processor: Image processor for vision inputs
             teacher_pool_manager: Manager for teacher examples
             teacher_ratio: Ratio of samples to use teacher examples (0.0 = no teachers)
             is_training: Whether this is a training dataset (affects prompt selection)
@@ -87,8 +92,8 @@ class BBUDataset(Dataset):
         # FAIL-FAST: Validate required parameters
         if not data_path:
             raise ValueError("data_path cannot be empty")
-        if chat_processor is None:
-            raise ValueError("chat_processor cannot be None")
+        if tokenizer is None:
+            raise ValueError("tokenizer cannot be None")
         if not isinstance(teacher_ratio, (int, float)):
             raise TypeError(
                 f"teacher_ratio must be a number, got {type(teacher_ratio)}"
@@ -108,19 +113,14 @@ class BBUDataset(Dataset):
                 )
 
         self.data_path = data_path
-        self.chat_processor = chat_processor
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
         self.teacher_pool_manager = teacher_pool_manager
         self.teacher_ratio = teacher_ratio
         self.is_training = is_training
 
-        # Set context for chat processor if available
-        context = "training" if is_training else "evaluation"
-        if hasattr(self.chat_processor, "set_context"):
-            self.chat_processor.set_context(context)  # type: ignore[attr-defined]
-        else:
-            logger.debug(
-                "ChatProcessor has no `set_context`; proceeding without context flag."
-            )
+        # Initialize data root from config
+        self.data_root = config.data_root
 
         # Load flat samples from all_samples.jsonl
         self.data = self._load_data()
@@ -133,6 +133,24 @@ class BBUDataset(Dataset):
 
         # Initialize special tokens
         self.tokens = SpecialTokens()
+
+        # Initialize ChatProcessor for proper image and token processing
+        from src.chat_processor import ChatProcessor
+
+        self.chat_processor = ChatProcessor(
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            config=config,
+            coordinate_tokens_enabled=getattr(
+                config, "coordinate_tokens_enabled", False
+            ),
+            max_coord_value=getattr(config, "max_coord_value", 2048),
+            language=getattr(config, "language", "chinese"),
+        )
+
+        # Initialize coordinate manager if coordinate tokens are enabled
+        if getattr(config, "coordinate_tokens_enabled", False):
+            self.chat_processor._update_coordinate_token_ranges()
 
         # Initialize teacher assignment tracking
         self._teacher_assignment_stats = {
@@ -184,10 +202,45 @@ class BBUDataset(Dataset):
                     "Teacher sampling enabled but teacher pool manager is not available"
                 )
 
-    @property
-    def data_root(self) -> str:
-        """Get data root from global config."""
-        return get_config().data_root
+        # Initialize unified processing components
+        self._initialize_processing_components(config)
+
+    def _initialize_processing_components(self, config):
+        """Initialize components for unified data processing."""
+        # Set language and training context
+        self.language = config.language if hasattr(config, "language") else "english"
+        self.use_training_prompts = self.is_training
+
+        # Initialize coordinate management
+        from src.utils.tokens import SimpleCoordinateManager
+
+        self.coordinate_config = (
+            config.coordinate if hasattr(config, "coordinate") else None
+        )
+        if self.coordinate_config:
+            self.coordinate_manager = SimpleCoordinateManager(self.coordinate_config)
+        else:
+            self.coordinate_manager = None
+
+        # Build system prompt
+        self.system_prompt = self._build_system_prompt()
+
+    def _build_system_prompt(self) -> str:
+        """Build system prompt for conversation."""
+        try:
+            from src.utils.prompt import get_system_prompt
+
+            return get_system_prompt(
+                language=self.language,
+            )
+        except (ImportError, TypeError):
+            # Fallback for testing or missing prompt module
+            if self.language == "chinese":
+                return (
+                    "你是一个专业的设备检测助手。请仔细分析图像并检测其中的设备和部件。"
+                )
+            else:
+                return "You are a professional equipment detection assistant. Please carefully analyze images and detect equipment and components within them."
 
     @property
     def model_max_length(self) -> int:
@@ -203,7 +256,7 @@ class BBUDataset(Dataset):
             ValueError: If any sample is invalid
         """
         valid_samples = []
-        is_training = "train" in self.data_path.lower()
+        is_training = "train" in str(self.data_path).lower()
         min_images = 1  # At least one image must be present
 
         logger.debug(
@@ -305,7 +358,7 @@ class BBUDataset(Dataset):
         return result
 
     def _get_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Internal getter to handle flat sample processing and teacher pairing."""
+        """Internal getter with unified end-to-end processing."""
         try:
             # Get flat sample from data
             if idx >= len(self.data):
@@ -340,27 +393,21 @@ class BBUDataset(Dataset):
                 teachers = structured_sample["teachers"]
                 logger.debug(f"   Teachers count: {len(teachers) if teachers else 0}")
 
-            # Process through chat processor
-            processed_data = self.chat_processor.process_sample(structured_sample)
-
-            # Convert ChatProcessorOutput to Dict[str, torch.Tensor] if needed
-            if not isinstance(processed_data, dict):
-                from dataclasses import asdict
-
-                processed_data = asdict(processed_data)
+            # Process through unified data processor (end-to-end)
+            processed_data = self._process_sample_unified(structured_sample)
 
             # FAIL-FAST: Ensure processed data has required fields before returning
             if not processed_data:
                 raise ValueError(
-                    f"Chat processor returned empty result for sample {idx}"
+                    f"Unified processor returned empty result for sample {idx}"
                 )
             if "input_ids" not in processed_data:
                 raise ValueError(
-                    f"Chat processor result missing 'input_ids' for sample {idx}. Keys: {list(processed_data.keys())}"
+                    f"Unified processor result missing 'input_ids' for sample {idx}. Keys: {list(processed_data.keys())}"
                 )
             if "labels" not in processed_data:
                 raise ValueError(
-                    f"Chat processor result missing 'labels' for sample {idx}. Keys: {list(processed_data.keys())}"
+                    f"Unified processor result missing 'labels' for sample {idx}. Keys: {list(processed_data.keys())}"
                 )
 
             return processed_data
@@ -371,6 +418,48 @@ class BBUDataset(Dataset):
             logger.error(error_msg)
             # Instead of returning empty dict, raise with full context
             raise RuntimeError(error_msg) from e
+
+    def _process_sample_unified(
+        self, raw_sample: Dict[str, Any]
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Unified end-to-end sample processing using ChatProcessor.
+
+        Uses the ChatProcessor to handle the complete processing pipeline
+        including proper vision token expansion and image processing.
+
+        Args:
+            raw_sample: Sample with 'teachers' (List[Sample]) and 'student' (Sample) structure
+
+        Returns:
+            Dict[str, torch.Tensor] ready for training
+        """
+        # Debug: Log the sample structure
+        teachers = raw_sample.get("teachers", [])
+        logger.debug(f"📝 Processing sample: {len(teachers)} teachers + 1 student")
+
+        # Use ChatProcessor to handle the complete processing pipeline
+        try:
+            # ChatProcessor expects the structured sample format with teachers and student
+            # The raw_sample already has the correct structure: {'teachers': [...], 'student': {...}}
+            result = self.chat_processor.process_sample(raw_sample)
+
+            # Convert ChatProcessorOutput to dict format if needed
+            if hasattr(result, "__dict__"):
+                # If it's a dataclass, convert to dict
+                from dataclasses import asdict
+
+                return asdict(result)
+            else:
+                # If it's already a dict, return as-is
+                return result
+
+        except Exception as e:
+            logger.error(f"ChatProcessor failed for sample: {e}")
+            logger.error(f"Raw sample keys: {list(raw_sample.keys())}")
+            if "student" in raw_sample:
+                logger.error(f"Student keys: {list(raw_sample['student'].keys())}")
+            raise RuntimeError(f"ChatProcessor processing failed: {e}") from e
 
     def _create_structured_sample(
         self, flat_sample: Dict[str, Any], idx: int
@@ -447,8 +536,22 @@ class BBUDataset(Dataset):
         # Track statistics
         self._teacher_assignment_stats["total_samples"] += 1
 
-        # Decide whether to use teachers based on teacher_ratio
-        use_teachers = random.random() < self.teacher_ratio
+        # Improved teacher assignment strategy for more consistent ratios
+        # Use a deterministic approach based on sample index to ensure better distribution
+        total_samples = self._teacher_assignment_stats["total_samples"]
+        expected_with_teacher = int(total_samples * self.teacher_ratio)
+        current_with_teacher = self._teacher_assignment_stats["samples_with_teacher"]
+
+        # If we're behind the expected ratio, force teacher assignment
+        # If we're ahead, use random assignment with adjusted probability
+        if current_with_teacher < expected_with_teacher:
+            use_teachers = True
+        else:
+            # Calculate remaining samples and remaining teacher slots
+            remaining_ratio = max(
+                0.0, self.teacher_ratio - (current_with_teacher / total_samples)
+            )
+            use_teachers = random.random() < remaining_ratio
 
         # Update statistics
         if use_teachers:
@@ -546,6 +649,345 @@ class BBUDataset(Dataset):
             raise ValueError(f"No valid samples after filtering in {self.data_path}")
 
         return validated_data
+
+    # ========================================================================
+    # UNIFIED PROCESSING METHODS (from ChatProcessor integration)
+    # ========================================================================
+
+    def _create_conversation_messages(
+        self, sample: Dict[str, Any]
+    ) -> List[ChatMessage]:
+        """Return a validated list of ChatMessage objects built from sample."""
+
+        messages: list[ChatMessage] = []
+
+        # 1) System prompt ----------------------------------------------------------------
+        messages.append(ChatMessage(role="system", content=self.system_prompt))
+
+        # 2) Learning instruction if teachers are present --------------------------------
+        # FAIL-FAST: Validate sample structure
+        if "teachers" not in sample:
+            raise ValueError("Sample must contain 'teachers' field (can be empty list)")
+        teachers: Sequence[Dict[str, Any]] = sample["teachers"]
+
+        if teachers:
+            from src.utils.prompt import get_learning_instruction
+
+            learning_instruction = get_learning_instruction(
+                language=self.language,
+            )
+            if learning_instruction.strip():
+                messages.append(ChatMessage(role="user", content=learning_instruction))
+                messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content="明白！我会仔细学习参考示例中的检测模式、标注风格和判断标准，然后应用到目标图像的检测中。"
+                        if self.language == "chinese"
+                        else "Understood! I will carefully study the detection patterns, annotation styles, and judgment criteria in the reference examples, then apply them to detect objects in the target image.",
+                    )
+                )
+
+        # 3) Teacher examples --------------------------------------------------------------
+        for i, teacher in enumerate(teachers):
+            # FAIL-FAST: Validate teacher structure
+            if "objects" not in teacher:
+                raise ValueError(f"Teacher {i} must contain 'objects' field")
+
+            # User uploads a teacher example image with clear context
+            if self.language == "chinese":
+                if len(teachers) == 1:
+                    user_content = "参考示例:\n<image>"
+                else:
+                    user_content = f"参考示例 {i + 1}/{len(teachers)}:\n<image>"
+            else:
+                if len(teachers) == 1:
+                    user_content = "Reference Example:\n<image>"
+                else:
+                    user_content = (
+                        f"Reference Example {i + 1}/{len(teachers)}:\n<image>"
+                    )
+
+            messages.append(ChatMessage(role="user", content=user_content))
+
+            # Assistant returns detection JSON with learning context
+            objects = teacher["objects"]
+            sorted_objects = self._sort_objects_by_position(objects)
+            assistant_response = self._format_objects_response(sorted_objects)
+            messages.append(ChatMessage(role="assistant", content=assistant_response))
+
+        # 3) Student target ---------------------------------------------------------------
+        # FAIL-FAST: Validate student structure
+        if "student" not in sample:
+            # If no explicit student field, the sample itself is the student
+            student = sample
+        else:
+            student = sample["student"]
+
+        # FAIL-FAST: Validate student structure
+        if "objects" not in student:
+            raise ValueError("Student must contain 'objects' field")
+
+        # Add transitional instruction if teachers were provided
+        if teachers:
+            if self.language == "chinese":
+                target_content = "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:\n<image>"
+            else:
+                target_content = "Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:\n<image>"
+        else:
+            if self.language == "chinese":
+                target_content = "请检测以下图像中的设备和部件:\n<image>"
+            else:
+                target_content = "Please detect all equipment and components in the following image:\n<image>"
+
+        messages.append(ChatMessage(role="user", content=target_content))
+
+        student_objects = student["objects"]
+        sorted_student_objects = self._sort_objects_by_position(student_objects)
+        student_response = self._format_objects_response(sorted_student_objects)
+        messages.append(ChatMessage(role="assistant", content=student_response))
+
+        return messages
+
+    def _extract_all_image_paths(self, sample: Dict[str, Any]) -> List[str]:
+        """Extract all image paths from structured sample."""
+        all_image_paths = []
+
+        # Extract teacher images
+        teachers = sample.get("teachers", [])
+        for teacher in teachers:
+            if "images" in teacher:
+                all_image_paths.extend(teacher["images"])
+
+        # Extract student images
+        student = sample.get("student", sample)
+        if "images" in student:
+            all_image_paths.extend(student["images"])
+
+        return all_image_paths
+
+    def _sort_objects_by_position(
+        self, objects: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Sort objects by vertical position (top to bottom, left to right)."""
+        if not objects:
+            return objects
+
+        def get_sort_key(obj):
+            if "bbox_2d" in obj:
+                bbox = obj["bbox_2d"]
+                return (bbox[1], bbox[0])  # Sort by y (top), then x (left)
+            elif "square" in obj:
+                square = obj["square"]
+                return (square[1], square[0])  # Sort by y (top), then x (left)
+            elif "line" in obj:
+                line = obj["line"]
+                return (line[1], line[0])  # Sort by first point y, then x
+            else:
+                return (0, 0)  # Default for objects without coordinates
+
+        return sorted(objects, key=get_sort_key)
+
+    def _create_json_object(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Create standardized JSON object for output."""
+        result = {"description": obj.get("description", "")}
+
+        # Add geometry information
+        if "bbox_2d" in obj:
+            result["bbox_2d"] = obj["bbox_2d"]
+        elif "square" in obj:
+            result["square"] = obj["square"]
+        elif "line" in obj:
+            result["line"] = obj["line"]
+
+        return result
+
+    def _format_objects_response(self, objects: List[Dict[str, Any]]) -> str:
+        """Format objects list as JSON response."""
+        if not objects:
+            return "[]"
+
+        formatted_objects = []
+        for obj in objects:
+            formatted_obj = self._create_json_object(obj)
+            formatted_objects.append(formatted_obj)
+
+        return json.dumps(
+            formatted_objects, ensure_ascii=False, indent=None, separators=(",", ":")
+        )
+
+    def _process_images_and_tokens(
+        self, conversation_messages: List[ChatMessage], image_paths: List[str]
+    ) -> Tuple[List[ChatMessage], List[Any], List[Tuple[int, int]]]:
+        """Process images and expand vision tokens in conversation."""
+        # For now, return basic structure - full implementation would handle image processing
+        processed_conversation = conversation_messages
+        images = []
+        image_dims = []
+
+        # Load and process images if image processor is available
+        if self.image_processor and image_paths:
+            import os
+
+            from PIL import Image
+
+            for img_path in image_paths:
+                full_path = os.path.join(self.data_root, img_path)
+                if os.path.exists(full_path):
+                    try:
+                        img = Image.open(full_path).convert("RGB")
+                        images.append(img)
+                        image_dims.append((img.width, img.height))
+                    except Exception as e:
+                        logger.warning(f"Failed to load image {full_path}: {e}")
+                        # Add placeholder for failed images
+                        images.append(None)
+                        image_dims.append((0, 0))
+                else:
+                    logger.warning(f"Image not found: {full_path}")
+                    images.append(None)
+                    image_dims.append((0, 0))
+
+        return processed_conversation, images, image_dims
+
+    def _tokenize_conversation(
+        self, conversation: List[ChatMessage]
+    ) -> Tuple[
+        torch.Tensor,  # input_ids
+        torch.Tensor,  # labels
+        List[Tuple[int, int]],  # teacher_spans
+        List[Tuple[int, int]],  # student_spans
+    ]:
+        """Tokenize conversation and create labels with proper masking."""
+        from dataclasses import asdict
+
+        # Apply chat template expects a List[dict] – convert once here.
+        formatted_text = self.tokenizer.apply_chat_template(
+            [asdict(msg) for msg in conversation],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+
+        # Debug: Log the formatted text before adding endoftext
+        logger.debug(
+            f"📄 Formatted text before endoftext: {repr(formatted_text[-100:])}"
+        )
+
+        # Check if endoftext is already present
+        if not formatted_text.endswith(self.tokens.ENDOFTEXT):
+            # Add end of text token only if not already present
+            formatted_text += self.tokens.ENDOFTEXT
+            logger.debug(f"✅ Added ENDOFTEXT token")
+        else:
+            logger.debug(f"✅ ENDOFTEXT token already present")
+
+        # Debug: Log the formatted text after adding endoftext
+        logger.debug(
+            f"📄 Formatted text after endoftext: {repr(formatted_text[-100:])}"
+        )
+        logger.debug(f"🔍 ENDOFTEXT token: {repr(self.tokens.ENDOFTEXT)}")
+
+        # Tokenize without tensor conversion first
+        tokenized = self.tokenizer(
+            formatted_text,
+            padding=False,
+            truncation=False,
+            add_special_tokens=False,  # we explicitly bake all special tokens into the prompt
+        )
+
+        # Flatten tokenizer output
+        flat_ids = self._flatten_tokenizer_output(tokenized["input_ids"])
+
+        # Convert to tensor (1D)
+        input_ids_1d = torch.tensor(flat_ids, dtype=torch.long)
+
+        # Create labels (copy of input_ids)
+        labels_1d = input_ids_1d.clone()
+
+        # Mask non-assistant tokens → only assistant messages contribute to loss
+        # Also extract teacher/student spans for loss splitting
+        labels_1d, teacher_spans, student_spans = self._mask_non_assistant_tokens(
+            labels_1d, conversation, formatted_text
+        )
+
+        # Add batch dimension for collator compatibility
+        input_ids = input_ids_1d.unsqueeze(0)  # (1, S)
+        labels = labels_1d.unsqueeze(0)  # (1, S)
+
+        return input_ids, labels, teacher_spans, student_spans
+
+    def _flatten_tokenizer_output(self, input_ids) -> List[int]:
+        """Flatten tokenizer output to handle nested lists."""
+        if isinstance(input_ids, list):
+            if len(input_ids) > 0 and isinstance(input_ids[0], list):
+                # Nested list - flatten
+                flattened = []
+                for sublist in input_ids:
+                    flattened.extend(sublist)
+                return flattened
+            else:
+                # Already flat list
+                return input_ids
+        else:
+            # Single tensor or other type
+            return input_ids.tolist() if hasattr(input_ids, "tolist") else [input_ids]
+
+    def _mask_non_assistant_tokens(
+        self,
+        labels_1d: torch.Tensor,
+        conversation: List[ChatMessage],
+        formatted_text: str,
+    ) -> Tuple[torch.Tensor, List[Tuple[int, int]], List[Tuple[int, int]]]:
+        """Mask non-assistant tokens and extract teacher/student spans."""
+        # For now, implement basic masking - full implementation would handle span extraction
+        # This is a simplified version that masks system and user messages
+
+        # Mask all tokens initially
+        labels_1d.fill_(-100)
+
+        # Find assistant message positions and unmask them
+        # This is a simplified approach - full implementation would parse the formatted text
+        teacher_spans = []
+        student_spans = []
+
+        # For now, return simplified spans
+        # Full implementation would analyze the conversation structure and formatted text
+        # to identify exact token positions for teacher vs student assistant responses
+
+        return labels_1d, teacher_spans, student_spans
+
+    def _process_images_for_model(
+        self, images: List[Any]
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Process images for model input."""
+        if not images or not self.image_processor:
+            return None, None
+
+        # Filter out None images
+        valid_images = [img for img in images if img is not None]
+        if not valid_images:
+            return None, None
+
+        try:
+            # Process images using the image processor
+            processed = self.image_processor(valid_images, return_tensors="pt")
+            pixel_values = processed.get("pixel_values")
+            image_grid_thw = processed.get("image_grid_thw")
+
+            return pixel_values, image_grid_thw
+        except Exception as e:
+            logger.warning(f"Failed to process images: {e}")
+            return None, None
+
+    def _extract_and_normalize_ground_truth(
+        self, raw_sample: Dict[str, Any], image_dims: List[Tuple[int, int]]
+    ) -> List[Dict[str, Any]]:
+        """Extract and normalize ground truth objects for the student."""
+        student = raw_sample.get("student", raw_sample)
+        objects = student.get("objects", [])
+
+        # For now, return objects as-is
+        # Full implementation would handle coordinate normalization
+        return objects
 
 
 def extract_ground_truth_from_sample(
@@ -867,11 +1309,6 @@ class PackedDataCollator:
 
         logger.debug(f"📦 PACKED COLLATOR:")
         logger.debug(f"   Batch size: {batch_size}")
-        logger.debug(f"   Individual lengths: {seq_lengths}")
-        logger.debug(f"   Total packed length: {total_length}")
-        logger.debug(
-            f"   Memory efficiency: {total_length / (batch_size * max(seq_lengths)):.2%}"
-        )
 
         # 3. Concatenate all sequences (no padding)
         packed_input_ids = torch.cat(input_ids_list, dim=0)

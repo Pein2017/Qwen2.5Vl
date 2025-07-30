@@ -96,6 +96,52 @@ class ConfigFactory:
         logger.info(f"✅ Created coordinate enabled config: {config_path}")
         return str(config_path)
 
+    def create_coordinate_enabled_config_with_value(
+        self, data_root: str, collator_type: str = "standard", max_coord_value: int = 2048
+    ) -> str:
+        """
+        Create configuration with coordinate tokens enabled with a specific max_coord_value.
+
+        Args:
+            data_root: Path to test data directory
+            collator_type: Type of data collator ("standard" or "packed")
+            max_coord_value: Maximum coordinate value for coordinate tokens
+
+        Returns:
+            Path to created configuration file
+        """
+        config_data = self._load_base_config()
+
+        # Coordinate token specific overrides with custom max_coord_value
+        coordinate_overrides = {
+            "coordinate_tokens_enabled": True,
+            "max_coord_value": max_coord_value,
+            "coordinate_loss_weight": 0.05,
+            "regular_loss_weight": 1.0,
+            "coordinate_lr": 5e-6,  # Enable coordinate learning rate
+        }
+
+        # Apply all overrides
+        config_data.update(self.TEST_OVERRIDES)
+        config_data.update(coordinate_overrides)
+        config_data.update(
+            {
+                "data_root": data_root,
+                "train_data_path": f"{data_root}/train.jsonl",
+                "val_data_path": f"{data_root}/val.jsonl",
+                "teacher_pool_file": f"{data_root}/teacher.jsonl",
+                "collator_type": collator_type,
+                "output_dir": f"{data_root}/output_coordinate_{collator_type}_{max_coord_value}",
+                "run_name": f"test_coordinate_{collator_type}_{max_coord_value}",
+            }
+        )
+
+        config_path = self.configs_dir / f"coordinate_enabled_{collator_type}_{max_coord_value}.yaml"
+        self._save_config(config_data, config_path)
+
+        logger.info(f"✅ Created coordinate enabled config with max_coord_value={max_coord_value}: {config_path}")
+        return str(config_path)
+
     def create_coordinate_disabled_config(
         self, data_root: str, collator_type: str = "standard"
     ) -> str:

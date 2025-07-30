@@ -6,17 +6,28 @@ Welcome to the BBU (Bounding Box Understanding) training pipeline documentation.
 
 ### **New to BBU?** Start Here
 - [**Getting Started**](getting-started.md) - 15-minute setup and first training run
-- [**Configuration**](configuration.md) - Complete configuration guide
-- [**Architecture**](architecture.md) - System overview and components
+- [**Configuration**](implementation/configuration.md) - Complete configuration guide
+- [**Architecture**](reference/architecture.md) - System overview and components
 
 ### **Core Features**
-- [**Coordinate Tokens**](coordinate-tokens.md) - Advanced coordinate token system (Standard + Coordinate modes)
-- [**Training**](training.md) - Training workflows, monitoring, and optimization
-- [**API Reference**](api-reference.md) - Complete API documentation
+- [**Coordinate Tokens**](features/coordinate-tokens.md) - Advanced coordinate token system (Standard + Coordinate modes)
+- [**Multi-Geometry Support**](features/multi-geometry.md) - Support for bbox_2d, line, and square geometries
+- [**Coordinate Normalization**](features/coordinate-normalization.md) - Robust coordinate processing and degenerate case handling
+- [**Training System**](implementation/training-system.md) - Training workflows, monitoring, and optimization
+- [**API Reference**](guides/api-reference.md) - Complete API documentation
+
+### **Implementation Documentation**
+- [**Data Conversion**](implementation/data-conversion.md) - Data processing pipeline and coordinate management
+- [**Model System**](implementation/model-system.md) - Qwen2.5-VL integration and coordinate token support
+- [**Training System**](implementation/training-system.md) - Loss management and training coordination
 
 ### **Need Help?**
-- [**Troubleshooting**](troubleshooting.md) - Common issues and solutions
-- [**Migration**](migration.md) - Upgrading from older versions
+- [**Troubleshooting**](troubleshooting/common-issues.md) - Common issues and solutions
+- [**Migration**](guides/migration.md) - Upgrading from older versions
+
+## 📋 **Complete Documentation Index**
+
+For a comprehensive list of all documentation files, see [**INDEX.md**](INDEX.md) - Complete documentation index with 30+ files organized by topic and user type.
 
 ## 📊 **System Overview**
 
@@ -38,25 +49,25 @@ The BBU training pipeline supports two operational modes:
 
 ### **I'm a New Developer**
 1. [Getting Started](getting-started.md) - Setup and first run
-2. [Configuration](configuration.md) - Understanding configuration options
-3. [Training](training.md) - Running your first training job
-4. [Troubleshooting](troubleshooting.md) - Common issues
+2. [Configuration](implementation/configuration.md) - Understanding configuration options
+3. [Training System](implementation/training-system.md) - Running your first training job
+4. [Troubleshooting](troubleshooting/common-issues.md) - Common issues
 
 ### **I'm a Researcher/Experimenter**
-1. [Coordinate Tokens](coordinate-tokens.md) - Advanced coordinate token features
-2. [Architecture](architecture.md) - System design and extensibility
-3. [API Reference](api-reference.md) - Customization and extension points
-4. [Training](training.md) - Advanced training configurations
+1. [Coordinate Tokens](features/coordinate-tokens.md) - Advanced coordinate token features
+2. [Architecture](reference/architecture.md) - System design and extensibility
+3. [API Reference](guides/api-reference.md) - Customization and extension points
+4. [Training Modes](features/training-modes.md) - Advanced training configurations
 
 ### **I Need to Troubleshoot**
-1. [Troubleshooting](troubleshooting.md) - Comprehensive problem-solving guide
-2. [Configuration](configuration.md) - Configuration validation
-3. [API Reference](api-reference.md) - API debugging
+1. [Troubleshooting](troubleshooting/common-issues.md) - Comprehensive problem-solving guide
+2. [Configuration](implementation/configuration.md) - Configuration validation
+3. [API Reference](guides/api-reference.md) - API debugging
 
 ### **I'm Migrating/Upgrading**
-1. [Migration](migration.md) - Version upgrade guides
-2. [Configuration](configuration.md) - New configuration format
-3. [Coordinate Tokens](coordinate-tokens.md) - New coordinate token system
+1. [Migration](guides/migration.md) - Version upgrade guides
+2. [Configuration](implementation/configuration.md) - New configuration format
+3. [Coordinate Tokens](features/coordinate-tokens.md) - New coordinate token system
 
 ## 🔧 **Quick Commands**
 
@@ -102,16 +113,20 @@ This documentation follows a simplified structure for easy navigation:
 
 ```
 BBU Training Pipeline
-├── Data Processing     → Handles JSONL data and coordinate conversion
-├── Model System       → Qwen2.5-VL with coordinate token extensions
-├── Training System    → Multi-component loss and optimization
-├── Coordinate Tokens  → Standard and Coordinate mode support
-└── Configuration      → Unified configuration management
+├── Data Conversion     → implementation/data-conversion.md
+├── Model System        → implementation/model-system.md
+├── Training System     → implementation/training-system.md
+├── Configuration       → implementation/configuration.md
+├── Coordinate Tokens   → features/coordinate-tokens.md
+├── Multi-Geometry      → features/multi-geometry.md
+└── Training Modes      → features/training-modes.md
 ```
 
 ## 📈 **Current Status**
 
 - ✅ **Coordinate Token System**: Both modes production ready
+- ✅ **Multi-Geometry Support**: Complete support for bbox_2d, line, and square geometries
+- ✅ **Loss Computation**: Fixed teacher assignment and duplicate loss variables
 - ✅ **Training Pipeline**: Fully functional with comprehensive testing
 - ✅ **Documentation**: Simplified and consolidated structure
 - ✅ **Testing**: 30/30 tests passing
@@ -127,4 +142,4 @@ When updating documentation:
 
 ---
 
-**Need immediate help?** Check [Troubleshooting](troubleshooting.md) for quick solutions to common issues.
+**Need immediate help?** Check [Troubleshooting](troubleshooting/common-issues.md) for quick solutions to common issues.

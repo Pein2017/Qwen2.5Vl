@@ -12,6 +12,7 @@ Key Benefits:
 - Extensible with custom validators
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -71,7 +72,6 @@ class BBUConfig(BaseModel):
     vision_lr: float = Field(ge=0, description="Vision encoder learning rate")
     merger_lr: float = Field(ge=0, description="Vision-language merger learning rate")
     llm_lr: float = Field(ge=0, description="LLM learning rate")
-    coordinate_lr: float = Field(ge=0, description="Coordinate token learning rate")
     adapter_lr: float = Field(ge=0, description="Adapter learning rate")
     warmup_ratio: float = Field(ge=0, le=1, description="Learning rate warmup ratio")
     weight_decay: float = Field(ge=0, description="Weight decay coefficient")
@@ -119,9 +119,6 @@ class BBUConfig(BaseModel):
     # === TRAINING CONTROL ===
     training_prompt_style: bool = Field(description="Use training prompt style")
     use_consistent_prompts: bool = Field(description="Use consistent prompting")
-    detection_freeze_epochs: int = Field(
-        ge=0, description="Epochs to freeze detection training"
-    )
 
     # === PERFORMANCE SETTINGS ===
     dataloader_num_workers: int = Field(
@@ -156,9 +153,6 @@ class BBUConfig(BaseModel):
     # === LOGGING SETTINGS ===
     logging_steps: int = Field(gt=0, description="Steps between log outputs")
     logging_dir: str = Field(description="Directory for log files")
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
-        description="Logging level"
-    )
     report_to: Literal["tensorboard", "wandb", "none"] = Field(
         description="Experiment tracking system"
     )
@@ -188,7 +182,7 @@ class BBUConfig(BaseModel):
     @property
     def use_differential_lr(self) -> bool:
         """Auto-determine if differential learning rates should be used."""
-        lrs = [self.vision_lr, self.merger_lr, self.llm_lr, self.coordinate_lr]
+        lrs = [self.vision_lr, self.merger_lr, self.llm_lr]
         active_lrs = [lr for lr in lrs if lr > 0]
         return len(set(active_lrs)) > 1
 
@@ -269,146 +263,296 @@ def load_config(yaml_path: str) -> BBUConfig:
     return config
 
 
-# === DOMAIN CONFIG EXTRACTORS (No more redundant classes!) ===
+# === DOMAIN CONFIG EXTRACTORS (Clean, validated, non-redundant!) ===
+@dataclass(frozen=True)
 class TrainingConfig:
-    """Training configuration extractor - no redundant field definitions!"""
+    """Training configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.learning_rate = config.learning_rate
-        self.batch_size = config.per_device_train_batch_size
-        self.epochs = config.num_train_epochs
-        self.gradient_accumulation_steps = config.gradient_accumulation_steps
-        self.warmup_ratio = config.warmup_ratio
-        self.weight_decay = config.weight_decay
-        self.max_grad_norm = config.max_grad_norm
-        self.lr_scheduler_type = config.lr_scheduler_type
-        self.gradient_checkpointing = config.gradient_checkpointing
-        self.bf16 = config.bf16
-        self.fp16 = config.fp16
-        self.vision_lr = config.vision_lr
-        self.merger_lr = config.merger_lr
-        self.llm_lr = config.llm_lr
-        self.coordinate_lr = config.coordinate_lr
-        self.adapter_lr = config.adapter_lr
-        self.detection_freeze_epochs = config.detection_freeze_epochs
-        self.use_flash_attention = config.use_flash_attention
-        self.mixed_precision = config.mixed_precision
-        self.teacher_loss_weight = config.teacher_loss_weight
-        self.student_loss_weight = config.student_loss_weight
+    learning_rate: float
+    batch_size: int
+    epochs: int
+    gradient_accumulation_steps: int
+    warmup_ratio: float
+    weight_decay: float
+    max_grad_norm: float
+    lr_scheduler_type: str
+    gradient_checkpointing: bool
+    bf16: bool
+    fp16: bool
+    vision_lr: float
+    merger_lr: float
+    llm_lr: float
+    adapter_lr: float
+    use_flash_attention: bool
+    mixed_precision: str
+    teacher_loss_weight: float
+    student_loss_weight: float
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "TrainingConfig":
-        """Create training config from main config."""
-        return cls(config)
+        """Create training config from main config with validation."""
+        return cls(
+            learning_rate=config.learning_rate,
+            batch_size=config.per_device_train_batch_size,
+            epochs=config.num_train_epochs,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            warmup_ratio=config.warmup_ratio,
+            weight_decay=config.weight_decay,
+            max_grad_norm=config.max_grad_norm,
+            lr_scheduler_type=config.lr_scheduler_type,
+            gradient_checkpointing=config.gradient_checkpointing,
+            bf16=config.bf16,
+            fp16=config.fp16,
+            vision_lr=config.vision_lr,
+            merger_lr=config.merger_lr,
+            llm_lr=config.llm_lr,
+            adapter_lr=config.adapter_lr,
+            use_flash_attention=config.use_flash_attention,
+            mixed_precision=config.mixed_precision,
+            teacher_loss_weight=config.teacher_loss_weight,
+            student_loss_weight=config.student_loss_weight,
+        )
+
+    def __post_init__(self):
+        """Validate training configuration."""
+        if self.learning_rate <= 0:
+            raise ValueError(f"Invalid learning_rate: {self.learning_rate}")
+        if self.batch_size <= 0:
+            raise ValueError(f"Invalid batch_size: {self.batch_size}")
+        if self.epochs <= 0:
+            raise ValueError(f"Invalid epochs: {self.epochs}")
+        if not 0 <= self.warmup_ratio <= 1:
+            raise ValueError(f"Invalid warmup_ratio: {self.warmup_ratio}")
 
 
+@dataclass(frozen=True)
 class CoordinateConfig:
-    """Coordinate configuration extractor - no redundant field definitions!"""
+    """Coordinate configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.coordinate_tokens_enabled = config.coordinate_tokens_enabled
-        self.max_coord_value = config.max_coord_value
-        self.coordinate_loss_weight = config.coordinate_loss_weight
-        self.regular_loss_weight = config.regular_loss_weight
+    coordinate_tokens_enabled: bool
+    max_coord_value: int
+    coordinate_loss_weight: float
+    regular_loss_weight: float
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "CoordinateConfig":
-        """Create coordinate config from main config."""
-        return cls(config)
+        """Create coordinate config from main config with validation."""
+        return cls(
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+            max_coord_value=config.max_coord_value,
+            coordinate_loss_weight=config.coordinate_loss_weight,
+            regular_loss_weight=config.regular_loss_weight,
+        )
+
+    def __post_init__(self):
+        """Validate coordinate configuration."""
+        if self.coordinate_tokens_enabled:
+            if self.max_coord_value <= 0:
+                raise ValueError(f"Invalid max_coord_value: {self.max_coord_value}")
+            if self.coordinate_loss_weight < 0:
+                raise ValueError(
+                    f"Invalid coordinate_loss_weight: {self.coordinate_loss_weight}"
+                )
+            if self.regular_loss_weight < 0:
+                raise ValueError(
+                    f"Invalid regular_loss_weight: {self.regular_loss_weight}"
+                )
 
 
+@dataclass(frozen=True)
 class ModelConfig:
-    """Model configuration extractor - no redundant field definitions!"""
+    """Model configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.model_path = config.model_path
-        self.model_size = config.model_size
-        self.model_max_length = config.model_max_length
-        self.attn_implementation = config.attn_implementation
-        self.torch_dtype = config.torch_dtype
-        self.use_cache = config.use_cache
-        self.use_cache_inference = config.use_cache_inference
-        self.model_hidden_size = config.model_hidden_size
-        self.model_num_layers = config.model_num_layers
-        self.model_num_attention_heads = config.model_num_attention_heads
-        self.model_vocab_size = config.model_vocab_size
+    model_path: str
+    model_size: str
+    model_max_length: int
+    attn_implementation: str
+    torch_dtype: str
+    use_cache: bool
+    use_cache_inference: bool
+    model_hidden_size: int
+    model_num_layers: int
+    model_num_attention_heads: int
+    model_vocab_size: int
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "ModelConfig":
-        """Create model config from main config."""
-        return cls(config)
+        """Create model config from main config with validation."""
+        return cls(
+            model_path=config.model_path,
+            model_size=config.model_size,
+            model_max_length=config.model_max_length,
+            attn_implementation=config.attn_implementation,
+            torch_dtype=config.torch_dtype,
+            use_cache=config.use_cache,
+            use_cache_inference=config.use_cache_inference,
+            model_hidden_size=config.model_hidden_size,
+            model_num_layers=config.model_num_layers,
+            model_num_attention_heads=config.model_num_attention_heads,
+            model_vocab_size=config.model_vocab_size,
+        )
+
+    def __post_init__(self):
+        """Validate model configuration."""
+        if not self.model_path:
+            raise ValueError("model_path cannot be empty")
+        if self.model_max_length <= 0:
+            raise ValueError(f"Invalid model_max_length: {self.model_max_length}")
+        if self.model_hidden_size <= 0:
+            raise ValueError(f"Invalid model_hidden_size: {self.model_hidden_size}")
+        if self.model_num_layers <= 0:
+            raise ValueError(f"Invalid model_num_layers: {self.model_num_layers}")
+        if self.model_num_attention_heads <= 0:
+            raise ValueError(
+                f"Invalid model_num_attention_heads: {self.model_num_attention_heads}"
+            )
 
 
+@dataclass(frozen=True)
 class DataConfig:
-    """Data configuration extractor - no redundant field definitions!"""
+    """Data configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.train_data_path = config.train_data_path
-        self.val_data_path = config.val_data_path
-        self.data_root = config.data_root
-        self.max_total_length = config.max_total_length
-        self.teacher_pool_file = config.teacher_pool_file
-        self.num_teacher_samples = config.num_teacher_samples
-        self.collator_type = config.collator_type
-        self.teacher_ratio = config.teacher_ratio
-        self.max_examples = config.max_examples
-        self.language = config.language
-        self.dataloader_num_workers = config.dataloader_num_workers
-        self.pin_memory = config.pin_memory
-        self.prefetch_factor = config.prefetch_factor
-        self.remove_unused_columns = config.remove_unused_columns
+    train_data_path: str
+    val_data_path: str
+    data_root: str
+    max_total_length: int
+    teacher_pool_file: str
+    num_teacher_samples: int
+    collator_type: str
+    teacher_ratio: float
+    max_examples: int
+    language: str
+    dataloader_num_workers: int
+    pin_memory: bool
+    prefetch_factor: int
+    remove_unused_columns: bool
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "DataConfig":
-        """Create data config from main config."""
-        return cls(config)
+        """Create data config from main config with validation."""
+        return cls(
+            train_data_path=config.train_data_path,
+            val_data_path=config.val_data_path,
+            data_root=config.data_root,
+            max_total_length=config.max_total_length,
+            teacher_pool_file=config.teacher_pool_file,
+            num_teacher_samples=config.num_teacher_samples,
+            collator_type=config.collator_type,
+            teacher_ratio=config.teacher_ratio,
+            max_examples=config.max_examples,
+            language=config.language,
+            dataloader_num_workers=config.dataloader_num_workers,
+            pin_memory=config.pin_memory,
+            prefetch_factor=config.prefetch_factor,
+            remove_unused_columns=config.remove_unused_columns,
+        )
+
+    def __post_init__(self):
+        """Validate data configuration."""
+        if not self.train_data_path:
+            raise ValueError("train_data_path cannot be empty")
+        if not self.val_data_path:
+            raise ValueError("val_data_path cannot be empty")
+        if not self.data_root:
+            raise ValueError("data_root cannot be empty")
+        if self.max_total_length <= 0:
+            raise ValueError(f"Invalid max_total_length: {self.max_total_length}")
+        if self.num_teacher_samples <= 0:
+            raise ValueError(f"Invalid num_teacher_samples: {self.num_teacher_samples}")
+        if not 0 <= self.teacher_ratio <= 1:
+            raise ValueError(f"Invalid teacher_ratio: {self.teacher_ratio}")
+        if self.dataloader_num_workers < 0:
+            raise ValueError(
+                f"Invalid dataloader_num_workers: {self.dataloader_num_workers}"
+            )
 
 
+@dataclass(frozen=True)
 class LoggingConfig:
-    """Logging configuration extractor - no redundant field definitions!"""
+    """Logging configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.logging_steps = config.logging_steps
-        self.logging_dir = config.logging_dir
-        self.log_level = config.log_level
-        self.report_to = config.report_to
-        self.disable_tqdm = config.disable_tqdm
-        self.verbose = config.verbose
-        self.eval_strategy = config.eval_strategy
-        self.eval_steps = config.eval_steps
-        self.save_strategy = config.save_strategy
-        self.save_steps = config.save_steps
-        self.save_total_limit = config.save_total_limit
+    logging_steps: int
+    logging_dir: str
+    report_to: str
+    disable_tqdm: bool
+    verbose: bool
+    eval_strategy: str
+    eval_steps: int
+    save_strategy: str
+    save_steps: int
+    save_total_limit: int
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "LoggingConfig":
-        """Create logging config from main config."""
-        return cls(config)
+        """Create logging config from main config with validation."""
+        return cls(
+            logging_steps=config.logging_steps,
+            logging_dir=config.logging_dir,
+            report_to=config.report_to,
+            disable_tqdm=config.disable_tqdm,
+            verbose=config.verbose,
+            eval_strategy=config.eval_strategy,
+            eval_steps=config.eval_steps,
+            save_strategy=config.save_strategy,
+            save_steps=config.save_steps,
+            save_total_limit=config.save_total_limit,
+        )
+
+    def __post_init__(self):
+        """Validate logging configuration."""
+        if self.logging_steps <= 0:
+            raise ValueError(f"Invalid logging_steps: {self.logging_steps}")
+        if not self.logging_dir:
+            raise ValueError("logging_dir cannot be empty")
+        valid_eval_strategies = ["steps", "epoch", "no"]
+        if self.eval_strategy not in valid_eval_strategies:
+            raise ValueError(
+                f"Invalid eval_strategy: {self.eval_strategy}. Must be one of {valid_eval_strategies}"
+            )
 
 
+@dataclass(frozen=True)
 class VisionConfig:
-    """Vision configuration extractor - no redundant field definitions!"""
+    """Vision configuration extractor with validation."""
 
-    def __init__(self, config: BBUConfig):
-        self.patch_size = config.patch_size
-        self.merge_size = config.merge_size
-        self.temporal_patch_size = config.temporal_patch_size
-        self.training_prompt_style = config.training_prompt_style
-        self.use_consistent_prompts = config.use_consistent_prompts
+    patch_size: int
+    merge_size: int
+    temporal_patch_size: int
+    training_prompt_style: bool
+    use_consistent_prompts: bool
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "VisionConfig":
-        """Create vision config from main config."""
-        return cls(config)
+        """Create vision config from main config with validation."""
+        return cls(
+            patch_size=config.patch_size,
+            merge_size=config.merge_size,
+            temporal_patch_size=config.temporal_patch_size,
+            training_prompt_style=config.training_prompt_style,
+            use_consistent_prompts=config.use_consistent_prompts,
+        )
+
+    def __post_init__(self):
+        """Validate vision configuration."""
+        if self.patch_size <= 0:
+            raise ValueError(f"Invalid patch_size: {self.patch_size}")
+        if self.merge_size <= 0:
+            raise ValueError(f"Invalid merge_size: {self.merge_size}")
+        if self.temporal_patch_size <= 0:
+            raise ValueError(f"Invalid temporal_patch_size: {self.temporal_patch_size}")
+
+
+import threading
 
 
 # Global config for modules that need it
 _global_config: BBUConfig | None = None
+_config_lock = threading.RLock()  # Reentrant lock for thread safety
 
 
 def get_config() -> BBUConfig:
     """
-    Get the global configuration instance.
+    Get the global configuration instance (thread-safe).
 
     Returns:
         BBUConfig instance
@@ -416,14 +560,15 @@ def get_config() -> BBUConfig:
     Raises:
         RuntimeError: If config has not been initialized
     """
-    if _global_config is None:
-        raise RuntimeError("Config not initialized. Call init_config() first.")
-    return _global_config
+    with _config_lock:
+        if _global_config is None:
+            raise RuntimeError("Config not initialized. Call init_config() first.")
+        return _global_config
 
 
 def init_config(yaml_path: str) -> BBUConfig:
     """
-    Initialize the global configuration from a YAML file.
+    Initialize the global configuration from a YAML file (thread-safe).
 
     Args:
         yaml_path: Path to YAML configuration file
@@ -434,18 +579,92 @@ def init_config(yaml_path: str) -> BBUConfig:
     Raises:
         FileNotFoundError: If the YAML file doesn't exist
         ValueError: If the YAML file is invalid
+        RuntimeError: If config is already initialized (call reset_config() first)
     """
-    # FAIL-FAST: Validate yaml_path
-    if not yaml_path:
-        raise ValueError("yaml_path cannot be empty")
-
-    # FAIL-FAST: Validate file exists
-    yaml_file = Path(yaml_path)
-    if not yaml_file.exists():
-        raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
-    if not yaml_file.is_file():
-        raise ValueError(f"Configuration path is not a file: {yaml_path}")
-
     global _global_config
-    _global_config = load_config(yaml_path)
-    return _global_config
+
+    with _config_lock:
+        # FAIL-FAST: Check if already initialized
+        if _global_config is not None:
+            raise RuntimeError(
+                "Config already initialized. Call reset_config() first if you need to reinitialize."
+            )
+
+        # FAIL-FAST: Validate yaml_path
+        if not yaml_path:
+            raise ValueError("yaml_path cannot be empty")
+
+        # FAIL-FAST: Validate file exists
+        yaml_file = Path(yaml_path)
+        if not yaml_file.exists():
+            raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
+        if not yaml_file.is_file():
+            raise ValueError(f"Configuration path is not a file: {yaml_path}")
+
+        _global_config = load_config(yaml_path)
+        return _global_config
+
+
+def reset_config() -> None:
+    """
+    Reset the global configuration (thread-safe).
+
+    This is primarily for testing purposes.
+    """
+    global _global_config
+    with _config_lock:
+        _global_config = None
+
+
+def is_config_initialized() -> bool:
+    """
+    Check if the global configuration is initialized (thread-safe).
+
+    Returns:
+        True if config is initialized, False otherwise
+    """
+    with _config_lock:
+        return _global_config is not None
+
+
+# === DOMAIN CONFIG PROPERTY GROUPS (Added after class definition) ===
+
+
+def _add_domain_properties():
+    """Add domain config property methods to BBUConfig class."""
+
+    def training_config(self) -> "TrainingConfig":
+        """Access training-specific configuration as a typed object."""
+        return TrainingConfig.from_bbu_config(self)
+
+    def coordinate_config(self) -> "CoordinateConfig":
+        """Access coordinate token configuration as a typed object."""
+        return CoordinateConfig.from_bbu_config(self)
+
+    def model_config(self) -> "ModelConfig":
+        """Access model configuration as a typed object."""
+        return ModelConfig.from_bbu_config(self)
+
+    def data_config(self) -> "DataConfig":
+        """Access data configuration as a typed object."""
+        return DataConfig.from_bbu_config(self)
+
+    def logging_config(self) -> "LoggingConfig":
+        """Access logging configuration as a typed object."""
+        return LoggingConfig.from_bbu_config(self)
+
+    def vision_config(self) -> "VisionConfig":
+        """Access vision configuration as a typed object."""
+        return VisionConfig.from_bbu_config(self)
+
+    # Add the property methods to BBUConfig class
+    BBUConfig.training_config = property(training_config)
+    BBUConfig.coordinate_config = property(coordinate_config)
+    BBUConfig.model_config = property(model_config)
+    BBUConfig.data_config = property(data_config)
+    BBUConfig.logging_config = property(logging_config)
+    BBUConfig.vision_config = property(vision_config)
+
+
+# Call the function to add the properties
+_add_domain_properties()
