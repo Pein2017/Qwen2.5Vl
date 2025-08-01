@@ -2,7 +2,10 @@
 
 ## Overview
 
-The `src/training/` module provides a **consolidated** training framework specifically designed for BBU equipment detection with coordinate token support, teacher-student learning, and comprehensive loss management. Built on top of HuggingFace Transformers, it features a **refactored architecture** that consolidates previously separate managers into **2 unified managers** for improved maintainability and performance.
+The training system provides a **production-ready** framework for BBU equipment detection with coordinate token support, teacher-student learning, and comprehensive loss management. The system has evolved through multiple architectures:
+
+- **`src/`**: Consolidated 2-manager architecture (legacy, stable)
+- **`src_new/`**: BBUTrainer architecture with NCCL timeout resolution (current production)
 
 ## Refactored Architecture (2025)
 

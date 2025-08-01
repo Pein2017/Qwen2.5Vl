@@ -2,9 +2,21 @@
 
 Welcome to the BBU (Bounding Box Understanding) training pipeline documentation. This system provides fine-tuning capabilities for Qwen2.5-VL models with coordinate token support for precise object localization.
 
+## 🔄 **IMPORTANT: BBUTrainer Architecture (August 2025)**
+
+The training system has been **completely refactored** to eliminate NCCL timeout issues:
+
+- **✅ PRODUCTION**: `BBUTrainer` with local loss aggregation (no distributed conflicts)
+- **✅ RESOLVED**: NCCL timeout issues completely eliminated
+- **✅ ENHANCED**: Improved logging formatting (4-decimal losses, readable learning rates)
+- **✅ CONFIGURABLE**: Dataset size limiting via `max_dataset_size` parameter
+- **❌ DEPRECATED**: `DistributedLossTrainer` (replaced by BBUTrainer)
+- **📖 Complete Guide**: [BBUTrainer NCCL Resolution](bbu-trainer-nccl-timeout-resolution.md)
+
 ## 🚀 **Quick Navigation**
 
 ### **New to BBU?** Start Here
+- [**Implementation Guide**](IMPLEMENTATION_GUIDE.md) - Choose between src/ vs src_new/ implementations
 - [**Getting Started**](getting-started.md) - 15-minute setup and first training run
 - [**Configuration**](implementation/configuration.md) - Complete configuration guide
 - [**Architecture**](reference/architecture.md) - System overview and components
@@ -22,8 +34,8 @@ Welcome to the BBU (Bounding Box Understanding) training pipeline documentation.
 - [**Training System**](implementation/training-system.md) - Loss management and training coordination
 
 ### **Need Help?**
-- [**Troubleshooting**](troubleshooting/common-issues.md) - Common issues and solutions
-- [**Migration**](guides/migration.md) - Upgrading from older versions
+- [**Troubleshooting**](troubleshooting/common-issues.md) - Common issues and solutions (src/ and src_new/)
+- [**Migration Guide**](guides/migration-src-to-src-new.md) - Upgrading from src/ to src_new/
 
 ## 📋 **Complete Documentation Index**
 
