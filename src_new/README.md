@@ -1,158 +1,76 @@
-# src_new: BBUTrainer Architecture
+# Qwen2.5-VL BBU Detection Training Pipeline
 
-**Production-ready training architecture with NCCL timeout resolution**
+**Production-ready training system for vision-language model fine-tuning with coordinate token support**
 
-## 🎯 **Overview**
+## 🎯 Quick Start
 
-The `src_new/` directory contains the latest production training architecture featuring:
-
-- **BBUTrainer**: Eliminates NCCL timeout issues through local loss aggregation
-- **TrainingStateManager**: Simplified state management without distributed conflicts
-- **Enhanced Logging**: 4-decimal precision for losses, readable learning rate formatting
-- **Configurable Dataset Size**: `max_dataset_size` parameter for debugging/testing
-
-## 🏗️ **Architecture**
-
-### **Core Components**
-
-```
-src_new/
-├── training/
-│   ├── bbu_trainer.py           # Main BBUTrainer implementation
-│   ├── training_state_manager.py # Local loss aggregation
-│   └── __init__.py              # Module exports
-├── models/
-│   └── wrapper.py               # DetectionModel wrapper
-├── data/
-│   └── dataset.py               # Dataset with max_dataset_size support
-├── config/
-│   └── config.py                # Configuration schema
-└── README.md                    # This file
+### Training
+```bash
+cd /data3/Qwen2.5-VL-main
+bash scripts/run_new_train.sh
 ```
 
-### **BBUTrainer Features**
+### Inference
+```bash
+python -m src_new.inference --config configs/bbu_v2.yaml --checkpoint path/to/checkpoint --image path/to/image.jpg
+```
 
-- **Local Loss Aggregation**: No distributed operations in critical paths
-- **Complete Override**: `_maybe_log_save_evaluate()` method completely overridden
-- **Standard HF Logging**: Uses only `super().log()` for compatibility
-- **Evaluation Loss Components**: Proper `eval_loss` and component capture
-- **Enhanced Checkpoint Logging**: Comprehensive save operation logging
+## 📚 Complete Documentation
 
-### **TrainingStateManager Features**
+**📖 See docs hub: `../docs/SRC_NEW_REFERENCE.md`**
 
-- **LossComponents Handling**: Supports both dataclass and dictionary formats
-- **Meaningful LR Groups**: `vision_lr`, `merger_lr` instead of generic names
-- **Local Accumulation**: No distributed synchronization required
-- **Reset Management**: Proper state cleanup after logging
+This docs hub links to the single deep-dive source of truth and key guides:
 
-## 🚀 **Usage**
+- Input Data Format, Token Conversion Pipeline, Conversation Structure
+- Span Detection & Loss Masking, Training Architecture
+- Configuration & Setup, Troubleshooting
 
-### **Basic Training**
+## 🏗️ System Overview
+
+### Architecture Components
+```
+Raw Data (JSONL) → Coordinate Conversion → Conversation Templates →
+Tokenization → Span Detection → Training → Model Checkpoints
+```
+
+### Key Features
+- **Vision-Language Integration**: End-to-end dense detection → Chinese captions
+- **Coordinate Token System**: Automatic bbox ↔ token conversion via soft regression
+- **Multi-Task Training**: Teacher–student span-based loss splits
+- **Modular Architecture**: Clean component boundaries, plug-and-play design
+- **Loss Management**: Mode-aware switching between coordinate and LLM loss
+
+## 🔧 Core Components
+
+1. **Data Processing** (`src_new/data/`) - Dataset loading, teacher-student conversations, coordinate conversion
+2. **Model Components** (`src_new/models/`) - Detection wrapper, dual-loss management, Qwen2.5-VL patches
+3. **Training System** (`src_new/training/`) - BBUTrainer, checkpoint saving, distributed training
+4. **Processing Pipeline** (`src_new/processing/`) - Templates, coordinate conversion, HuggingFace integration
+
+## 📊 Training Performance
+
+- **Model**: 7B parameters (Qwen2.5-VL base + coordinate tokens)
+- **Speed**: ~2-3 samples/second on A100
+- **Memory**: ~24GB VRAM for batch_size=1
+- **Convergence**: 1000-2000 steps for fine-tuning
+
+## 🧪 Testing
 
 ```bash
-# Use existing training scripts (automatically uses BBUTrainer)
-bash scripts/run_new_train.sh bbu_v2_not_use_coord 4,5,6,7 INFO
+cd src_new/tests
+python run_comprehensive_tests.py
 ```
 
-### **Configuration**
+## 🚀 Recent Improvements
 
-```yaml
-# configs/bbu_v2_not_use_coord.yaml
-num_train_epochs: 30
-per_device_train_batch_size: 1
-learning_rate: 5e-6
-vision_lr: 5e-7
-merger_lr: 5e-5
+- ✅ **Fixed Student Response Generation**: Complete teacher-student conversations
+- ✅ **Resolved Checkpoint Saving**: Proper `processing_class` handling
+- ✅ **Accurate Span Detection**: Offset mapping for token-level alignment
+- ✅ **Unified Documentation**: Single authoritative reference
+- ✅ **EOS Training Added**: `<|im_end|>` is now included in assistant span labels to teach proper termination
+- ✅ **Vision token expansion validation fixed**: We now validate the number of `<|image_pad|>` tokens against the expected count computed from image grids and merge size, i.e. `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)`. This matches the official Qwen2.5‑VL processor behavior and prevents spurious "Image token/grid mismatch" errors.
+- ✅ **HF config exposure in wrapper**: `DetectionModel.config` now proxies the underlying HuggingFace model config (and keeps the training dataclass on `training_config`). This preserves integrations that call `model.config.to_json_string()` and similar APIs.
 
-# Dataset size limiting (optional, for debugging)
-max_dataset_size: -1  # -1 = full dataset, positive integer = limit samples
+---
 
-# Logging settings
-logging_steps: 1
-eval_steps: 20
-save_steps: 50
-```
-
-### **Expected Log Output**
-
-```json
-{
-  "loss": 39.2213,
-  "llm_loss": 15.3432,
-  "coordinate_loss": 244.0140,
-  "teacher_loss": 27.5678,
-  "student_loss": 11.6543,
-  "grad_norm": 4769.334,
-  "vision_lr": "5.00e-07",
-  "merger_lr": "5.00e-05",
-  "epoch": 0.333
-}
-```
-
-## 🔧 **Key Improvements Over Previous Architectures**
-
-### **NCCL Timeout Resolution**
-- **Problem**: DistributedLossTrainer had double NCCL operations causing timeouts
-- **Solution**: BBUTrainer uses local aggregation only, no custom distributed ops
-
-### **Enhanced Logging**
-- **Loss Precision**: All losses rounded to 4 decimal places
-- **Learning Rates**: Scientific notation (e.g., `5.00e-07`) for readability
-- **Meaningful Names**: `vision_lr`, `merger_lr` instead of `learning_rate_group_0`
-
-### **Dataset Flexibility**
-- **Full Dataset**: `max_dataset_size: -1` (default)
-- **Limited Dataset**: `max_dataset_size: 10` for quick testing
-- **Clear Logging**: Shows whether using full or limited dataset
-
-### **Evaluation Completeness**
-- **eval_loss**: Properly computed and logged
-- **Component Losses**: `eval_llm_loss`, `eval_coordinate_loss`, etc.
-- **State Isolation**: Evaluation doesn't interfere with training state
-
-## 📊 **Monitoring and Debugging**
-
-### **Dataset Size Logging**
-```
-📊 [FULL DATASET] Using complete dataset: 300 samples
-✅ Loaded 300 samples from data/ds_v2_full/train.jsonl
-```
-
-### **Checkpoint Logging**
-```
-🔄 [CHECKPOINT SAVE] Starting checkpoint save at 2025-08-01 02:28:45
-📁 Checkpoint location: 7-30/checkpoint-100
-📊 Training step: 100
-📈 Epoch: 0.500
-📋 Current training metrics:
-   loss: 39.2213
-   llm_loss: 15.3432
-   vision_lr: 5.00e-07
-✅ [CHECKPOINT SAVE] Completed successfully in 2.34s
-```
-
-## 🔄 **Migration from src/**
-
-The `src_new/` architecture is a complete replacement for `src/` with:
-
-1. **Simplified Architecture**: Fewer components, clearer responsibilities
-2. **Eliminated NCCL Issues**: No distributed operation conflicts
-3. **Enhanced Monitoring**: Better logging and debugging capabilities
-4. **Production Stability**: Thoroughly tested and verified
-
-### **Migration Steps**
-1. Use `scripts/run_new_train.sh` instead of old training scripts
-2. Update configs to use `src_new/` compatible parameters
-3. Verify `max_dataset_size: -1` for full dataset usage
-4. Monitor improved logging output for verification
-
-## 🎉 **Production Status**
-
-**Status**: ✅ **Production Ready**
-- **NCCL Timeouts**: Completely resolved
-- **Loss Logging**: All components captured correctly
-- **Evaluation**: Complete metrics including eval_loss
-- **Checkpointing**: Robust saving with comprehensive logging
-- **Testing**: 5/5 integration tests passed
-
-The `src_new/` architecture is the recommended approach for all new training workflows.
+*For full deep dive, follow `../docs/SRC_NEW_REFERENCE.md` → `../src_new/UNIFIED_DOCUMENTATION.md`*

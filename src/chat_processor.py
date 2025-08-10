@@ -682,7 +682,7 @@ class ChatProcessor:
         """
         # Check for available geometry types
         available_geom_types = []
-        for geom_key in ["bbox_2d", "square", "line"]:
+        for geom_key in ["bbox_2d", "quad", "line"]:
             if geom_key in obj:
                 available_geom_types.append(geom_key)
 

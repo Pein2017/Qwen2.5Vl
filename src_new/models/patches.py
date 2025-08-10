@@ -15,17 +15,23 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
 
 
 def get_patches_logger() -> logging.Logger:
-    """Get logger for patches module."""
-    logger = logging.getLogger("patches")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    return logger
+    """Get rank-aware logger for patches module."""
+    try:
+        from ..utils.rank_aware_logging import get_rank_aware_logger
+
+        return get_rank_aware_logger("patches")
+    except ImportError:
+        # Fallback to standard logging
+        logger = logging.getLogger("patches")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
 
 
 logger = get_patches_logger()
@@ -38,87 +44,85 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-def official_apply_multimodal_rotary_pos_emb(
+def fixed_apply_multimodal_rotary_pos_emb(
     q, k, cos, sin, mrope_section, unsqueeze_dim=1
 ):
     """
-    Official implementation that ALWAYS doubles mrope_section.
+    Fixed implementation that prevents double-doubling of mrope_section.
 
-    This is the exact implementation from the official Qwen2.5-VL code.
-
-    CRITICAL FIX: Ensure mrope_section is not duplicated per batch sample.
-    The mrope_section should be consistent regardless of batch size.
+    The issue is that the transformers library automatically doubles mrope_section,
+    but our fine-tuned checkpoint already has the correct doubled values in the config.
+    This leads to mrope_section being doubled twice, causing dimension mismatches.
     """
-    # Ensure mrope_section is a list (not duplicated per batch)
+    # Ensure mrope_section is a list
     if isinstance(mrope_section, torch.Tensor):
         mrope_section = mrope_section.tolist()
 
-    # Debug: Log the mrope_section we receive
-    logger.debug(
-        f"🔍 Received mrope_section: {mrope_section} (len={len(mrope_section)})"
-    )
+    logger.debug(f"🔍 Input mrope_section: {mrope_section}")
+    logger.debug(f"🔍 cos shape: {cos.shape}")
 
-    # If mrope_section appears to be duplicated (common issue in batching),
-    # extract the unique pattern
-    if len(mrope_section) > 6:  # Standard Qwen2.5-VL has 6 sections
-        # Check if it's a repeated pattern
-        section_len = 6  # Standard length for Qwen2.5-VL
-        if len(mrope_section) % section_len == 0:
-            # Extract the first pattern
-            original_section = mrope_section[:section_len]
-            # Verify it's actually repeated
-            is_repeated = all(
-                mrope_section[i : i + section_len] == original_section
-                for i in range(0, len(mrope_section), section_len)
-            )
-            if is_repeated:
-                logger.warning(
-                    f"🔧 Detected duplicated mrope_section: {mrope_section} -> {original_section}"
-                )
-                mrope_section = original_section
-
-    # CRITICAL FIX: Check if we need to double mrope_section based on actual tensor dimensions
-    # The cos/sin tensors determine whether doubling is needed
-    original_sum = sum(mrope_section)
+    # Get actual tensor dimension
     actual_dim = cos.shape[-1]
+    original_sum = sum(mrope_section)
 
-    logger.debug(
-        f"🔍 Original mrope_section sum: {original_sum}, cos dim: {actual_dim}"
-    )
+    logger.debug(f"🔍 mrope_section sum: {original_sum}, cos dim: {actual_dim}")
+
+    # CRITICAL FIX: The transformers library doubles mrope_section automatically,
+    # but our checkpoint config already has the doubled values.
+    # We need to prevent this double-doubling.
 
     if original_sum == actual_dim:
-        # Tensor dimensions match original mrope_section - no doubling needed
-        logger.debug("✅ Using original mrope_section (no doubling)")
-        pass  # Keep mrope_section as is
+        # Perfect match - use as is
+        final_mrope_section = mrope_section
+        logger.debug("✅ Using mrope_section as-is (perfect match)")
+    elif original_sum == actual_dim * 2:
+        # mrope_section is doubled but cos dim is half - need to halve mrope_section
+        # This happens when config has doubled values but cos tensor is not doubled
+        final_mrope_section = [x // 2 for x in mrope_section]
+        logger.debug(
+            f"✅ Halving mrope_section: {mrope_section} -> {final_mrope_section}"
+        )
     elif original_sum * 2 == actual_dim:
-        # Tensor dimensions match doubled mrope_section - doubling needed
-        logger.debug("✅ Doubling mrope_section to match tensor dimensions")
-        mrope_section = mrope_section * 2
+        # Need to double mrope_section to match cos dim
+        final_mrope_section = mrope_section * 2
+        logger.debug(
+            f"✅ Doubling mrope_section: {mrope_section} -> {final_mrope_section}"
+        )
     else:
-        # Neither original nor doubled matches - this is an error
-        logger.error(
-            f"❌ mRoPE dimension mismatch: "
-            f"original sum={original_sum}, doubled sum={original_sum * 2}, cos dim={actual_dim}"
-        )
-        logger.error(f"   mrope_section: {mrope_section}")
-        logger.error(f"   cos shape: {cos.shape}")
-        logger.error(f"   sin shape: {sin.shape}")
-        raise RuntimeError(
-            f"mRoPE dimension mismatch: neither {original_sum} nor {original_sum * 2} matches {actual_dim}"
-        )
+        # Try to detect if mrope_section was already doubled by checking for patterns
+        if len(mrope_section) == 12 and len(set(mrope_section[::2])) <= 3:
+            # Looks like a doubled pattern [a,b,c,a,b,c,a,b,c,a,b,c] -> [a,b,c,a,b,c]
+            half_len = len(mrope_section) // 2
+            first_half = mrope_section[:half_len]
+            second_half = mrope_section[half_len:]
+            if first_half == second_half and sum(first_half) == actual_dim:
+                final_mrope_section = first_half
+                logger.debug(
+                    f"✅ Detected doubled pattern, using first half: {final_mrope_section}"
+                )
+            else:
+                raise RuntimeError(
+                    f"Cannot resolve mrope_section: sum={original_sum}, cos_dim={actual_dim}"
+                )
+        else:
+            raise RuntimeError(
+                f"Cannot resolve mrope_section: sum={original_sum}, cos_dim={actual_dim}"
+            )
 
     # Final validation
-    expected_sum = sum(mrope_section)
-    if expected_sum != actual_dim:
+    if sum(final_mrope_section) != actual_dim:
         raise RuntimeError(
-            f"Final mRoPE validation failed: expected {expected_sum}, got {actual_dim}"
+            f"Final validation failed: {sum(final_mrope_section)} != {actual_dim}"
         )
 
+    logger.debug(f"✅ Final mrope_section: {final_mrope_section}")
+
+    # Apply the rotary position embedding with the corrected mrope_section
     cos = torch.cat(
-        [m[i % 3] for i, m in enumerate(cos.split(mrope_section, dim=-1))], dim=-1
+        [m[i % 3] for i, m in enumerate(cos.split(final_mrope_section, dim=-1))], dim=-1
     ).unsqueeze(unsqueeze_dim)
     sin = torch.cat(
-        [m[i % 3] for i, m in enumerate(sin.split(mrope_section, dim=-1))], dim=-1
+        [m[i % 3] for i, m in enumerate(sin.split(final_mrope_section, dim=-1))], dim=-1
     ).unsqueeze(unsqueeze_dim)
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
@@ -326,7 +330,7 @@ def patch_qwen25_multimodal_rotary_pos_emb() -> None:
         # Replace the problematic function with our fixed version
         # Use globals() to access the function from global scope
         qwen25_modeling.apply_multimodal_rotary_pos_emb = globals()[
-            "official_apply_multimodal_rotary_pos_emb"
+            "fixed_apply_multimodal_rotary_pos_emb"
         ]
         logger.info(
             "✅ Qwen2.5-VL multimodal rotary position embedding patched successfully"

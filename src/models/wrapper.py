@@ -48,7 +48,7 @@ def clear_global_coordinate_loss():
 class CoordinateConfig:
     """Configuration for coordinate token extension."""
 
-    max_coord_value: int = 2048
+    max_coord_value: int = 1024
     coord_token_init_std: float = 0.02
     coordinate_loss_weight: float = 1.0
     regular_loss_weight: float = 1.0

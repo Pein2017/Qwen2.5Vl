@@ -4,26 +4,7 @@ Visualize the latest JSONL data format with multi-geometry support.
 
 This script loads JSONL annotation files and visualizes different geometry types:
 - bbox_2d: Traditional rectangular bounding boxes [x1, y1, x2, y2]
-- squar    def get_main_category(self, description: str) -> str:
-        Extract main category from description (part before first comma).
-        return description.split(",")[0].strip() if description else "Unknown"
-
-    def draw_objects_on_axis(
-        self, ax, image_array: np.ndarray, objects: List[Dict], title: str
-    ):
-        Draw multi-geometry objects on a matplotlib axis.
-        ax.imshow(image_array)
-        ax.set_title(title, fontsize=12, fontweight="bold")
-        ax.axis("off")
-
-        # First pass: collect all unique main categories
-        for obj in objects:
-            description = obj.get("description", "Unknown")
-            main_category = self.get_main_category(description)
-            self.unique_descriptions.add(main_category)
-            if main_category not in self.description_colors:
-                color_idx = len(self.description_colors) % len(self.label_color_palette)
-                self.description_colors[main_category] = self.label_color_palette[color_idx]ls (四边形) [x1, y1, x2, y2, x3, y3, x4, y4]
+- quad: Quadrilaterals (四边形) [x1, y1, x2, y2, x3, y3, x4, y4]
 - line: Line segments (线段) [x1, y1, x2, y2, x3, y3, ...]
 
 Configure the settings below and run the script directly.
@@ -34,16 +15,16 @@ Configure the settings below and run the script directly.
 # =============================================================================
 
 # JSONL file path to visualize (relative to BASE_DIR)
-JSONL_PATH = "temp_invalid.jsonl"
+JSONL_PATH = "data/ds_v2_bbu_bbu_shield/all_samples.jsonl"
 
 # Output directory for visualizations
-OUTPUT_DIR = "invalid_visualizations"
+OUTPUT_DIR = "vis_raw_data"
 
 # Base directory for resolving relative paths
 BASE_DIR = "."
 
 # Maximum number of samples to process (-1 for all samples)
-MAX_SAMPLES = 10
+MAX_SAMPLES = 50
 
 # Show different geometry types with different colors
 SHOW_GEOMETRY_LEGEND = True
@@ -58,7 +39,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
@@ -87,7 +68,7 @@ except Exception as e:
 
 
 class MultiGeometryVisualizer:
-    """Visualizes JSONL data with multi-geometry support (bbox_2d, square, line)."""
+    """Visualizes JSONL data with multi-geometry support (bbox_2d, quad, line)."""
 
     def __init__(self, base_dir: str = "."):
         self.base_dir = Path(base_dir)
@@ -99,7 +80,7 @@ class MultiGeometryVisualizer:
         # Geometry-specific styles (for shape outlines only)
         self.geometry_styles = {
             "bbox_2d": {"linewidth": 2, "linestyle": "-"},
-            "square": {"linewidth": 2, "linestyle": "--"},
+            "quad": {"linewidth": 2, "linestyle": "--"},
             "line": {"linewidth": 3, "linestyle": "-"},
         }
 
@@ -133,46 +114,45 @@ class MultiGeometryVisualizer:
         ]
         self.label_to_color = {}
 
-    def load_image_safe(
-        self, image_path: str
-    ) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int]]]:
-        """Safely load image and return array and dimensions."""
+    def get_main_category(self, description: str) -> str:
+        """Extract main category from description (part before first comma)."""
+        return description.split(",")[0].strip() if description else "Unknown"
+
+    def load_image_safe(self, image_path: str) -> Tuple[np.ndarray, Tuple[int, int]]:
+        """Load image and return array and dimensions. Handles path resolution."""
         try:
-            # Try different path combinations
-            path_candidates = [
-                image_path,
-                self.base_dir / image_path,
-                self.base_dir / "data" / "ds_v2_full" / image_path,
-                self.base_dir
-                / "data"
-                / "ds_v2_full"
-                / "images"
-                / Path(image_path).name,
-                self.base_dir / "data" / "ds_v2" / image_path,
-                self.base_dir / "data" / "ds_v2" / "images" / Path(image_path).name,
-                self.base_dir / "images" / Path(image_path).name,
-                Path(image_path),
-            ]
+            # First try direct path
+            abs_path = Path(image_path)
 
-            for candidate in path_candidates:
-                abs_path = Path(candidate)
-                if abs_path.exists():
-                    with Image.open(abs_path) as img:
-                        img_rgb = img.convert("RGB")
-                        img_array = np.array(img_rgb)
-                        return img_array, img_rgb.size  # (width, height)
+            # If not found, try with base_dir
+            if not abs_path.exists():
+                abs_path = self.base_dir / image_path
 
-            logger.error(
-                f"Image file not found in any candidate path: {path_candidates}"
-            )
-            return None, None
+            # If still not found, try with data/ds_v2_full/images/ prefix
+            if not abs_path.exists():
+                # Get just the filename from the path
+                image_filename = Path(image_path).name
+                # Try with data/ds_v2_full/images/ prefix
+                abs_path = (
+                    self.base_dir / "data" / "ds_v2_full" / "images" / image_filename
+                )
+
+            # If still not found, raise error
+            if not abs_path.exists():
+                raise FileNotFoundError(f"Image file not found: {image_path}")
+
+            with Image.open(abs_path) as img:
+                img_rgb = img.convert("RGB")
+                img_array = np.array(img_rgb)
+                logger.info(f"Successfully loaded image from: {abs_path}")
+                return img_array, img_rgb.size  # (width, height)
 
         except Exception as e:
             logger.error(f"Failed to load image {image_path}: {e}")
-            return None, None
+            raise  # Re-raise the exception
 
     def load_jsonl_file(self, jsonl_path: str) -> List[Dict]:
-        """Load JSONL file and return list of samples."""
+        """Load JSONL file and return list of samples. Raises error if file not found."""
         try:
             abs_path = (
                 self.base_dir / jsonl_path
@@ -181,8 +161,7 @@ class MultiGeometryVisualizer:
             )
 
             if not abs_path.exists():
-                logger.error(f"JSONL file not found: {abs_path}")
-                return []
+                raise FileNotFoundError(f"JSONL file not found: {abs_path}")
 
             samples = []
             with open(abs_path, "r", encoding="utf-8") as f:
@@ -195,14 +174,14 @@ class MultiGeometryVisualizer:
                         samples.append(sample)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse line {line_num}: {e}")
-                        continue
+                        raise  # Re-raise the exception
 
             logger.info(f"Loaded {len(samples)} samples from: {abs_path}")
             return samples
 
         except Exception as e:
             logger.error(f"Failed to load JSONL {jsonl_path}: {e}")
-            return []
+            raise  # Re-raise the exception instead of returning empty list
 
     def extract_objects_from_sample(self, sample: Dict) -> List[Dict]:
         """
@@ -213,12 +192,14 @@ class MultiGeometryVisualizer:
 
         Returns:
             List of object dictionaries with geometry and description
+
+        Raises:
+            ValueError: If no 'objects' field found or objects can't be processed
         """
         objects = []
 
         if "objects" not in sample:
-            logger.warning("No 'objects' field found in sample")
-            return objects
+            raise ValueError("No 'objects' field found in sample")
 
         for obj in sample["objects"]:
             try:
@@ -226,19 +207,20 @@ class MultiGeometryVisualizer:
                 geometry_info = {}
                 geometry_type = None
 
-                # Check for different geometry types
+                # Strictly support only the following geometry types
                 if "bbox_2d" in obj:
                     geometry_type = "bbox_2d"
                     geometry_info["bbox_2d"] = obj["bbox_2d"]
-                elif "square" in obj:
-                    geometry_type = "square"
-                    geometry_info["square"] = obj["square"]
+                elif "quad" in obj:
+                    geometry_type = "quad"
+                    geometry_info["quad"] = obj["quad"]
                 elif "line" in obj:
                     geometry_type = "line"
                     geometry_info["line"] = obj["line"]
                 else:
-                    logger.warning(f"Unknown geometry type in object: {obj}")
-                    continue
+                    raise ValueError(
+                        f"Unsupported geometry type. Expected one of ['bbox_2d','quad','line'], got keys: {list(obj.keys())}"
+                    )
 
                 # Extract description
                 description = obj.get("desc", "Unknown")
@@ -253,8 +235,11 @@ class MultiGeometryVisualizer:
                 objects.append(obj_entry)
 
             except Exception as e:
-                logger.warning(f"Failed to process object: {e}")
-                continue
+                logger.error(f"Failed to process object: {e}")
+                raise  # Re-raise the exception
+
+        if not objects:
+            raise ValueError("No valid objects found in sample")
 
         return objects
 
@@ -277,10 +262,11 @@ class MultiGeometryVisualizer:
         # First pass: collect all unique descriptions
         for obj in objects:
             description = obj.get("description", "Unknown")
-            self.unique_descriptions.add(description)
-            if description not in self.description_colors:
+            main_category = self.get_main_category(description)
+            self.unique_descriptions.add(main_category)
+            if main_category not in self.description_colors:
                 color_idx = len(self.description_colors) % len(self.label_color_palette)
-                self.description_colors[description] = self.label_color_palette[
+                self.description_colors[main_category] = self.label_color_palette[
                     color_idx
                 ]
 
@@ -288,13 +274,14 @@ class MultiGeometryVisualizer:
         for obj in objects:
             geometry_type = obj.get("geometry_type", "unknown")
             description = obj.get("description", "Unknown")
-            color = self.description_colors[description]
+            main_category = self.get_main_category(description)
+            color = self.description_colors[main_category]
 
             # Draw based on geometry type with consistent colors
             if geometry_type == "bbox_2d":
                 self._draw_bbox_2d(ax, obj, color)
-            elif geometry_type == "square":
-                self._draw_square(ax, obj, color)
+            elif geometry_type == "quad":
+                self._draw_quad(ax, obj, color)
             elif geometry_type == "line":
                 self._draw_line(ax, obj, color)
 
@@ -322,19 +309,157 @@ class MultiGeometryVisualizer:
         )
         ax.add_patch(rect)
 
-    def _draw_square(self, ax, obj: Dict, color: str):
-        """Draw quadrilateral (四边形)."""
-        square = obj.get("square", [])
-        if len(square) != 8:
+    def _canonical_quad_ordering(
+        self, points: List[Tuple[float, float]]
+    ) -> List[Tuple[int, int]]:
+        """
+        Apply canonical clockwise ordering starting from top-left vertex.
+
+        **VISUALIZATION-SPECIFIC**: This function ensures proper quadrilateral display
+        by using a robust geometric approach that handles incorrectly ordered input data.
+
+        Unlike the data processing pipeline which assumes input data is already reasonable,
+        the visualization must handle arbitrary coordinate orders that may cause crossed lines.
+
+        Args:
+            points: List of (x, y) vertex coordinates in any order
+
+        Returns:
+            Points ordered for proper polygon display: [tl, tr, br, bl] (clockwise)
+        """
+        if len(points) != 4:
+            logger.warning(
+                f"Quad must have exactly 4 points, got {len(points)}: {points}"
+            )
+            return [(int(p[0]), int(p[1])) for p in points]
+
+        # Use robust corner detection based on coordinate extremes
+        # This approach is more reliable for visualization than the geometric method
+        pts = np.array(points, dtype="float32")
+
+        # Calculate centroid for reference
+        cx = np.mean(pts[:, 0])
+        cy = np.mean(pts[:, 1])
+
+        # Classify points by their position relative to centroid
+        def classify_corner(point):
+            x, y = point
+            # Determine quadrant relative to centroid
+            if x <= cx and y <= cy:
+                return (0, -(x + y))  # Top-left: minimize x+y
+            elif x >= cx and y <= cy:
+                return (1, x - y)  # Top-right: maximize x-y
+            elif x >= cx and y >= cy:
+                return (2, x + y)  # Bottom-right: maximize x+y
+            else:  # x <= cx and y >= cy
+                return (3, -x + y)  # Bottom-left: maximize -x+y
+
+        # Sort points by corner classification
+        sorted_points = sorted(points, key=classify_corner)
+
+        # Ensure we have exactly one point in each quadrant
+        # If not, fall back to simple coordinate-based ordering
+        if len(set(classify_corner(p)[0] for p in sorted_points)) != 4:
+            logger.debug("Fallback to coordinate-based ordering")
+            # Simple fallback: sort by y first (top to bottom), then by x within each row
+            sorted_by_y = sorted(points, key=lambda p: p[1])
+            top_points = sorted(
+                sorted_by_y[:2], key=lambda p: p[0]
+            )  # Top row, left to right
+            bottom_points = sorted(
+                sorted_by_y[2:], key=lambda p: p[0]
+            )  # Bottom row, left to right
+            sorted_points = [
+                top_points[0],
+                top_points[1],
+                bottom_points[1],
+                bottom_points[0],
+            ]
+
+        return [(int(p[0]), int(p[1])) for p in sorted_points]
+
+    def _extract_geometry_coordinates(self, geometry: Dict) -> Tuple[str, List[float]]:
+        """
+        Extract coordinates from legacy geometry format (ds_v1 style).
+
+        Args:
+            geometry: Geometry object with 'type' and 'coordinates' fields
+
+        Returns:
+            Tuple of (geometry_type, coordinates_list)
+        """
+        geometry_type_map = {
+            "Square": "quad",  # Legacy "Square" type maps to "quad"
+            "Quad": "quad",
+            "LineString": "line",
+            "ExtentPolygon": "quad",  # Treat as quad for visualization
+        }
+
+        geom_type = geometry.get("type", "")
+        coordinates = geometry.get("coordinates", [])
+
+        if not coordinates:
+            logger.warning(f"Empty coordinates in geometry type: {geom_type}")
+            return "bbox_2d", [0, 0, 1, 1]
+
+        # Map geometry type to visualization type
+        vis_type = geometry_type_map.get(geom_type, "quad")
+
+        if vis_type == "quad":
+            # Extract quad coordinates from nested structure
+            # Handle format: [[[x1,y1], [x2,y2], [x3,y3], [x4,y4], [x1,y1]]]
+            if coordinates and isinstance(coordinates[0], list):
+                points = (
+                    coordinates[0]
+                    if isinstance(coordinates[0][0], list)
+                    else coordinates
+                )
+            else:
+                points = coordinates
+
+            # Extract first 4 points and flatten to [x1,y1,x2,y2,x3,y3,x4,y4]
+            quad_coords = []
+            for i, point in enumerate(points[:4]):  # Take first 4 points
+                if isinstance(point, list) and len(point) >= 2:
+                    quad_coords.extend([float(point[0]), float(point[1])])
+
+            if len(quad_coords) == 8:
+                return "quad", quad_coords
+            else:
+                logger.warning(
+                    f"Invalid quad coordinates: expected 8 values, got {len(quad_coords)}"
+                )
+                return "bbox_2d", [0, 0, 1, 1]
+
+        elif vis_type == "line":
+            # Extract line coordinates and flatten
+            line_coords = []
+            for point in coordinates:
+                if isinstance(point, list) and len(point) >= 2:
+                    line_coords.extend([float(point[0]), float(point[1])])
+            return "line", line_coords
+
+        # Fallback to bbox
+        logger.warning(f"Unsupported geometry type: {geom_type}, falling back to bbox")
+        return "bbox_2d", [0, 0, 1, 1]
+
+    def _draw_quad(self, ax, obj: Dict, color: str):
+        """Draw quadrilateral (四边形) with model-centric coordinate ordering."""
+        quad = obj.get("quad", [])
+        if len(quad) != 8:
             return
 
         # Convert to coordinate pairs
-        coords = [(square[i], square[i + 1]) for i in range(0, 8, 2)]
+        raw_coords = [(quad[i], quad[i + 1]) for i in range(0, 8, 2)]
 
-        # Create polygon with geometry-specific style
-        style = self.geometry_styles["square"]
+        # Apply canonical quad ordering to exactly match data conversion pipeline
+        # This ensures visualization shows what the model sees (no coordinate reordering)
+        ordered_coords = self._canonical_quad_ordering(raw_coords)
+
+        # Create polygon with geometry-specific style using ordered coordinates
+        style = self.geometry_styles["quad"]
         polygon = patches.Polygon(
-            coords,
+            ordered_coords,
             linewidth=style["linewidth"],
             linestyle=style["linestyle"],
             edgecolor=color,
@@ -379,7 +504,10 @@ class MultiGeometryVisualizer:
         description_counts = {}
         for obj in objects:
             description = obj.get("description", "Unknown")
-            description_counts[description] = description_counts.get(description, 0) + 1
+            main_category = self.get_main_category(description)
+            description_counts[main_category] = (
+                description_counts.get(main_category, 0) + 1
+            )
 
         # Create legend elements for descriptions
         for description in sorted(description_counts.keys()):
@@ -398,7 +526,7 @@ class MultiGeometryVisualizer:
             # Add geometry type indicators
             geometry_labels = {
                 "bbox_2d": "矩形 (Rectangle)",
-                "square": "四边形 (Quadrilateral)",
+                "quad": "四边形 (Quadrilateral)",
                 "line": "线段 (Line Segment)",
             }
 
@@ -441,26 +569,23 @@ class MultiGeometryVisualizer:
             sample_idx: Sample index for naming
 
         Returns:
-            True if successful, False otherwise
+            True if successful
+
+        Raises:
+            ValueError: If no images found in sample or other visualization errors
         """
         # Extract image path
         images = sample.get("images", [])
         if not images:
-            logger.warning("No images found in sample")
-            return False
+            raise ValueError("No images found in sample")
 
         image_path = images[0]  # Use first image
 
-        # Load image
+        # Load image - will raise FileNotFoundError if image not found
         image_array, _ = self.load_image_safe(image_path)
-        if image_array is None:
-            return False
 
-        # Extract objects
+        # Extract objects - will raise ValueError if no objects found
         objects = self.extract_objects_from_sample(sample)
-        if not objects:
-            logger.warning(f"No objects found in sample")
-            return False
 
         # Create visualization
         fig, ax = plt.subplots(1, 1, figsize=(15, 10))
@@ -511,6 +636,9 @@ class MultiGeometryVisualizer:
 
         Returns:
             Number of successful visualizations
+
+        Raises:
+            Exception: If any sample fails to visualize
         """
         success_count = 0
 
@@ -520,27 +648,11 @@ class MultiGeometryVisualizer:
 
         for i, sample in enumerate(samples):
             logger.info(f"Processing sample {i + 1}/{len(samples)}")
-
-            if self.visualize_single_sample(sample, output_dir, i):
-                success_count += 1
+            # Will raise exception if visualization fails
+            self.visualize_single_sample(sample, output_dir, i)
+            success_count += 1
 
         return success_count
-
-
-def find_jsonl_files(base_dir: str = ".") -> List[str]:
-    """Find JSONL files in the base directory."""
-    base_path = Path(base_dir)
-    jsonl_files = []
-
-    # Look for JSONL files in common locations
-    search_patterns = ["*.jsonl", "data/**/*.jsonl", "**/*.jsonl"]
-
-    for pattern in search_patterns:
-        for jsonl_file in base_path.glob(pattern):
-            if jsonl_file.is_file():
-                jsonl_files.append(str(jsonl_file.relative_to(base_path)))
-
-    return sorted(list(set(jsonl_files)))  # Remove duplicates and sort
 
 
 def main():
@@ -554,58 +666,37 @@ def main():
     # Initialize visualizer
     visualizer = MultiGeometryVisualizer(BASE_DIR)
 
-    # Load JSONL file
+    # Load JSONL file - will raise error if not found
     jsonl_file_path = JSONL_PATH
-    if not Path(jsonl_file_path).is_absolute():
-        # Try to find the JSONL file
-        if not (Path(BASE_DIR) / jsonl_file_path).exists():
-            print(f"⚠️  JSONL file not found at {jsonl_file_path}")
-            print("🔍 Searching for JSONL files...")
 
-            available_jsonl = find_jsonl_files(BASE_DIR)
-            if available_jsonl:
-                print("📋 Available JSONL files:")
-                for i, jsonl_file in enumerate(available_jsonl):
-                    print(f"   {i + 1}. {jsonl_file}")
+    try:
+        samples = visualizer.load_jsonl_file(jsonl_file_path)
+        print(f"📊 Loaded {len(samples)} samples")
 
-                # Use the first one if JSONL_PATH matches any
-                for jsonl_file in available_jsonl:
-                    if Path(jsonl_file).name == Path(JSONL_PATH).name:
-                        jsonl_file_path = jsonl_file
-                        print(f"✅ Using: {jsonl_file_path}")
-                        break
-                else:
-                    # Use the first available one
-                    jsonl_file_path = available_jsonl[0]
-                    print(f"✅ Using first available: {jsonl_file_path}")
-            else:
-                logger.error("No JSONL files found")
-                return 1
+        # Visualize samples - will raise error if visualization fails
+        success_count = visualizer.visualize_jsonl_batch(
+            samples, OUTPUT_DIR, MAX_SAMPLES
+        )
 
-    samples = visualizer.load_jsonl_file(jsonl_file_path)
-    if not samples:
-        logger.error("No samples loaded from JSONL file")
+        # Print summary
+        print(f"\n{'=' * 60}")
+        print(f"MULTI-GEOMETRY VISUALIZATION SUMMARY")
+        print(f"{'=' * 60}")
+        print(f"Total samples: {len(samples)}")
+        print(
+            f"Processed samples: {min(len(samples), MAX_SAMPLES) if MAX_SAMPLES > 0 else len(samples)}"
+        )
+        print(f"✅ Successful visualizations: {success_count}")
+        print(f"📁 Output directory: {OUTPUT_DIR}")
+        print(
+            f"🎨 Geometry legend: {'Enabled' if SHOW_GEOMETRY_LEGEND else 'Disabled'}"
+        )
+        print(f"{'=' * 60}")
+
+        return 0
+    except Exception as e:
+        logger.error(f"Error: {e}")
         return 1
-
-    print(f"📊 Loaded {len(samples)} samples")
-
-    # Visualize samples
-    success_count = visualizer.visualize_jsonl_batch(samples, OUTPUT_DIR, MAX_SAMPLES)
-
-    # Print summary
-    print(f"\n{'=' * 60}")
-    print(f"MULTI-GEOMETRY VISUALIZATION SUMMARY")
-    print(f"{'=' * 60}")
-    print(f"Total samples: {len(samples)}")
-    print(
-        f"Processed samples: {min(len(samples), MAX_SAMPLES) if MAX_SAMPLES > 0 else len(samples)}"
-    )
-    print(f"✅ Successful visualizations: {success_count}")
-    print(f"📁 Output directory: {OUTPUT_DIR}")
-    print(f"🎨 Geometry legend: {'Enabled' if SHOW_GEOMETRY_LEGEND else 'Disabled'}")
-    print(f"{'=' * 60}")
-
-    return 0
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from ..utils.rank_aware_logging import get_rank_aware_logger
+
+
+# Module-level logger
+logger = get_rank_aware_logger(__name__)
+
 
 class TrainingStateManager:
     """
@@ -43,7 +49,7 @@ class TrainingStateManager:
         """
         self.config = config
         self.model = model
-        self.logger = logger
+        self.logger = logger or get_rank_aware_logger(__name__)
 
         # Loss component tracking
         self._loss_components_accumulator = {}
@@ -76,10 +82,6 @@ class TrainingStateManager:
             loss_dict = {}
             for attr_name in [
                 "loss",
-                "llm_loss",
-                "coordinate_loss",
-                "teacher_loss",
-                "student_loss",
                 "teacher_llm_loss",
                 "teacher_l1_loss",
                 "student_llm_loss",
@@ -89,20 +91,30 @@ class TrainingStateManager:
                 if value is not None:
                     loss_dict[attr_name] = value
 
-        # Accumulate the loss components
+        # Filter to only include meaningful loss components
+        meaningful_keys = {
+            "loss",
+            "teacher_llm_loss",
+            "student_llm_loss",
+            "teacher_l1_loss",
+            "student_l1_loss",
+        }
+
+        # Accumulate only the meaningful loss components
         for key, value in loss_dict.items():
-            if torch.is_tensor(value):
-                # Convert to float for accumulation
-                value_float = (
-                    value.item() if value.numel() == 1 else value.mean().item()
-                )
-            else:
-                value_float = float(value)
+            if key in meaningful_keys and value is not None:
+                if torch.is_tensor(value):
+                    # Convert to float for accumulation
+                    value_float = (
+                        value.item() if value.numel() == 1 else value.mean().item()
+                    )
+                else:
+                    value_float = float(value)
 
-            if key not in self._loss_components_accumulator:
-                self._loss_components_accumulator[key] = 0.0
+                if key not in self._loss_components_accumulator:
+                    self._loss_components_accumulator[key] = 0.0
 
-            self._loss_components_accumulator[key] += value_float
+                self._loss_components_accumulator[key] += value_float
 
         self._loss_components_count += 1
 
@@ -134,6 +146,7 @@ class TrainingStateManager:
         model: Any,
         start_time: float,
         learning_rate: Optional[float] = None,
+        trainer_state: Optional[Any] = None,
     ) -> Dict[str, float]:
         """
         Generate training metrics for logging (local only, no distributed operations).
@@ -144,6 +157,7 @@ class TrainingStateManager:
             model: The model being trained
             start_time: Training start time
             learning_rate: Current learning rate
+            trainer_state: Optional trainer state for remaining time calculation
 
         Returns:
             Dictionary of metrics for logging
@@ -162,8 +176,11 @@ class TrainingStateManager:
         else:
             logs["loss"] = float(tr_loss)
 
-        # Add loss components
+        # Add loss components (only meaningful ones)
         logs.update(component_logs)
+
+        # Verify loss decomposition if we have component losses
+        self._verify_loss_decomposition(logs)
 
         # Add gradient norm
         if grad_norm is not None:
@@ -188,6 +205,12 @@ class TrainingStateManager:
             if (current_time - start_time) > 0
             else 0.0
         )
+
+        # Add remaining time estimation
+        if trainer_state is not None:
+            remaining_hrs = self._calculate_remaining_hours(start_time, trainer_state)
+            if remaining_hrs > 0:
+                logs["remaining_hrs"] = remaining_hrs
 
         # Update step count
         self._step_count += 1
@@ -253,6 +276,83 @@ class TrainingStateManager:
         # Clear any remaining accumulators
         self._loss_components_accumulator.clear()
         self._loss_components_count = 0
+
+    def _verify_loss_decomposition(self, logs: Dict[str, float]) -> None:
+        """
+        Verify that the total loss equals the sum of component losses.
+
+        This ensures mathematical correctness of the loss decomposition.
+        """
+        if "loss" not in logs:
+            return
+
+        total_loss = logs["loss"]
+        component_sum = 0.0
+
+        # Sum all component losses
+        for key in [
+            "teacher_llm_loss",
+            "student_llm_loss",
+            "teacher_l1_loss",
+            "student_l1_loss",
+        ]:
+            if key in logs and logs[key] is not None:
+                component_sum += logs[key]
+
+        # Check if we have any components to verify
+        if component_sum > 0:
+            # Allow small floating point differences (1e-6 relative tolerance)
+            relative_error = abs(total_loss - component_sum) / max(
+                abs(total_loss), 1e-8
+            )
+            if relative_error > 1e-6:
+                if self.logger:
+                    self.logger.warning(
+                        f"Loss decomposition mismatch: total={total_loss:.6f}, "
+                        f"components_sum={component_sum:.6f}, "
+                        f"relative_error={relative_error:.2e}"
+                    )
+
+    def _calculate_remaining_hours(
+        self, start_time: float, trainer_state: Any
+    ) -> float:
+        """
+        Calculate estimated remaining training time in hours.
+
+        Args:
+            start_time: Training start time
+            trainer_state: Trainer state with step information
+
+        Returns:
+            Estimated remaining hours (0.0 if cannot calculate)
+        """
+        try:
+            if not hasattr(trainer_state, "global_step") or not hasattr(
+                trainer_state, "max_steps"
+            ):
+                return 0.0
+
+            current_step = trainer_state.global_step
+            max_steps = trainer_state.max_steps
+
+            if current_step <= 0 or max_steps <= 0 or current_step >= max_steps:
+                return 0.0
+
+            # Calculate elapsed time and average time per step
+            elapsed_time = time.time() - start_time
+            avg_time_per_step = elapsed_time / current_step
+
+            # Calculate remaining steps and time
+            remaining_steps = max_steps - current_step
+            remaining_seconds = remaining_steps * avg_time_per_step
+
+            # Convert to hours
+            return remaining_seconds / 3600.0
+
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Could not calculate remaining time: {e}")
+            return 0.0
 
     def get_training_stats(self) -> Dict[str, Any]:
         """Get comprehensive training statistics."""

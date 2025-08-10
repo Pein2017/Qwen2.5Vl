@@ -75,7 +75,7 @@ class UnifiedTokenManager:
         self,
         tokenizer: PreTrainedTokenizer,
         model: PreTrainedModel,
-        max_coord_value: int = 2048,
+        max_coord_value: int = 1024,
     ):
         """
         Initialize unified token manager.
@@ -421,7 +421,7 @@ class UnifiedTokenManager:
     def create_tokenizer_with_coordinate_tokens(
         cls,
         tokenizer_path: str = "Qwen/Qwen2.5-VL-3B-Instruct",
-        max_coord_value: int = 2048,
+        max_coord_value: int = 1024,
     ) -> PreTrainedTokenizer:
         """
         Factory method to create a tokenizer with coordinate tokens.
@@ -453,7 +453,7 @@ class UnifiedTokenManager:
 
     @classmethod
     def get_coordinate_token_range_from_tokenizer(
-        cls, tokenizer: PreTrainedTokenizer, max_coord_value: int = 2048
+        cls, tokenizer: PreTrainedTokenizer, max_coord_value: int = 1024
     ) -> Tuple[int, int]:
         """Get coordinate token range from tokenizer."""
         vocab = tokenizer.get_vocab()
@@ -716,7 +716,7 @@ class UnifiedTokenManager:
 def create_unified_token_manager(
     tokenizer: PreTrainedTokenizer,
     model: PreTrainedModel,
-    max_coord_value: int = 2048,
+    max_coord_value: int = 1024,
     coordinate_tokens_enabled: bool = True,
 ) -> UnifiedTokenManager:
     """
@@ -742,7 +742,7 @@ class UnifiedTokenManagerCompat:
 
     @staticmethod
     def create_tokenizer_with_coordinate_tokens(
-        tokenizer_path: str = "Qwen/Qwen2.5-VL-3B-Instruct", max_coord_value: int = 2048
+        tokenizer_path: str = "Qwen/Qwen2.5-VL-3B-Instruct", max_coord_value: int = 1024
     ) -> PreTrainedTokenizer:
         """Create tokenizer with coordinate tokens (backward compatibility)."""
         return UnifiedTokenManager.create_tokenizer_with_coordinate_tokens(
@@ -756,7 +756,7 @@ class UnifiedTokenManagerCompat:
 
     @staticmethod
     def get_coordinate_token_range(
-        tokenizer: PreTrainedTokenizer, max_coord_value: int = 2048
+        tokenizer: PreTrainedTokenizer, max_coord_value: int = 1024
     ) -> Tuple[int, int]:
         """Get coordinate token range (backward compatibility)."""
         return UnifiedTokenManager.get_coordinate_token_range_from_tokenizer(
@@ -803,7 +803,7 @@ class SimpleCoordinateManager:
     Used during ChatProcessor initialization when model is not available.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, max_coord_value: int = 2048):
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_coord_value: int = 1024):
         """
         Initialize simple coordinate manager.
 
@@ -875,11 +875,18 @@ class SimpleCoordinateManager:
                 f"🎯 Found coordinate tokens: range [{self.coord_start_id}, {self.coord_end_id})"
             )
         else:
+            # Check if coordinate tokens were expected to be present
+            # If this is being used in a context where coordinate tokens should exist, raise an error
             self.coord_start_id = None
             self.coord_end_id = None
             self.config.enable_coordinate_tokens = False  # Use standard mode
-            logger.warning(
-                "⚠️ Coordinate tokens not found in vocabulary - coordinate features disabled"
+            logger.error(
+                "❌ CRITICAL: Coordinate tokens not found in vocabulary but SimpleCoordinateManager was initialized. "
+                "This suggests coordinate tokens should be present but are missing from the tokenizer vocabulary."
+            )
+            raise ValueError(
+                "Coordinate tokens not found in vocabulary. If coordinate processing is required, "
+                "ensure the tokenizer vocabulary has been extended with coordinate tokens before initialization."
             )
             logger.debug(
                 f"🔍 Coordinate token '{coord_0_token}' not found in vocabulary"
@@ -1449,7 +1456,7 @@ def has_coordinate_tokens_static(tokenizer: PreTrainedTokenizer) -> bool:
 
 
 def get_coordinate_token_range_static(
-    tokenizer: PreTrainedTokenizer, max_coord_value: int = 2048
+    tokenizer: PreTrainedTokenizer, max_coord_value: int = 1024
 ) -> Tuple[int, int]:
     """Static method wrapper for backward compatibility."""
     return UnifiedTokenManager.get_coordinate_token_range_from_tokenizer(

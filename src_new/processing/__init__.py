@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Processing module for Qwen2.5-VL new architecture.
+Processing module for Qwen2.5-VL HuggingFace-first architecture.
 
-This module provides stateless processing components for:
-- Chat conversation building and tokenization
-- Coordinate token handling and tokenizer extension
-- Template management for Chinese prompts
+This module provides clean processing components for:
+- HuggingFace-first conversation processing
+- Focused coordinate token conversion
+- Centralized prompt constants
 """
 
-from .chat_processor import ChatProcessor
+from .conversation_processor import ConversationProcessor
+from .coordinate_converter import CoordinateTokenConverter
+from .templates import CONSTANTS
 from .token_processor import TokenProcessor
-from .templates import TemplateManager
+
 
 __all__ = [
-    "ChatProcessor",
-    "TokenProcessor", 
-    "TemplateManager",
+    "ConversationProcessor",
+    "CoordinateTokenConverter",
+    "TokenProcessor",
+    "CONSTANTS",
 ]

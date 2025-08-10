@@ -19,50 +19,78 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 
-# Global logging configuration
+# Global logging configuration (compatibility with legacy callers)
+# These values mirror the state managed by src_new.utils.rank_aware_logging.
 _GLOBAL_LOG_LEVEL = logging.INFO
 _CONFIGURED_LOGGERS = set()
 
 
 def set_global_log_level(level: str) -> None:
-    """Set global log level for all loggers in the system."""
+    """Set global log level for all loggers in the system.
+
+    This delegates to the centralized rank-aware logging utilities to ensure
+    consistent behavior across ranks and modules. The local variables remain
+    only for backward compatibility with legacy callers.
+    """
     global _GLOBAL_LOG_LEVEL
 
-    # Convert string to logging level
-    if isinstance(level, str):
-        level_map = {
-            "DEBUG": logging.DEBUG,
-            "INFO": logging.INFO,
-            "WARNING": logging.WARNING,
-            "ERROR": logging.ERROR,
-            "CRITICAL": logging.CRITICAL,
-        }
-        _GLOBAL_LOG_LEVEL = level_map.get(level.upper(), logging.INFO)
-    else:
-        _GLOBAL_LOG_LEVEL = level
+    # Normalize to string for the rank-aware API, which accepts str or int
+    normalized_level = level
+    try:
+        # Defer to rank-aware system for propagation across all loggers
+        from ..utils.rank_aware_logging import set_global_log_level as _set_global
 
-    # Update all existing configured loggers
-    for logger_name in _CONFIGURED_LOGGERS:
-        existing_logger = logging.getLogger(logger_name)
-        existing_logger.setLevel(_GLOBAL_LOG_LEVEL)
-
-    # Also update root logger
-    logging.getLogger().setLevel(_GLOBAL_LOG_LEVEL)
+        _set_global(normalized_level)
+    except Exception:
+        # Fallback: update root logger if rank-aware utilities are unavailable
+        if isinstance(level, str):
+            level_map = {
+                "DEBUG": logging.DEBUG,
+                "INFO": logging.INFO,
+                "WARNING": logging.WARNING,
+                "ERROR": logging.ERROR,
+                "CRITICAL": logging.CRITICAL,
+            }
+            resolved = level_map.get(level.upper(), logging.INFO)
+        else:
+            resolved = int(level)
+        logging.getLogger().setLevel(resolved)
+        for logger_name in _CONFIGURED_LOGGERS:
+            logging.getLogger(logger_name).setLevel(resolved)
+    finally:
+        # Keep local mirror updated for compatibility (e.g., script fallback)
+        if isinstance(level, str):
+            level_map = {
+                "DEBUG": logging.DEBUG,
+                "INFO": logging.INFO,
+                "WARNING": logging.WARNING,
+                "ERROR": logging.ERROR,
+                "CRITICAL": logging.CRITICAL,
+            }
+            _GLOBAL_LOG_LEVEL = level_map.get(level.upper(), logging.INFO)
+        else:
+            _GLOBAL_LOG_LEVEL = int(level)
 
 
 def get_config_logger() -> logging.Logger:
-    """Get logger for config module."""
-    logger = logging.getLogger("config")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(_GLOBAL_LOG_LEVEL)
-        _CONFIGURED_LOGGERS.add("config")
-    return logger
+    """Get rank-aware logger for config module."""
+    try:
+        from ..utils.rank_aware_logging import get_rank_aware_logger
+
+        return get_rank_aware_logger("config")
+    except ImportError:
+        # Fallback to original implementation
+        logger = logging.getLogger("config")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(_GLOBAL_LOG_LEVEL)
+            _CONFIGURED_LOGGERS.add("config")
+        return logger
 
 
 logger = get_config_logger()
@@ -168,10 +196,6 @@ class Config:
     language: str = "chinese"
 
     # Dataset size limiting (optional, primarily for debugging/testing)
-    # -1 = use full dataset (default), positive integer = limit to N samples
-    max_dataset_size: int = -1
-
-    # Dataset size limiting (optional, primarily for debugging/testing)
     # Set to None or 0 to use full dataset, or specify a positive integer to limit samples
     max_dataset_size: Optional[int] = None
 
@@ -181,6 +205,18 @@ class Config:
     save_strategy: str = "steps"
     save_steps: int = 50
     save_total_limit: int = 2
+    save_on_each_node: bool = False  # EFFICIENCY: Only rank 0 saves checkpoints
+
+    # Best checkpoint tracking settings with defaults
+    load_best_model_at_end: bool = True  # Enable automatic best checkpoint saving
+    metric_for_best_model: str = "eval_loss"  # Track evaluation loss for best model
+    greater_is_better: bool = False  # Lower eval_loss is better
+
+    # Unified checkpoint management settings
+    best_checkpoint_metric: str = "eval_loss"  # Metric to track for best checkpoints
+    best_checkpoint_greater_is_better: bool = (
+        False  # Whether higher metric values are better
+    )
 
     # Logging settings with defaults
     logging_steps: int = 10
@@ -215,6 +251,9 @@ class Config:
     patch_size: int = 14
     merge_size: int = 2
     temporal_patch_size: int = 2
+    max_pixels: int = (
+        401408  # 512 * 28 * 28 - controls Qwen2VL image processor pixel limit
+    )
 
     # Training control flags with defaults
     training_prompt_style: bool = True
@@ -257,6 +296,9 @@ class Config:
 
         if self.torch_dtype not in ["float16", "bfloat16", "float32"]:
             raise ValueError(f"Invalid torch_dtype: {self.torch_dtype}")
+
+        if self.max_pixels <= 0:
+            raise ValueError(f"max_pixels must be positive, got {self.max_pixels}")
 
     def _validate_training_settings(self) -> None:
         """Validate training-related settings."""
@@ -376,6 +418,31 @@ def load_config(config_path: str) -> Config:
 
     # Convert scientific notation strings to floats
     data = _convert_scientific_notation(data)
+
+    # === Unified dataset path defaults ===
+    # If only data_root is provided, auto-derive standard file paths inside it
+    # Expected structure under data_root:
+    #   - images/  (image files referenced in JSONL as ./images/xxx.jpeg)
+    #   - train.jsonl
+    #   - val.jsonl
+    #   - teacher_pool.jsonl
+    try:
+        data_root_value = data.get("data_root")
+        if data_root_value:
+            # Normalize to Path for safe joining but keep string form in final dict
+            data_root_path = Path(data_root_value)
+
+            # Derive when missing
+            if not data.get("train_data_path"):
+                data["train_data_path"] = str(data_root_path / "train.jsonl")
+            if not data.get("val_data_path"):
+                data["val_data_path"] = str(data_root_path / "val.jsonl")
+            if not data.get("teacher_pool_file"):
+                # Use .jsonl per project convention
+                data["teacher_pool_file"] = str(data_root_path / "teacher_pool.jsonl")
+    except Exception:
+        # Do not block config loading if derivation fails; validation will catch later
+        pass
 
     # Create config with comprehensive error handling
     try:

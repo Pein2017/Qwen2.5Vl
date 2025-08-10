@@ -1,88 +1,59 @@
 # Documentation Archive
 
-**Historical documentation preserved from the complex nested structure (pre-reorganization)**
+**Essential historical documentation preserved for reference**
 
 ## 📋 **What's Archived Here**
 
-This directory contains the previous documentation structure that was reorganized on 2025-01-27 to create a simplified, maintainable documentation system.
+This directory contains valuable historical documentation that provides important context and technical details for the BBU training pipeline project.
 
-### **Archived Structure**
+> **🧹 Archive Cleanup (2025-01-31)**: Removed 12 outdated files (completed work summaries and superseded content) while preserving essential historical documentation.
+
+### **Current Archive Structure**
 ```
 archive/
-├── old-structure/           # Complete old documentation structure
-│   ├── core/               # Core system documentation
-│   ├── components/         # Component-specific guides
-│   ├── guides/             # User guides and tutorials
-│   ├── quick-start/        # Quick start materials
-│   ├── status/             # Implementation status docs
-│   ├── troubleshooting/    # Troubleshooting guides
-│   ├── reference/          # API and command references
-│   ├── workflows/          # Workflow documentation
-│   ├── refactoring/        # Refactoring notes and plans
-│   ├── implementation/     # Implementation details
-│   ├── legacy/             # Legacy documentation
-│   ├── advanced/           # Advanced topics
-│   ├── 专利/               # Chinese documentation
-│   └── archive-old/        # Previously archived content
-└── README.md               # This file
+├── README.md                                    # This file
+├── ARCHIVE_CLEANUP_PLAN.md                     # Documentation of cleanup process
+├── coordinate-token-system-complete-guide.md   # Comprehensive coordinate token guide
+├── soft_expectation_coordinate_regression.md   # Technical coordinate regression details
+├── raw_data_template_数据堂.md                  # Legacy data format specifications
+└── raw_data_v2.md                             # Legacy V2 data format documentation
 ```
 
-## 🎯 **Why Was This Reorganized?**
+## 📚 **Archive Contents**
 
-### **Problems with Old Structure**
-- **12+ nested subdirectories** with overlapping content
-- **50+ scattered files** with duplicate information
-- **Unclear navigation** and hierarchy
-- **Mixed languages** and inconsistent naming
-- **Maintenance burden** due to scattered information
-- **User confusion** about where to find information
+### **Technical Documentation**
+- **`coordinate-token-system-complete-guide.md`** - Comprehensive guide to the coordinate token system implementation, including technical details and design decisions
+- **`soft_expectation_coordinate_regression.md`** - Detailed explanation of the soft expectation approach for coordinate regression
 
-### **New Simplified Structure**
-```
-docs/
-├── README.md               # Main entry point with navigation
-├── getting-started.md      # Quick start guide (consolidated)
-├── configuration.md        # Complete configuration guide (consolidated)
-├── coordinate-tokens.md    # Coordinate token system (consolidated)
-├── training.md            # Training guide and workflows (consolidated)
-├── troubleshooting.md     # All troubleshooting in one place (consolidated)
-├── api-reference.md       # API documentation (consolidated)
-├── architecture.md        # System architecture overview (consolidated)
-├── migration.md           # Migration guides (consolidated)
-└── archive/               # Historical content (this directory)
-```
+### **Legacy Data Formats**
+- **`raw_data_template_数据堂.md`** - Original data template specifications from 数据堂 (DataTang)
+- **`raw_data_v2.md`** - Version 2 data format documentation with schema details
 
-### Legacy Data Formats
-- **`raw_data_template_数据堂.md`** - Legacy data template documentation
-- **`raw_data_v2.md`** - Legacy V2 data format documentation
+### **Process Documentation**
+- **`ARCHIVE_CLEANUP_PLAN.md`** - Documentation of the archive cleanup process and rationale
 
-## Current Documentation (2025 Modular Architecture)
+## 🔗 **Current Documentation**
 
-The current system uses a modular architecture with simplified components. For up-to-date documentation, please refer to:
+For up-to-date documentation, please refer to the main documentation structure:
 
-### Core Documentation
-- **[Architecture](../core/architecture.md)** - Current modular system architecture
-- **[Training Architecture](../core/training-architecture-2025.md)** - Current training system
-- **[Data Pipeline](../core/data-pipeline.md)** - Current 5-stage processing pipeline
+### **Core Documentation**
+- **[README.md](../README.md)** - Main documentation hub and navigation
+- **[Getting Started](../getting-started.md)** - Quick setup and first training run
+- **[Architecture](../reference/architecture.md)** - Current system architecture
 
-### Reference Documentation
-- **[API Reference](../reference/api-core-components.md)** - Current modular APIs
-- **[Source Code Reference](../reference/src-code-reference.md)** - Current codebase structure
+### **Implementation Documentation**
+- **[Configuration](../implementation/configuration.md)** - Complete configuration system
+- **[Training System](../implementation/training-system.md)** - Training framework and loss management
+- **[Model System](../implementation/model-system.md)** - Model architecture and integration
 
-## Migration Summary
+### **Feature Documentation**
+- **[Coordinate Tokens](../features/coordinate-tokens.md)** - Current coordinate token system
+- **[Multi-Geometry](../features/multi-geometry.md)** - Multi-geometry support (bbox_2d, line, square)
 
-The system has migrated from the legacy coordinate token approach to a simpler token system:
+### **Guides & Support**
+- **[Troubleshooting](../troubleshooting/common-issues.md)** - Common issues and solutions
+- **[Migration Guide](../guides/migration-src-to-src-new.md)** - Upgrading from src/ to src_new/
 
-### Legacy Coordinate Token System (Archived)
-- Complex coordinate token scheme with special encoding
-- Separate token for each coordinate value
-- Higher memory and computation requirements
-- Large tokenizer vocabulary size
+---
 
-### Current Simple Token System
-- Lightweight token addition using standard HuggingFace infrastructure
-- Comma-separated coordinate values within geometry tokens
-- Support for multiple geometry types (bbox_2d, square, line)
-- Reduced memory usage and improved performance
-
-For any questions about the archived documentation or the migration process, please refer to the [V2 Migration Complete](../V2_MIGRATION_COMPLETE.md) document. 
+**Archive Purpose**: This directory preserves essential historical documentation that provides valuable context and technical details not covered in the current documentation structure.

@@ -38,11 +38,18 @@ def clean_annotation_file(input_path, output_path, lang="both"):
             if lang in ("en", "both"):
                 properties["content"] = original_properties.get("content", {})
 
+            # Convert legacy "Square" geometry type to "Quad" for consistency
+            geometry = feature.get("geometry", {})
+            if geometry.get("type") == "Square":
+                geometry = geometry.copy()
+                geometry["type"] = "Quad"
+                print(f"  Converted geometry type 'Square' -> 'Quad' in feature")
+
             cleaned_features.append(
                 {
                     # GeoJSON 要求的 Feature 类型
                     "type": feature.get("type", "Feature"),
-                    "geometry": feature.get("geometry", {}),
+                    "geometry": geometry,
                     "properties": properties,
                 }
             )

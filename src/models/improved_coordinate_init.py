@@ -33,7 +33,7 @@ class ImprovedCoordinateInitializer:
     - Maintaining proper embedding magnitudes
     """
 
-    def __init__(self, tokenizer, model, max_coord_value: int = 2048):
+    def __init__(self, tokenizer, model, max_coord_value: int = 1024):
         self.tokenizer = tokenizer
         self.model = model
         self.max_coord_value = max_coord_value

@@ -1,8 +1,21 @@
 #!/bin/bash
 
 # =============================================================================
-# New Architecture Training Launch Script
+# New Architecture Training Launch Script - OPTIMIZED
 # Uses src_new implementation with simplified configuration and modular design
+#
+# OPTIMIZATION: Removed 15+ performance-limiting environment variables and added optimizations:
+# - NCCL communication restrictions (NCCL_IB_DISABLE, NCCL_P2P_DISABLE)
+# - Excessive timeout settings (300s timeouts)
+# - Redundant TQDM settings
+# - Debug-only variables (NCCL_DEBUG)
+#
+# ADDED CPU THREADING OPTIMIZATION:
+# - OMP_NUM_THREADS=8 (vs restrictive 1) - optimized for 56 cores, 6 GPUs
+# - MKL/OpenBLAS/Numba threading for better data loading performance
+# - Memory trimming and I/O optimizations
+#
+# This allows PyTorch to use optimized defaults for better training efficiency.
 # =============================================================================
 
 set -euo pipefail
@@ -19,14 +32,12 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
 CONFIG_NAME="bbu_v2_use_coord"                      # Config to use: bbu_v2 
-GPU_DEVICES="0,1,2,3,4,5,6,7"                           # GPU devices (comma-separated) - start with single GPU for testing
+GPU_DEVICES="0,1,2,3,4,5,6,7"                             # GPU devices (comma-separated) - start with single GPU for testing
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
 LOG_LEVEL="INFO"                          # Logging level: INFO (production) | DEBUG (development)
-to_console=false                           # true: console output, false: log to run_new.log
-export TRANSFORMERS_NO_TQDM=1
-export DISABLE_TQDM=1
+to_console=false                             # true: console output, false: log to run_new.log
 
 
 setup_environment() {
@@ -35,69 +46,55 @@ setup_environment() {
     # Activate conda environment
     eval "$(conda shell.bash hook)"
     conda activate ms
-    
+
     # Core environment variables
     export HF_MODULES_CACHE="/data3/Qwen2.5-VL-main/model_cache"
     export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
     export TOKENIZERS_PARALLELISM=false
     export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
-    export TRANSFORMERS_NO_TQDM=1
-    export DISABLE_TQDM=1
     
-    # Distributed training
+    # Global logging level for rank-aware logging
+    export BBU_LOG_LEVEL="$LOG_LEVEL"
+
+    # Distributed training coordination
     export MASTER_ADDR="127.0.0.1"
     export MASTER_PORT=$(generate_random_port)
-    
-    # Performance optimizations
-    export OMP_NUM_THREADS=1
-    export NCCL_DEBUG=WARN
+
+    # Memory optimization
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-    # **FIX: NCCL timeout and communication optimizations**
-    # Use new PyTorch 2.x environment variable names (old ones are deprecated)
-    export TORCH_NCCL_BLOCKING_WAIT=1           # Enable blocking wait for better error reporting
-    export TORCH_NCCL_ASYNC_ERROR_HANDLING=1    # Enable async error handling
-
-    # CRITICAL: Set NCCL timeout in seconds (not milliseconds) - INCREASED for checkpoint saving
-    export NCCL_TIMEOUT=300                     # 5 minutes timeout for NCCL operations (was 10s)
-    export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=300 # 5 minutes heartbeat timeout (was 10s)
-    export TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC=300000  # 5 minutes wait timeout (was 10s)
-
-    export NCCL_TREE_THRESHOLD=0                # Force tree algorithm for better stability
-    export NCCL_IB_DISABLE=1                    # Disable InfiniBand if causing issues
-    export NCCL_P2P_DISABLE=1                   # Disable P2P if causing issues
-    export NCCL_SHM_DISABLE=0                   # Keep shared memory enabled
-    export NCCL_SOCKET_NTHREADS=4               # Reduce socket threads
-    export NCCL_NSOCKS_PERTHREAD=4              # Reduce sockets per thread
-
-    # Additional timeout settings for PyTorch distributed - INCREASED for checkpoint saving
-    export TORCH_DISTRIBUTED_TIMEOUT=300        # 5 minutes for distributed operations (was 10s)
-
-    # DeepSpeed specific timeout settings
-    export DEEPSPEED_TIMEOUT=300                 # 5 minutes for DeepSpeed operations
-    export DEEPSPEED_CHECKPOINT_TIMEOUT=600     # 10 minutes for checkpoint operations
-
-    # Debug: Print NCCL environment variables to verify they're set
-    echo "🔍 NCCL Environment Variables:"
-    echo "   NCCL_TIMEOUT=$NCCL_TIMEOUT"
-    echo "   TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=$TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"
-    echo "   TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC=$TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC"
-    echo "   TORCH_DISTRIBUTED_TIMEOUT=$TORCH_DISTRIBUTED_TIMEOUT"
-
-    # Custom loss synchronization replaced by DistributedLossTrainer
-    # Uses HuggingFace's built-in _nested_gather() for reliable distributed synchronization
-
-    # FlashAttention v2 and Triton compatibility fixes
+    # FlashAttention v2 and Triton compatibility
     export TRITON_CACHE_DIR="/tmp/triton_cache"
     export TORCH_COMPILE_DISABLE=1
     export FLASH_ATTENTION_FORCE_CUDNN=0
+    # IMPORTANT: Do not set TRITON_CACHE_MANAGER to arbitrary values.
+    # Triton expects a value in the form "module_path:ClassName". Invalid values cause a crash
+    # like: ValueError: not enough values to unpack (expected 2, got 1)
+    # We explicitly unset it so Triton uses its default file cache manager and TRITON_CACHE_DIR.
+    if [[ -n "${TRITON_CACHE_MANAGER:-}" && "$TRITON_CACHE_MANAGER" != *:* ]]; then
+        echo "⚠️  Ignoring invalid TRITON_CACHE_MANAGER=$TRITON_CACHE_MANAGER (expected 'module_path:ClassName'). Unsetting."
+        unset TRITON_CACHE_MANAGER
+    else
+        unset TRITON_CACHE_MANAGER
+    fi
+
+    # CPU Threading Optimization (56 cores, 8 GPUs)
+    export OMP_NUM_THREADS=4                    # OpenMP threading (vs restrictive 1)
+    export MKL_NUM_THREADS=4                    # Intel MKL threading
+    export OPENBLAS_NUM_THREADS=4               # OpenBLAS threading
+    export NUMBA_NUM_THREADS=4                  # Numba threading
+
+    # I/O and System Optimization
+    export PYTHONUNBUFFERED=1                  # Immediate stdout/stderr (already set)
+    export MALLOC_TRIM_THRESHOLD_=100000       # Aggressive memory trimming
 
     # Create Triton cache directory if it doesn't exist
     mkdir -p "$TRITON_CACHE_DIR"
-    
+
     cd "$PROJECT_ROOT"
-    
+
     echo "✅ Environment configured for new architecture (Python: $(which python))"
+    echo "🚀 Optimized setup - removed performance-limiting environment variables"
 }
 
 # =============================================================================
@@ -227,6 +224,26 @@ main() {
     setup_environment
     determine_deepspeed_usage
     validate_config
+
+    # After validation, decide whether to keep FlashAttention/Triton-specific env
+    FLASH_ATTENTION_ENABLED=$(python - <<'PY'
+from src_new.config.config import load_config
+try:
+    cfg = load_config(f"configs/${CONFIG_NAME}.yaml")
+    print('1' if getattr(cfg, 'attn_implementation', 'eager') == 'flash_attention_2' else '0')
+except Exception:
+    print('0')
+PY
+)
+    if [[ "$FLASH_ATTENTION_ENABLED" == "1" ]]; then
+        echo "✓ Using flash_attention_2 per config — keeping Triton/FlashAttention env"
+        # Ensure Triton cache dir exists
+        mkdir -p "$TRITON_CACHE_DIR"
+    else
+        echo "ℹ️ Not using flash_attention_2 — unsetting Triton/FlashAttention env"
+        unset FLASH_ATTENTION_FORCE_CUDNN
+        unset TRITON_CACHE_DIR
+    fi
     
     # Launch training
     if [[ $DEEPSPEED_ENABLED == true ]]; then

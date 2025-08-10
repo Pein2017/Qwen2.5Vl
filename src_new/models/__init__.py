@@ -12,7 +12,7 @@ This module provides the core model components for the new simplified architectu
 from .loss_manager import LossComponents, LossManager, ModelOutput
 from .patches import (
     apply_comprehensive_qwen25_fixes,
-    official_apply_multimodal_rotary_pos_emb,
+    fixed_apply_multimodal_rotary_pos_emb,
     patch_qwen25_attention_implementation,
     patch_qwen25_forward_method,
     patch_qwen25_multimodal_rotary_pos_emb,
@@ -32,7 +32,7 @@ __all__ = [
     "ModelOutput",
     # Patch functions
     "apply_comprehensive_qwen25_fixes",
-    "official_apply_multimodal_rotary_pos_emb",
+    "fixed_apply_multimodal_rotary_pos_emb",
     "patch_qwen25_attention_implementation",
     "patch_qwen25_forward_method",
     "patch_qwen25_multimodal_rotary_pos_emb",

@@ -10,33 +10,47 @@
       "free_text": "Insert directly without modification"
     },
     "geometry_constraints": {
-      "line_objects": ["fiber", "wire"],
-      "square_bbox_objects": ["bbu", "bbu_shield", "connect_point", "label"]
+      "line_objects": [
+        "fiber",
+        "wire"
+      ],
+      "quad_bbox_objects": [
+        "bbu",
+        "bbu_shield",
+        "connect_point",
+        "label"
+      ]
     }
   },
-
   "object_types": {
     "bbu": {
       "chinese_label": "BBU设备",
-      "geometry_types": ["square", "bbox_2d"],
+      "geometry_types": [
+        "quad",
+        "bbox_2d"
+      ],
       "hierarchy_template": "BBU设备,brand,completeness,windshield_requirement/[windshield_conformity]/[special_text]",
       "attributes": [
         {
           "level": 1,
           "name": "brand",
-          "chinese_questions": ["这个BBU设备是什么品牌"],
+          "chinese_questions": [
+            "这个BBU设备是什么品牌"
+          ],
           "content_mapping": "bbu_brand",
           "required": true,
           "values": {
             "华为": "华为",
-            "中兴": "中兴", 
+            "中兴": "中兴",
             "爱立信": "爱立信"
           }
         },
         {
           "level": 1,
           "name": "completeness",
-          "chinese_questions": ["这个BBU设备是否显示完整"],
+          "chinese_questions": [
+            "这个BBU设备是否显示完整"
+          ],
           "content_mapping": "bbu_stituation",
           "required": true,
           "values": {
@@ -47,7 +61,9 @@
         {
           "level": 1,
           "name": "windshield_requirement",
-          "chinese_questions": ["这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断"],
+          "chinese_questions": [
+            "这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断"
+          ],
           "content_mapping": "bbu_equipment",
           "required": true,
           "values": {
@@ -58,8 +74,10 @@
         },
         {
           "level": 2,
-          "name": "windshield_conformity", 
-          "chinese_questions": ["这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断"],
+          "name": "windshield_conformity",
+          "chinese_questions": [
+            "这个BBU设备是否需要安装挡风板，结合图片中机柜空间状态判断"
+          ],
           "content_mapping": "bbu_equipment",
           "required": false,
           "conditional": {
@@ -74,23 +92,29 @@
         {
           "level": 3,
           "name": "special_circumstances",
-          "chinese_questions": ["如果有特殊情况，请具体描述"],
+          "chinese_questions": [
+            "如果有特殊情况，请具体描述"
+          ],
           "content_mapping": "special_situation",
           "required": false,
           "is_free_text": true
         }
       ]
     },
-
     "bbu_shield": {
       "chinese_label": "挡风板",
-      "geometry_types": ["square", "bbox_2d"],
+      "geometry_types": [
+        "quad",
+        "bbox_2d"
+      ],
       "hierarchy_template": "挡风板,brand,completeness,obstruction,direction/[special_text]",
       "attributes": [
         {
           "level": 1,
           "name": "brand",
-          "chinese_questions": ["这个挡风板是什么牌子"],
+          "chinese_questions": [
+            "这个挡风板是什么牌子"
+          ],
           "content_mapping": "bbu_shield_brand",
           "required": true,
           "values": {
@@ -101,7 +125,9 @@
         {
           "level": 1,
           "name": "completeness",
-          "chinese_questions": ["这个挡风板是否显示完整"],
+          "chinese_questions": [
+            "这个挡风板是否显示完整"
+          ],
           "content_mapping": "bbu_shield_situation",
           "required": true,
           "values": {
@@ -112,7 +138,9 @@
         {
           "level": 1,
           "name": "obstruction",
-          "chinese_questions": ["这个挡风板是否被杂物遮挡"],
+          "chinese_questions": [
+            "这个挡风板是否被杂物遮挡"
+          ],
           "content_mapping": "bbu_shield_cover",
           "required": true,
           "values": {
@@ -123,7 +151,9 @@
         {
           "level": 1,
           "name": "direction",
-          "chinese_questions": ["这个挡风板安装方向是否正确"],
+          "chinese_questions": [
+            "这个挡风板安装方向是否正确"
+          ],
           "content_mapping": "bbu_shield_install_direction",
           "required": true,
           "values": {
@@ -134,23 +164,29 @@
         {
           "level": 2,
           "name": "special_circumstances",
-          "chinese_questions": ["如果有特殊情况，请具体描述"],
+          "chinese_questions": [
+            "如果有特殊情况，请具体描述"
+          ],
           "content_mapping": "special_situation",
           "required": false,
           "is_free_text": true
         }
       ]
     },
-
     "connect_point": {
       "chinese_label": "螺丝、光纤插头",
-      "geometry_types": ["square", "bbox_2d"],
+      "geometry_types": [
+        "quad",
+        "bbox_2d"
+      ],
       "hierarchy_template": "螺丝、光纤插头,type,completeness,compliance/[specific_issues]/[special_text]",
       "attributes": [
         {
           "level": 1,
           "name": "type",
-          "chinese_questions": ["这个螺丝/插头是什么种类"],
+          "chinese_questions": [
+            "这个螺丝/插头是什么种类"
+          ],
           "content_mapping": "connect_point_type",
           "required": true,
           "values": {
@@ -164,7 +200,9 @@
         {
           "level": 1,
           "name": "completeness",
-          "chinese_questions": ["螺丝/插头是否显示完整"],
+          "chinese_questions": [
+            "螺丝/插头是否显示完整"
+          ],
           "content_mapping": "connect_point_situation",
           "required": true,
           "values": {
@@ -175,7 +213,9 @@
         {
           "level": 1,
           "name": "compliance",
-          "chinese_questions": ["这个螺丝/插头连接是否符合要求"],
+          "chinese_questions": [
+            "这个螺丝/插头连接是否符合要求"
+          ],
           "content_mapping": "connect_point_check",
           "required": true,
           "values": {
@@ -186,7 +226,9 @@
         {
           "level": 2,
           "name": "specific_issues",
-          "chinese_questions": ["这个螺丝/插头连接是否符合要求"],
+          "chinese_questions": [
+            "这个螺丝/插头连接是否符合要求"
+          ],
           "content_mapping": "connect_point_check",
           "required": false,
           "conditional": {
@@ -196,7 +238,7 @@
           "values": {
             "不符合要求/未拧紧": "未拧紧",
             "不符合要求/露铜": "露铜",
-            "不符合要求/复接": "复接", 
+            "不符合要求/复接": "复接",
             "不符合要求/生锈": "生锈"
           },
           "multiple_values_separator": ","
@@ -204,23 +246,30 @@
         {
           "level": 3,
           "name": "special_circumstances",
-          "chinese_questions": ["如果有特殊情况，请具体描述"],
+          "chinese_questions": [
+            "如果有特殊情况，请具体描述"
+          ],
           "content_mapping": "special_situation",
           "required": false,
           "is_free_text": true
         }
       ]
     },
-
     "label": {
       "chinese_label": "标签",
-      "geometry_types": ["square", "bbox_2d"],
+      "geometry_types": [
+        "quad",
+        "bbox_2d"
+      ],
       "hierarchy_template": "标签/text_content",
       "attributes": [
         {
           "level": 1,
           "name": "text_content",
-          "chinese_questions": ["请输入标签上的文字内容", "能否阅读标签上的文字内容"],
+          "chinese_questions": [
+            "请输入标签上的文字内容",
+            "能否阅读标签上的文字内容"
+          ],
           "content_mapping": "label_text_content",
           "required": true,
           "is_free_text": true,
@@ -232,16 +281,19 @@
         }
       ]
     },
-
     "fiber": {
       "chinese_label": "光纤",
-      "geometry_types": ["line"],
+      "geometry_types": [
+        "line"
+      ],
       "hierarchy_template": "光纤,obstruction,protection,bend_radius/[protection_details]/[special_text]",
       "attributes": [
         {
           "level": 1,
           "name": "obstruction",
-          "chinese_questions": ["这条光纤是否被遮挡"],
+          "chinese_questions": [
+            "这条光纤是否被遮挡"
+          ],
           "content_mapping": "fiber_cover",
           "required": true,
           "values": {
@@ -252,7 +304,9 @@
         {
           "level": 1,
           "name": "protection",
-          "chinese_questions": ["这条光纤是否采用保护措施"],
+          "chinese_questions": [
+            "这条光纤是否采用保护措施"
+          ],
           "content_mapping": "fiber_protection",
           "required": true,
           "values": {
@@ -265,7 +319,9 @@
         {
           "level": 1,
           "name": "bend_radius",
-          "chinese_questions": ["这条光纤弯曲半径是否合理"],
+          "chinese_questions": [
+            "这条光纤弯曲半径是否合理"
+          ],
           "content_mapping": "fiber_bend_radius",
           "required": true,
           "values": {
@@ -276,7 +332,9 @@
         {
           "level": 2,
           "name": "protection_details",
-          "chinese_questions": ["这条光纤是否采用保护措施"],
+          "chinese_questions": [
+            "这条光纤是否采用保护措施"
+          ],
           "content_mapping": "fiber_protection",
           "required": false,
           "conditional": {
@@ -292,23 +350,28 @@
         {
           "level": 3,
           "name": "special_circumstances",
-          "chinese_questions": ["如果有特殊情况，请具体描述"],
+          "chinese_questions": [
+            "如果有特殊情况，请具体描述"
+          ],
           "content_mapping": "special_situation",
           "required": false,
           "is_free_text": true
         }
       ]
     },
-
     "wire": {
-      "chinese_label": "电线", 
-      "geometry_types": ["line"],
+      "chinese_label": "电线",
+      "geometry_types": [
+        "line"
+      ],
       "hierarchy_template": "电线,obstruction,organization/[special_text]",
       "attributes": [
         {
           "level": 1,
           "name": "obstruction",
-          "chinese_questions": ["这条电线是否被遮挡"],
+          "chinese_questions": [
+            "这条电线是否被遮挡"
+          ],
           "content_mapping": "wire_cover",
           "required": true,
           "values": {
@@ -319,7 +382,9 @@
         {
           "level": 1,
           "name": "organization",
-          "chinese_questions": ["这条电线是否捆扎整齐"],
+          "chinese_questions": [
+            "这条电线是否捆扎整齐"
+          ],
           "content_mapping": "wire_organization",
           "required": true,
           "values": {
@@ -330,7 +395,9 @@
         {
           "level": 2,
           "name": "special_circumstances",
-          "chinese_questions": ["如果有特殊情况，请具体描述"],
+          "chinese_questions": [
+            "如果有特殊情况，请具体描述"
+          ],
           "content_mapping": "special_situation",
           "required": false,
           "is_free_text": true

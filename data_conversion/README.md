@@ -1,10 +1,10 @@
-# Qwen2.5-VL Data Conversion Pipeline - Object-Oriented Training System
+# Qwen2.5-VL Data Conversion Pipeline
 
-> **Hierarchical Object-Oriented Architecture – July 2025**
+> **Unified Processing Architecture – August 2025**
 >
-> This pipeline features a hierarchical object-oriented training system with precise Chinese BBU equipment 
-> annotation processing. The system supports flexible object type combinations for progressive multi-task 
-> learning with exact hierarchical description formatting.
+> Streamlined data conversion pipeline using `unified_processor.py` for BBU equipment annotation processing. 
+> Features coordinate transformation management, hierarchical Chinese descriptions, and flexible object type 
+> filtering for progressive multi-task learning.
 
 ---
 
@@ -22,11 +22,18 @@
 
 ## Overview
 
-The object-oriented pipeline converts **V2 JSON annotations + images** into training-ready format optimized for hierarchical BBU equipment detection:
+The unified pipeline converts **V2 JSON annotations + images** into training-ready format via `unified_processor.py`:
 
 ```
-ds_v2/ (V2 JSON/images) → data/{dataset_name}/ (train.jsonl, val.jsonl, teacher.jsonl + processed images)
+ds_v2/ (V2 JSON/images) → unified_processor.py → data/{dataset_name}/ (train.jsonl, val.jsonl, teacher.jsonl + processed images)
 ```
+
+**Architecture Components:**
+- **`unified_processor.py`** - Main orchestrator with integrated sample processing
+- **`coordinate_manager.py`** - EXIF orientation, rescaling, smart resize transformations  
+- **`flexible_taxonomy_processor.py`** - V2 annotation processing with hierarchical descriptions
+- **`validation_manager.py`** - Comprehensive validation with detailed error reporting
+- **`config.py`** - Type-safe configuration management
 
 ### 🎯 Key Features
 
@@ -310,7 +317,7 @@ OBJECT_TYPES="full"                   # All object types (no filtering)
 from data_conversion.unified_processor import UnifiedProcessor
 from data_conversion.config import DataConversionConfig
 
-# Object-oriented configuration
+# Configure unified processor
 config = DataConversionConfig(
     input_dir="ds_v2",
     output_dir="data", 
@@ -321,13 +328,19 @@ config = DataConversionConfig(
     seed=17
 )
 
-# Run object-oriented pipeline
+# Run unified processing pipeline
 processor = UnifiedProcessor(config)
 results = processor.process()
 
 print(f"✅ Processed {results['total_processed']} samples")
 print(f"📊 Object types: {config.object_types}")
 ```
+
+**Key Features:**
+- **Coordinate Transformation Pipeline**: EXIF orientation → dimension rescaling → smart resize
+- **Hierarchical Processing**: V2 annotations with comma/slash separator logic
+- **Comprehensive Validation**: Strict validation with detailed error reporting and fix suggestions
+- **Teacher Selection**: Automated teacher sample selection for few-shot learning
 
 ---
 
@@ -452,29 +465,29 @@ Invalid object type: equipment. Valid types: {bbu, bbu_shield, label, fiber, wir
 
 ### Validation Commands
 
-Test object-oriented functionality:
+Test unified processor functionality:
 
 ```bash
-# Test object type filtering
+# Test unified processor initialization
 /root/miniconda3/envs/ms/bin/python -c "
-from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
-processor = HierarchicalProcessor(object_types={'bbu', 'label'})
-print(f'✅ Object filtering ready: {processor.object_types}')
+from data_conversion.unified_processor import UnifiedProcessor
+from data_conversion.config import DataConversionConfig
+config = DataConversionConfig(input_dir='ds_v2', output_dir='data', object_types=['bbu'])
+processor = UnifiedProcessor(config)
+print('✅ UnifiedProcessor initialized successfully')
 "
 
-# Test hierarchical descriptions
+# Test coordinate transformation
 /root/miniconda3/envs/ms/bin/python -c "
-from data_conversion.flexible_taxonomy_processor import FlexibleTaxonomyProcessor
-processor = FlexibleTaxonomyProcessor()
-print('✅ Hierarchical descriptions ready')
+from data_conversion.coordinate_manager import CoordinateManager
+print('✅ CoordinateManager ready for EXIF/rescaling/resize transformations')
 "
 
-# Test geometry constraints
+# Test validation manager
 /root/miniconda3/envs/ms/bin/python -c "
-from data_conversion.flexible_taxonomy_processor import FlexibleTaxonomyProcessor
-processor = FlexibleTaxonomyProcessor()
-print(f'BBU with square: {processor._validate_geometry_constraint(\"bbu\", \"square\")}')
-print(f'Fiber with line: {processor._validate_geometry_constraint(\"fiber\", \"line\")}')
+from data_conversion.validation_manager import ValidationManager
+vm = ValidationManager('strict')
+print('✅ ValidationManager ready with strict validation mode')
 "
 ```
 

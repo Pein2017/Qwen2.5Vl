@@ -20,17 +20,23 @@ if TYPE_CHECKING:
 
 
 def get_utils_logger() -> logging.Logger:
-    """Get logger for training utils."""
-    logger = logging.getLogger("training_utils")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    return logger
+    """Get rank-aware logger for training utils."""
+    try:
+        from ..utils.rank_aware_logging import get_rank_aware_logger
+
+        return get_rank_aware_logger("training_utils")
+    except ImportError:
+        # Fallback to standard logging
+        logger = logging.getLogger("training_utils")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
 
 
 logger = get_utils_logger()

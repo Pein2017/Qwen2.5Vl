@@ -274,11 +274,45 @@ def compare_model_outputs(
     return torch.allclose(output1, output2, rtol=rtol, atol=atol)
 
 
-def generate_test_images(
-    count: int = 3, size: tuple = (224, 224)
-) -> List[torch.Tensor]:
-    """Generate random test images as tensors."""
-    return [torch.randn(3, size[0], size[1]) for _ in range(count)]
+def generate_test_images(*args, **kwargs):
+    """Generate test images.
+
+    Overloads:
+    - generate_test_images(count=3, size=(224,224)) -> List[torch.Tensor]
+    - generate_test_images(dir_path, count=3, size=(224,224)) -> List[str] of saved image paths
+    """
+    import os
+
+    from PIL import Image
+
+    # Parse args: optional dir_path positional, plus kwargs
+    dir_path = None
+    if len(args) > 0 and isinstance(args[0], (str, os.PathLike)):
+        dir_path = str(args[0])
+        args = args[1:]
+
+    # Defaults
+    count = kwargs.pop("count", 3)
+    size = kwargs.pop("size", (224, 224))
+
+    # Ensure no unexpected kwargs remain
+    assert not kwargs, f"Unexpected kwargs: {kwargs}"
+
+    if dir_path is None:
+        # Old behavior: return tensors
+        return [torch.randn(3, size[0], size[1]) for _ in range(count)]
+
+    # New behavior: write JPEGs and return paths
+    os.makedirs(dir_path, exist_ok=True)
+    paths = []
+    for i in range(count):
+        img = Image.fromarray(
+            (torch.rand(size[1], size[0], 3).numpy() * 255).astype("uint8")
+        )
+        out_path = os.path.join(dir_path, f"gen_{i}.jpeg")
+        img.save(out_path, format="JPEG")
+        paths.append(out_path)
+    return paths
 
 
 def create_coordinate_test_cases() -> List[Dict[str, Any]]:
@@ -367,6 +401,10 @@ class TestMetrics:
         self.metrics[name] += value
         self.counts[name] += 1
 
+    def add_measurement(self, name: str, value: float):
+        # Alias used by some tests
+        self.update(name, value)
+
     def get_average(self, name: str) -> float:
         if name not in self.metrics or self.counts[name] == 0:
             return 0.0
@@ -376,11 +414,20 @@ class TestMetrics:
         return {name: self.get_average(name) for name in self.metrics.keys()}
 
 
-def skip_if_no_gpu():
-    """Decorator to skip tests if GPU is not available."""
+def skip_if_no_gpu(func=None):
+    """Decorator to skip tests if GPU is not available.
+
+    Can be used as `@skip_if_no_gpu` (no parentheses).
+    """
     import pytest
 
-    return pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU not available")
+    marker = pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="GPU not available"
+    )
+    if func is None:
+        return marker
+    # If used without parentheses, wrap the function
+    return marker(func)
 
 
 def skip_if_no_model_cache():

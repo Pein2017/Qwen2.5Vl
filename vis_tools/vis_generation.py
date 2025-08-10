@@ -2,6 +2,7 @@
 """
 Visualization script for Qwen2.5-VL model inference results.
 Creates side-by-side comparisons of ground truth vs predictions with different colors for different labels.
+Supports multiple geometry types: bbox_2d (rectangles), quad (quadrilaterals), and line segments.
 """
 
 import hashlib
@@ -10,7 +11,7 @@ import logging
 import os
 import shutil
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import matplotlib
 import matplotlib.patches as patches
@@ -18,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import rcParams
 from matplotlib.font_manager import FontProperties, fontManager
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Polygon, Rectangle
 from PIL import Image
 from tqdm import tqdm
 
@@ -26,13 +27,17 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "exp_det_coordinates/715-det_coordinates/val/inference/predictions.json"
-OUTPUT_DIR = "715-det-coordinates-val"
+INPUT_FILE = "exp_det_coordinates/730-use_coord-ep200/val/inference/predictions.json"
+OUTPUT_DIR = "vis_generation/730-use_coord-ep200-val"
 BASE_PATH = "."
+# Data root directory for image files
+DATA_ROOT_DIR = "data/ds_v2_bbu_bbu_shield/images"
 MAX_SAMPLES = None  # Set to a number to limit samples, or None for all
 SAMPLE_INDICES: Optional[List[int]] = (
     None  # Set to list of indices [0, 1, 2, 5] or None for all
 )
+# Show different geometry types with different colors and styles
+SHOW_GEOMETRY_LEGEND = True
 #
 # Examples:
 # - Process all samples: SAMPLE_INDICES = None, MAX_SAMPLES = None
@@ -125,6 +130,60 @@ def generate_colors(labels: List[str]) -> Dict[str, str]:
     return color_map
 
 
+# Geometry-specific styles for shape outlines (only supported geometries)
+GEOMETRY_STYLES = {
+    "bbox_2d": {"linewidth": 2, "linestyle": "-"},
+    "quad": {"linewidth": 2, "linestyle": "--"},
+    "line": {"linewidth": 3, "linestyle": "-"},
+}
+
+
+def _canonical_quad_ordering(
+    points: List[Tuple[float, float]],
+) -> List[Tuple[int, int]]:
+    """
+    Order four points to a canonical clockwise order starting from top-left.
+
+    This mirrors the ordering logic used in vis_raw.py so that visualization of
+    quads is consistent across tools and robust to arbitrary input point order.
+    """
+    if len(points) != 4:
+        return [(int(p[0]), int(p[1])) for p in points]
+
+    pts = np.array(points, dtype="float32")
+
+    # Centroid
+    cx = float(np.mean(pts[:, 0]))
+    cy = float(np.mean(pts[:, 1]))
+
+    def classify_corner(point: Tuple[float, float]) -> Tuple[int, float]:
+        x, y = point
+        if x <= cx and y <= cy:
+            return (0, -(x + y))  # top-left: minimize x+y
+        elif x >= cx and y <= cy:
+            return (1, x - y)  # top-right: maximize x-y
+        elif x >= cx and y >= cy:
+            return (2, x + y)  # bottom-right: maximize x+y
+        else:  # x <= cx and y >= cy
+            return (3, -x + y)  # bottom-left: maximize -x+y
+
+    sorted_points = sorted(points, key=classify_corner)
+
+    # Ensure distinct corners; if not, fallback ordering by rows
+    if len(set(classify_corner(p)[0] for p in sorted_points)) != 4:
+        sorted_by_y = sorted(points, key=lambda p: p[1])
+        top_points = sorted(sorted_by_y[:2], key=lambda p: p[0])
+        bottom_points = sorted(sorted_by_y[2:], key=lambda p: p[0])
+        sorted_points = [
+            top_points[0],
+            top_points[1],
+            bottom_points[1],
+            bottom_points[0],
+        ]
+
+    return [(int(p[0]), int(p[1])) for p in sorted_points]
+
+
 def parse_bbox_data(bbox_str: str) -> List[Dict[str, Any]]:
     """
     Parse bbox data from JSON string format. If the JSON string is
@@ -136,7 +195,7 @@ def parse_bbox_data(bbox_str: str) -> List[Dict[str, Any]]:
         bbox_str: JSON string or already-parsed Python list.
 
     Returns:
-        List of dictionaries with keys like ``bbox_2d`` and ``label``.
+        List of dictionaries with keys like ``bbox_2d``, ``square``, ``line`` and ``label``.
     """
     # Early exit if data already provided as list
     if isinstance(bbox_str, list):
@@ -201,12 +260,18 @@ def load_image_safe(
     Returns:
         Tuple of (image_array, success_flag)
     """
-    # Try different path combinations
+    # Extract the image filename from the path
+    image_filename = os.path.basename(image_path)
+
+    # Try different path combinations including data root dir
     path_candidates = [
         image_path,
         os.path.join(base_path, image_path),
+        os.path.join(base_path, DATA_ROOT_DIR, image_filename),
         os.path.join(".", image_path),
+        os.path.join(".", DATA_ROOT_DIR, image_filename),
         os.path.join("..", image_path),
+        os.path.join("..", DATA_ROOT_DIR, image_filename),
     ]
 
     for path in path_candidates:
@@ -222,84 +287,278 @@ def load_image_safe(
     return None, False
 
 
-def draw_bboxes(ax, bbox_data: List[Dict], color_map: Dict[str, str], title: str):
+def determine_geometry_type(item: Dict[str, Any]) -> str:
     """
-    Draw bounding boxes on the given axis.
+    Determine the geometry type of an item based on available keys.
+
+    Args:
+        item: Dictionary containing geometry information
+
+    Returns:
+        String identifying the geometry type: 'bbox_2d', 'quad', or 'line'
+
+    Raises:
+        ValueError: If geometry type is unknown or unsupported
+    """
+    if "bbox_2d" in item:
+        return "bbox_2d"
+    elif "quad" in item:
+        return "quad"
+    elif "line" in item:
+        return "line"
+    else:
+        raise ValueError(
+            f"Unsupported geometry type. Expected one of ['bbox_2d','quad','line'], got keys: {list(item.keys())}"
+        )
+
+
+def draw_bbox_2d(ax, item: Dict[str, Any], color: str):
+    """
+    Draw rectangular bounding box.
 
     Args:
         ax: Matplotlib axis
-        bbox_data: List of bbox dictionaries
+        item: Dictionary containing bbox_2d information
+        color: Color to use for the box
+    """
+    bbox = item.get("bbox_2d", [])
+    if len(bbox) != 4:
+        return
+
+    x1, y1, x2, y2 = bbox
+    width = x2 - x1
+    height = y2 - y1
+
+    # Apply geometry-specific style
+    style = GEOMETRY_STYLES["bbox_2d"]
+    rect = Rectangle(
+        (x1, y1),
+        width,
+        height,
+        linewidth=style["linewidth"],
+        linestyle=style["linestyle"],
+        edgecolor=color,
+        facecolor="none",
+        alpha=0.8,
+    )
+    ax.add_patch(rect)
+
+    # Text labels removed - will only show in legend
+
+
+def draw_quad(ax, item: Dict[str, Any], color: str):
+    """
+    Draw quadrilateral using 'quad' key (8 values: x1,y1,...,x4,y4).
+
+    Args:
+        ax: Matplotlib axis
+        item: Dictionary containing quad information
+        color: Color to use for the polygon
+    """
+    quad = item.get("quad", [])
+    if len(quad) != 8:
+        return
+
+    # Convert to coordinate pairs
+    raw_coords = [(quad[i], quad[i + 1]) for i in range(0, 8, 2)]
+
+    # Apply canonical clockwise ordering from top-left to align with vis_raw.py
+    ordered_coords = _canonical_quad_ordering(raw_coords)
+
+    # Apply geometry-specific style
+    style = GEOMETRY_STYLES["quad"]
+    polygon = Polygon(
+        ordered_coords,
+        linewidth=style["linewidth"],
+        linestyle=style["linestyle"],
+        edgecolor=color,
+        facecolor="none",
+        alpha=0.8,
+    )
+    ax.add_patch(polygon)
+
+    # Text labels removed - will only show in legend
+
+
+def draw_line(ax, item: Dict[str, Any], color: str):
+    """
+    Draw line segment.
+
+    Args:
+        ax: Matplotlib axis
+        item: Dictionary containing line information
+        color: Color to use for the line
+    """
+    line = item.get("line", [])
+    if len(line) < 4 or len(line) % 2 != 0:
+        return
+
+    # Convert to coordinate pairs
+    coords = [(line[i], line[i + 1]) for i in range(0, len(line), 2)]
+
+    # Extract x and y coordinates
+    x_coords = [coord[0] for coord in coords]
+    y_coords = [coord[1] for coord in coords]
+
+    # Apply geometry-specific style
+    style = GEOMETRY_STYLES["line"]
+    ax.plot(
+        x_coords,
+        y_coords,
+        color=color,
+        linewidth=style["linewidth"],
+        linestyle=style["linestyle"],
+        alpha=0.8,
+        marker="o",
+        markersize=4,
+    )
+
+    # Text labels removed - will only show in legend
+
+
+def draw_bboxes(ax, bbox_data: List[Dict], color_map: Dict[str, str], title: str):
+    """
+    Draw bounding boxes and other geometries on the given axis.
+
+    Args:
+        ax: Matplotlib axis
+        bbox_data: List of geometry dictionaries
         color_map: Mapping from label to color
         title: Title for the subplot
     """
     ax.set_title(title, fontsize=14, fontweight="bold")
     ax.axis("off")
 
-    # Draw bounding boxes
+    # Draw geometries
     for item in bbox_data:
-        bbox = item.get("bbox_2d", [])
-        label = item.get("label", "Unknown")
-
-        if len(bbox) != 4:
-            continue
-
-        x1, y1, x2, y2 = bbox
-        width = x2 - x1
-        height = y2 - y1
+        # Prefer 'desc' as the object label; fallback to legacy 'label'
+        label = (
+            item.get("desc")
+            if isinstance(item.get("desc"), str)
+            else str(item.get("label", "Unknown"))
+        )
 
         # Get color for this label
-        color = color_map.get(label, "#000000")  # Default to black if not found
+        color = color_map.get(label) or "#000000"  # Default to black if not found
 
-        # Draw rectangle
-        rect = Rectangle(
-            (x1, y1),
-            width,
-            height,
-            linewidth=2,
-            edgecolor=color,
-            facecolor="none",
-            alpha=0.8,
-        )
-        ax.add_patch(rect)
+        # Determine geometry type and draw accordingly
+        geometry_type = determine_geometry_type(item)
 
-        # Add label text with background
-        ax.text(
-            x1,
-            y1 - 5,
-            label,
-            fontsize=8,
-            color=color,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8),
-            verticalalignment="top",
-        )
+        if geometry_type == "bbox_2d":
+            draw_bbox_2d(ax, item, color)
+        elif geometry_type == "quad":
+            draw_quad(ax, item, color)
+        elif geometry_type == "line":
+            draw_line(ax, item, color)
 
 
-def create_legend(fig, color_map: Dict[str, str], bbox_counts: Dict[str, List[int]]):
+def create_legend(
+    fig,
+    color_map: Dict[str, str],
+    bbox_counts: Dict[str, List[int]],
+    used_geometry_types: Optional[Set[str]] = None,
+):
     """
     Create a legend showing label colors and counts.
+    Only shows labels that actually appear in the current visualization.
 
     Args:
         fig: Matplotlib figure
         color_map: Mapping from label to color
         bbox_counts: Mapping from label to [ground_truth_count, prediction_count]
+        used_geometry_types: Set of geometry types used in this visualization
     """
     legend_elements = []
-    for label in sorted(color_map.keys()):
+
+    # Only include labels that actually have objects in this visualization
+    active_labels = [
+        label for label, counts in bbox_counts.items() if counts[0] > 0 or counts[1] > 0
+    ]
+
+    # Sort labels by total count (descending) for better organization
+    active_labels.sort(key=lambda label: sum(bbox_counts[label]), reverse=True)
+
+    # Create compact legend entries for active labels
+    for label in active_labels:
         counts = bbox_counts.get(label, [0, 0])
         gt_count, pred_count = counts[0], counts[1]
-        legend_label = f"{label} (GT: {gt_count}, Pred: {pred_count})"
+
+        # Use shorter legend format if the label is long
+        if len(label) > 15:
+            short_label = label[:12] + "..."
+            legend_label = f"{short_label} ({gt_count}/{pred_count})"
+        else:
+            legend_label = f"{label} ({gt_count}/{pred_count})"
+
         legend_elements.append(
             patches.Patch(color=color_map[label], label=legend_label)
         )
 
-    # Place legend outside the plot area
-    fig.legend(
+    # Add geometry type indicators if enabled (but more compact)
+    if SHOW_GEOMETRY_LEGEND and used_geometry_types and len(used_geometry_types) > 0:
+        # Filter out 'unknown' geometry type
+        valid_types = [t for t in used_geometry_types if t != "unknown"]
+
+        if valid_types:
+            # Add separator in legend only if we have actual geometry types to show
+            legend_elements.append(patches.Patch(color="none", label=""))
+
+            # Add geometry style indicators - more compact
+            geometry_labels = {
+                "bbox_2d": "Rectangle",
+                "quad": "Quadrilateral",
+                "line": "Line",
+            }
+
+            # Only show geometry types that are actually used
+            for geometry_type in valid_types:
+                if geometry_type in geometry_labels:
+                    style = GEOMETRY_STYLES[geometry_type]
+                    legend_elements.append(
+                        patches.Patch(
+                            facecolor="none",
+                            edgecolor="gray",
+                            linewidth=style["linewidth"],
+                            linestyle=style["linestyle"],
+                            label=geometry_labels[geometry_type],
+                        )
+                    )
+
+    # Calculate optimal legend placement and columns based on number of elements
+    n_elements = len(legend_elements)
+
+    # Use multiple columns for the legend if there are many elements
+    ncol = 1
+    if n_elements > 20:
+        ncol = 4
+    elif n_elements > 15:
+        ncol = 3
+    elif n_elements > 8:
+        ncol = 2
+
+    # Place legend outside the plot area with improved visibility
+    legend = fig.legend(
         handles=legend_elements,
-        loc="center right",
-        bbox_to_anchor=(0.98, 0.5),
-        fontsize=10,
-        framealpha=0.9,
+        loc="upper right",
+        bbox_to_anchor=(0.99, 0.99),
+        fontsize=10,  # Slightly larger font for better readability
+        framealpha=0.95,  # More opaque background
+        ncol=ncol,  # Multiple columns
+        columnspacing=1.0,  # Spacing between columns
+        handletextpad=0.5,  # Spacing between handle and text
+        borderaxespad=0.1,  # Spacing around the legend
+        title="Object Categories (GT/Pred Counts)",  # Add a title to the legend
+        title_fontsize=11,  # Title font size
     )
+
+    # Make the legend more compact but ensure readability
+    legend._legend_box.align = "left"
+
+    # Add a light background to make the legend stand out more
+    frame = legend.get_frame()
+    frame.set_facecolor("white")
+    frame.set_edgecolor("lightgray")
+    frame.set_linewidth(1)
 
 
 def visualize_sample(
@@ -323,7 +582,17 @@ def visualize_sample(
     # Extract data
     image_path = sample_data.get("image", "")
     ground_truth_str = sample_data.get("ground_truth", "[]")
-    pred_result_str = sample_data.get("pred_result", "[]")
+    # Use unified 'prediction' field produced by inference; fallback to legacy 'pred_result'
+    pred_result_str = sample_data.get("prediction")
+    if pred_result_str is None:
+        pred_result_str = sample_data.get("pred_result", "[]")
+    else:
+        # Ensure string fallback
+        pred_result_str = (
+            pred_result_str
+            if isinstance(pred_result_str, str)
+            else json.dumps(pred_result_str, ensure_ascii=False)
+        )
 
     if not image_path:
         return False
@@ -340,17 +609,37 @@ def visualize_sample(
     if not ground_truth_data and not pred_result_data:
         return False
 
-    # Count bboxes per label
+    # Count objects per label and track which geometry types are used
     bbox_counts = defaultdict(lambda: [0, 0])
-    for item in ground_truth_data:
-        label = item.get("label", "Unknown")
-        bbox_counts[label][0] += 1
-    for item in pred_result_data:
-        label = item.get("label", "Unknown")
-        bbox_counts[label][1] += 1
+    used_geometry_types = set()
 
-    # Create figure with subplots
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    for item in ground_truth_data:
+        label = (
+            item.get("desc")
+            if isinstance(item.get("desc"), str)
+            else str(item.get("label", "Unknown"))
+        )
+        bbox_counts[label][0] += 1
+        geometry_type = determine_geometry_type(item)
+        used_geometry_types.add(geometry_type)
+
+    for item in pred_result_data:
+        label = (
+            item.get("desc")
+            if isinstance(item.get("desc"), str)
+            else str(item.get("label", "Unknown"))
+        )
+        bbox_counts[label][1] += 1
+        geometry_type = determine_geometry_type(item)
+        used_geometry_types.add(geometry_type)
+
+    # Create figure with subplots - use more of the available space for images
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(18, 9)
+    )  # Increased height for legend space
+
+    # Add small space between subplots
+    plt.subplots_adjust(wspace=0.02)
 
     # Plot ground truth
     ax1.imshow(image_array)
@@ -370,17 +659,19 @@ def visualize_sample(
         f"Predictions ({len(pred_result_data)} objects)",
     )
 
-    # Add overall title
+    # Add overall title but make it smaller
     image_name = os.path.basename(image_path)
     fig.suptitle(
-        f"Model Performance Comparison: {image_name}", fontsize=16, fontweight="bold"
+        f"Model Performance Comparison: {image_name}", fontsize=14, fontweight="bold"
     )
 
-    # Create legend
-    create_legend(fig, color_map, bbox_counts)
+    # Create legend - will be automatically positioned in the upper right corner
+    create_legend(fig, color_map, bbox_counts, used_geometry_types)
 
-    # Adjust layout to accommodate legend
-    plt.subplots_adjust(right=0.75)
+    # Give more space to the plots and legend
+    plt.tight_layout(
+        rect=[0, 0, 0.95, 0.92]  # Adjusted to give more space for the legend
+    )
 
     # Save the visualization
     os.makedirs(output_dir, exist_ok=True)
@@ -427,6 +718,7 @@ def main():
         return
 
     print(f"✅ Loaded {len(samples)} samples")
+    print(f"📁 Data root directory for images: {DATA_ROOT_DIR}")
 
     # Determine which samples to process
     if SAMPLE_INDICES and isinstance(SAMPLE_INDICES, list):
@@ -447,9 +739,22 @@ def main():
     for sample in samples_to_process:
         # Collect labels from ground truth and prediction boxes
         for item in parse_bbox_data(sample.get("ground_truth", "[]")):
-            global_labels.add(item.get("label", "Unknown"))
-        for item in parse_bbox_data(sample.get("pred_result", "[]")):
-            global_labels.add(item.get("label", "Unknown"))
+            lbl = (
+                item.get("desc")
+                if isinstance(item.get("desc"), str)
+                else str(item.get("label", "Unknown"))
+            )
+            global_labels.add(lbl)
+        pred_field = sample.get("prediction")
+        if pred_field is None:
+            pred_field = sample.get("pred_result", "[]")
+        for item in parse_bbox_data(pred_field):
+            lbl = (
+                item.get("desc")
+                if isinstance(item.get("desc"), str)
+                else str(item.get("label", "Unknown"))
+            )
+            global_labels.add(lbl)
 
     color_map = generate_colors(list(global_labels))
 
@@ -468,10 +773,12 @@ def main():
     print(f"VISUALIZATION SUMMARY")
     print(f"{'=' * 60}")
     print(f"Input file: {INPUT_FILE}")
+    print(f"Data root directory: {DATA_ROOT_DIR}")
     print(f"Total samples in file: {len(samples)}")
     print(f"Samples processed: {len(samples_to_process)}")
     print(f"✅ Successful visualizations: {success_count}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
+    print(f"🎨 Geometry legend: {'Enabled' if SHOW_GEOMETRY_LEGEND else 'Disabled'}")
     print(f"{'=' * 60}")
 
 

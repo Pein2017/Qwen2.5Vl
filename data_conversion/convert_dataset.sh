@@ -35,7 +35,7 @@ export MODELSCOPE_CACHE="/data3/Qwen2.5-VL-main/modelscope/hub"
 # Required paths - YOU MUST SET THESE
 INPUT_DIR="ds_v2"                    # e.g., "ds_v2" or "my_dataset"
 OUTPUT_DIR="data"                   # e.g., "data" or "/path/to/output"
-DATASET_NAME="ds_v2_full"                 # e.g., "experiment_1" or leave empty to auto-detect
+DATASET_NAME="ds_v2_bbu_bbu_shield"                 # e.g., "experiment_1" or leave empty to auto-detect
 
 # Optional configuration files - SET THESE IF YOU HAVE THEM
 HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" or leave empty
@@ -44,7 +44,7 @@ HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" o
 VAL_RATIO="0.1"                    # e.g., "0.1" for 10% validation split
 MAX_TEACHERS="10"                 # e.g., "10" for max teacher samples
 RESIZE="true"                       # "true" or "false" for image resizing
-OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
+OBJECT_TYPES="bbu bbu_shield"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
 
 # Optional settings
 LOG_LEVEL="INFO"                    # e.g., "INFO", "DEBUG", "WARNING", "ERROR" or leave empty

@@ -1,0 +1,99 @@
+# BBU Qwen2.5-VL Training Config
+
+# MODEL SETTINGS
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+model_size: "3B"
+model_max_length: 120000
+attn_implementation: "flash_attention_2"
+
+torch_dtype: "bfloat16"
+use_cache: false
+use_cache_inference: true
+model_hidden_size: 2048
+model_num_layers: 36
+model_num_attention_heads: 16
+model_vocab_size: 151665  
+# TRAINING SETTINGS
+num_train_epochs: 4
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 1
+learning_rate: 5e-6
+vision_lr: 5e-7
+merger_lr: 5e-5
+llm_lr: 5e-6
+
+adapter_lr: 0.0
+warmup_ratio: 0.1
+weight_decay: 0.0001
+
+lr_scheduler_type: "cosine"
+gradient_checkpointing: false
+bf16: true
+fp16: false
+use_flash_attention: true
+mixed_precision: "bf16"
+
+# DATA SETTINGS
+data_root: "data/ds_v2_bbu_bbu_shield"
+max_total_length: 12000
+num_teacher_samples: 1
+collator_type: "packed"
+teacher_ratio: 1  
+language: "chinese"
+max_dataset_size: 4
+
+# EVALUATION SETTINGS
+eval_strategy: "steps"
+eval_steps: 2
+save_strategy: "steps"
+save_steps: 4 # must >=1
+save_total_limit: 2
+save_on_each_node: false  # EFFICIENCY: Only rank 0 saves checkpoints
+# NOTE: Fast checkpoint mode is enabled by default (saves inference-ready checkpoints in 30s vs 200-400s)
+
+# BEST CHECKPOINT TRACKING
+load_best_model_at_end: true  # Enable automatic best checkpoint saving
+metric_for_best_model: "eval_loss"  # Track evaluation loss for best model
+greater_is_better: false  # Lower eval_loss is better
+
+# LOGGING SETTINGS
+logging_steps: 1
+logging_dir: "logs"
+report_to: "tensorboard"
+disable_tqdm: true
+verbose: false
+
+
+# COORDINATE TOKEN CONFIG
+coordinate_tokens_enabled: true
+max_coord_value: 1024
+coordinate_loss_weight: 0.1
+regular_loss_weight: 1.0
+
+# ESSENTIAL SETTINGS
+remove_unused_columns: false
+
+# DATALOADER PERFORMANCE
+dataloader_num_workers: 4
+pin_memory: true
+prefetch_factor: 2
+
+# OUTPUT SETTINGS
+output_dir: "output-7-30-debug"
+run_name: "7-30-use_coord-debug"
+tb_dir: "tb"
+
+# TEACHER-STUDENT LOSS WEIGHTS
+teacher_loss_weight: 0.3
+student_loss_weight: 1.0
+
+# VISION PROCESSING PARAMETERS
+patch_size: 14
+merge_size: 2
+temporal_patch_size: 2
+max_pixels: 401408  # 512 * 28 * 28 - controls Qwen2VL image processor pixel limit
+
+# TRAINING CONTROL FLAGS
+training_prompt_style: true
+use_consistent_prompts: true

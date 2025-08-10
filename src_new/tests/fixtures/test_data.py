@@ -143,8 +143,8 @@ def create_sample_batch(
         "input_ids": torch.randint(0, vocab_size, (batch_size, seq_len)),
         "attention_mask": torch.ones(batch_size, seq_len, dtype=torch.long),
         "labels": torch.randint(0, vocab_size, (batch_size, seq_len)),
-        "pixel_values": torch.randn(batch_size, 3, 224, 224),
-        "image_grid_thw": torch.tensor([[1, 224, 224]] * batch_size),
+        "pixel_values": torch.randn(batch_size * 4, 1024),
+        "image_grid_thw": torch.tensor([[1, 2, 2]] * batch_size),
     }
 
 
@@ -222,8 +222,8 @@ COLLATOR_TYPES = ["standard", "packed"]
 SPECIAL_TOKENS = {
     "obj_ref_start": "<|obj_ref_start|>",
     "obj_ref_end": "<|obj_ref_end|>",
-    "bbox_start": "<|bbox_start|>",
-    "bbox_end": "<|bbox_end|>",
+    "box_start": "<|box_start|>",
+    "box_end": "<|box_end|>",
     "quad_start": "<|quad_start|>",
     "quad_end": "<|quad_end|>",
     "line_start": "<|line_start|>",

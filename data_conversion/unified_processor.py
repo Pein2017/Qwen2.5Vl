@@ -294,8 +294,8 @@ class UnifiedProcessor:
             def get_sort_key(obj):
                 if "bbox_2d" in obj:
                     return (obj["bbox_2d"][1], obj["bbox_2d"][0])  # y, x
-                elif "square" in obj:
-                    return (obj["square"][1], obj["square"][0])  # y, x of first point
+                elif "quad" in obj:
+                    return (obj["quad"][1], obj["quad"][0])  # y, x of first point
                 elif "line" in obj:
                     return (obj["line"][1], obj["line"][0])  # y, x of first point
                 return (0, 0)  # fallback
@@ -398,11 +398,11 @@ class UnifiedProcessor:
         # Get any coordinate for dimension calculation
         if "bbox_2d" in first_obj:
             geometry_input = first_obj["bbox_2d"]
-        elif "square" in first_obj:
-            # Create bbox from square for dimension calculation
-            square = first_obj["square"]
-            x_coords = [square[i] for i in range(0, len(square), 2)]
-            y_coords = [square[i] for i in range(1, len(square), 2)]
+        elif "quad" in first_obj:
+            # Create bbox from quad for dimension calculation
+            quad = first_obj["quad"]
+            x_coords = [quad[i] for i in range(0, len(quad), 2)]
+            y_coords = [quad[i] for i in range(1, len(quad), 2)]
             geometry_input = [
                 min(x_coords),
                 min(y_coords),
@@ -445,9 +445,9 @@ class UnifiedProcessor:
                 )
                 updated_obj["bbox_2d"] = [int(round(c)) for c in transformed_coords]
 
-            elif "square" in obj:
-                # Transform square coordinates (8 coordinates: x1,y1,x2,y2,x3,y3,x4,y4)
-                coords = obj["square"]
+            elif "quad" in obj:
+                # Transform quad coordinates (8 coordinates: x1,y1,x2,y2,x3,y3,x4,y4)
+                coords = obj["quad"]
                 transformed_coords = []
                 for i in range(0, len(coords), 2):
                     if i + 1 < len(coords):
@@ -466,7 +466,7 @@ class UnifiedProcessor:
                                 int(round(transformed_point[1])),
                             ]
                         )
-                updated_obj["square"] = transformed_coords
+                updated_obj["quad"] = transformed_coords
 
             elif "line" in obj:
                 # Transform line coordinates (sequence of x,y pairs)
@@ -491,7 +491,11 @@ class UnifiedProcessor:
                         )
                 updated_obj["line"] = transformed_coords
 
-            updated_objects.append(updated_obj)
+            # Apply coordinate normalization after transformation
+            normalized_obj = CoordinateManager.normalize_object_coordinates(
+                updated_obj, final_width, final_height
+            )
+            updated_objects.append(normalized_obj)
 
         updated_sample = sample_data.copy()
         updated_sample["objects"] = updated_objects
@@ -917,15 +921,15 @@ class TeacherSelector:
         return min(1.0, covered_area / total_area)
 
     def _calculate_geometry_diversity(self, sample: Dict) -> int:
-        """Calculate geometry type diversity (bbox_2d, square, line)."""
+        """Calculate geometry type diversity (bbox_2d, quad, line)."""
         geometry_types = set()
         objects = sample.get("objects", [])
 
         for obj in objects:
             if "bbox_2d" in obj:
                 geometry_types.add("bbox_2d")
-            elif "square" in obj:
-                geometry_types.add("square")
+            elif "quad" in obj:
+                geometry_types.add("quad")
             elif "line" in obj:
                 geometry_types.add("line")
 

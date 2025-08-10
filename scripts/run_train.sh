@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# Unified BBU Training Launch Script
+# Unified Training Launch Script - Using src_new Architecture
 # Handles ALL environment variables and GPU/distributed configuration
 # Clean separation: Environment (bash) vs Training Parameters (YAML)
 # =============================================================================
@@ -18,8 +18,8 @@ export PYTHONPATH=/data3/Qwen2.5-VL-main
 PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
-CONFIG_NAME="bbu_v2"                   # Config to use: bbu_v2 | base_flat_det
-GPU_DEVICES="0,1,2,3,4,5,6,7"               # GPU devices (comma-separated)
+CONFIG_NAME="bbu_v2_use_coord"                   # Config to use: bbu_v2 
+GPU_DEVICES="2,3,4,5,6,7"               # GPU devices (comma-separated)
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Simplified: Single configuration system

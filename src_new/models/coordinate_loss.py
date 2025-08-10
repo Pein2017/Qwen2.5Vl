@@ -8,19 +8,20 @@ L1 loss for better coordinate regression performance.
 
 Mathematical Foundation:
     P(coord_value = v) = softmax(logits_v / temperature)
-    expected_coord = Σ(v * P(coord_value = v))  # v ∈ [0, 2048]
+    expected_coord = Σ(v * P(coord_value = v))  # v ∈ [0, MAX_COORD]
     coordinate_loss = L1(expected_coord, ground_truth_coord)
 """
 
-import logging
 from typing import Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 
+# Configure rank-aware logger
+from ..utils.rank_aware_logging import get_rank_aware_logger
 
-# Configure logger
-logger = logging.getLogger(__name__)
+
+logger = get_rank_aware_logger(__name__)
 
 
 class SoftExpectationCoordinateLoss:
@@ -39,6 +40,10 @@ class SoftExpectationCoordinateLoss:
     - Better convergence for coordinate prediction tasks
     """
 
+    # Class-level tracking for epoch-based warning logging
+    _last_warning_epoch = -1
+    _warning_logged_this_epoch = False
+
     def __init__(
         self,
         coord_start_id: int = 151667,
@@ -52,7 +57,7 @@ class SoftExpectationCoordinateLoss:
 
         Args:
             coord_start_id: First coordinate token ID (<|coord_0|>)
-            coord_end_id: Last coordinate token ID + 1 (<|coord_2048|> + 1)
+            coord_end_id: Last coordinate token ID + 1 (<|coord_MAX_COORD|> + 1)
             temperature: Softmax temperature for sharpness control
             numerical_stability: Enable numerical stability improvements
             device: Device for tensor operations
@@ -63,7 +68,7 @@ class SoftExpectationCoordinateLoss:
         self.numerical_stability = numerical_stability
         self.device = device
 
-        # Coordinate vocabulary size (2049 tokens: coord_0 to coord_2048)
+        # Coordinate vocabulary size (2049 tokens: coord_0 to coord_MAX_COORD)
         self.coord_vocab_size = coord_end_id - coord_start_id
 
         # Pre-compute coordinate value indices for efficiency
@@ -76,9 +81,21 @@ class SoftExpectationCoordinateLoss:
             f"temperature={temperature}"
         )
 
+    @classmethod
+    def update_epoch(cls, epoch: int):
+        """
+        Update the current epoch for warning logging control.
+
+        Args:
+            epoch: Current training epoch
+        """
+        if epoch != cls._last_warning_epoch:
+            cls._last_warning_epoch = epoch
+            cls._warning_logged_this_epoch = False
+
     def _get_coord_values(self, device: torch.device) -> torch.Tensor:
         """
-        Get coordinate value indices tensor [0, 1, 2, ..., 2048].
+        Get coordinate value indices tensor [0, 1, 2, ..., MAX_COORD].
 
         Args:
             device: Target device for tensor
@@ -197,33 +214,58 @@ class SoftExpectationCoordinateLoss:
                 f"expected coord_vocab_size {self.coord_vocab_size}"
             )
 
-        # Compute soft expectation values
-        expected_coords = self.compute_soft_expectation(coord_logits, temperature)
+        # Compute soft expectation values (this will be updated after filtering)
+        # We'll compute this after filtering valid positions
 
         # Extract ground truth coordinate values
         target_coord_ids = labels[coord_positions]
-        target_coords = (
-            target_coord_ids - self.coord_start_id
-        )  # Convert to [0, 2048] range
+
+        # Filter out positions where labels contain -100 (ignore tokens)
+        valid_mask = target_coord_ids != -100
+
+        if not valid_mask.any():
+            # No valid coordinate targets found - return zero loss
+            logger.debug("No valid coordinate targets found (all positions are -100)")
+            return torch.tensor(0.0, device=logits.device, requires_grad=True), {
+                "num_coord_tokens": 0,
+                "valid_coord_tokens": 0,
+                "avg_expected_coord": 0.0,
+                "avg_target_coord": 0.0,
+            }
+
+        # Filter to only valid positions
+        valid_coord_logits = coord_logits[valid_mask]
+        valid_target_coord_ids = target_coord_ids[valid_mask]
+
+        # Convert target token IDs to coordinate values [0, MAX_COORD] range
+        target_coords = valid_target_coord_ids - self.coord_start_id
 
         # Validate target coordinates are in valid range
         if torch.any(target_coords < 0) or torch.any(
             target_coords >= self.coord_vocab_size
         ):
-            logger.warning(
-                f"⚠️ Target coordinates out of range: "
-                f"min={target_coords.min().item()}, max={target_coords.max().item()}, "
-                f"expected_range=[0, {self.coord_vocab_size - 1}]"
-            )
+            # Only log warning once per epoch to reduce noise
+            if not self._warning_logged_this_epoch:
+                logger.warning(
+                    f"⚠️ Target coordinates out of range (epoch {self._last_warning_epoch}): "
+                    f"min={target_coords.min().item()}, max={target_coords.max().item()}, "
+                    f"expected_range=[0, {self.coord_vocab_size - 1}] "
+                    f"(further warnings suppressed for this epoch)"
+                )
+                self._warning_logged_this_epoch = True
             # Clamp to valid range
             target_coords = torch.clamp(target_coords, 0, self.coord_vocab_size - 1)
+
+        # Compute soft expectation values for valid positions only
+        expected_coords = self.compute_soft_expectation(valid_coord_logits, temperature)
 
         # Compute L1 loss between expected and target coordinates
         coordinate_loss = F.l1_loss(expected_coords, target_coords.float())
 
         # Prepare loss information for logging
         loss_info = {
-            "num_coord_tokens": num_coord_tokens,
+            "num_coord_tokens": len(coord_positions[0]),
+            "valid_coord_tokens": valid_mask.sum().item(),
             "coordinate_l1_loss": coordinate_loss.item(),
             "mean_expected_coord": expected_coords.mean().item(),
             "mean_target_coord": target_coords.float().mean().item(),
@@ -231,7 +273,8 @@ class SoftExpectationCoordinateLoss:
 
         logger.debug(
             f"🎯 Soft expectation coordinate loss: {coordinate_loss.item():.6f} "
-            f"(tokens: {num_coord_tokens}, "
+            f"(total_tokens: {loss_info['num_coord_tokens']}, "
+            f"valid_tokens: {loss_info['valid_coord_tokens']}, "
             f"expected: {loss_info['mean_expected_coord']:.2f}, "
             f"target: {loss_info['mean_target_coord']:.2f})"
         )
@@ -280,10 +323,24 @@ def create_coordinate_loss_from_token_processor(
     # Get actual coordinate token range from token processor
     coord_start_id, coord_end_id = token_processor.get_coordinate_token_range(tokenizer)
 
+    # OPTIMIZATION: Support lazy loading - allow coordinate tokens to be added later
     if coord_start_id == 0 and coord_end_id == 0:
-        raise ValueError(
-            "No coordinate tokens found in tokenizer. Ensure coordinate tokens are properly added to the tokenizer vocabulary."
-        )
+        # Check if coordinate tokens are enabled in config
+        if (
+            hasattr(token_processor, "config")
+            and token_processor.config.coordinate_tokens_enabled
+        ):
+            logger.warning(
+                "Coordinate tokens not found in tokenizer yet. "
+                "This is expected with lazy loading - tokens will be validated during training."
+            )
+            # Use placeholder range that will be updated when tokens are actually added
+            coord_start_id = len(tokenizer.get_vocab())  # Start after current vocab
+            coord_end_id = coord_start_id + token_processor.config.max_coord_value + 1
+        else:
+            raise ValueError(
+                "No coordinate tokens found in tokenizer. Ensure coordinate tokens are properly added to the tokenizer vocabulary."
+            )
 
     # Adjust end_id to be exclusive (add 1)
     coord_end_id = coord_end_id + 1

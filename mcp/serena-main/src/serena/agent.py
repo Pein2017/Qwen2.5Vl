@@ -17,17 +17,26 @@ from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
 from sensai.util import logging
 from sensai.util.logging import LogTime
+from solidlsp import SolidLanguageServer
 
 from serena import serena_version
 from serena.analytics import RegisteredTokenCountEstimator, ToolUsageStats
-from serena.config.context_mode import RegisteredContext, SerenaAgentContext, SerenaAgentMode
-from serena.config.serena_config import SerenaConfig, ToolInclusionDefinition, ToolSet, get_serena_managed_in_project_dir
+from serena.config.context_mode import (
+    RegisteredContext,
+    SerenaAgentContext,
+    SerenaAgentMode,
+)
+from serena.config.serena_config import (
+    SerenaConfig,
+    ToolInclusionDefinition,
+    ToolSet,
+)
 from serena.dashboard import SerenaDashboardAPI
 from serena.project import Project
 from serena.prompt_factory import SerenaPromptFactory
 from serena.tools import ActivateProjectTool, Tool, ToolRegistry
 from serena.util.logging import MemoryLogHandler
-from solidlsp import SolidLanguageServer
+
 
 if TYPE_CHECKING:
     from serena.gui_log_viewer import GuiLogViewer
@@ -60,7 +69,7 @@ class LinesRead:
 
 class MemoriesManager:
     def __init__(self, project_root: str):
-        self._memory_dir = Path(get_serena_managed_in_project_dir(project_root)) / "memories"
+        self._memory_dir = Path(project_root) / ".serena" / "memories"
         self._memory_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_memory_file_path(self, name: str) -> Path:
@@ -83,7 +92,9 @@ class MemoriesManager:
         return f"Memory {name} written."
 
     def list_memories(self) -> list[str]:
-        return [f.name.replace(".md", "") for f in self._memory_dir.iterdir() if f.is_file()]
+        return [
+            f.name.replace(".md", "") for f in self._memory_dir.iterdir() if f.is_file()
+        ]
 
     def delete_memory(self, name: str) -> str:
         memory_file_path = self._get_memory_file_path(name)
@@ -139,7 +150,11 @@ class SerenaAgent:
                 # which uv used as a base, unfortunately)
                 from serena.gui_log_viewer import GuiLogViewer
 
-                self._gui_log_viewer = GuiLogViewer("dashboard", title="Serena Logs", memory_log_handler=get_memory_log_handler())
+                self._gui_log_viewer = GuiLogViewer(
+                    "dashboard",
+                    title="Serena Logs",
+                    memory_log_handler=get_memory_log_handler(),
+                )
                 self._gui_log_viewer.start()
 
         # set the agent context
@@ -148,7 +163,10 @@ class SerenaAgent:
         self._context = context
 
         # instantiate all tool classes
-        self._all_tools: dict[type[Tool], Tool] = {tool_class: tool_class(self) for tool_class in ToolRegistry().get_all_tool_classes()}
+        self._all_tools: dict[type[Tool], Tool] = {
+            tool_class: tool_class(self)
+            for tool_class in ToolRegistry().get_all_tool_classes()
+        }
         tool_names = [tool.get_name_from_cls() for tool in self._all_tools.values()]
 
         # If GUI log window is enabled, set the tool names for highlighting
@@ -157,45 +175,72 @@ class SerenaAgent:
 
         self._tool_usage_stats: ToolUsageStats | None = None
         if self.serena_config.record_tool_usage_stats:
-            token_count_estimator = RegisteredTokenCountEstimator[self.serena_config.token_count_estimator]
-            log.info(f"Tool usage statistics recording is enabled with token count estimator: {token_count_estimator.name}.")
+            token_count_estimator = RegisteredTokenCountEstimator[
+                self.serena_config.token_count_estimator
+            ]
+            log.info(
+                f"Tool usage statistics recording is enabled with token count estimator: {token_count_estimator.name}."
+            )
             self._tool_usage_stats = ToolUsageStats(token_count_estimator)
 
         # start the dashboard (web frontend), registering its log handler
         if self.serena_config.web_dashboard:
             self._dashboard_thread, port = SerenaDashboardAPI(
-                get_memory_log_handler(), tool_names, tool_usage_stats=self._tool_usage_stats
+                get_memory_log_handler(),
+                tool_names,
+                tool_usage_stats=self._tool_usage_stats,
             ).run_in_thread()
             dashboard_url = f"http://127.0.0.1:{port}/dashboard/index.html"
             log.info("Serena web dashboard started at %s", dashboard_url)
             if self.serena_config.web_dashboard_open_on_launch:
                 # open the dashboard URL in the default web browser (using a separate process to control
                 # output redirection)
-                process = multiprocessing.Process(target=self._open_dashboard, args=(dashboard_url,))
+                process = multiprocessing.Process(
+                    target=self._open_dashboard, args=(dashboard_url,)
+                )
                 process.start()
                 process.join(timeout=1)
 
         # log fundamental information
-        log.info(f"Starting Serena server (version={serena_version()}, process id={os.getpid()}, parent process id={os.getppid()})")
+        log.info(
+            f"Starting Serena server (version={serena_version()}, process id={os.getpid()}, parent process id={os.getppid()})"
+        )
         log.info("Configuration file: %s", self.serena_config.config_file_path)
-        log.info("Available projects: {}".format(", ".join(self.serena_config.project_names)))
-        log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}")
+        log.info(
+            "Available projects: {}".format(", ".join(self.serena_config.project_names))
+        )
+        log.info(
+            f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}"
+        )
 
         # determine the base toolset defining the set of exposed tools (which e.g. the MCP shall see),
         # limited by the Serena config, the context (which is fixed for the session) and JetBrains mode
-        tool_inclusion_definitions: list[ToolInclusionDefinition] = [self.serena_config, self._context]
+        tool_inclusion_definitions: list[ToolInclusionDefinition] = [
+            self.serena_config,
+            self._context,
+        ]
         if self._context.name == RegisteredContext.IDE_ASSISTANT.value:
-            tool_inclusion_definitions.extend(self._ide_context_tool_inclusion_definitions(project))
+            tool_inclusion_definitions.extend(
+                self._ide_context_tool_inclusion_definitions(project)
+            )
         if self.serena_config.jetbrains:
-            tool_inclusion_definitions.append(SerenaAgentMode.from_name_internal("jetbrains"))
+            tool_inclusion_definitions.append(
+                SerenaAgentMode.from_name_internal("jetbrains")
+            )
 
         self._base_tool_set = ToolSet.default().apply(*tool_inclusion_definitions)
-        self._exposed_tools = {tc: t for tc, t in self._all_tools.items() if self._base_tool_set.includes_name(t.get_name())}
+        self._exposed_tools = {
+            tc: t
+            for tc, t in self._all_tools.items()
+            if self._base_tool_set.includes_name(t.get_name())
+        }
         log.info(f"Number of exposed tools: {len(self._exposed_tools)}")
 
         # create executor for starting the language server and running tools in another thread
         # This executor is used to achieve linear task execution, so it is important to use a single-threaded executor.
-        self._task_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="SerenaAgentExecutor")
+        self._task_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="SerenaAgentExecutor"
+        )
         self._task_executor_lock = threading.Lock()
         self._task_executor_task_index = 1
 
@@ -223,9 +268,13 @@ class SerenaAgent:
             try:
                 self.activate_project_from_path_or_name(project)
             except Exception as e:
-                log.error(f"Error activating project '{project}' at startup: {e}", exc_info=e)
+                log.error(
+                    f"Error activating project '{project}' at startup: {e}", exc_info=e
+                )
 
-    def _ide_context_tool_inclusion_definitions(self, project_root_or_name: str | None) -> list[ToolInclusionDefinition]:
+    def _ide_context_tool_inclusion_definitions(
+        self, project_root_or_name: str | None
+    ) -> list[ToolInclusionDefinition]:
         """
         In the IDE assistant context, the agent is assumed to work on a single project, and we thus
         want to apply that project's tool exclusions/inclusions from the get-go, limiting the set
@@ -240,13 +289,21 @@ class SerenaAgent:
             # Note: Auto-generation is disabled, because the result must be returned instantaneously
             #   (project generation could take too much time), so as not to delay MCP server startup
             #   and provide responses to the client immediately.
-            project = self.load_project_from_path_or_name(project_root_or_name, autogenerate=False)
+            project = self.load_project_from_path_or_name(
+                project_root_or_name, autogenerate=False
+            )
             if project is not None:
-                tool_inclusion_definitions.append(ToolInclusionDefinition(excluded_tools=[ActivateProjectTool.get_name_from_cls()]))
+                tool_inclusion_definitions.append(
+                    ToolInclusionDefinition(
+                        excluded_tools=[ActivateProjectTool.get_name_from_cls()]
+                    )
+                )
                 tool_inclusion_definitions.append(project.project_config)
         return tool_inclusion_definitions
 
-    def record_tool_usage_if_enabled(self, input_kwargs: dict, tool_result: str | dict, tool: Tool) -> None:
+    def record_tool_usage_if_enabled(
+        self, input_kwargs: dict, tool_result: str | dict, tool: Tool
+    ) -> None:
         """
         Record the usage of a tool with the given input and output strings if tool usage statistics recording is enabled.
         """
@@ -257,7 +314,9 @@ class SerenaAgent:
             log.debug(f"Recording tool usage for tool '{tool_name}'")
             self._tool_usage_stats.record_tool_usage(tool_name, input_str, output_str)
         else:
-            log.debug(f"Tool usage statistics recording is disabled, not recording usage of '{tool_name}'.")
+            log.debug(
+                f"Tool usage statistics recording is disabled, not recording usage of '{tool_name}'."
+            )
 
     @staticmethod
     def _open_dashboard(url: str) -> None:
@@ -347,7 +406,9 @@ class SerenaAgent:
             if tool_set.includes_name(tool_instance.get_name())
         }
 
-        log.info(f"Active tools ({len(self._active_tools)}): {', '.join(self.get_active_tool_names())}")
+        log.info(
+            f"Active tools ({len(self._active_tools)}): {', '.join(self.get_active_tool_names())}"
+        )
 
     def issue_task(self, task: Callable[[], Any], name: str | None = None) -> Future:
         """
@@ -359,7 +420,9 @@ class SerenaAgent:
         :return: a Future object representing the execution of the task
         """
         with self._task_executor_lock:
-            task_name = f"Task-{self._task_executor_task_index}[{name or task.__name__}]"
+            task_name = (
+                f"Task-{self._task_executor_task_index}[{name or task.__name__}]"
+            )
             self._task_executor_task_index += 1
 
             def task_execution_wrapper() -> Any:
@@ -408,7 +471,9 @@ class SerenaAgent:
         if self._project_activation_callback is not None:
             self._project_activation_callback()
 
-    def load_project_from_path_or_name(self, project_root_or_name: str, autogenerate: bool) -> Project | None:
+    def load_project_from_path_or_name(
+        self, project_root_or_name: str, autogenerate: bool
+    ) -> Project | None:
         """
         Get a project instance from a path or a name.
 
@@ -417,12 +482,20 @@ class SerenaAgent:
             which does not yet contain a Serena project configuration file
         :return: the project instance if it was found/could be created, None otherwise
         """
-        project_instance: Project | None = self.serena_config.get_project(project_root_or_name)
+        project_instance: Project | None = self.serena_config.get_project(
+            project_root_or_name
+        )
         if project_instance is not None:
-            log.info(f"Found registered project '{project_instance.project_name}' at path {project_instance.project_root}")
+            log.info(
+                f"Found registered project '{project_instance.project_name}' at path {project_instance.project_root}"
+            )
         elif autogenerate and os.path.isdir(project_root_or_name):
-            project_instance = self.serena_config.add_project_from_path(project_root_or_name)
-            log.info(f"Added new project {project_instance.project_name} for path {project_instance.project_root}")
+            project_instance = self.serena_config.add_project_from_path(
+                project_root_or_name
+            )
+            log.info(
+                f"Added new project {project_instance.project_name} for path {project_instance.project_root}"
+            )
         return project_instance
 
     def activate_project_from_path_or_name(self, project_root_or_name: str) -> Project:
@@ -435,7 +508,9 @@ class SerenaAgent:
         :return: a tuple of the project instance and a Boolean indicating whether the project was newly
             created
         """
-        project_instance: Project | None = self.load_project_from_path_or_name(project_root_or_name, autogenerate=True)
+        project_instance: Project | None = self.load_project_from_path_or_name(
+            project_root_or_name, autogenerate=True
+        )
         if project_instance is None:
             raise ProjectNotFoundError(
                 f"Project '{project_root_or_name}' not found: Not a valid project name or directory. "
@@ -454,7 +529,9 @@ class SerenaAgent:
         """
         :return: the list of names of the active tools for the current project
         """
-        return sorted([tool.get_name_from_cls() for tool in self.get_active_tool_classes()])
+        return sorted(
+            [tool.get_name_from_cls() for tool in self.get_active_tool_classes()]
+        )
 
     def tool_is_active(self, tool_class: type["Tool"] | str) -> bool:
         """
@@ -477,7 +554,11 @@ class SerenaAgent:
             result_str += f"Active project: {self._active_project.project_name}\n"
         else:
             result_str += "No active project\n"
-        result_str += "Available projects:\n" + "\n".join(list(self.serena_config.project_names)) + "\n"
+        result_str += (
+            "Available projects:\n"
+            + "\n".join(list(self.serena_config.project_names))
+            + "\n"
+        )
         result_str += f"Active context: {self._context.name}\n"
 
         # Active modes
@@ -486,9 +567,14 @@ class SerenaAgent:
 
         # Available but not active modes
         all_available_modes = SerenaAgentMode.list_registered_mode_names()
-        inactive_modes = [mode for mode in all_available_modes if mode not in active_mode_names]
+        inactive_modes = [
+            mode for mode in all_available_modes if mode not in active_mode_names
+        ]
         if inactive_modes:
-            result_str += "Available but not active modes: {}\n".format(", ".join(inactive_modes)) + "\n"
+            result_str += (
+                "Available but not active modes: {}\n".format(", ".join(inactive_modes))
+                + "\n"
+            )
 
         # Active tools
         result_str += "Active tools (after all exclusions from the project, context, and modes):\n"
@@ -500,8 +586,12 @@ class SerenaAgent:
             result_str += "  " + ", ".join(chunk) + "\n"
 
         # Available but not active tools
-        all_tool_names = sorted([tool.get_name_from_cls() for tool in self._all_tools.values()])
-        inactive_tool_names = [tool for tool in all_tool_names if tool not in active_tool_names]
+        all_tool_names = sorted(
+            [tool.get_name_from_cls() for tool in self._all_tools.values()]
+        )
+        inactive_tool_names = [
+            tool for tool in all_tool_names if tool not in active_tool_names
+        ]
         if inactive_tool_names:
             result_str += "Available but not active tools:\n"
             for i in range(0, len(inactive_tool_names), chunk_size):
@@ -522,13 +612,19 @@ class SerenaAgent:
             ls_timeout = None
         else:
             if tool_timeout < 10:
-                raise ValueError(f"Tool timeout must be at least 10 seconds, but is {tool_timeout} seconds")
-            ls_timeout = tool_timeout - 5  # the LS timeout is for a single call, it should be smaller than the tool timeout
+                raise ValueError(
+                    f"Tool timeout must be at least 10 seconds, but is {tool_timeout} seconds"
+                )
+            ls_timeout = (
+                tool_timeout - 5
+            )  # the LS timeout is for a single call, it should be smaller than the tool timeout
 
         # stop the language server if it is running
         if self.is_language_server_running():
             assert self.language_server is not None
-            log.info(f"Stopping the current language server at {self.language_server.repository_root_path} ...")
+            log.info(
+                f"Stopping the current language server at {self.language_server.repository_root_path} ..."
+            )
             self.language_server.stop()
             self.language_server = None
 
@@ -539,7 +635,9 @@ class SerenaAgent:
             ls_timeout=ls_timeout,
             trace_lsp_communication=self.serena_config.trace_lsp_communication,
         )
-        log.info(f"Starting the language server for {self._active_project.project_name}")
+        log.info(
+            f"Starting the language server for {self._active_project.project_name}"
+        )
         self.language_server.start()
         if not self.language_server.is_running():
             raise RuntimeError(

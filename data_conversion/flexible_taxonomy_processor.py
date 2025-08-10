@@ -37,7 +37,7 @@ class AnnotationSample:
     """Represents a processed annotation sample with hierarchical information."""
 
     object_type: str
-    geometry_format: str  # bbox_2d, square, line
+    geometry_format: str  # bbox_2d, quad, line
     coordinates: List[float]
     grouped_attributes: Dict[str, Dict[str, str]]  # group -> attribute -> value
     description: str
@@ -169,19 +169,17 @@ class FlexibleTaxonomyProcessor:
                     line_coords.extend([int(round(coord[0])), int(round(coord[1]))])
             return "line", line_coords
 
-        elif geometry_type == "Square":
-            # Extract square coordinates (first 4 points)
+        elif geometry_type == "Quad":
+            # Extract quad coordinates (first 4 points)
             if coordinates and isinstance(coordinates[0], list):
                 points = coordinates[0]
-                square_coords = []
+                quad_coords = []
                 for point in points[:4]:
                     if isinstance(point, list) and len(point) >= 2:
-                        square_coords.extend(
-                            [int(round(point[0])), int(round(point[1]))]
-                        )
+                        quad_coords.extend([int(round(point[0])), int(round(point[1]))])
 
-                if len(square_coords) == 8:  # Valid square
-                    return "square", square_coords
+                if len(quad_coords) == 8:  # Valid quad
+                    return "quad", quad_coords
 
         # ExtentPolygon -> bbox_2d
         return "bbox_2d", bbox
@@ -416,7 +414,7 @@ class FlexibleTaxonomyProcessor:
             return True  # No constraints defined
 
         # Map geometry formats to constraint names
-        geometry_mapping = {"line": "line", "bbox_2d": "bbox_2d", "square": "square"}
+        geometry_mapping = {"line": "line", "bbox_2d": "bbox_2d", "quad": "quad"}
 
         constraint_name = geometry_mapping.get(geometry_format, geometry_format)
         return constraint_name in allowed_geometries
@@ -522,7 +520,7 @@ class HierarchicalProcessor:
         Returns objects in format:
         [
             {'bbox_2d': [x1,y1,x2,y2], 'desc': '...'},
-            {'square': [x1,y1,x2,y2,x3,y3,x4,y4], 'desc': '...'},
+            {'quad': [x1,y1,x2,y2,x3,y3,x4,y4], 'desc': '...'},
             {'line': [x1,y1,x2,y2,...], 'desc': '...'}
         ]
         """

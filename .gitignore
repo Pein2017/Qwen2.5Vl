@@ -1,38 +1,71 @@
-# ─ 1. 先屏蔽一切 ───────────────────────────
+# Claude Code workspace ignore file
+# Ignore everything first
 *
 
-# ─ 2. 允许遍历所有目录（必要，否则 Git 不会深挖） ─
+# Allow directory traversal
 !*/
 
-# ─ 3. 必需元文件（根级） ───────────────────
-!.gitignore
-!.gitattributes
-!.editorconfig
-!.pre-commit-config.yaml
-!*.yaml
-!ds/ds_v2_full/*.jsonl
+# Allow only these specific directories and their contents
+!data_conversion/
+!data_conversion/**
 !docs/
-
-# ─ 4. 允许的代码 / 文档类型（任何深度） ──────
-!*.py
-!*.sh
-!*.md
-!run.log
+!docs/**
+!eval/
+!eval/**
+!configs/
+!configs/**
+!data/
+!data/**
+!src/
+!src/**
+!scripts/
+!scripts/**
 !tests/
+!tests/**
+!src_new/
+!src_new/**
+!run_new.log
+!vis_tools/
+!vis_tools/**
+!todo/
+!todo/**
 
+# Allow essential root files
+!.gitignore
+!CLAUDE.md
+!README.md
 
-# ─ 5. CI / 构建脚本等（可按需删减） ─────────
-!pyproject.toml
-!requirements*.txt
-      
-
-
-# ─ 6. 永久黑名单（编译文件、缓存、系统垃圾） ─
-**/__pycache__/
-*.py[cod]
-*.so
-*.pyd
-.DS_Store
-*.tmp
-*.swp
-Thumbs.db
+# Ignore all other directories and files at root level except the allowed ones
+/.claude
+/.cursor
+/.git
+/.kiro
+/.pytest_cache
+/.ruff_cache
+/.serena
+/.swarm
+/.trae
+/.vscode
+/data_analysis
+/data_templates
+/demo
+/ds_v1
+/ds_v2
+/examples
+/exp_det_coordinates
+/good_results
+/important_demo
+/legacy
+/logs
+/model_cache
+/output*
+/output-*
+/raw_ds
+/tasks
+/tb
+/temporal
+/test_output
+/专利
+**/*.jpeg
+**/*.jpg
+**/*.png

@@ -20,17 +20,23 @@ if TYPE_CHECKING:
 
 
 def get_collator_logger() -> logging.Logger:
-    """Get logger for collator module."""
-    logger = logging.getLogger("collator")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    return logger
+    """Get rank-aware logger for collator module."""
+    try:
+        from ..utils.rank_aware_logging import get_rank_aware_logger
+
+        return get_rank_aware_logger("collator")
+    except ImportError:
+        # Fallback to standard logging
+        logger = logging.getLogger("collator")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
 
 
 logger = get_collator_logger()
@@ -188,6 +194,12 @@ class StandardDataCollator:
             "labels": padded_labels,
         }
 
+        # Convert attention_mask to boolean and make contiguous (FlashAttention 2 friendly)
+        if isinstance(batch["attention_mask"], torch.Tensor):
+            batch["attention_mask"] = (
+                batch["attention_mask"].to(torch.bool).contiguous()
+            )
+
         # Add image features if available
         if pixel_values is not None:
             batch["pixel_values"] = pixel_values
@@ -208,6 +220,30 @@ class StandardDataCollator:
             logger.debug(
                 f"Added student_assistant_spans to batch: {len(student_assistant_spans)} samples"
             )
+
+        # PRE-BATCH VALIDATION: Ensure multimodal tensors are consistent to avoid CUDA OOB later
+        try:
+            if "pixel_values" in batch and "image_grid_thw" in batch:
+                pv = batch["pixel_values"]
+                grid = batch["image_grid_thw"]
+                # Expect flattened patches for Qwen2.5-VL
+                if pv.dim() not in (2,):
+                    raise ValueError(
+                        f"Standard collator: pixel_values must be flattened [num_patches, patch_features], got {pv.shape}"
+                    )
+                if grid.dim() != 2 or grid.shape[1] != 3:
+                    raise ValueError(
+                        f"Standard collator: image_grid_thw must be [num_images, 3], got {grid.shape}"
+                    )
+                expected = int((grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item())
+                actual = int(pv.shape[0])
+                if expected != actual:
+                    raise ValueError(
+                        f"Standard collator: pixel_values rows ({actual}) != sum(t*h*w) ({expected}) from image_grid_thw"
+                    )
+        except Exception as e:
+            logger.error(f"❌ Multimodal validation failure (standard): {e}")
+            raise
 
         return batch
 
@@ -328,12 +364,14 @@ class PackedDataCollator:
                     f"got shape {pv.shape}."
                 )
 
-        # For Qwen2.5-VL, concatenate patches along the first dimension
+        # For Qwen2.5-VL, we need to handle batching correctly
+        # The model expects pixel_values to be properly batched
         if pixel_values_list and pixel_values_list[0].dim() == 2:
-            # Qwen2.5-VL patch format: concatenate patches
+            # Qwen2.5-VL patch format: concatenate patches from all samples
+            # This creates a single tensor with all patches from all images in the batch
             pixel_values = torch.cat(
                 pixel_values_list, dim=0
-            )  # [total_patches, patch_features]
+            )  # [total_patches_in_batch, patch_features]
         else:
             # Standard image format: stack images
             pixel_values = torch.stack(
@@ -360,6 +398,12 @@ class PackedDataCollator:
             "labels": padded_labels,
             "pixel_values": pixel_values,
         }
+
+        # Convert attention_mask to boolean and make contiguous (FlashAttention 2 friendly)
+        if isinstance(batch["attention_mask"], torch.Tensor):
+            batch["attention_mask"] = (
+                batch["attention_mask"].to(torch.bool).contiguous()
+            )
 
         # CRITICAL FIX: Handle image_grid_thw correctly
         # The issue: image_grid_thw from processor has shape [1, 3]
@@ -429,6 +473,30 @@ class PackedDataCollator:
                 f"Added student_assistant_spans to batch: {len(student_assistant_spans)} samples"
             )
 
+        # PRE-BATCH VALIDATION: Ensure multimodal tensors are consistent to avoid CUDA OOB later
+        try:
+            if "pixel_values" in batch and "image_grid_thw" in batch:
+                pv = batch["pixel_values"]
+                grid = batch["image_grid_thw"]
+                # Expect flattened patches for Qwen2.5-VL here as well
+                if pv.dim() not in (2,):
+                    raise ValueError(
+                        f"Packed collator: pixel_values must be flattened [total_patches, patch_features], got {pv.shape}"
+                    )
+                if grid.dim() != 2 or grid.shape[1] != 3:
+                    raise ValueError(
+                        f"Packed collator: image_grid_thw must be [num_images, 3], got {grid.shape}"
+                    )
+                expected = int((grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item())
+                actual = int(pv.shape[0])
+                if expected != actual:
+                    raise ValueError(
+                        f"Packed collator: pixel_values rows ({actual}) != sum(t*h*w) ({expected}) from image_grid_thw"
+                    )
+        except Exception as e:
+            logger.error(f"❌ Multimodal validation failure (packed): {e}")
+            raise
+
         return batch
 
     def _collate_packed(
@@ -465,6 +533,12 @@ class PackedDataCollator:
             "attention_mask": packed_attention_mask,
             "labels": packed_labels,
         }
+
+        # Convert attention_mask to boolean and make contiguous (FlashAttention 2 friendly)
+        if isinstance(batch["attention_mask"], torch.Tensor):
+            batch["attention_mask"] = (
+                batch["attention_mask"].to(torch.bool).contiguous()
+            )
 
         return batch
 
@@ -513,12 +587,19 @@ class PackedDataCollator:
         Pad sequences to the same length.
 
         Args:
-            sequences: List of sequences
+            sequences: List of sequences (can be 1D or 2D with batch dimension)
             pad_value: Value to use for padding
 
         Returns:
             Padded tensor
         """
+        if not sequences:
+            raise ValueError("Cannot pad empty sequence list")
+
+        # Handle 2D tensors with batch dimension [1, seq_len] -> [seq_len]
+        if sequences[0].dim() == 2 and sequences[0].size(0) == 1:
+            sequences = [seq.squeeze(0) for seq in sequences]
+
         # Get sequence lengths
         lengths = [seq.size(0) for seq in sequences]
         max_len = max(lengths)

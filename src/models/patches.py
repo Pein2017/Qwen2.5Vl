@@ -181,7 +181,9 @@ def safe_visual_forward(original_forward):
                 logger.debug(
                     f"🔧 Moving hidden_states from {hidden_states.device} to {target_device}"
                 )
-                hidden_states = hidden_states.to(device=target_device, non_blocking=True)
+                hidden_states = hidden_states.to(
+                    device=target_device, non_blocking=True
+                )
 
             if torch.is_tensor(grid_thw) and grid_thw.device != target_device:
                 logger.debug(
@@ -386,7 +388,7 @@ def apply_comprehensive_qwen25_fixes():
             setattr(
                 qwen25_modeling.Qwen2_5_VisionTransformerPretrainedModel,
                 "forward",
-                safe_visual_forward(original_forward)
+                safe_visual_forward(original_forward),
             )
             logger.info("✅ Safe visual forward patch applied for generation")
         else:

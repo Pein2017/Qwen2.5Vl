@@ -33,8 +33,8 @@ class MockTokenizer:
             # Geometry tokens already in Qwen2.5-VL pretrained vocabulary
             "<|obj_ref_start|>": 151646,
             "<|obj_ref_end|>": 151647,
-            "<|bbox_start|>": 151648,
-            "<|bbox_end|>": 151649,
+            "<|box_start|>": 151648,
+            "<|box_end|>": 151649,
             "<|quad_start|>": 151650,
             "<|quad_end|>": 151651,
             # NEW: Line tokens that need to be added (only 2 tokens)
@@ -49,6 +49,26 @@ class MockTokenizer:
         for i in range(2049):  # 0 to 2048 inclusive = 2049 tokens
             token = f"<|coord_{i}|>"
             self.coordinate_tokens[token] = 151667 + i  # Start after line tokens
+
+        # Create a Mock for decode so tests can set side_effect
+        self.decode = Mock(side_effect=self._decode_impl)
+
+    def _decode_impl(self, token_ids: List[int], **kwargs) -> str:
+        """Mock decoding implementation used by the decode Mock."""
+        if not token_ids:
+            return ""
+
+        # Check for special tokens
+        for token, token_id in self.special_tokens.items():
+            if token_id in token_ids:
+                return token
+
+        # Check for coordinate tokens
+        for token, token_id in self.coordinate_tokens.items():
+            if token_id in token_ids:
+                return token
+
+        return f"decoded_text_{len(token_ids)}_tokens"
 
     def encode(self, text: str, **kwargs) -> List[int]:
         """Mock encoding that returns reasonable token ids."""
@@ -147,7 +167,6 @@ class MockTokenizer:
     def __call__(self, text: str, **kwargs) -> Dict[str, torch.Tensor]:
         """Make tokenizer callable for HuggingFace compatibility."""
         # Extract parameters
-        padding = kwargs.get("padding", False)
         truncation = kwargs.get("truncation", False)
         max_length = kwargs.get("max_length", 512)
         return_tensors = kwargs.get("return_tensors", None)
@@ -189,14 +208,29 @@ class MockImageProcessor:
             images = [images]
 
         batch_size = len(images)
+        # Use a tiny grid per image [[1, 2, 2]] -> 4 patches per image
+        grid_per_image = torch.tensor([1, 2, 2], dtype=torch.long)
+        image_grid_thw = torch.stack([grid_per_image for _ in range(batch_size)])
+        num_patches = int(
+            (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2])
+            .sum()
+            .item()
+        )
+        hidden = 1024
         return {
-            "pixel_values": torch.randn(batch_size, 3, 224, 224),
-            "image_grid_thw": torch.tensor([[1, 224, 224]] * batch_size),
+            "pixel_values": torch.randn(num_patches, hidden),
+            "image_grid_thw": image_grid_thw,
         }
 
     def __call__(self, images, **kwargs) -> Dict[str, torch.Tensor]:
         """Make the processor callable (same as preprocess)."""
         return self.preprocess(images, **kwargs)
+
+
+class MockEmbeddings:
+    def __init__(self, weight: torch.Tensor):
+        self.weight = weight
+        self.num_embeddings = weight.shape[0]
 
 
 class MockModel:
@@ -219,6 +253,9 @@ class MockModel:
 
         self.training = True
         self.device = torch.device("cpu")
+
+    def get_input_embeddings(self):
+        return MockEmbeddings(self.embed_tokens.weight)
 
     def forward(self, **kwargs) -> Mock:
         """Mock forward pass."""
@@ -364,6 +401,16 @@ class MockDataCollator:
         batch_size = len(features)
         max_length = 100
 
+        # Build minimal valid image tensors for Qwen2.5-VL
+        grid_per_image = torch.tensor([1, 2, 2], dtype=torch.long)
+        image_grid_thw = torch.stack([grid_per_image for _ in range(batch_size)])
+        num_patches = int(
+            (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2])
+            .sum()
+            .item()
+        )
+        hidden = 1024
+
         return {
             "input_ids": torch.randint(
                 0, self.tokenizer.vocab_size, (batch_size, max_length)
@@ -372,8 +419,8 @@ class MockDataCollator:
             "labels": torch.randint(
                 0, self.tokenizer.vocab_size, (batch_size, max_length)
             ),
-            "pixel_values": torch.randn(batch_size, 3, 224, 224),
-            "image_grid_thw": torch.tensor([[1, 224, 224]] * batch_size),
+            "pixel_values": torch.randn(num_patches, hidden),
+            "image_grid_thw": image_grid_thw,
         }
 
 
@@ -385,7 +432,10 @@ def create_mock_tokenizer(vocab_size: int = 151665) -> MockTokenizer:
 
 def create_mock_model(vocab_size: int = 151665, hidden_size: int = 2048) -> MockModel:
     """Create a mock model with specified parameters."""
-    return MockModel(vocab_size, hidden_size)
+    model = MockModel(vocab_size, hidden_size)
+    # Override generate with an instance-level Mock to allow .side_effect in tests
+    model.generate = Mock(return_value=torch.tensor([[1, 2, 3]]))
+    return model
 
 
 def create_mock_trainer(model=None, **kwargs) -> MockTrainer:

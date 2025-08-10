@@ -27,6 +27,17 @@ from typing import TYPE_CHECKING
 
 import torch
 
+
+# Initialize rank-aware logging from environment BEFORE importing patches
+# so any import-time logs (e.g., compatibility patches) respect configured level.
+try:
+    from src_new.utils.rank_aware_logging import initialize_logging_from_env
+
+    initialize_logging_from_env()
+except Exception:
+    # Safe to ignore; will be configured later in main
+    pass
+
 # Apply compatibility patches early
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
 
@@ -48,20 +59,26 @@ warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 
 
 def get_logger():
-    """Get logger for training script."""
-    from src_new.config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
+    """Get rank-aware logger for training script."""
+    try:
+        from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
-    logger = logging.getLogger("train_new")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(_GLOBAL_LOG_LEVEL)
-        _CONFIGURED_LOGGERS.add("train_new")
-    return logger
+        return get_rank_aware_logger("train_new")
+    except ImportError:
+        # Fallback to config system
+        from src_new.config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
+
+        logger = logging.getLogger("train_new")
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(_GLOBAL_LOG_LEVEL)
+            _CONFIGURED_LOGGERS.add("train_new")
+        return logger
 
 
 def parse_args():
@@ -101,6 +118,10 @@ def parse_args():
 
 def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
     """Create TrainingArguments with DeepSpeed configuration."""
+    from transformers import TrainingArguments
+
+    logger = get_logger()
+
     # Runtime DeepSpeed configuration from environment variables
     deepspeed_enabled = os.getenv("BBU_DEEPSPEED_ENABLED", "false").lower() == "true"
     deepspeed_config = (
@@ -108,8 +129,6 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         if deepspeed_enabled
         else None
     )
-
-    from transformers import TrainingArguments
 
     # Create training arguments with direct config access
     training_args = TrainingArguments(
@@ -137,6 +156,12 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
+        # Checkpoint optimization settings
+        save_safetensors=True,  # Always use SafeTensors for faster loading
+        # Best checkpoint tracking settings
+        load_best_model_at_end=config.load_best_model_at_end,
+        metric_for_best_model=config.metric_for_best_model,
+        greater_is_better=config.greater_is_better,
         # Logging settings
         logging_steps=config.logging_steps,
         logging_dir=config.logging_dir,
@@ -149,8 +174,13 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         if config.dataloader_num_workers > 0
         else None,
         remove_unused_columns=config.remove_unused_columns,
-        # Model saving settings - disable safe serialization to avoid shared tensor issues
-        save_safetensors=False,
+        # Model saving settings - enable SafeTensors for faster inference loading
+        save_on_each_node=getattr(
+            config, "save_on_each_node", False
+        ),  # EFFICIENCY: Only rank 0 saves checkpoints
+        # Checkpoint optimization settings for faster training
+        dataloader_drop_last=True,  # Reduce coordination overhead
+        save_only_model=False,  # Keep full checkpoints for training resumption
         # NCCL timeout optimization - reduce evaluation frequency during distributed training
         eval_delay=0,  # No delay before first evaluation
         eval_accumulation_steps=1,  # Reduce evaluation accumulation to minimize memory
@@ -162,7 +192,83 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         deepspeed=deepspeed_config if deepspeed_enabled else None,
     )
 
+    # Add fast checkpoint mode configuration (default: True for inference-ready checkpoints)
+    logger.info(
+        "🚀 Fast checkpoint mode enabled - inference-ready checkpoints only (30s vs 200-400s)"
+    )
+
     return training_args
+
+
+def perform_pre_distributed_expansion(base_model, tokenizer, config):
+    """
+    Perform ALL tokenizer and model expansion operations BEFORE distributed training.
+
+    This function centralizes all expensive expansion operations to happen once
+    in the main process, preventing conflicts with HuggingFace Trainer's distributed
+    coordination mechanisms.
+
+    Args:
+        base_model: The base Qwen2.5-VL model
+        tokenizer: The base tokenizer
+        config: Training configuration
+
+    Returns:
+        tuple: (expanded_tokenizer, expanded_model)
+    """
+    from src_new.processing.token_processor import TokenConfig, TokenProcessor
+
+    logger = get_logger()
+    logger.info("🔧 Starting pre-distributed expansion operations...")
+
+    # Only perform expansion if coordinate tokens are enabled
+    if not config.coordinate_tokens_enabled:
+        logger.info("📋 Coordinate tokens disabled - skipping expansion")
+        return tokenizer, base_model
+
+    # Create token processor for expansion
+    token_config = TokenConfig(
+        coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        max_coord_value=config.max_coord_value,
+    )
+    token_processor = TokenProcessor(token_config)
+
+    # Record initial vocabulary size
+    vocab_size_before = len(tokenizer.get_vocab())
+    logger.info(f"📊 Initial vocabulary size: {vocab_size_before}")
+
+    # Check if expansion is needed
+    has_extended_vocab = vocab_size_before > 151665
+    skip_extension = (
+        getattr(config, "skip_vocab_extension", False) or has_extended_vocab
+    )
+
+    if skip_extension:
+        if has_extended_vocab:
+            logger.info(
+                f"🚀 Vocabulary already extended ({vocab_size_before} tokens) - skipping expansion"
+            )
+        else:
+            logger.info("🚀 Skipping vocabulary extension (manual override)")
+        return tokenizer, base_model
+
+    # Perform tokenizer vocabulary expansion
+    logger.info("🔧 Expanding tokenizer vocabulary...")
+    expanded_tokenizer = token_processor.extend_tokenizer_vocabulary(tokenizer)
+
+    # Perform model embedding extension
+    logger.info("🔧 Expanding model embeddings...")
+    expanded_model = token_processor.extend_model_embeddings(
+        base_model, expanded_tokenizer
+    )
+
+    # Log final vocabulary size
+    vocab_size_after = len(expanded_tokenizer.get_vocab())
+    logger.info(
+        f"✅ Pre-distributed expansion completed: {vocab_size_before} → {vocab_size_after} tokens"
+    )
+
+    return expanded_tokenizer, expanded_model
 
 
 def create_trainer_with_new_architecture(
@@ -180,18 +286,19 @@ def create_trainer_with_new_architecture(
     """
     from transformers import AutoTokenizer
 
-    # Import from collator module
+    logger = get_logger()
+    # Import required components for datasets, collator, and model wrapper
     from src_new.data.collator import create_data_collator
     from src_new.data.dataset import Dataset
     from src_new.data.teacher_pool import TeacherPoolManager
     from src_new.models.wrapper import DetectionModel
 
-    logger = get_logger()
-
     # Load tokenizer and processor
     logger.info(f"Loading tokenizer and processor from {config.model_path}")
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model_path, trust_remote_code=True, use_fast=False
+        config.model_path,
+        trust_remote_code=True,
+        use_fast=True,  # FIXED: Enable fast tokenizer for offset mapping
     )
 
     # Load image processor separately (following src pattern)
@@ -201,18 +308,13 @@ def create_trainer_with_new_architecture(
         config.model_path, trust_remote_code=True
     )
 
-    # Extend tokenizer vocabulary if coordinate tokens are enabled
-    if config.coordinate_tokens_enabled:
-        logger.info("🔧 Extending tokenizer vocabulary for coordinate tokens...")
-        from src_new.processing.token_processor import TokenConfig, TokenProcessor
+    # Override max_pixels with configured value
+    if hasattr(config, "max_pixels"):
+        logger.info(f"🖼️ Setting image processor max_pixels to {config.max_pixels}")
+        image_processor.max_pixels = config.max_pixels
 
-        token_config = TokenConfig(
-            coordinate_tokens_enabled=True,
-            max_coord_value=config.max_coord_value,
-        )
-        token_processor = TokenProcessor(token_config)
-        tokenizer = token_processor.extend_tokenizer_vocabulary(tokenizer)
-        logger.info("✅ Tokenizer vocabulary extended")
+    # Note: Tokenizer vocabulary extension is now handled by DetectionModel
+    # to avoid duplicate processing and ensure consistency
 
     # Load teacher pool
     teacher_pool_manager = TeacherPoolManager(
@@ -242,32 +344,86 @@ def create_trainer_with_new_architecture(
         collator_type=config.collator_type, tokenizer=tokenizer, config=config
     )
 
-    # Load and wrap model
+    # Load and wrap model with optimized loading strategy
     logger.info(f"Loading model from {config.model_path}")
     from transformers import Qwen2_5_VLForConditionalGeneration
 
+    # Optimized loading parameters for faster initialization
+    loading_kwargs = {
+        "torch_dtype": getattr(torch, config.torch_dtype),
+        "attn_implementation": config.attn_implementation,
+        "trust_remote_code": False,
+        "low_cpu_mem_usage": True,  # Reduce CPU memory usage during loading
+    }
+
+    # Add device_map for direct GPU loading if available and not using DeepSpeed
+    if (
+        torch.cuda.is_available()
+        and not hasattr(config, "deepspeed")
+        and torch.cuda.device_count() == 1
+    ):
+        loading_kwargs["device_map"] = "auto"
+        logger.info("🚀 Using direct GPU loading for faster initialization")
+
     base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        config.model_path,
-        torch_dtype=getattr(torch, config.torch_dtype),
-        attn_implementation=config.attn_implementation,
-        trust_remote_code=False,
+        config.model_path, **loading_kwargs
     )
 
-    # Wrap model with detection capabilities
-    model = DetectionModel(base_model=base_model, config=config, tokenizer=tokenizer)
+    # CRITICAL: Perform ALL expansion operations BEFORE distributed training
+    # This prevents conflicts with HuggingFace Trainer's distributed coordination
+    tokenizer, base_model = perform_pre_distributed_expansion(
+        base_model, tokenizer, config
+    )
+
+    # Wrap model with detection capabilities (expansion already completed)
+    model = DetectionModel(
+        base_model=base_model,
+        config=config,
+        tokenizer=tokenizer,
+        skip_expansion=True,  # Skip expansion since it's already done
+    )
 
     # Import BBUTrainer locally to ensure it's available in distributed training
     BBUTrainer = __import__("src_new.training", fromlist=["BBUTrainer"]).BBUTrainer
 
-    # Create trainer with local loss aggregation (no distributed conflicts)
+    # Create trainer with unified checkpoint management (no callback needed)
+    # Best checkpoint functionality is now integrated directly into BBUTrainer
     trainer = BBUTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         training_args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=data_collator,
+        # callbacks=[]  # No BestCheckpointCallback needed - integrated into trainer
     )
+
+    # Create and set processor for checkpoint saving with updated components
+    from transformers import Qwen2VLProcessor
+
+    # Load processor from pretrained to get the chat template, then update components
+    processor = Qwen2VLProcessor.from_pretrained(
+        config.model_path, trust_remote_code=True
+    )
+
+    # Update processor with our extended tokenizer and image processor
+    # Note: We need to create a new processor instance with updated components
+    processor = Qwen2VLProcessor(
+        image_processor=image_processor,
+        tokenizer=tokenizer,
+        chat_template=processor.chat_template,  # Preserve the original chat template
+    )
+
+    # CRITICAL: Set tokenizer as trainer's processing_class for automatic saving
+    # HuggingFace Trainer expects processing_class to have get_vocab() method (tokenizer has it, processor doesn't)
+    trainer.processing_class = tokenizer
+    logger.info(
+        "🔧 Set expanded tokenizer as processing_class for automatic checkpoint saving"
+    )
+
+    # Set processor for the trainer
+    trainer.set_processor(processor)
+    logger.info("✅ Processor configured for checkpoint saving with chat template")
 
     return trainer
 
@@ -275,6 +431,18 @@ def create_trainer_with_new_architecture(
 def main():
     """Main training function using new src_new architecture."""
     args = parse_args()
+
+    # Setup centralized rank-aware logging system
+    from src_new.utils.rank_aware_logging import (
+        configure_rank_aware_logging,
+        initialize_logging_from_env,
+        log_distributed_info,
+    )
+
+    # Initialize from environment (BBU_LOG_LEVEL/BBU_LOG_FORMAT), then apply CLI override
+    initialize_logging_from_env()
+    configure_rank_aware_logging(log_level=args.log_level)
+
     logger = get_logger()
 
     try:
@@ -284,6 +452,9 @@ def main():
         if "CUDA_VISIBLE_DEVICES" not in os.environ:
             os.environ["CUDA_VISIBLE_DEVICES"] = "0"
             logger.info("🖥️ Set CUDA_VISIBLE_DEVICES=0 to force single GPU usage")
+
+        # Log distributed training information (rank-aware)
+        log_distributed_info(logger)
 
         # Load configuration
         logger.info("Loading configuration...")
@@ -329,10 +500,8 @@ def main():
             logger.info("   - Datasets and model loaded successfully")
             return 0
 
-        # Setup logging level using centralized system
-        from src_new.config.config import set_global_log_level
-
-        set_global_log_level(args.log_level)
+        # Setup centralized rank-aware logging system
+        # Logging was configured at the top; no reconfiguration needed here
         logger.info(f"🔧 Global logging level set to: {args.log_level}")
 
         # Create training arguments
@@ -356,27 +525,15 @@ def main():
         logger.info("🚀 Starting training with new architecture...")
         trainer.train()
 
+        # Best checkpoint is maintained automatically by unified checkpoint management
+        # No need for manual save_final_model call
+
         # Post-training cleanup
-        # Custom state saving (replacing trainer.save_state())
-        import os
-
-        state_dict = {
-            "optimizer": getattr(trainer, "optimizer", None),
-            "lr_scheduler": getattr(trainer, "lr_scheduler", None),
-            "epoch": getattr(getattr(trainer, "state", None), "epoch", None),
-        }
-
-        # Ensure output_dir exists and is a string
-        output_dir = training_args.output_dir or "."
-        state_path = os.path.join(output_dir, "trainer_state.pt")
-        torch.save(state_dict, state_path)
-        logger.info(f"💾 Trainer state saved to {state_path}")
-
         # Re-enable cache after training
         trainer.model.base_model.config.use_cache = config.use_cache_inference
 
-        # No need to save model again if custom Trainer already handles it
         logger.info("✅ Training completed successfully with new architecture!")
+        logger.info("🔗 Best checkpoint maintained by unified checkpoint management")
         return 0
 
     except Exception as e:

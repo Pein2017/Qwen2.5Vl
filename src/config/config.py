@@ -14,7 +14,7 @@ Key Benefits:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, computed_field, field_validator
@@ -98,8 +98,21 @@ class BBUConfig(BaseModel):
     teacher_ratio: float = Field(
         ge=0, le=1, description="Ratio of teacher vs student samples"
     )
-    max_examples: int = Field(gt=0, description="Maximum number of examples")
     language: Literal["chinese", "english"] = Field(description="Primary language")
+    max_dataset_size: Optional[int] = Field(
+        default=None,
+        description="Maximum dataset size for debugging (optional, -1 = use all)",
+    )
+
+    @field_validator("max_dataset_size")
+    @classmethod
+    def validate_max_dataset_size(cls, v):
+        """Validate max_dataset_size: None, -1, or positive integer."""
+        if v is not None and v != -1 and v <= 0:
+            raise ValueError(
+                "max_dataset_size must be None, -1 (use all), or a positive integer"
+            )
+        return v
 
     # === COORDINATE TOKEN CONFIGURATION ===
     coordinate_tokens_enabled: bool = Field(
@@ -426,6 +439,7 @@ class DataConfig:
     pin_memory: bool
     prefetch_factor: int
     remove_unused_columns: bool
+    max_dataset_size: Optional[int]
 
     @classmethod
     def from_bbu_config(cls, config: BBUConfig) -> "DataConfig":
@@ -445,6 +459,7 @@ class DataConfig:
             pin_memory=config.pin_memory,
             prefetch_factor=config.prefetch_factor,
             remove_unused_columns=config.remove_unused_columns,
+            max_dataset_size=config.max_dataset_size,
         )
 
     def __post_init__(self):

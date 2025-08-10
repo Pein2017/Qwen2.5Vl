@@ -118,6 +118,7 @@ class BBUDataset(Dataset):
         self.teacher_pool_manager = teacher_pool_manager
         self.teacher_ratio = teacher_ratio
         self.is_training = is_training
+        self.config = config
 
         # Initialize data root from config
         self.data_root = config.data_root
@@ -329,6 +330,20 @@ class BBUDataset(Dataset):
 
         if not valid_samples:
             raise ValueError(f"No valid samples found in {self.data_path}")
+
+        # Apply max_dataset_size limit if specified in config
+        # -1 means use all samples, None or 0 means no limit, positive values limit the dataset
+        max_dataset_size = getattr(self.config, "max_dataset_size", None)
+        if max_dataset_size is not None and max_dataset_size > 0:
+            if len(valid_samples) > max_dataset_size:
+                logger.info(
+                    f"🔧 DEBUG MODE: Limiting dataset from {len(valid_samples)} to {max_dataset_size} samples"
+                )
+                valid_samples = valid_samples[:max_dataset_size]
+        elif max_dataset_size == -1:
+            logger.info(
+                f"📊 Using all {len(valid_samples)} samples (max_dataset_size=-1)"
+            )
 
         logger.debug(f"✅ Validated {len(valid_samples)} samples")
         return valid_samples

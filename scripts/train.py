@@ -27,7 +27,6 @@ patch_torch_library_wrap_triton()
 warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 
 
-from src.config import load_config
 from src.logger_utils import (
     configure_global_logging,
     get_training_logger,
@@ -56,7 +55,6 @@ def parse_args():
     parser.add_argument(
         "--log_level",
         required=True,
-        choices=["DEBUG", "INFO"],
         help="Logging level: INFO (production) | DEBUG (development)",
     )
 
@@ -138,7 +136,10 @@ def main():
         config_name: str = args.config
         config_source_path = f"configs/{config_name}.yaml"
         logger.info("Loading explicit configuration system...")
-        config = load_config(config_source_path)
+        # Initialize global config singleton
+        from src.config import init_config
+
+        config = init_config(config_source_path)
         logger.info(f"Configuration loaded: {config_source_path}")
 
         # Print config if requested
@@ -187,7 +188,6 @@ def main():
 
         from src.training.trainer_factory import (
             create_trainer_with_coordinator,
-            safe_save_model_for_hf_trainer,
         )  # noqa: E402
 
         # =====================================================================
@@ -231,34 +231,13 @@ def main():
         trainer.save_state()
         logger.info("💾 Trainer state saved")
 
-        # Save image processor - following official approach
-        if hasattr(trainer, "processing_class"):
-            try:
-                # Get image processor from the trainer's model setup
-                from transformers.models.auto.processing_auto import AutoProcessor
-
-                processor = AutoProcessor.from_pretrained(config.model_path)
-
-                # Check if image processor exists and is not None
-                if (
-                    hasattr(processor, "image_processor")
-                    and processor.image_processor is not None
-                ):
-                    processor.image_processor.save_pretrained(training_args.output_dir)
-                    logger.info(
-                        f"💾 Image processor saved to: {training_args.output_dir}"
-                    )
-                else:
-                    logger.warning("⚠️  Image processor is None, skipping save")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to save image processor: {e}")
-
         # Re-enable cache after training - using configured value
         trainer.model.config.use_cache = config.use_cache_inference
 
-        # Safe model saving - following official approach
-        safe_save_model_for_hf_trainer(trainer, training_args.output_dir)
-        logger.info(f"💾 Model saved to: {training_args.output_dir}")
+        # Save final model with descriptive naming based on training metrics
+        # This handles model, tokenizer, and image processor saving automatically
+        final_model_path = trainer.save_final_model(training_args.output_dir)
+        logger.info(f"💾 Final model and components saved to: {final_model_path}")
 
         logger.info("✅ Training completed successfully!")
         return 0
