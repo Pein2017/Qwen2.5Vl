@@ -174,11 +174,19 @@ class LossManager:
         # Pass the configured temperature so initialization logs reflect the actual setting
         from .coordinate_loss import create_coordinate_loss_from_token_processor
 
+        # Optional KL regularizer configuration (robust to Mocks)
+        kl_raw = getattr(config, "coordinate_kl_weight", None)
+        kl_weight = float(kl_raw) if isinstance(kl_raw, (int, float)) else 0.0
+        sigma_raw = getattr(config, "coordinate_label_sigma", None)
+        label_sigma = float(sigma_raw) if isinstance(sigma_raw, (int, float)) else None
+
         self.coordinate_loss_fn = create_coordinate_loss_from_token_processor(
             token_processor=token_processor,
             tokenizer=tokenizer,
             temperature=self.coordinate_loss_temperature,
             numerical_stability=True,
+            kl_weight=kl_weight,
+            label_sigma=label_sigma,
         )
 
     def update_epoch(self, epoch: int):
@@ -460,8 +468,8 @@ class LossManager:
         - Maintains identical loss values and gradient flow
 
         **Loss Components:**
-        1. **Teacher LLM Loss**: Cross-entropy loss on teacher assistant tokens (excluding coordinates)
-        2. **Student LLM Loss**: Cross-entropy loss on student assistant tokens (excluding coordinates)
+        1. **Teacher LLM Loss**: Cross-entropy loss on teacher assistant tokens (including coordinate tokens)
+        2. **Student LLM Loss**: Cross-entropy loss on student assistant tokens (including coordinate tokens)
         3. **Teacher L1 Loss**: Soft expectation coordinate loss at positions predicting coordinate tokens (teacher spans)
         4. **Student L1 Loss**: Soft expectation coordinate loss at positions predicting coordinate tokens (student spans)
 
@@ -501,10 +509,9 @@ class LossManager:
         teacher_mask_shifted = teacher_mask[:, 1:]
         student_mask_shifted = student_mask[:, 1:]
 
-        # For LLM loss, exclude coordinate-token targets (work on text-only targets)
-        non_coord_label_mask_shifted = (~coord_label_mask)[:, 1:]
-        teacher_llm_mask_shifted = teacher_mask_shifted & non_coord_label_mask_shifted
-        student_llm_mask_shifted = student_mask_shifted & non_coord_label_mask_shifted
+        # For LLM loss, include all assistant targets (including coordinate-token targets)
+        teacher_llm_mask_shifted = teacher_mask_shifted
+        student_llm_mask_shifted = student_mask_shifted
 
         # Compute CE once on shifted tensors and reuse
         per_token_loss = self._compute_per_token_cross_entropy(
@@ -574,7 +581,11 @@ class LossManager:
 
         # Reshape logits and labels
         vocab_size = logits.shape[-1]
-        logits_flat = logits.view(-1, vocab_size)
+        # Work in float32 for numerical robustness (bf16 inputs may overflow/underflow in softmax)
+        logits_flat = logits.float().view(-1, vocab_size)
+        # Clamp and clean non-finite values before CE
+        logits_flat = torch.clamp(logits_flat, min=-50.0, max=50.0)
+        logits_flat = torch.nan_to_num(logits_flat, nan=0.0, posinf=50.0, neginf=-50.0)
         labels_flat = labels.view(-1)
 
         # Compute per-token loss

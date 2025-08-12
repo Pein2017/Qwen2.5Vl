@@ -7,32 +7,19 @@ Implements coordinate token conversion, tokenizer vocabulary extension,
 and special token wrapping for multi-geometry annotations.
 """
 
-import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-from transformers import PreTrainedTokenizer, Qwen2VLForConditionalGeneration
+from transformers import PreTrainedTokenizer
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
+    Qwen2_5_VLForConditionalGeneration,
+)
 
+from ..utils.logger_factory import get_processing_logger
+from ..utils.tensor_validation import TensorValidator
 
-def get_token_logger() -> logging.Logger:
-    """Get rank-aware logger for token processing (strict, no fallback)."""
-    from ..utils.rank_aware_logging import get_rank_aware_logger
-
-    return get_rank_aware_logger("token_processor")
-
-
-logger = get_token_logger()
-
-# Global cache for tokenizer extensions to avoid repeated processing in multi-GPU setups
-_TOKENIZER_EXTENSION_CACHE = {}
-
-
-def clear_tokenizer_cache():
-    """Clear the tokenizer extension cache."""
-    global _TOKENIZER_EXTENSION_CACHE
-    _TOKENIZER_EXTENSION_CACHE.clear()
-    logger.info("🧹 Tokenizer extension cache cleared")
+logger = get_processing_logger("token_processor")
 
 
 @dataclass
@@ -44,6 +31,8 @@ class TokenConfig:
     new_geometry_tokens: Optional[List[str]] = None
     # Make lazy initialization behavior explicit to avoid hasattr checks elsewhere
     lazy_coordinate_init: bool = True
+    # Optional mode for coordinate embedding initialization
+    coordinate_init_mode: Optional[str] = None  # "fourier_ramp" | "random" | None
 
     def __post_init__(self):
         if self.new_geometry_tokens is None:
@@ -214,8 +203,8 @@ class TokenProcessor:
         return tokenizer
 
     def extend_model_embeddings(
-        self, model: Qwen2VLForConditionalGeneration, tokenizer: PreTrainedTokenizer
-    ) -> Qwen2VLForConditionalGeneration:
+        self, model: Qwen2_5_VLForConditionalGeneration, tokenizer: PreTrainedTokenizer
+    ) -> Qwen2_5_VLForConditionalGeneration:
         """
         Extend model embeddings to accommodate new tokens with optimized performance.
 
@@ -262,16 +251,31 @@ class TokenProcessor:
                 return model
 
             # Pad rows to multiple of 128 (strict target): ceil(152692 / 128) * 128 = 152704
+            import inspect
             import math
 
             import torch
 
             target_rows = math.ceil(len(tokenizer.get_vocab()) / 128) * 128
 
+            # Check if mean_resizing is supported
+            supports_mean = (
+                "mean_resizing"
+                in inspect.signature(model.resize_token_embeddings).parameters
+            )
+
             with torch.no_grad():
-                model.resize_token_embeddings(
-                    target_rows, mean_resizing=False, pad_to_multiple_of=128
-                )
+                if self.config.coordinate_init_mode == "ms_mean" and supports_mean:
+                    logger.info(
+                        "🎯 Using ms-swift style mean_resizing for neutral initialization"
+                    )
+                    model.resize_token_embeddings(
+                        target_rows, mean_resizing=True, pad_to_multiple_of=128
+                    )
+                else:
+                    model.resize_token_embeddings(
+                        target_rows, mean_resizing=False, pad_to_multiple_of=128
+                    )
 
             # Deterministic initialization for new rows
             self._smart_initialize_new_embeddings(
@@ -291,7 +295,7 @@ class TokenProcessor:
 
     def _smart_initialize_new_embeddings(
         self,
-        model: Qwen2VLForConditionalGeneration,
+        model: Qwen2_5_VLForConditionalGeneration,
         original_vocab_size: int,
         padded_vocab_size: int,
         tokenizer: PreTrainedTokenizer,
@@ -345,20 +349,38 @@ class TokenProcessor:
                 # Initialize output embeddings if they exist and need initialization
                 if hasattr(output_embeddings, "weight"):
                     out_w = output_embeddings.weight
-                    output_mask = (out_w == 0).all(dim=0)
-                    num_output_to_init = output_mask.sum().item()
-
-                    if num_output_to_init > 0:
-                        new_output_embeddings = (
-                            torch.randn(
-                                embedding_dim,
-                                num_output_to_init,
-                                device=out_w.device,
-                                dtype=out_w.dtype,
-                            )
-                            * init_std
+                    if out_w.dim() == 2:
+                        output_mask = (
+                            (out_w == 0).all(dim=0)
+                            if out_w.shape[0] == embedding_dim
+                            else (out_w == 0).all(dim=1)
                         )
-                        out_w[:, output_mask] = new_output_embeddings
+                        num_output_to_init = output_mask.sum().item()
+                        if num_output_to_init > 0:
+                            if out_w.shape[0] == embedding_dim:
+                                # [hidden, vocab]
+                                new_output_embeddings = (
+                                    torch.randn(
+                                        embedding_dim,
+                                        num_output_to_init,
+                                        device=out_w.device,
+                                        dtype=out_w.dtype,
+                                    )
+                                    * init_std
+                                )
+                                out_w[:, output_mask] = new_output_embeddings
+                            else:
+                                # [vocab, hidden]
+                                new_output_embeddings = (
+                                    torch.randn(
+                                        num_output_to_init,
+                                        embedding_dim,
+                                        device=out_w.device,
+                                        dtype=out_w.dtype,
+                                    )
+                                    * init_std
+                                )
+                                out_w[output_mask, :] = new_output_embeddings
 
                 logger.info(
                     f"✅ Smart-initialized {num_to_initialize} input and {num_output_to_init if 'num_output_to_init' in locals() else 0} output embeddings"
@@ -374,18 +396,39 @@ class TokenProcessor:
             input_embeddings, output_embeddings, vocab, tokenizer
         )
 
-        # Initialize coordinate tokens deterministically
+        # Initialize coordinate tokens deterministically (selectable mode)
         if self.config.coordinate_tokens_enabled:
-            self._initialize_coordinate_tokens_optimized(
-                input_embeddings,
-                output_embeddings,
-                vocab,
-                original_vocab_size,
-            )
+            mode = self.config.coordinate_init_mode
+
+            if mode == "ms_mean":
+                logger.info(
+                    "🎯 Applying ms-swift style neutral initialization for coordinate tokens"
+                )
+                self._initialize_coordinate_tokens_ms_mean(
+                    input_embeddings,
+                    output_embeddings,
+                    vocab,
+                    original_vocab_size,
+                    padded_vocab_size,
+                )
+            elif mode == "fourier_ramp":
+                self._initialize_coordinate_tokens_fourier_ramp(
+                    input_embeddings,
+                    output_embeddings,
+                    vocab,
+                    original_vocab_size,
+                )
+            else:
+                self._initialize_coordinate_tokens_optimized(
+                    input_embeddings,
+                    output_embeddings,
+                    vocab,
+                    original_vocab_size,
+                )
 
     def _validate_tokenizer_embedding_alignment(
         self,
-        model: Qwen2VLForConditionalGeneration,
+        model: Qwen2_5_VLForConditionalGeneration,
         tokenizer: PreTrainedTokenizer,
         original_vocab_size: int,
         original_snapshot: torch.Tensor,
@@ -491,7 +534,7 @@ class TokenProcessor:
 
     def _initialize_new_embeddings(
         self,
-        model: Qwen2VLForConditionalGeneration,
+        model: Qwen2_5_VLForConditionalGeneration,
         original_vocab_size: int,
         new_vocab_size: int,
         tokenizer: PreTrainedTokenizer,
@@ -630,6 +673,168 @@ class TokenProcessor:
                         w[:, coord_token_ids_tensor] = coord_embeddings.T
 
         logger.info("✅ Deterministic coordinate token initialization completed")
+
+    def _initialize_coordinate_tokens_fourier_ramp(
+        self,
+        input_embeddings: torch.nn.Embedding,
+        output_embeddings: torch.nn.Linear,
+        vocab: Dict[str, int],
+        original_vocab_size: int,
+    ) -> None:
+        """
+        Initialize coordinate token embeddings using Fourier + ramp features.
+
+        This method creates embeddings with ordinal structure using sinusoidal features
+        plus linear ramps to encode coordinate ordering information.
+        """
+        if not self.config.coordinate_tokens_enabled:
+            return
+
+        # Gather coordinate token IDs (0..max)
+        coord_token_ids = [
+            vocab[f"<|coord_{i}|>"]
+            for i in range(self.config.max_coord_value + 1)
+            if f"<|coord_{i}|>" in vocab
+        ]
+        if not coord_token_ids:
+            logger.info("No coordinate tokens found in vocabulary")
+            return
+
+        embedding_dim = input_embeddings.embedding_dim
+        device = input_embeddings.weight.device
+
+        with torch.no_grad():
+            in_w = input_embeddings.weight
+            out_w = getattr(output_embeddings, "weight", None)
+
+            # Match std to existing embeddings
+            existing_std = in_w[:original_vocab_size].std().item()
+            init_std = min(existing_std, 0.02) if existing_std > 0 else 0.02
+
+            coord_token_ids_tensor = torch.tensor(coord_token_ids, device=device)
+            K = self.config.max_coord_value
+
+            # Create Fourier + ramp features
+            coord_embeddings = torch.zeros(
+                len(coord_token_ids_tensor),
+                embedding_dim,
+                device=device,
+                dtype=in_w.dtype,
+            )
+
+            for i, coord_value in enumerate(range(self.config.max_coord_value + 1)):
+                u = coord_value / K  # Normalized coordinate [0, 1]
+                u_tensor = torch.tensor(u, device=device, dtype=torch.float32)
+
+                # Fill first dimensions with Fourier features
+                fourier_dims = min(
+                    embedding_dim // 4, 64
+                )  # Use up to 64 dims for Fourier
+                for m in range(fourier_dims // 2):
+                    if 2 * m < embedding_dim:
+                        freq = 2**m
+                        coord_embeddings[i, 2 * m] = torch.sin(
+                            2 * torch.pi * u_tensor * freq
+                        )
+                    if 2 * m + 1 < embedding_dim:
+                        freq = 2**m
+                        coord_embeddings[i, 2 * m + 1] = torch.cos(
+                            2 * torch.pi * u_tensor * freq
+                        )
+
+                # Add linear ramp features
+                ramp_start = fourier_dims
+                if ramp_start < embedding_dim:
+                    coord_embeddings[i, ramp_start] = u_tensor  # Linear ramp
+                if ramp_start + 1 < embedding_dim:
+                    coord_embeddings[i, ramp_start + 1] = (
+                        u_tensor - 0.5
+                    ) ** 2  # Quadratic
+                if ramp_start + 2 < embedding_dim:
+                    coord_embeddings[i, ramp_start + 2] = u_tensor**3  # Cubic
+
+            # Scale to match pretrained std and mean-center
+            coord_embeddings = coord_embeddings * init_std
+            coord_embeddings = coord_embeddings - coord_embeddings.mean(
+                dim=0, keepdim=True
+            )
+
+            in_w[coord_token_ids_tensor] = coord_embeddings
+
+            # Mirror into LM head if it exists
+            if isinstance(out_w, torch.Tensor) and out_w.dim() == 2:
+                max_id = int(coord_token_ids_tensor.max())
+                if out_w.shape[0] > max_id:
+                    # [vocab, hidden] layout
+                    out_w[coord_token_ids_tensor] = coord_embeddings
+                elif out_w.shape[1] > max_id:
+                    # [hidden, vocab] layout
+                    out_w[:, coord_token_ids_tensor] = coord_embeddings.T
+
+        logger.info("✅ Coordinate tokens initialized with Fourier + ramp features")
+
+    def _initialize_coordinate_tokens_ms_mean(
+        self,
+        input_embeddings: torch.nn.Embedding,
+        output_embeddings: torch.nn.Linear,
+        vocab: Dict[str, int],
+        original_vocab_size: int,
+        padded_vocab_size: int,
+    ) -> None:
+        """
+        Initialize coordinate token embeddings using ms-swift style neutral initialization.
+
+        This method applies neutral initialization where new coordinate tokens start
+        centered at the mean of existing embeddings with small noise for symmetry breaking.
+        """
+        if not self.config.coordinate_tokens_enabled:
+            return
+
+        # Gather coordinate token IDs (0..max)
+        coord_token_ids = [
+            vocab[f"<|coord_{i}|>"]
+            for i in range(self.config.max_coord_value + 1)
+            if f"<|coord_{i}|>" in vocab
+        ]
+        if not coord_token_ids:
+            logger.info("No coordinate tokens found in vocabulary")
+            return
+
+        embedding_dim = input_embeddings.embedding_dim
+        device = input_embeddings.weight.device
+
+        with torch.no_grad():
+            in_w = input_embeddings.weight
+            out_w = getattr(output_embeddings, "weight", None)
+
+            # Manual neutral init: set new rows to mean of existing embeddings + small noise
+            base_mean = in_w[:original_vocab_size].mean(dim=0, keepdim=True)
+            base_std = in_w[:original_vocab_size].std().item()
+
+            # Apply to coordinate token rows only
+            coord_token_ids_tensor = torch.tensor(coord_token_ids, device=device)
+
+            # Initialize coordinate token rows to mean + small noise
+            coord_embeddings = base_mean.expand(len(coord_token_ids_tensor), -1).clone()
+            coord_embeddings += (
+                0.01 * float(base_std) * torch.randn_like(coord_embeddings)
+            )
+
+            in_w[coord_token_ids_tensor] = coord_embeddings
+
+            # Mirror into LM head if it exists
+            if isinstance(out_w, torch.Tensor) and out_w.dim() == 2:
+                max_id = int(coord_token_ids_tensor.max())
+                if out_w.shape[0] > max_id:
+                    # [vocab, hidden] layout
+                    out_w[coord_token_ids_tensor] = coord_embeddings
+                elif out_w.shape[1] > max_id:
+                    # [hidden, vocab] layout
+                    out_w[:, coord_token_ids_tensor] = coord_embeddings.T
+
+        logger.info(
+            "✅ Coordinate tokens initialized with ms-swift neutral initialization"
+        )
 
     def _initialize_coordinate_tokens(
         self,

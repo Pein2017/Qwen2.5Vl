@@ -471,9 +471,9 @@ The system computes separate losses for different learning objectives:
 | `teacher_l1_loss` | Teacher coordinate regression | Soft expectation + L1 loss |
 | `student_l1_loss` | Student coordinate regression | Soft expectation + L1 loss |
 
-Note (2025-08): We decouple supervision streams using label-aligned masks with next-token shifting.
-- CE counts only text tokens inside assistant spans (teacher/student) and excludes coordinate-token targets.
-- L1 counts only coordinate-token targets within assistant spans.
+Note (2025-08): We use joint training with span-aligned masks and next-token shifting.
+- CE covers all assistant tokens (text + coordinate tokens) within teacher/student spans for comprehensive language learning.
+- L1 covers only coordinate-token targets within assistant spans for precise coordinate regression.
 - Soft-expectation temperature is configurable via `coordinate_temperature` (preferred; legacy: `coordinate_loss_temperature`).
 
 ### Soft Expectation Coordinate Loss

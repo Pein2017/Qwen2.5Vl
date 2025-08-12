@@ -18,7 +18,6 @@ Usage:
 """
 
 import argparse
-import logging
 import os
 import warnings
 from typing import TYPE_CHECKING
@@ -58,25 +57,9 @@ warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 
 def get_logger():
     """Get rank-aware logger for training script."""
-    try:
-        from src_new.utils.rank_aware_logging import get_rank_aware_logger
+    from src_new.utils.logger_factory import get_training_logger
 
-        return get_rank_aware_logger("train_new")
-    except ImportError:
-        # Fallback to config system
-        from src_new.config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
-
-        logger = logging.getLogger("train_new")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(_GLOBAL_LOG_LEVEL)
-            _CONFIGURED_LOGGERS.add("train_new")
-        return logger
+    return get_training_logger("train_new")
 
 
 def parse_args():
@@ -386,6 +369,35 @@ def create_trainer_with_new_architecture(
         eval_dataset=val_dataset,
         data_collator=data_collator,
         # callbacks=[]  # No BestCheckpointCallback needed - integrated into trainer
+    )
+
+    # Pre-create optimizer so that all params are registered once
+    try:
+        trainer.create_optimizer()
+        logger.info("✅ Pre-created optimizer before staged freezing")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not pre-create optimizer: {e}")
+
+    # TODO: Register progressive unfreeze callback (freeze vision+LLM for first X epochs)
+    # Temporarily disabled - needs further testing for HF Transformers compatibility
+    # try:
+    #     from src_new.training.callbacks import ProgressiveUnfreezeCallback
+    #
+    #     freeze_epochs = getattr(config, "freeze_vision_llm_epochs", 1)
+    #     callback = ProgressiveUnfreezeCallback(
+    #         freeze_vision_llm_epochs=int(freeze_epochs), coord_slice_only=True
+    #     )
+    #     # Store trainer reference for HF compatibility
+    #     callback._trainer_ref = trainer
+    #     trainer.add_callback(callback)
+    #     logger.info(
+    #         f"✅ Registered ProgressiveUnfreezeCallback (freeze_vision_llm_epochs={freeze_epochs})"
+    #     )
+    # except Exception as e:
+    #     logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
+
+    logger.info(
+        "🔧 ProgressiveUnfreezeCallback temporarily disabled - training with standard setup"
     )
 
     # Create and set processor for checkpoint saving with updated components

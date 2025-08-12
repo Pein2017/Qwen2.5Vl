@@ -18,6 +18,10 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from src_new.utils.data_resolver import DataResolver
+
+
+logger = logging.getLogger(__name__)
 
 # Global logging configuration (compatibility with legacy callers)
 # These values mirror the state managed by src_new.utils.rank_aware_logging.
@@ -51,7 +55,7 @@ def set_global_log_level(level: str) -> None:
                 "ERROR": logging.ERROR,
                 "CRITICAL": logging.CRITICAL,
             }
-            resolved = level_map.get(level.upper(), logging.INFO)
+            resolved = level_map[level.upper()]
         else:
             resolved = int(level)
         logging.getLogger().setLevel(resolved)
@@ -67,19 +71,15 @@ def set_global_log_level(level: str) -> None:
                 "ERROR": logging.ERROR,
                 "CRITICAL": logging.CRITICAL,
             }
-            _GLOBAL_LOG_LEVEL = level_map.get(level.upper(), logging.INFO)
+            _GLOBAL_LOG_LEVEL = level_map[level.upper()]
         else:
             _GLOBAL_LOG_LEVEL = int(level)
 
 
-def get_config_logger() -> logging.Logger:
-    """Get rank-aware logger for config module (strict, no fallback)."""
-    from ..utils.rank_aware_logging import get_rank_aware_logger
-
-    return get_rank_aware_logger("config")
+from ..utils.logger_factory import get_module_logger
 
 
-logger = get_config_logger()
+logger = get_module_logger("config")
 
 
 def _convert_scientific_notation(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,22 +135,91 @@ class Config:
     # Training settings
     num_train_epochs: int
     per_device_train_batch_size: int
+    per_device_eval_batch_size: int
+    gradient_accumulation_steps: int
     learning_rate: float
     vision_lr: float
     merger_lr: float
     llm_lr: float
+    adapter_lr: float
+    warmup_ratio: float
+    weight_decay: float
+    max_grad_norm: float
+    lr_scheduler_type: str
+    gradient_checkpointing: bool
+    bf16: bool
+    fp16: bool
+    use_flash_attention: bool
+    mixed_precision: str
 
     # Data settings
     train_data_path: str
     val_data_path: str
     data_root: str
     teacher_pool_file: str
+    max_total_length: int
+    num_teacher_samples: int
+    collator_type: str
+    teacher_ratio: float
+    language: str
 
     # Output settings
     output_dir: str
     run_name: str
     max_coord_value: int
     model_hidden_size: int
+
+    # Coordinate token configuration (required)
+    coordinate_tokens_enabled: bool
+    coordinate_loss_weight: float
+    regular_loss_weight: float
+    coordinate_temperature: float
+    coordinate_loss_temperature: float
+    coordinate_kl_weight: float
+    coordinate_label_sigma: float
+    coordinate_init_mode: str
+
+    # Evaluation settings (required)
+    eval_strategy: str
+    eval_steps: int
+    save_strategy: str
+    save_steps: int
+    save_total_limit: int
+
+    # Logging settings (required)
+    logging_steps: int
+    logging_dir: str
+    report_to: str
+    disable_tqdm: bool
+    verbose: bool
+
+    # Essential settings (required)
+    remove_unused_columns: bool
+
+    # Dataloader performance settings (required)
+    dataloader_num_workers: int
+    pin_memory: bool
+    prefetch_factor: int
+
+    # Output settings (required)
+    tb_dir: str
+
+    # Teacher-student loss weights (required)
+    teacher_loss_weight: float
+    student_loss_weight: float
+
+    # Vision processing parameters (required)
+    patch_size: int
+    merge_size: int
+    temporal_patch_size: int
+    max_pixels: int
+
+    # Training control flags (required)
+    training_prompt_style: bool
+    use_consistent_prompts: bool
+
+    # Model loading control flags (required)
+    skip_vocab_extension: bool
 
     # === OPTIONAL FIELDS (with defaults) ===
     # Model settings with defaults
@@ -160,43 +229,17 @@ class Config:
     model_num_attention_heads: int = 16
     model_vocab_size: int = 151665
 
-    # Training settings with defaults
-    per_device_eval_batch_size: int = 1
-    gradient_accumulation_steps: int = 1
-    adapter_lr: float = 0.0
-    warmup_ratio: float = 0.1
-    weight_decay: float = 0.0001
-    max_grad_norm: float = 1.0
-    lr_scheduler_type: str = "cosine"
-    gradient_checkpointing: bool = True
-    bf16: bool = True
-    fp16: bool = False
-    use_flash_attention: bool = True
-    mixed_precision: str = "bf16"
+    # Training settings with defaults (keeping only truly optional ones)
 
-    # Data settings with defaults
-    max_total_length: int = 12000
-    num_teacher_samples: int = 1
-    collator_type: str = "packed"
-    teacher_ratio: float = 0.5
-    language: str = "chinese"
+    # Data settings with defaults (keeping only truly optional ones)
 
-    # Dataset size limiting (optional, primarily for debugging/testing)
-    # Set to None or 0 to use full dataset, or specify a positive integer to limit samples
-    max_dataset_size: Optional[int] = None
-
-    # Evaluation settings with defaults
-    eval_strategy: str = "steps"
-    eval_steps: int = 20
-    save_strategy: str = "steps"
-    save_steps: int = 50
-    save_total_limit: int = 2
-    save_on_each_node: bool = False  # EFFICIENCY: Only rank 0 saves checkpoints
+    # Dataset size limiting moved to optional section below
 
     # Best checkpoint tracking settings with defaults
     load_best_model_at_end: bool = True  # Enable automatic best checkpoint saving
     metric_for_best_model: str = "eval_loss"  # Track evaluation loss for best model
     greater_is_better: bool = False  # Lower eval_loss is better
+    save_on_each_node: bool = False  # EFFICIENCY: Only rank 0 saves checkpoints
 
     # Unified checkpoint management settings
     best_checkpoint_metric: str = "eval_loss"  # Metric to track for best checkpoints
@@ -204,53 +247,9 @@ class Config:
         False  # Whether higher metric values are better
     )
 
-    # Logging settings with defaults
-    logging_steps: int = 10
-    logging_dir: str = "logs"
-    report_to: str = "tensorboard"
-    disable_tqdm: bool = True
-    verbose: bool = False
-
-    # Coordinate token configuration with defaults
-    coordinate_tokens_enabled: bool = True
-
-    coordinate_loss_weight: float = 0.05
-    regular_loss_weight: float = 1.0
-    # Temperature for soft expectation over coordinate token logits (preferred key)
-    coordinate_temperature: float = 1.0
-    # Backward-compat alias (legacy key used in tests); kept in sync with coordinate_temperature
-    coordinate_loss_temperature: float = 1.0
+    # Optional parameters that can have defaults
     new_geometry_tokens: Optional[List[str]] = None
-
-    # Essential settings with defaults
-    remove_unused_columns: bool = False
-
-    # Dataloader performance settings with defaults
-    dataloader_num_workers: int = 4
-    pin_memory: bool = True
-    prefetch_factor: int = 2
-
-    # Output settings with defaults
-    tb_dir: str = "tb"
-
-    # Teacher-student loss weights with defaults
-    teacher_loss_weight: float = 0.3
-    student_loss_weight: float = 1.0
-
-    # Vision processing parameters with defaults
-    patch_size: int = 14
-    merge_size: int = 2
-    temporal_patch_size: int = 2
-    max_pixels: int = (
-        401408  # 512 * 28 * 28 - controls Qwen2VL image processor pixel limit
-    )
-
-    # Training control flags with defaults
-    training_prompt_style: bool = True
-    use_consistent_prompts: bool = True
-
-    # Model loading control flags with defaults
-    skip_vocab_extension: bool = False  # Skip vocabulary extension during model loading
+    max_dataset_size: Optional[int] = None
 
     def __post_init__(self) -> None:
         """
@@ -367,6 +366,48 @@ class Config:
                 f"coordinate_loss_temperature must be > 0, got {self.coordinate_loss_temperature}"
             )
 
+        # Optional KL fields validation (only if provided)
+        if self.coordinate_kl_weight is not None:
+            if self.coordinate_kl_weight < 0:
+                raise ValueError(
+                    f"coordinate_kl_weight cannot be negative, got {self.coordinate_kl_weight}"
+                )
+            # If a positive KL weight is provided, require a positive sigma
+            if self.coordinate_kl_weight > 0:
+                if (
+                    self.coordinate_label_sigma is None
+                    or self.coordinate_label_sigma <= 0
+                ):
+                    raise ValueError(
+                        "coordinate_kl_weight > 0 requires coordinate_label_sigma > 0 (in BIN units)"
+                    )
+
+        # Optional init mode validation (pass-through if unknown)
+        if self.coordinate_init_mode is not None:
+            allowed = {"fourier_ramp", "random"}
+            if self.coordinate_init_mode not in allowed:
+                raise ValueError(
+                    f"coordinate_init_mode must be one of {sorted(list(allowed))}, got {self.coordinate_init_mode!r}"
+                )
+
+        # Optional: validate coordinate init mode
+        if self.coordinate_init_mode is not None:
+            allowed = {"fourier_ramp", "random"}
+            if self.coordinate_init_mode not in allowed:
+                raise ValueError(
+                    f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
+                )
+
+        # Optional: validate Gaussian KL parameters
+        if self.coordinate_kl_weight is not None and self.coordinate_kl_weight < 0:
+            raise ValueError(
+                f"coordinate_kl_weight cannot be negative, got {self.coordinate_kl_weight}"
+            )
+        if self.coordinate_label_sigma is not None and self.coordinate_label_sigma <= 0:
+            raise ValueError(
+                f"coordinate_label_sigma must be > 0, got {self.coordinate_label_sigma}"
+            )
+
         # Initialize new_geometry_tokens if not provided
         if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
             # Only add line tokens - quad tokens already exist in Qwen2.5-VL
@@ -438,17 +479,19 @@ def load_config(config_path: str) -> Config:
             # Populate new key from legacy
             data["coordinate_temperature"] = float(data["coordinate_loss_temperature"])
         else:
-            # Ensure both keys exist with default 1.0 for dataclass init
-            data.setdefault("coordinate_temperature", 1.0)
-            data.setdefault(
-                "coordinate_loss_temperature", data["coordinate_temperature"]
-            )
+            # Both keys must be explicitly provided in configuration
+            if "coordinate_temperature" not in data:
+                raise ValueError(
+                    "coordinate_temperature must be explicitly specified in configuration"
+                )
+            if "coordinate_loss_temperature" not in data:
+                data["coordinate_loss_temperature"] = data["coordinate_temperature"]
     except Exception:
         # If mapping fails, let dataclass validation handle values
         pass
 
     # === Unified dataset path defaults ===
-    # If only data_root is provided, auto-derive standard file paths inside it
+    # Auto-derive data paths from data_root using centralized data resolver
     # Expected structure under data_root:
     #   - images/  (image files referenced in JSONL as ./images/xxx.jpeg)
     #   - train.jsonl
@@ -457,20 +500,50 @@ def load_config(config_path: str) -> Config:
     try:
         data_root_value = data.get("data_root")
         if data_root_value:
-            # Normalize to Path for safe joining but keep string form in final dict
-            data_root_path = Path(data_root_value)
+            # Use DataResolver for automatic path discovery and validation
+            # Only derive paths if they're not explicitly provided (backward compatibility)
+            if not all(
+                [
+                    data.get("train_data_path"),
+                    data.get("val_data_path"),
+                    data.get("teacher_pool_file"),
+                ]
+            ):
+                try:
+                    dataset_paths = DataResolver.resolve_dataset_paths(data_root_value)
 
-            # Derive when missing
-            if not data.get("train_data_path"):
-                data["train_data_path"] = str(data_root_path / "train.jsonl")
-            if not data.get("val_data_path"):
-                data["val_data_path"] = str(data_root_path / "val.jsonl")
-            if not data.get("teacher_pool_file"):
-                # Use .jsonl per project convention
-                data["teacher_pool_file"] = str(data_root_path / "teacher_pool.jsonl")
-    except Exception:
+                    # Only set paths that weren't explicitly provided
+                    if not data.get("train_data_path"):
+                        data["train_data_path"] = str(dataset_paths.train_data_path)
+                    if not data.get("val_data_path"):
+                        data["val_data_path"] = str(dataset_paths.val_data_path)
+                    if not data.get("teacher_pool_file"):
+                        data["teacher_pool_file"] = str(dataset_paths.teacher_pool_file)
+
+                    logger.debug(
+                        f"✅ Auto-resolved dataset paths from data_root: {data_root_value}"
+                    )
+                except (FileNotFoundError, ValueError) as e:
+                    logger.warning(
+                        f"⚠️ Could not auto-resolve dataset paths from data_root '{data_root_value}': {e}"
+                    )
+                    # Fall back to manual derivation for backward compatibility
+                    data_root_path = Path(data_root_value)
+                    if not data.get("train_data_path"):
+                        data["train_data_path"] = str(data_root_path / "train.jsonl")
+                    if not data.get("val_data_path"):
+                        data["val_data_path"] = str(data_root_path / "val.jsonl")
+                    if not data.get("teacher_pool_file"):
+                        data["teacher_pool_file"] = str(
+                            data_root_path / "teacher_pool.jsonl"
+                        )
+    except Exception as e:
         # Do not block config loading if derivation fails; validation will catch later
+        logger.debug(f"Data path derivation failed: {e}")
         pass
+
+    # All parameters must be explicitly provided in YAML configuration
+    # No defaults are provided here to ensure fail-fast behavior
 
     # Create config with comprehensive error handling
     try:

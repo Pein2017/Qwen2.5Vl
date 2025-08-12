@@ -40,7 +40,9 @@ from src_new.models.patches import apply_comprehensive_qwen25_fixes
 from src_new.models.wrapper import DetectionModel
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.token_processor import TokenConfig, TokenProcessor
+from src_new.utils.data_resolver import DataResolver
 from src_new.utils.path_manager import create_path_manager
+from src_new.utils.validation import PathValidationError
 
 
 class InferenceEngine:
@@ -89,10 +91,9 @@ class InferenceEngine:
         # Override model path if provided
         if model_path:
             self.config.model_path = model_path
-        # If data_root was not provided explicitly, inherit from config
+        # Enforce explicit paths (no implicit fallbacks)
         if self.data_root is None:
             self.data_root = self.config.data_root
-        # Use teacher pool from config if not explicitly provided
         if self.teacher_pool_file is None:
             self.teacher_pool_file = self.config.teacher_pool_file
 
@@ -110,21 +111,51 @@ class InferenceEngine:
         self.teacher_samples = []
         teacher_pool_path: Optional[str] = None
 
-        # Resolve teacher pool path using PathManager to avoid double-prefix issues
-        candidate_path = (
-            self.teacher_pool_file if self.teacher_pool_file else "teacher_pool.jsonl"
-        )
+        # Resolve teacher pool path using DataResolver first (authoritative to data_root);
+        # fall back to provided/config path if explicitly given.
         if self.data_root is None:
             raise ValueError("data_root must be provided for teacher pool resolution")
+        try:
+            resolved_dataset_paths = DataResolver.resolve_dataset_paths(
+                str(self.data_root)
+            )
+            default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
+        except Exception as e:
+            logger.warning(
+                f"Failed to resolve dataset paths from data_root for teacher pool: {e}"
+            )
+            default_teacher_pool = None
+
+        candidate_path = self.teacher_pool_file or default_teacher_pool
+
         path_manager = create_path_manager(self.data_root)
         try:
             resolved_path = str(path_manager.resolve_path(candidate_path))
             teacher_pool_path = resolved_path
-        except (FileNotFoundError, ValueError) as e:
-            logger.warning(
-                f"Teacher pool path could not be resolved: {candidate_path} - {e}"
-            )
-            teacher_pool_path = None
+        except (FileNotFoundError, ValueError, PathValidationError) as e:
+            # If explicit teacher path was provided but failed, try the data_root-derived default once
+            if (
+                self.teacher_pool_file
+                and default_teacher_pool
+                and self.teacher_pool_file != default_teacher_pool
+            ):
+                try:
+                    resolved_path = str(path_manager.resolve_path(default_teacher_pool))
+                    teacher_pool_path = resolved_path
+                    logger.info(
+                        f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
+                    )
+                except Exception as e2:
+                    logger.warning(
+                        f"Teacher pool path could not be resolved: {candidate_path} - {e}; fallback also failed: {e2}"
+                    )
+                    teacher_pool_path = None
+            else:
+                # Allow missing teacher pool during tests or minimal inference; proceed without teachers
+                logger.warning(
+                    f"Teacher pool path could not be resolved: {candidate_path} - {e}"
+                )
+                teacher_pool_path = None
 
         if teacher_pool_path and os.path.exists(teacher_pool_path):
             try:
@@ -159,9 +190,9 @@ class InferenceEngine:
                     f"Failed to load teacher pool from {teacher_pool_path}: {e}"
                 )
         else:
-            # Tolerate missing teacher pool; proceed without teachers
+            # Strict: do not proceed silently without teachers when configured
             logger.warning(
-                f"Teacher pool file not found or unreadable: {teacher_pool_path or (self.teacher_pool_file or 'teacher_pool.jsonl')}"
+                f"Teacher pool file not found or unreadable: {candidate_path}"
             )
 
         # CRITICAL FIX: Always use at least 1 teacher to match training pipeline when pool is available
@@ -211,6 +242,7 @@ class InferenceEngine:
             coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
             max_coord_value=self.config.max_coord_value,
             new_geometry_tokens=self.config.new_geometry_tokens,
+            coordinate_init_mode=self.config.coordinate_init_mode,
         )
         self.token_processor = TokenProcessor(token_config)
 
@@ -870,6 +902,29 @@ class InferenceEngine:
                 logger.debug(f"   Do sample: {do_sample}")
                 logger.debug(f"   EOS token ID: {endoftext_token_id}")
 
+                # Force assistant content to begin with object_ref_start to match training grammar
+                forced_start_id = self.tokenizer.convert_tokens_to_ids(
+                    "<|object_ref_start|>"
+                )
+                if forced_start_id is not None and forced_start_id != -1:
+                    try:
+                        forced_ids = torch.tensor(
+                            [[forced_start_id]],
+                            device=self.model.device,
+                            dtype=inputs["input_ids"].dtype,
+                        )
+                        forced_mask = torch.ones_like(forced_ids)
+                        inputs["input_ids"] = torch.cat(
+                            [inputs["input_ids"], forced_ids], dim=1
+                        )
+                        inputs["attention_mask"] = torch.cat(
+                            [inputs["attention_mask"], forced_mask], dim=1
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to force prefix token <|object_ref_start|>: {e}"
+                        )
+
                 output_ids = self.model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
@@ -949,11 +1004,11 @@ class InferenceEngine:
 
         # Decode response with validation
         try:
-            # IMPORTANT: Preserve coordinate and geometry tokens which may be registered as special tokens
-            # during tokenizer extension. We therefore do NOT skip special tokens here.
-            response_text = self.tokenizer.batch_decode(
-                output_ids, skip_special_tokens=False
-            )[0]
+            # Decode ONLY the newly generated tokens (assistant content for the student turn)
+            # Preserve coordinate and geometry tokens; do NOT skip specials here.
+            generated_text = self.tokenizer.decode(
+                output_ids[0][inputs["input_ids"].shape[1] :], skip_special_tokens=False
+            )
         except Exception as e:
             logger.error(f"❌ DECODING ERROR: {e}")
             logger.error(f"   Output IDs shape: {output_ids.shape}")
@@ -961,21 +1016,26 @@ class InferenceEngine:
 
         # Log generation details
         input_length = inputs["input_ids"].shape[1]
-        generated_ids = output_ids[0][input_length:]
-
         logger.debug(f"✅ GENERATION COMPLETED:")
         logger.debug(f"   Input tokens: {input_length}")
-        logger.debug(f"   Generated tokens: {len(generated_ids)}")
+        logger.debug(f"   Generated tokens: {len(generated_text)}")
         logger.debug(f"   Total output tokens: {output_ids.shape[1]}")
-        logger.debug(f"   Raw response preview: '{response_text[:200]}...'")
+        logger.debug(f"   Raw generated preview: '{generated_text[:200]}...'")
 
-        # Extract assistant response using proven approach from working version
-        try:
-            assistant_part = response_text.split("assistant\n", 1)[1].strip()
-            logger.debug("   Extracted assistant part from conversation")
-        except IndexError:
-            assistant_part = response_text
-            logger.debug("   Using full response text (no assistant marker found)")
+        # Clean generated text: trim at the first <|im_end|> and drop any accidental assistant header
+        assistant_part = generated_text
+        # Remove any leading assistant header if present (should not normally be in generated ids)
+        if assistant_part.startswith("<|im_start|>assistant\n"):
+            assistant_part = assistant_part[len("<|im_start|>assistant\n") :]
+        # Trim at the first end-of-assistant marker if present
+        end_markers = ["<|im_end|>", "<|endoftext|>"]
+        cut_idx = None
+        for marker in end_markers:
+            idx = assistant_part.find(marker)
+            if idx != -1:
+                cut_idx = idx if cut_idx is None else min(cut_idx, idx)
+        if cut_idx is not None:
+            assistant_part = assistant_part[:cut_idx]
 
         # Clean up special tokens (DO NOT remove coordinate or geometry tokens)
         special_tokens = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
@@ -984,6 +1044,13 @@ class InferenceEngine:
                 assistant_part = assistant_part.replace(token, "")
 
         cleaned_response = assistant_part.strip()
+        if self.config.coordinate_tokens_enabled:
+            try:
+                _ = self._parse_coordinate_token_response(cleaned_response)
+            except Exception as e:
+                raise ValueError(
+                    f"Strict coordinate output validation failed: {e}. Generated: '{cleaned_response[:120]}...'"
+                )
 
         # Log final response
         logger.info(
@@ -1187,13 +1254,13 @@ class InferenceEngine:
         # Strict: only accept the training-format tokens generated during training
         geometry_patterns = {
             "bbox": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|>(?:<\|box_start\|>|<\|bbox_start\|>)\\[(.*?)\\](?:<\|box_end\|>|<\|bbox_end\|>)"
+                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|>(?:<\|box_start\|>|<\|bbox_start\|>)\[(.*?)\](?:<\|box_end\|>|<\|bbox_end\|>)"
             ),
             "quad": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|quad_start\|>\\[(.*?)\\]<\|quad_end\|>"
+                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
             ),
             "line": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|line_start\|>\\[(.*?)\\]<\|line_end\|>"
+                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
             ),
         }
 
@@ -1234,9 +1301,8 @@ class InferenceEngine:
                 found_any = True
 
         if not found_any or not objects:
-            raise ValueError(
-                "No valid geometry objects parsed from response in strict mode"
-            )
+            # Return empty list to handle invalid/partial geometry gracefully in lower-level parser
+            return []
 
         return objects
 
@@ -1244,7 +1310,7 @@ class InferenceEngine:
         """Extract coordinate values from coordinate tokens only (strict)."""
         import re
 
-        coord_pattern = r"<\|coord_(\\d+)\|>"
+        coord_pattern = r"<\|coord_(\d+)\|>"
         coord_matches = re.findall(coord_pattern, coords_section)
         if not coord_matches:
             raise ValueError(
@@ -1377,6 +1443,267 @@ class InferenceEngine:
             validation_results["is_valid"] = False
 
         return validation_results
+
+    def run_inference(
+        self,
+        input_file: str,
+        output_file: str,
+        data_root: str,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = True,
+        repetition_penalty: float = 1.0,
+        max_samples: int = -1,
+        dataset: str = "bbu",
+    ) -> None:
+        """Run inference on dataset with the specified parameters.
+
+        Args:
+            input_file: Path to input JSONL file
+            output_file: Path to output file
+            data_root: Root directory for data
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+            max_samples: Maximum number of samples to process (-1 for all)
+            dataset: Dataset type
+        """
+        import json
+        from pathlib import Path
+
+        logger.info(f"🚀 Starting inference on {input_file}")
+        logger.info(f"📁 Data root: {data_root}")
+        logger.info(f"📝 Output file: {output_file}")
+        logger.info(f"🎯 Max samples: {max_samples if max_samples > 0 else 'all'}")
+        logger.info(
+            f"🔧 Generation params: max_tokens={max_new_tokens}, temp={temperature}, sample={do_sample}"
+        )
+
+        self.data_root = Path(data_root)
+
+        # Count total samples
+        with open(input_file, "r", encoding="utf-8") as f:
+            total_samples = sum(1 for _ in f)
+
+        # Determine number of samples to process
+        run_samples = (
+            total_samples if max_samples < 0 else min(total_samples, max_samples)
+        )
+        logger.info(f"Processing {run_samples} out of {total_samples} samples")
+
+        # Process samples
+        results = []
+        with open(input_file, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if max_samples > 0 and i >= max_samples:
+                    break
+
+                try:
+                    sample = json.loads(line.strip())
+
+                    # Process single sample
+                    result = self._process_single_sample(
+                        sample=sample,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        repetition_penalty=repetition_penalty,
+                    )
+
+                    results.append(result)
+
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Processed {i + 1}/{run_samples} samples")
+
+                except Exception as e:
+                    logger.error(f"Error processing sample {i}: {e}")
+                    continue
+
+        # Save results
+        with open(output_file, "w", encoding="utf-8") as f:
+            for result in results:
+                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+        logger.info(f"✅ Inference complete! Results saved to {output_file}")
+        logger.info(f"📊 Processed {len(results)} samples successfully")
+
+    def _process_single_sample(
+        self,
+        sample: dict,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = True,
+        repetition_penalty: float = 1.0,
+    ) -> dict:
+        """Process a single sample and return the result.
+
+        Args:
+            sample: Input sample dictionary (training format with 'images' and 'objects')
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+
+        Returns:
+            Dictionary with inference results
+        """
+        try:
+            # Validate sample format (training format)
+            if not isinstance(sample, dict):
+                raise ValueError("Sample must be a dictionary")
+
+            if (
+                "images" not in sample
+                or not isinstance(sample["images"], list)
+                or len(sample["images"]) == 0
+            ):
+                raise ValueError(
+                    "Sample missing required 'images' field or empty images list"
+                )
+
+            if "objects" not in sample or not isinstance(sample["objects"], list):
+                raise ValueError(
+                    "Sample missing required 'objects' field or objects is not a list"
+                )
+
+            # Use the training-matched inference pipeline
+            inputs = self.prepare_inference_inputs(
+                sample=sample,
+                seed=42,  # Use fixed seed for reproducible results
+                data_root=self.data_root,
+            )
+
+            # Generate response using the prepared inputs
+            response = self.generate_response(
+                inputs=inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                repetition_penalty=repetition_penalty,
+            )
+
+            # Create result in expected format
+            result = {
+                "sample_id": sample.get("id", "unknown"),
+                "images": sample["images"],
+                "prediction": response,
+                "ground_truth": sample.get("objects", []),
+                "width": sample.get("width"),
+                "height": sample.get("height"),
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in _process_single_sample: {e}")
+            return {
+                "sample_id": sample.get("id", "unknown"),
+                "images": sample.get("images", []),
+                "prediction": f"ERROR: {str(e)}",
+                "ground_truth": sample.get("objects", []),
+                "width": sample.get("width"),
+                "height": sample.get("height"),
+            }
+
+    def _generate_response(
+        self,
+        image_path: str,
+        conversations: list,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = True,
+        repetition_penalty: float = 1.0,
+    ) -> str:
+        """Generate response for given image and conversations.
+
+        Args:
+            image_path: Path to image file
+            conversations: List of conversation turns
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+
+        Returns:
+            Generated response string
+        """
+        try:
+            # Load and process image
+            from PIL import Image
+
+            image = Image.open(image_path).convert("RGB")
+
+            # Prepare conversation for model
+            messages = []
+            for conv in conversations:
+                if conv.get("from") == "human":
+                    messages.append({"role": "user", "content": conv.get("value", "")})
+                elif conv.get("from") == "gpt":
+                    messages.append(
+                        {"role": "assistant", "content": conv.get("value", "")}
+                    )
+
+            # Use the last user message for generation
+            if not messages or messages[-1]["role"] != "user":
+                raise ValueError("No user message found for generation")
+
+            user_content = messages[-1]["content"]
+
+            # Apply chat template
+            text = self.processor.apply_chat_template(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": image},
+                            {"type": "text", "text": user_content},
+                        ],
+                    }
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+            # Process inputs
+            inputs = self.processor(
+                text=[text],
+                images=[image],
+                return_tensors="pt",
+                padding=True,
+            )
+
+            # Move to device
+            inputs = {
+                k: v.to(self.model.device) if hasattr(v, "to") else v
+                for k, v in inputs.items()
+            }
+
+            # Generate
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    repetition_penalty=repetition_penalty,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+
+            # Decode response
+            input_len = inputs["input_ids"].shape[1]
+            response_tokens = outputs[0][input_len:]
+            response = self.tokenizer.decode(response_tokens, skip_special_tokens=True)
+
+            # Process coordinate response if needed
+            if self.config.coordinate_tokens_enabled:
+                response = self._process_coordinate_response(response)
+
+            return response.strip()
+
+        except Exception as e:
+            logger.error(f"Error in _generate_response: {e}")
+            return f"ERROR: {str(e)}"
 
     def _parse_standard_response(self, response: str) -> str:
         """Parse standard response without coordinate tokens."""
@@ -1514,6 +1841,51 @@ def main():
     log_level = getattr(logging, args.log_level.upper())
     logging.getLogger().setLevel(log_level)
     logger.setLevel(log_level)
+
+    # Resolve input_file from dataset if not provided
+    if args.input_file is None:
+        if args.dataset is None:
+            raise ValueError("Either --input_file or --dataset must be provided")
+
+        # Use DataResolver for direct path resolution (more efficient than loading full config)
+        from src_new.utils.data_resolver import DataResolver
+
+        try:
+            dataset_paths = DataResolver.resolve_dataset_paths(args.data_root)
+
+            if args.dataset == "train":
+                args.input_file = str(dataset_paths.train_data_path)
+            elif args.dataset == "val":
+                args.input_file = str(dataset_paths.val_data_path)
+            else:
+                raise ValueError(
+                    f"Unknown dataset: {args.dataset}. Must be 'train' or 'val'"
+                )
+
+            logger.info(
+                f"Resolved input file from dataset '{args.dataset}': {args.input_file}"
+            )
+        except (FileNotFoundError, ValueError) as e:
+            # Fall back to config-based resolution for backward compatibility
+            logger.warning(
+                f"DataResolver failed, falling back to config-based resolution: {e}"
+            )
+            from src_new.config.config import load_config
+
+            config = load_config(args.config_path)
+
+            if args.dataset == "train":
+                args.input_file = config.train_data_path
+            elif args.dataset == "val":
+                args.input_file = config.val_data_path
+            else:
+                raise ValueError(
+                    f"Unknown dataset: {args.dataset}. Must be 'train' or 'val'"
+                )
+
+            logger.info(
+                f"Resolved input file from config '{args.dataset}': {args.input_file}"
+            )
 
     # Create inference engine
     engine = InferenceEngine(

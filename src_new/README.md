@@ -76,6 +76,7 @@ python run_comprehensive_tests.py
 - ✅ **EOS Training Added**: `<|im_end|>` is now included in assistant span labels to teach proper termination
 - ✅ **Vision token expansion validation**: We validate the number of `<|image_pad|>` tokens against the expected count computed from image grids and merge size, i.e. `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)` to match the official Qwen2.5‑VL processor behavior.
 - ✅ **HF config exposure in wrapper**: `DetectionModel.config` now proxies the underlying HuggingFace model config (and keeps the training dataclass on `training_config`). This preserves integrations that call `model.config.to_json_string()` and similar APIs.
+- ✅ **Joint Training Loss**: Cross-Entropy loss now covers all assistant tokens (text + coordinate tokens) while L1 loss remains exclusively for coordinate tokens, enabling joint learning of language and coordinate prediction.
 
 ---
 

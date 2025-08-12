@@ -24,6 +24,47 @@ from ..utils.rank_aware_logging import get_rank_aware_logger
 logger = get_rank_aware_logger(__name__)
 
 
+class GaussianKLRegularizer:
+    """
+    Numerically-stable Gaussian KL regularizer over coordinate bins.
+
+    Computes KL(p_target || p_pred) where p_target is a Gaussian over bins centered at
+a scalar ground-truth coordinate and p_pred comes from model logits via log_softmax.
+    """
+
+    def __init__(self, eps: float = 1e-8) -> None:
+        self.eps = float(eps)
+
+    def __call__(
+        self,
+        logits_valid: torch.Tensor,  # [N_valid, V]
+        target_coords: torch.Tensor,  # [N_valid]
+        coord_values: torch.Tensor,  # [V]
+        temperature: float,
+        sigma_bins: float,
+    ) -> torch.Tensor:
+        # Ensure float32 path for numerical stability
+        logits_f32 = logits_valid.float()
+
+        # Use log_softmax directly for stability
+        log_p_pred = F.log_softmax(logits_f32 / float(temperature), dim=-1)
+
+        # Build Gaussian targets over bins (in BIN units)
+        # dist shape: [N_valid, V]
+        dist = coord_values.unsqueeze(0) - target_coords.float().unsqueeze(1)
+        sigma = float(max(sigma_bins, 1.0))  # σ sanity in bins
+        denom = 2.0 * (sigma ** 2)
+        p_tgt_unnorm = torch.exp(- (dist ** 2) / denom)
+
+        # Normalize with epsilon guard
+        p_tgt = p_tgt_unnorm / (p_tgt_unnorm.sum(dim=-1, keepdim=True) + self.eps)
+        p_tgt = torch.clamp(p_tgt, min=self.eps)
+
+        # KL expects log-probs for input and probs for target
+        kl = F.kl_div(log_p_pred, p_tgt, reduction="batchmean")
+        return kl
+
+
 class SoftExpectationCoordinateLoss:
     """
     Implements soft expectation + L1 loss for coordinate token regression.
@@ -52,6 +93,8 @@ class SoftExpectationCoordinateLoss:
         temperature: float,
         numerical_stability: bool = True,
         device: Optional[torch.device] = None,
+        kl_weight: float = 0.0,
+        label_sigma: Optional[float] = None,
     ):
         """
         Initialize soft expectation coordinate loss.
@@ -62,12 +105,16 @@ class SoftExpectationCoordinateLoss:
             temperature: Softmax temperature for sharpness control
             numerical_stability: Enable numerical stability improvements
             device: Device for tensor operations
+            kl_weight: Weight for Gaussian KL regularizer (0 disables KL)
+            label_sigma: Gaussian sigma in BIN units; required if kl_weight>0
         """
         self.coord_start_id = coord_start_id
         self.coord_end_id = coord_end_id
         self.temperature = temperature
         self.numerical_stability = numerical_stability
         self.device = device
+        self.kl_weight = float(kl_weight)
+        self.label_sigma = None if label_sigma is None else float(label_sigma)
 
         # Coordinate vocabulary size (number of coordinate tokens)
         self.coord_vocab_size = coord_end_id - coord_start_id
@@ -75,11 +122,14 @@ class SoftExpectationCoordinateLoss:
         # Pre-compute coordinate value indices for efficiency
         self._coord_values = None
 
+        # KL helper
+        self._gaussian_kl = GaussianKLRegularizer(eps=1e-8)
+
         logger.info(
             f"🎯 Initialized SoftExpectationCoordinateLoss: "
             f"range=[{coord_start_id}, {coord_end_id}), "
             f"vocab_size={self.coord_vocab_size}, "
-            f"temperature={temperature}"
+            f"temperature={temperature}, kl_weight={self.kl_weight}, label_sigma={self.label_sigma}"
         )
 
     @classmethod
@@ -220,6 +270,7 @@ class SoftExpectationCoordinateLoss:
                     "coordinate_l1_loss": 0.0,
                     "mean_expected_coord": 0.0,
                     "mean_target_coord": 0.0,
+                    "coordinate_kl": 0.0,
                 },
             )
 
@@ -252,9 +303,6 @@ class SoftExpectationCoordinateLoss:
                 f"expected coord_vocab_size {self.coord_vocab_size}"
             )
 
-        # Compute soft expectation values (this will be updated after filtering)
-        # We'll compute this after filtering valid positions
-
         # Extract ground truth coordinate values
         target_coord_ids = labels[coord_positions]
 
@@ -269,6 +317,7 @@ class SoftExpectationCoordinateLoss:
                 "valid_coord_tokens": 0,
                 "avg_expected_coord": 0.0,
                 "avg_target_coord": 0.0,
+                "coordinate_kl": 0.0,
             }
 
         # Filter to only valid positions
@@ -298,23 +347,45 @@ class SoftExpectationCoordinateLoss:
         expected_coords = self.compute_soft_expectation(valid_coord_logits, temperature)
 
         # Compute L1 loss between expected and target coordinates
-        coordinate_loss = F.l1_loss(expected_coords, target_coords.float())
+        coordinate_l1_loss = F.l1_loss(expected_coords, target_coords.float())
+        coordinate_loss = coordinate_l1_loss
+
+        # Optional Gaussian KL term (numerically stable)
+        coordinate_kl = 0.0
+        if self.kl_weight > 0.0:
+            if self.label_sigma is None or self.label_sigma <= 0.0:
+                raise ValueError(
+                    "coordinate_kl_weight > 0 requires a positive coordinate_label_sigma in BIN units"
+                )
+            # Compute only when we have valid positions
+            if valid_coord_logits.numel() > 0:
+                # Get coordinate values for current device
+                coord_values = self._get_coord_values(valid_coord_logits.device)
+                # Compute KL in float32 along coord vocab
+                coordinate_kl_tensor = self._gaussian_kl(
+                    logits_valid=valid_coord_logits,
+                    target_coords=target_coords,
+                    coord_values=coord_values,
+                    temperature=temperature if temperature is not None else self.temperature,
+                    sigma_bins=float(self.label_sigma),
+                )
+                coordinate_loss = coordinate_loss + self.kl_weight * coordinate_kl_tensor
+                coordinate_kl = float(coordinate_kl_tensor.detach().item())
 
         # Prepare loss information for logging
         loss_info = {
             "num_coord_tokens": len(coord_positions[0]),
             "valid_coord_tokens": valid_mask.sum().item(),
-            "coordinate_l1_loss": coordinate_loss.item(),
-            "mean_expected_coord": expected_coords.mean().item(),
-            "mean_target_coord": target_coords.float().mean().item(),
+            "coordinate_l1_loss": float(coordinate_l1_loss.detach().item()),
+            "mean_expected_coord": float(expected_coords.mean().item()),
+            "mean_target_coord": float(target_coords.float().mean().item()),
+            "coordinate_kl": coordinate_kl,
         }
 
         logger.debug(
             f"🎯 Soft expectation coordinate loss: {coordinate_loss.item():.6f} "
-            f"(total_tokens: {loss_info['num_coord_tokens']}, "
-            f"valid_tokens: {loss_info['valid_coord_tokens']}, "
-            f"expected: {loss_info['mean_expected_coord']:.2f}, "
-            f"target: {loss_info['mean_target_coord']:.2f})"
+            f"(tokens: {loss_info['valid_coord_tokens']}, "
+            f"L1: {loss_info['coordinate_l1_loss']:.6f}, KL: {loss_info['coordinate_kl']:.6f})"
         )
 
         return coordinate_loss, loss_info

@@ -18,6 +18,7 @@ Usage (example):
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -143,7 +144,12 @@ def extend_and_save(
 
     # Configure and extend
     token_config = TokenConfig(
-        coordinate_tokens_enabled=True, max_coord_value=int(max_coord_value)
+        coordinate_tokens_enabled=True,
+        max_coord_value=int(max_coord_value),
+        # Optional: allow override via env COORD_INIT_MODE without changing script CLI
+        coordinate_init_mode=(
+            (os.environ.get("COORD_INIT_MODE") or None) if "os" in globals() else None
+        ),
     )
     processor = TokenProcessor(token_config)
 
