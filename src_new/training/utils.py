@@ -181,10 +181,13 @@ def prepare_model_for_training(
         Prepared model
     """
     # Enable gradient checkpointing if specified
-    if getattr(config, "gradient_checkpointing", False):
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable()
-            logger.info("✅ Gradient checkpointing enabled")
+    if config.gradient_checkpointing:
+        if not hasattr(model, "gradient_checkpointing_enable"):
+            raise RuntimeError(
+                "Model does not support gradient_checkpointing_enable but config.gradient_checkpointing is True"
+            )
+        model.gradient_checkpointing_enable()
+        logger.info("✅ Gradient checkpointing enabled")
 
     # Set model to training mode
     model.train()

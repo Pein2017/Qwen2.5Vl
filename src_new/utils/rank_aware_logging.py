@@ -69,7 +69,10 @@ def _detect_distributed_info() -> tuple[int, int, bool]:
         pass
 
     # Method 2: Check environment variables (set by torchrun/deepspeed)
-    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    rank_env = os.environ.get("RANK")
+    if rank_env is None:
+        rank_env = os.environ.get("LOCAL_RANK", "0")
+    rank = int(rank_env)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
     # For single GPU training, both should be 0 and 1 respectively
@@ -249,7 +252,10 @@ def log_distributed_info(logger: Optional[logging.Logger] = None) -> None:
 def _to_log_level(level: Union[str, int]) -> int:
     """Convert a string or int log level to a valid logging level int."""
     if isinstance(level, str):
-        return getattr(logging, level.upper(), logging.INFO)
+        level_upper = level.upper()
+        if not hasattr(logging, level_upper):
+            raise ValueError(f"Invalid log level string: {level}")
+        return getattr(logging, level_upper)
     return int(level)
 
 
@@ -306,7 +312,9 @@ def configure_rank_aware_logging(
     # to rank-aware behavior (i.e., have RankAwareFilter installed)
     for name in logging.Logger.manager.loggerDict:  # type: ignore[attr-defined]
         logger = logging.getLogger(name)
-        if any(isinstance(f, RankAwareFilter) for f in getattr(logger, "filters", [])):
+        if hasattr(logger, "filters") and any(
+            isinstance(f, RankAwareFilter) for f in logger.filters
+        ):
             logger.setLevel(level_int)
             for handler in logger.handlers:
                 handler.setLevel(level_int)
@@ -333,7 +341,9 @@ def set_global_log_level(log_level: Union[str, int]) -> None:
     # Update all existing loggers with rank-aware filters
     for name in logging.Logger.manager.loggerDict:  # type: ignore[attr-defined]
         logger = logging.getLogger(name)
-        if any(isinstance(f, RankAwareFilter) for f in getattr(logger, "filters", [])):
+        if hasattr(logger, "filters") and any(
+            isinstance(f, RankAwareFilter) for f in logger.filters
+        ):
             logger.setLevel(level_int)
             for handler in logger.handlers:
                 handler.setLevel(level_int)

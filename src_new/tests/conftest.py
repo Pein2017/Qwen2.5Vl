@@ -14,14 +14,14 @@ import pytest
 import torch
 import yaml
 
-
 # Import real component fixtures
+from src_new.tests.fixtures.real_components import *  # noqa: F401,F403
 
 
 # Test data constants - Updated for latest architecture
 SAMPLE_CONFIG_DATA = {
     # Model settings
-    "model_path": "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct",
+    "model_path": "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024",
     "model_size": "3B",
     "model_max_length": 32000,  # Updated to match documentation
     "attn_implementation": "flash_attention_2",
@@ -83,7 +83,7 @@ SAMPLE_JSONL_DATA = [
                 "desc": "螺丝连接点/光纤插头连接点,显示完整,符合要求",
             },
             {
-                "square": [209, 477, 254, 486, 252, 500, 211, 490],
+                "quad": [209, 477, 254, 486, 252, 500, 211, 490],
                 "desc": "标签贴纸/GPS信号线标识",
             },
         ],
@@ -213,6 +213,14 @@ def mock_config():
     for key, value in SAMPLE_CONFIG_DATA.items():
         setattr(config, key, value)
     return config
+
+
+@pytest.fixture
+def extended_tokenizer(real_base_tokenizer):
+    """Return the already extended tokenizer from the pre-expanded cache.
+    Kept for backwards compatibility with tests expecting this fixture.
+    """
+    return real_base_tokenizer
 
 
 @pytest.fixture

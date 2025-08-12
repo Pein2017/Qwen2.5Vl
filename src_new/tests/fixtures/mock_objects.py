@@ -31,8 +31,8 @@ class MockTokenizer:
             "<|endoftext|>": 151643,
             "<|image_pad|>": 151655,
             # Geometry tokens already in Qwen2.5-VL pretrained vocabulary
-            "<|obj_ref_start|>": 151646,
-            "<|obj_ref_end|>": 151647,
+            "<|object_ref_start|>": 151646,
+            "<|object_ref_end|>": 151647,
             "<|box_start|>": 151648,
             "<|box_end|>": 151649,
             "<|quad_start|>": 151650,
@@ -50,11 +50,16 @@ class MockTokenizer:
             token = f"<|coord_{i}|>"
             self.coordinate_tokens[token] = 151667 + i  # Start after line tokens
 
-        # Create a Mock for decode so tests can set side_effect
+        # Create a Mock for decode so tests can set side_effect; support tensors too
         self.decode = Mock(side_effect=self._decode_impl)
 
     def _decode_impl(self, token_ids: List[int], **kwargs) -> str:
-        """Mock decoding implementation used by the decode Mock."""
+        """Mock decoding implementation used by the decode Mock.
+        Accepts Python lists or 1D torch tensors.
+        """
+        # Support torch tensor inputs from code paths that feed tensors to decode
+        if isinstance(token_ids, torch.Tensor):
+            token_ids = token_ids.view(-1).tolist()
         if not token_ids:
             return ""
 
@@ -233,10 +238,11 @@ class MockEmbeddings:
         self.num_embeddings = weight.shape[0]
 
 
-class MockModel:
+class MockModel(torch.nn.Module):
     """Mock model for testing model wrapper functionality."""
 
     def __init__(self, vocab_size: int = 151665, hidden_size: int = 2048):
+        super().__init__()
         self.config = Mock()
         self.config.vocab_size = vocab_size
         self.config.hidden_size = hidden_size

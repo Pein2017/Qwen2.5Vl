@@ -86,24 +86,9 @@ class BBUTrainer(HFTrainer):
             tokenizer: DEPRECATED - use processing_class instead
             **kwargs: Additional arguments passed to HF Trainer
         """
-        # Handle backward compatibility
+        # Backward-compat: if tokenizer provided, prefer processing_class strictly
         if tokenizer is not None and processing_class is None:
-            import warnings
-
-            warnings.warn(
-                "The 'tokenizer' parameter is deprecated. Use 'processing_class' instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
             processing_class = tokenizer
-        elif tokenizer is not None and processing_class is not None:
-            import warnings
-
-            warnings.warn(
-                "Both 'tokenizer' and 'processing_class' provided. Using 'processing_class'.",
-                UserWarning,
-                stacklevel=2,
-            )
 
         # Initialize parent trainer
         super().__init__(
@@ -136,16 +121,14 @@ class BBUTrainer(HFTrainer):
 
         # Initialize unified checkpoint manager
         # Extract checkpoint settings from training_config or use defaults
-        if training_config:
-            best_checkpoint_metric = getattr(
-                training_config, "best_checkpoint_metric", "eval_loss"
+        if training_config is None:
+            raise ValueError(
+                "Model is missing training_config required for checkpoint manager initialization"
             )
-            best_checkpoint_greater_is_better = getattr(
-                training_config, "best_checkpoint_greater_is_better", False
-            )
-        else:
-            best_checkpoint_metric = "eval_loss"
-            best_checkpoint_greater_is_better = False
+        best_checkpoint_metric = training_config.best_checkpoint_metric
+        best_checkpoint_greater_is_better = (
+            training_config.best_checkpoint_greater_is_better
+        )
 
         self.checkpoint_manager = UnifiedCheckpointManager(
             metric_name=best_checkpoint_metric,
@@ -269,6 +252,9 @@ class BBUTrainer(HFTrainer):
 
         # Get model outputs and loss
         if return_outputs:
+            # Legacy mode: do not pass unified assistant_spans; rely on teacher/student spans
+            if "assistant_spans" in inputs:
+                inputs = {k: v for k, v in inputs.items() if k != "assistant_spans"}
             loss, outputs = super().compute_loss(
                 model,
                 inputs,
@@ -276,6 +262,9 @@ class BBUTrainer(HFTrainer):
                 num_items_in_batch=num_items_in_batch,
             )
         else:
+            # Legacy mode: do not pass unified assistant_spans; rely on teacher/student spans
+            if "assistant_spans" in inputs:
+                inputs = {k: v for k, v in inputs.items() if k != "assistant_spans"}
             loss = super().compute_loss(
                 model,
                 inputs,
@@ -904,7 +893,29 @@ class BBUTrainer(HFTrainer):
                     "vocab_size_extended": len(self.processing_class.get_vocab())
                     if self.processing_class
                     else None,
-                    "coordinate_token_range": [151667, 152692],  # Standard range
+                    "coordinate_token_range": (
+                        lambda _tok: (
+                            [
+                                min(
+                                    _tok.get_vocab()[t]
+                                    for t in _tok.get_vocab()
+                                    if t.startswith("<|coord_")
+                                ),
+                                max(
+                                    _tok.get_vocab()[t]
+                                    for t in _tok.get_vocab()
+                                    if t.startswith("<|coord_")
+                                )
+                                + 1,
+                            ]
+                            if _tok is not None
+                            and any(
+                                t.startswith("<|coord_")
+                                for t in _tok.get_vocab().keys()
+                            )
+                            else [None, None]
+                        )
+                    )(self.processing_class),
                 }
 
                 coord_config_path = os.path.join(
@@ -1109,7 +1120,29 @@ class BBUTrainer(HFTrainer):
                     "vocab_size_extended": len(self.processing_class.get_vocab())
                     if self.processing_class
                     else None,
-                    "coordinate_token_range": [151667, 152692],
+                    "coordinate_token_range": (
+                        lambda _tok: (
+                            [
+                                min(
+                                    _tok.get_vocab()[t]
+                                    for t in _tok.get_vocab()
+                                    if t.startswith("<|coord_")
+                                ),
+                                max(
+                                    _tok.get_vocab()[t]
+                                    for t in _tok.get_vocab()
+                                    if t.startswith("<|coord_")
+                                )
+                                + 1,
+                            ]
+                            if _tok is not None
+                            and any(
+                                t.startswith("<|coord_")
+                                for t in _tok.get_vocab().keys()
+                            )
+                            else [None, None]
+                        )
+                    )(self.processing_class),
                 }
 
                 coord_config_path = os.path.join(

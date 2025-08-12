@@ -20,8 +20,6 @@ Usage:
 import argparse
 import logging
 import os
-import pathlib
-import shutil
 import warnings
 from typing import TYPE_CHECKING
 
@@ -200,75 +198,74 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
     return training_args
 
 
-def perform_pre_distributed_expansion(base_model, tokenizer, config):
+def _validate_preexpanded_checkpoint(tokenizer, model, config) -> None:
+    """Strictly validate that checkpoint is pre-expanded when coords are enabled.
+
+    Raises ValueError/AssertionError with actionable messages if validation fails.
     """
-    Perform ALL tokenizer and model expansion operations BEFORE distributed training.
-
-    This function centralizes all expensive expansion operations to happen once
-    in the main process, preventing conflicts with HuggingFace Trainer's distributed
-    coordination mechanisms.
-
-    Args:
-        base_model: The base Qwen2.5-VL model
-        tokenizer: The base tokenizer
-        config: Training configuration
-
-    Returns:
-        tuple: (expanded_tokenizer, expanded_model)
-    """
-    from src_new.processing.token_processor import TokenConfig, TokenProcessor
-
     logger = get_logger()
-    logger.info("🔧 Starting pre-distributed expansion operations...")
+    if not getattr(config, "coordinate_tokens_enabled", False):
+        return
 
-    # Only perform expansion if coordinate tokens are enabled
-    if not config.coordinate_tokens_enabled:
-        logger.info("📋 Coordinate tokens disabled - skipping expansion")
-        return tokenizer, base_model
+    vocab = tokenizer.get_vocab()
+    vocab_size = len(vocab)
 
-    # Create token processor for expansion
-    token_config = TokenConfig(
-        coordinate_tokens_enabled=config.coordinate_tokens_enabled,
-        max_coord_value=config.max_coord_value,
-    )
-    token_processor = TokenProcessor(token_config)
+    if vocab_size <= 151665:
+        raise ValueError(
+            f"Coordinate tokens are enabled but tokenizer is not extended: vocab_size={vocab_size} (expected > 151665). "
+            f"Please run the migration script to export an expanded checkpoint and point model_path to it."
+        )
 
-    # Record initial vocabulary size
-    vocab_size_before = len(tokenizer.get_vocab())
-    logger.info(f"📊 Initial vocabulary size: {vocab_size_before}")
+    # Required tokens
+    missing = []
+    for tok in ("<|line_start|>", "<|line_end|>"):
+        if tok not in vocab:
+            missing.append(tok)
+    if missing:
+        raise ValueError(
+            f"Missing required geometry tokens in tokenizer: {missing}. Ensure you used the official base model and migration script."
+        )
 
-    # Check if expansion is needed
-    has_extended_vocab = vocab_size_before > 151665
-    skip_extension = (
-        getattr(config, "skip_vocab_extension", False) or has_extended_vocab
-    )
+    # Coordinate token ID range check
+    max_coord = int(getattr(config, "max_coord_value", -1))
+    if max_coord < 0:
+        raise ValueError(
+            "max_coord_value must be set when coordinate tokens are enabled"
+        )
 
-    if skip_extension:
-        if has_extended_vocab:
-            logger.info(
-                f"🚀 Vocabulary already extended ({vocab_size_before} tokens) - skipping expansion"
+    coord_ids = []
+    for i in range(max_coord + 1):
+        tok = f"<|coord_{i}|>"
+        if tok not in vocab:
+            raise ValueError(
+                f"Missing coordinate token '{tok}' in tokenizer. Expected full range 0..{max_coord}."
             )
-        else:
-            logger.info("🚀 Skipping vocabulary extension (manual override)")
-        return tokenizer, base_model
+        coord_ids.append(vocab[tok])
 
-    # Perform tokenizer vocabulary expansion
-    logger.info("🔧 Expanding tokenizer vocabulary...")
-    expanded_tokenizer = token_processor.extend_tokenizer_vocabulary(tokenizer)
+    hard_start = 151667
+    if min(coord_ids) != hard_start or max(coord_ids) != hard_start + max_coord:
+        raise ValueError(
+            "Tokenizer coordinate token range mismatch. "
+            f"Expected inclusive range [{hard_start}, {hard_start + max_coord}] but found "
+            f"[{min(coord_ids)}, {max(coord_ids)}]. Ensure the checkpoint was exported via the migration script."
+        )
 
-    # Perform model embedding extension
-    logger.info("🔧 Expanding model embeddings...")
-    expanded_model = token_processor.extend_model_embeddings(
-        base_model, expanded_tokenizer
-    )
+    # Embedding shape checks
+    in_emb = model.get_input_embeddings()
+    num_rows = int(in_emb.weight.shape[0])
+    if num_rows < vocab_size:
+        raise AssertionError(
+            f"Model input embeddings smaller than tokenizer: rows={num_rows}, vocab={vocab_size}. "
+            f"Expanded checkpoint must include resized embeddings."
+        )
+    if (num_rows % 128) != 0:
+        raise AssertionError(
+            f"Model embeddings must be padded to a multiple of 128 rows; got {num_rows}."
+        )
 
-    # Log final vocabulary size
-    vocab_size_after = len(expanded_tokenizer.get_vocab())
     logger.info(
-        f"✅ Pre-distributed expansion completed: {vocab_size_before} → {vocab_size_after} tokens"
+        f"✅ Pre-expanded checkpoint validated: tokenizer={vocab_size}, embeddings_rows={num_rows}, max_coord={max_coord}"
     )
-
-    return expanded_tokenizer, expanded_model
 
 
 def create_trainer_with_new_architecture(
@@ -310,13 +307,9 @@ def create_trainer_with_new_architecture(
 
     # Override max_pixels with configured value
     if hasattr(config, "max_pixels"):
-        logger.info(f"🖼️ Setting image processor max_pixels to {config.max_pixels}")
-        image_processor.max_pixels = config.max_pixels
+        image_processor.size = getattr(image_processor, "size", image_processor.size)
 
-    # Note: Tokenizer vocabulary extension is now handled by DetectionModel
-    # to avoid duplicate processing and ensure consistency
-
-    # Load teacher pool
+    # Create teacher pool manager (lazy loading of teachers)
     teacher_pool_manager = TeacherPoolManager(
         teacher_pool_file=config.teacher_pool_file
     )
@@ -369,18 +362,15 @@ def create_trainer_with_new_architecture(
         config.model_path, **loading_kwargs
     )
 
-    # CRITICAL: Perform ALL expansion operations BEFORE distributed training
-    # This prevents conflicts with HuggingFace Trainer's distributed coordination
-    tokenizer, base_model = perform_pre_distributed_expansion(
-        base_model, tokenizer, config
-    )
+    # Strictly require pre-expanded checkpoints if coordinate tokens are enabled
+    _validate_preexpanded_checkpoint(tokenizer, base_model, config)
 
-    # Wrap model with detection capabilities (expansion already completed)
+    # Wrap model with detection capabilities (no expansion performed here)
     model = DetectionModel(
         base_model=base_model,
         config=config,
         tokenizer=tokenizer,
-        skip_expansion=True,  # Skip expansion since it's already done
+        skip_expansion=True,  # Expansion is externalized via migration script
     )
 
     # Import BBUTrainer locally to ensure it's available in distributed training
@@ -406,8 +396,7 @@ def create_trainer_with_new_architecture(
         config.model_path, trust_remote_code=True
     )
 
-    # Update processor with our extended tokenizer and image processor
-    # Note: We need to create a new processor instance with updated components
+    # Update processor with our tokenizer and image processor
     processor = Qwen2VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
@@ -417,132 +406,46 @@ def create_trainer_with_new_architecture(
     # CRITICAL: Set tokenizer as trainer's processing_class for automatic saving
     # HuggingFace Trainer expects processing_class to have get_vocab() method (tokenizer has it, processor doesn't)
     trainer.processing_class = tokenizer
-    logger.info(
-        "🔧 Set expanded tokenizer as processing_class for automatic checkpoint saving"
-    )
+    logger.info("🔧 Set tokenizer as processing_class for automatic checkpoint saving")
 
-    # Set processor for the trainer
+    # Provide processor to trainer and datasets for HF-first pipeline
     trainer.set_processor(processor)
-    logger.info("✅ Processor configured for checkpoint saving with chat template")
+    logger.info("✅ Set HuggingFace processor on trainer and datasets")
 
     return trainer
 
 
 def main():
-    """Main training function using new src_new architecture."""
+    from src_new.config.config import load_config, set_global_log_level
+
     args = parse_args()
-
-    # Setup centralized rank-aware logging system
-    from src_new.utils.rank_aware_logging import (
-        configure_rank_aware_logging,
-        initialize_logging_from_env,
-        log_distributed_info,
-    )
-
-    # Initialize from environment (BBU_LOG_LEVEL/BBU_LOG_FORMAT), then apply CLI override
-    initialize_logging_from_env()
-    configure_rank_aware_logging(log_level=args.log_level)
-
+    set_global_log_level(args.log_level)
     logger = get_logger()
 
-    try:
-        # Force single GPU usage to avoid DataParallel issues
-        import os
+    # Load configuration
+    config = load_config(f"configs/{args.config}.yaml")
 
-        if "CUDA_VISIBLE_DEVICES" not in os.environ:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-            logger.info("🖥️ Set CUDA_VISIBLE_DEVICES=0 to force single GPU usage")
+    if args.print_config:
+        from pprint import pformat
 
-        # Log distributed training information (rank-aware)
-        log_distributed_info(logger)
+        logger.info("Loaded config:\n" + pformat(config))
+        return
 
-        # Load configuration
-        logger.info("Loading configuration...")
-        from src_new.config.config import load_config
+    # Create training arguments (DeepSpeed-aware)
+    training_args = create_training_arguments_with_deepspeed(
+        config, max_steps=args.max_steps
+    )
 
-        config_path = f"configs/{args.config}.yaml"
-        config = load_config(config_path)
-        logger.info(f"Configuration loaded: {config_path}")
+    # Create trainer and optionally run tests
+    trainer = create_trainer_with_new_architecture(training_args, config)
 
-        # Print config if requested
-        if args.print_config:
-            logger.info(f"Model: {config.model_path}")
-            logger.info(
-                f"LR: {config.learning_rate}, Epochs: {config.num_train_epochs}"
-            )
-            logger.info(
-                f"Batch: {config.per_device_train_batch_size}, Output: {config.output_dir}"
-            )
-            logger.info(
-                f"Coordinate tokens: {'enabled' if config.coordinate_tokens_enabled else 'disabled'}"
-            )
-            return 0
+    if args.test_trainer:
+        logger.info("Trainer creation successful - exiting due to --test-trainer")
+        return
 
-        # Validation only mode
-        if args.validate_only:
-            logger.info("✅ Configuration validation passed!")
-            return 0
-
-        # Test trainer creation mode
-        if args.test_trainer:
-            logger.info("🧪 Testing trainer creation...")
-
-            # Create training arguments
-            training_args = create_training_arguments_with_deepspeed(
-                config, args.max_steps
-            )
-
-            # Create trainer using new architecture
-            trainer = create_trainer_with_new_architecture(training_args, config)
-
-            logger.info("✅ Trainer creation test passed!")
-            logger.info(f"   - Model: {type(trainer.model).__name__}")
-            logger.info("   - Datasets and model loaded successfully")
-            return 0
-
-        # Setup centralized rank-aware logging system
-        # Logging was configured at the top; no reconfiguration needed here
-        logger.info(f"🔧 Global logging level set to: {args.log_level}")
-
-        # Create training arguments
-        logger.info("Creating TrainingArguments with DeepSpeed configuration...")
-        training_args = create_training_arguments_with_deepspeed(config, args.max_steps)
-
-        # Create output directory
-        output_dir = training_args.output_dir or "."
-        pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # Create trainer using new architecture
-        logger.info("Creating trainer with new architecture...")
-        trainer = create_trainer_with_new_architecture(training_args, config)
-
-        # Save configuration for reproducibility
-        config_dest_path = pathlib.Path(config.output_dir) / f"{args.config}.yaml"
-        shutil.copy(config_path, config_dest_path)
-        logger.info(f"💾 Configuration saved to: {config_dest_path}")
-
-        # Start training
-        logger.info("🚀 Starting training with new architecture...")
-        trainer.train()
-
-        # Best checkpoint is maintained automatically by unified checkpoint management
-        # No need for manual save_final_model call
-
-        # Post-training cleanup
-        # Re-enable cache after training
-        trainer.model.base_model.config.use_cache = config.use_cache_inference
-
-        logger.info("✅ Training completed successfully with new architecture!")
-        logger.info("🔗 Best checkpoint maintained by unified checkpoint management")
-        return 0
-
-    except Exception as e:
-        logger.error(f"Training failed: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return 1
+    # Begin training
+    trainer.train()
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()

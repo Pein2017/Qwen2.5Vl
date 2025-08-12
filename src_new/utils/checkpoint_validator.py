@@ -230,7 +230,8 @@ class CheckpointValidator:
         """Print a formatted validation report."""
         logger.info(f"\n🔍 Checkpoint Validation Report")
         logger.info(f"📁 Path: {results['checkpoint_path']}")
-        logger.info(f"✅ Valid: {results.get('is_valid', False)}")
+        is_valid = bool(results["is_valid"]) if "is_valid" in results else False
+        logger.info(f"✅ Valid: {is_valid}")
 
         if results["errors"]:
             logger.error(f"\n❌ Errors ({len(results['errors'])}):")
@@ -256,7 +257,10 @@ class CheckpointValidator:
         else:
             logger.error(f"   ❌ No model weights found")
 
-        if results["coordinate_tokens"].get("config_exists"):
+        if (
+            "config_exists" in results["coordinate_tokens"]
+            and results["coordinate_tokens"]["config_exists"]
+        ):
             logger.info(f"\n🎯 Coordinate Tokens:")
             coord_info = results["coordinate_tokens"]
             logger.info(f"   ✅ Configuration found")

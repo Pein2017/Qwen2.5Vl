@@ -73,24 +73,10 @@ def set_global_log_level(level: str) -> None:
 
 
 def get_config_logger() -> logging.Logger:
-    """Get rank-aware logger for config module."""
-    try:
-        from ..utils.rank_aware_logging import get_rank_aware_logger
+    """Get rank-aware logger for config module (strict, no fallback)."""
+    from ..utils.rank_aware_logging import get_rank_aware_logger
 
-        return get_rank_aware_logger("config")
-    except ImportError:
-        # Fallback to original implementation
-        logger = logging.getLogger("config")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(_GLOBAL_LOG_LEVEL)
-            _CONFIGURED_LOGGERS.add("config")
-        return logger
+    return get_rank_aware_logger("config")
 
 
 logger = get_config_logger()
@@ -230,6 +216,10 @@ class Config:
 
     coordinate_loss_weight: float = 0.05
     regular_loss_weight: float = 1.0
+    # Temperature for soft expectation over coordinate token logits (preferred key)
+    coordinate_temperature: float = 1.0
+    # Backward-compat alias (legacy key used in tests); kept in sync with coordinate_temperature
+    coordinate_loss_temperature: float = 1.0
     new_geometry_tokens: Optional[List[str]] = None
 
     # Essential settings with defaults
@@ -258,6 +248,9 @@ class Config:
     # Training control flags with defaults
     training_prompt_style: bool = True
     use_consistent_prompts: bool = True
+
+    # Model loading control flags with defaults
+    skip_vocab_extension: bool = False  # Skip vocabulary extension during model loading
 
     def __post_init__(self) -> None:
         """
@@ -364,6 +357,16 @@ class Config:
                 f"regular_loss_weight must be positive, got {self.regular_loss_weight}"
             )
 
+        # Validate temperatures
+        if self.coordinate_temperature <= 0:
+            raise ValueError(
+                f"coordinate_temperature must be > 0, got {self.coordinate_temperature}"
+            )
+        if self.coordinate_loss_temperature <= 0:
+            raise ValueError(
+                f"coordinate_loss_temperature must be > 0, got {self.coordinate_loss_temperature}"
+            )
+
         # Initialize new_geometry_tokens if not provided
         if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
             # Only add line tokens - quad tokens already exist in Qwen2.5-VL
@@ -418,6 +421,31 @@ def load_config(config_path: str) -> Config:
 
     # Convert scientific notation strings to floats
     data = _convert_scientific_notation(data)
+
+    # Backward/forward compatibility for coordinate temperature keys
+    # Prefer 'coordinate_temperature' if present; keep both keys in sync
+    try:
+        if (
+            "coordinate_temperature" in data
+            and data["coordinate_temperature"] is not None
+        ):
+            # If legacy exists but differs, override legacy with new
+            data["coordinate_loss_temperature"] = float(data["coordinate_temperature"])
+        elif (
+            "coordinate_loss_temperature" in data
+            and data["coordinate_loss_temperature"] is not None
+        ):
+            # Populate new key from legacy
+            data["coordinate_temperature"] = float(data["coordinate_loss_temperature"])
+        else:
+            # Ensure both keys exist with default 1.0 for dataclass init
+            data.setdefault("coordinate_temperature", 1.0)
+            data.setdefault(
+                "coordinate_loss_temperature", data["coordinate_temperature"]
+            )
+    except Exception:
+        # If mapping fails, let dataclass validation handle values
+        pass
 
     # === Unified dataset path defaults ===
     # If only data_root is provided, auto-derive standard file paths inside it

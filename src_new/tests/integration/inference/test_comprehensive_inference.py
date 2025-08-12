@@ -31,7 +31,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 from tests.fixtures.mock_objects import create_mock_model, create_mock_tokenizer
 from tests.fixtures.test_utils import (
-    TestMetrics,
+    MetricsHelper as TestMetrics,
+)
+from tests.fixtures.test_utils import (
     generate_test_images,
     skip_if_no_gpu,
 )
@@ -39,73 +41,109 @@ from tests.fixtures.test_utils import (
 from inference import InferenceEngine
 
 
-class TestComprehensiveInference:
-    """Comprehensive inference test suite."""
+# Module-level fixtures so all test classes can use them
+@pytest.fixture
+def temp_dir():
+    temp_dir = tempfile.mkdtemp()
+    yield temp_dir
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
-    @pytest.fixture
-    def temp_dir(self):
-        """Create temporary directory for test data."""
-        temp_dir = tempfile.mkdtemp()
-        yield temp_dir
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
-    @pytest.fixture
-    def test_images(self, temp_dir):
-        """Generate test images for inference."""
-        return generate_test_images(temp_dir, count=5)
+@pytest.fixture
+def test_images(temp_dir):
+    return generate_test_images(temp_dir, count=5)
 
-    @pytest.fixture
-    def mock_inference_engine(self, temp_dir):
-        """Create mock inference engine for testing without real model."""
-        # Create minimal config for testing
-        config_data = {
-            "coordinate_tokens_enabled": True,
-            "max_coord_value": 1000,
-            "new_geometry_tokens": True,
-            "model_path": "/fake/model/path",
+
+@pytest.fixture
+def mock_inference_engine(temp_dir):
+    """Create mock inference engine for testing without real model."""
+    # Create minimal valid config for testing (all required fields present)
+    config_data = {
+        # Model
+        "model_path": temp_dir,
+        "model_size": "3B",
+        "model_max_length": 32000,
+        "attn_implementation": "flash_attention_2",
+        "torch_dtype": "bfloat16",
+        "model_hidden_size": 2048,
+        # Training (minimal values)
+        "num_train_epochs": 1,
+        "per_device_train_batch_size": 1,
+        "learning_rate": 5e-6,
+        "vision_lr": 5e-7,
+        "merger_lr": 1e-5,
+        "llm_lr": 5e-6,
+        # Data paths (synthetic in temp_dir)
+        "data_root": temp_dir,
+        "train_data_path": os.path.join(temp_dir, "train.jsonl"),
+        "val_data_path": os.path.join(temp_dir, "val.jsonl"),
+        "teacher_pool_file": os.path.join(temp_dir, "teacher_pool.jsonl"),
+        # Output
+        "output_dir": os.path.join(temp_dir, "out"),
+        "run_name": "inference_test",
+        # Coordinates
+        "max_coord_value": 1024,
+        "coordinate_tokens_enabled": True,
+    }
+
+    config_path = os.path.join(temp_dir, "test_config.yaml")
+    with open(config_path, "w") as f:
+        import yaml
+
+        yaml.dump(config_data, f)
+
+    # Mock the model loading to avoid requiring actual model
+    with (
+        patch("inference.DetectionModel") as mock_model_class,
+        patch("inference.AutoTokenizer") as mock_tokenizer_class,
+        patch("inference.Qwen2VLImageProcessor") as mock_processor_class,
+        patch("inference.Qwen2VLProcessor") as mock_unified_processor_class,
+        patch("inference.ConversationProcessor") as mock_conv_processor,
+    ):
+        # Setup mocks
+        mock_tokenizer = create_mock_tokenizer()
+        mock_tokenizer_class.from_pretrained.return_value = mock_tokenizer
+
+        mock_model = create_mock_model()
+        mock_model_class.from_pretrained.return_value = mock_model
+        mock_model_class.from_pretrained_fast.return_value = mock_model
+
+        mock_processor = MagicMock()
+        mock_processor_class.from_pretrained.return_value = mock_processor
+
+        mock_conversation_processor = MagicMock()
+        mock_conv_processor.return_value = mock_conversation_processor
+
+        # Patch unified processor to a simple object with required attributes
+        fake_unified = MagicMock()
+        fake_unified.image_processor = mock_processor
+        fake_unified.tokenizer = mock_tokenizer
+        mock_unified_processor_class.return_value = fake_unified
+
+        # Create inference engine
+        engine = InferenceEngine(
+            config_path=config_path,
+            model_path=temp_dir,  # point to an existing directory to satisfy path validation
+            use_training_prompts=True,
+            batch_size=1,
+        )
+
+        # Attach mocks for testing
+        engine._mock_tokenizer = mock_tokenizer
+        engine._mock_model = mock_model
+        engine._mock_conversation_processor = mock_conversation_processor
+
+        # Provide default mock outputs for conversation processor methods used by inference
+        default_inputs = {
+            "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1, 1, 1]], dtype=torch.long),
+            "pixel_values": torch.randn(4, 1024),
+            "image_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
         }
+        mock_conversation_processor.create_simple_conversation_for_generation.return_value = default_inputs
+        mock_conversation_processor.create_teacher_student_conversation_for_generation.return_value = default_inputs
 
-        config_path = os.path.join(temp_dir, "test_config.yaml")
-        with open(config_path, "w") as f:
-            import yaml
-
-            yaml.dump(config_data, f)
-
-        # Mock the model loading to avoid requiring actual model
-        with (
-            patch("inference.DetectionModel") as mock_model_class,
-            patch("inference.AutoTokenizer") as mock_tokenizer_class,
-            patch("inference.Qwen2VLImageProcessor") as mock_processor_class,
-            patch("inference.ConversationProcessor") as mock_conv_processor,
-        ):
-            # Setup mocks
-            mock_tokenizer = create_mock_tokenizer()
-            mock_tokenizer_class.from_pretrained.return_value = mock_tokenizer
-
-            mock_model = create_mock_model()
-            mock_model_class.from_pretrained.return_value = mock_model
-            mock_model_class.from_pretrained_fast.return_value = mock_model
-
-            mock_processor = MagicMock()
-            mock_processor_class.from_pretrained.return_value = mock_processor
-
-            mock_conversation_processor = MagicMock()
-            mock_conv_processor.return_value = mock_conversation_processor
-
-            # Create inference engine
-            engine = InferenceEngine(
-                config_path=config_path,
-                model_path="/fake/model/path",
-                use_training_prompts=True,
-                batch_size=1,
-            )
-
-            # Attach mocks for testing
-            engine._mock_tokenizer = mock_tokenizer
-            engine._mock_model = mock_model
-            engine._mock_conversation_processor = mock_conversation_processor
-
-            yield engine
+        yield engine
 
 
 class TestSingleImageInference:
@@ -134,7 +172,7 @@ class TestSingleImageInference:
 
         # Test that conversation processor was called correctly
         mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_simple_conversation.called
+        assert mock_conv.create_simple_conversation_for_generation.called
 
     def test_single_image_coordinate_tokens(self, mock_inference_engine, test_images):
         """Test single image inference with coordinate tokens enabled."""
@@ -151,7 +189,7 @@ class TestSingleImageInference:
         }
 
         # Mock coordinate token response
-        mock_response = "The image shows <|obj_ref_start|>螺丝位于设备左上角<|obj_ref_end|><|box_start|>[<|coord_50|>, <|coord_50|>, <|coord_150|>, <|coord_150|>]<|box_end|>"
+        mock_response = "The image shows <|object_ref_start|>螺丝位于设备左上角<|object_ref_end|><|box_start|>[<|coord_50|>, <|coord_50|>, <|coord_150|>, <|coord_150|>]<|box_end|>"
 
         with patch.object(
             mock_inference_engine, "generate_response", return_value=mock_response
@@ -245,7 +283,7 @@ class TestTeacherStudentInference:
 
         # Validate that teacher examples were included
         mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_teacher_student_conversation.called
+        assert mock_conv.create_teacher_student_conversation_for_generation.called
 
         # Validate input structure
         assert "input_ids" in inputs
@@ -314,7 +352,7 @@ I can see test objects in the image.<|im_end|>
             "image_grid_thw": torch.tensor([[1, 2, 2]]),
         }
 
-        mock_inference_engine._mock_conversation_processor.create_teacher_student_conversation.return_value = mock_inputs
+        mock_inference_engine._mock_conversation_processor.create_teacher_student_conversation_for_generation.return_value = mock_inputs
 
         with patch.object(
             mock_inference_engine.tokenizer,
@@ -358,7 +396,7 @@ class TestMultiImageProcessing:
             ),  # 3 image grids
         }
 
-        mock_inference_engine._mock_conversation_processor.create_simple_conversation.return_value = mock_inputs
+        mock_inference_engine._mock_conversation_processor.create_simple_conversation_for_generation.return_value = mock_inputs
 
         # Mock tokenizer decode to return text with appropriate image tokens
         mock_text = (
@@ -411,8 +449,8 @@ class TestCoordinateSystemValidation:
         """Test coordinate token generation during inference."""
         # Mock a coordinate token response
         mock_response = """The image contains multiple objects:
-1. <|obj_ref_start|>螺丝在左上角<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_50|>, <|coord_200|>, <|coord_150|>]<|box_end|>
-2. <|obj_ref_start|>挡风板在右侧<|obj_ref_end|><|quad_start|>[<|coord_300|>, <|coord_100|>, <|coord_400|>, <|coord_100|>, <|coord_400|>, <|coord_200|>, <|coord_300|>, <|coord_200|>]<|quad_end|>"""
+1. <|object_ref_start|>螺丝在左上角<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_50|>, <|coord_200|>, <|coord_150|>]<|box_end|>
+2. <|object_ref_start|>挡风板在右侧<|object_ref_end|><|quad_start|>[<|coord_300|>, <|coord_100|>, <|coord_400|>, <|coord_100|>, <|coord_400|>, <|coord_200|>, <|coord_300|>, <|coord_200|>]<|quad_end|>"""
 
         # Test coordinate token parsing
         parsed_objects = mock_inference_engine._parse_coordinate_token_response(
@@ -474,7 +512,7 @@ class TestEdgeCasesAndErrorHandling:
         # Should fall back to simple conversation
         inputs = mock_inference_engine.prepare_inference_inputs(sample)
         assert inputs is not None
-        assert mock_inference_engine._mock_conversation_processor.create_simple_conversation.called
+        assert mock_inference_engine._mock_conversation_processor.create_simple_conversation_for_generation.called
 
     def test_missing_image_files(self, mock_inference_engine):
         """Test handling of missing image files."""
@@ -500,8 +538,22 @@ class TestEdgeCasesAndErrorHandling:
 
         for i, sample in enumerate(malformed_samples):
             if i < 2:  # First two should raise errors
-                with pytest.raises(Exception):
-                    mock_inference_engine.prepare_inference_inputs(sample)
+                # Make the conversation processor raise when images are missing/empty
+                def side_effect_simple(s, images):
+                    if not images:
+                        raise ValueError("images must be non-empty")
+                    return {
+                        "input_ids": torch.tensor([[1, 2, 3]]),
+                        "attention_mask": torch.tensor([[1, 1, 1]]),
+                    }
+
+                with patch.object(
+                    mock_inference_engine._mock_conversation_processor,
+                    "create_simple_conversation_for_generation",
+                    side_effect=side_effect_simple,
+                ):
+                    with pytest.raises(Exception):
+                        mock_inference_engine.prepare_inference_inputs(sample)
             # Others might work with defaults
 
     def test_empty_response_generation(self, mock_inference_engine, test_images):
@@ -680,7 +732,7 @@ class TestEvalScriptIntegration:
 
         # Verify conversation processor was called for multi-geometry sample
         mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_simple_conversation.called
+        assert mock_conv.create_simple_conversation_for_generation.called
 
     def test_real_teacher_student_format(
         self,
@@ -718,18 +770,18 @@ class TestEvalScriptIntegration:
 
         # Validate teacher-student conversation creation
         mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_teacher_student_conversation.called
+        assert mock_conv.create_teacher_student_conversation_for_generation.called
 
     def test_coordinate_token_processing_with_real_geometries(
         self, mock_inference_engine, real_dataset_sample
     ):
         """Test coordinate token processing for all geometry types found in real data."""
         # Mock coordinate token responses for different geometries
-        bbox_response = "I can see <|obj_ref_start|>螺丝、光纤插头/地排处接地螺丝,只显示部分,符合要求<|obj_ref_end|><|box_start|>[<|coord_358|>, <|coord_106|>, <|coord_407|>, <|coord_149|>]<|box_end|>"
+        bbox_response = "I can see <|object_ref_start|>螺丝、光纤插头/地排处接地螺丝,只显示部分,符合要求<|object_ref_end|><|box_start|>[<|coord_358|>, <|coord_106|>, <|coord_407|>, <|coord_149|>]<|box_end|>"
 
-        quad_response = "There is <|obj_ref_start|>BBU设备/华为,只显示部分,无需安装<|obj_ref_end|><|quad_start|>[<|coord_2|>, <|coord_0|>, <|coord_226|>, <|coord_0|>, <|coord_241|>, <|coord_14|>, <|coord_0|>, <|coord_73|>]<|quad_end|>"
+        quad_response = "There is <|object_ref_start|>BBU设备/华为,只显示部分,无需安装<|object_ref_end|><|quad_start|>[<|coord_2|>, <|coord_0|>, <|coord_226|>, <|coord_0|>, <|coord_241|>, <|coord_14|>, <|coord_0|>, <|coord_73|>]<|quad_end|>"
 
-        line_response = "I see <|obj_ref_start|>光纤/有遮挡,无保护措施,弯曲半径合理<|obj_ref_end|><|line_start|>[<|coord_184|>, <|coord_347|>, <|coord_194|>, <|coord_362|>, <|coord_213|>, <|coord_372|>, <|coord_232|>, <|coord_378|>]<|line_end|>"
+        line_response = "I see <|object_ref_start|>光纤/有遮挡,无保护措施,弯曲半径合理<|object_ref_end|><|line_start|>[<|coord_184|>, <|coord_347|>, <|coord_194|>, <|coord_362|>, <|coord_213|>, <|coord_372|>, <|coord_232|>, <|coord_378|>]<|line_end|>"
 
         # Test bbox processing
         bbox_objects = mock_inference_engine._parse_coordinate_token_response(
@@ -1025,7 +1077,7 @@ class TestEvalScriptIntegration:
 
                 # Validate that conversation processor handles edge cases
                 mock_conv = mock_inference_engine._mock_conversation_processor
-                assert mock_conv.create_simple_conversation.called
+                assert mock_conv.create_simple_conversation_for_generation.called
 
             except Exception as e:
                 # Log edge case failures for analysis

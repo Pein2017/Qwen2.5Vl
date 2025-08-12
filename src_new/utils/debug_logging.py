@@ -355,15 +355,15 @@ class DebugLogger:
 
         # Count other special tokens
         image_count = chat_text.count("<|image_pad|>")
-        obj_ref_start_count = chat_text.count("<|obj_ref_start|>")
-        obj_ref_end_count = chat_text.count("<|obj_ref_end|>")
+        obj_ref_start_count = chat_text.count("<|object_ref_start|>")
+        obj_ref_end_count = chat_text.count("<|object_ref_end|>")
         box_start_count = chat_text.count("<|box_start|>")
         box_end_count = chat_text.count("<|box_end|>")
 
         logger.debug(f"  Other special tokens:")
         logger.debug(f"    <|image_pad|>: {image_count}")
         logger.debug(
-            f"    <|obj_ref_start|>/<|obj_ref_end|>: {obj_ref_start_count}/{obj_ref_end_count}"
+            f"    <|object_ref_start|>/<|object_ref_end|>: {obj_ref_start_count}/{obj_ref_end_count}"
         )
         logger.debug(
             f"    <|box_start|>/<|box_end|>: {box_start_count}/{box_end_count}"

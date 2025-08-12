@@ -11,7 +11,7 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
     """Create a sample configuration with optional overrides."""
     config = {
         # Model settings
-        "model_path": "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct",
+        "model_path": "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024",
         "model_size": "3B",
         "model_max_length": 120000,
         "attn_implementation": "flash_attention_2",
@@ -48,7 +48,7 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
         "max_examples": 1,
         # Coordinate token settings
         "coordinate_tokens_enabled": True,
-        "max_coord_value": 2048,
+        "max_coord_value": 1024,
         "coordinate_loss_weight": 0.05,
         "regular_loss_weight": 1.0,
         # Teacher-student settings
@@ -92,7 +92,7 @@ def create_sample_jsonl_data() -> List[Dict[str, Any]]:
             "objects": [
                 {"bbox_2d": [100, 150, 200, 250], "desc": "测试设备/基础检测目标"},
                 {
-                    "square": [300, 400, 350, 410, 348, 425, 302, 415],
+                    "quad": [300, 400, 350, 410, 348, 425, 302, 415],
                     "desc": "标签贴纸/测试标识",
                 },
             ],
@@ -161,7 +161,7 @@ def create_coordinate_tokens_data() -> Dict[str, Any]:
         "token_ids": [151666, 151667, 151668, 151669],  # Extended vocab range
         "coordinate_ranges": {
             "bbox_2d": (0, 4),
-            "square": (0, 8),
+            "quad": (0, 8),
             "line": (0, 16),  # Variable length
         },
     }
@@ -220,8 +220,8 @@ COLLATOR_TYPES = ["standard", "packed"]
 
 # Special token constants for testing
 SPECIAL_TOKENS = {
-    "obj_ref_start": "<|obj_ref_start|>",
-    "obj_ref_end": "<|obj_ref_end|>",
+    "obj_ref_start": "<|object_ref_start|>",
+    "obj_ref_end": "<|object_ref_end|>",
     "box_start": "<|box_start|>",
     "box_end": "<|box_end|>",
     "quad_start": "<|quad_start|>",

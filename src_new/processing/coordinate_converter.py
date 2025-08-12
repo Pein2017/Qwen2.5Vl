@@ -8,7 +8,7 @@ Everything else is handled by official HuggingFace components.
 
 Key Features:
 - ONLY coordinate token conversion (no chat formatting)
-- Supports bbox_2d, quad, square, line geometries
+- Supports bbox_2d, quad, line geometries
 - Fail-fast validation with explicit errors
 - Clean 50-line implementation
 """
@@ -24,44 +24,44 @@ class CoordinateTokenConverter:
     and is the ONLY custom logic we need to preserve.
     """
 
-    def __init__(self, max_coord_value: int = 1024):
+    def __init__(self, max_coord_value: int):
         """
         Initialize coordinate token converter.
 
         Args:
-            max_coord_value: Maximum coordinate value for clamping
+            max_coord_value: Maximum coordinate value for clamping (required)
 
         Raises:
-            ValueError: If max_coord_value is invalid
+            ValueError: If max_coord_value is missing or invalid
         """
-        if max_coord_value <= 0:
-            raise ValueError(f"max_coord_value must be positive, got {max_coord_value}")
+        if max_coord_value is None:
+            raise ValueError(
+                "max_coord_value is required and must be provided via configuration (YAML)."
+            )
+        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
+            raise ValueError(
+                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
+            )
 
         self.max_coord_value = max_coord_value
 
         # Geometry type mappings (from current _format_objects_for_response)
         self.geometry_tokens = {
             "bbox_2d": (
-                "<|obj_ref_start|>",
-                "<|obj_ref_end|>",
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
                 "<|box_start|>",
                 "<|box_end|>",
             ),
             "quad": (
-                "<|obj_ref_start|>",
-                "<|obj_ref_end|>",
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
                 "<|quad_start|>",
                 "<|quad_end|>",
             ),
-            "square": (
-                "<|obj_ref_start|>",
-                "<|obj_ref_end|>",
-                "<|quad_start|>",
-                "<|quad_end|>",
-            ),  # Handle square as quad
             "line": (
-                "<|obj_ref_start|>",
-                "<|obj_ref_end|>",
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
                 "<|line_start|>",
                 "<|line_end|>",
             ),
@@ -130,9 +130,7 @@ class CoordinateTokenConverter:
         elif "quad" in obj:
             geometry_type = "quad"
             coordinates = obj["quad"]
-        elif "square" in obj:
-            geometry_type = "square"
-            coordinates = obj["square"]
+
         elif "line" in obj:
             geometry_type = "line"
             coordinates = obj["line"]
@@ -145,7 +143,7 @@ class CoordinateTokenConverter:
             available_keys = [k for k in obj.keys() if k not in ["desc", "category"]]
             raise ValueError(
                 f"Object {obj_index} contains unsupported geometry type. "
-                f"Expected one of: bbox_2d, quad, square, line. "
+                f"Expected one of: bbox_2d, quad, line. "
                 f"Found geometry keys: {available_keys}. "
                 f"Full object: {obj}"
             )
@@ -176,7 +174,9 @@ class CoordinateTokenConverter:
             coord_tokens.append(f"<|coord_{clamped_coord}|>")
 
         coord_string = ", ".join(coord_tokens)
-        description = obj.get("desc", "")
+        if "desc" not in obj:
+            raise ValueError(f"Object {obj_index} missing required 'desc' field")
+        description = obj["desc"]
 
         # Format complete token string (exact same format as current system)
         return (

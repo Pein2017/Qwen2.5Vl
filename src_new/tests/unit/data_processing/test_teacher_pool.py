@@ -36,7 +36,7 @@ class TestTeacherPoolManager:
                 "images": ["teacher_2.jpg"],
                 "objects": [
                     {
-                        "square": [100, 110, 120, 115, 118, 130, 98, 125],
+                        "quad": [100, 110, 120, 115, 118, 130, 98, 125],
                         "desc": "标签/参考标签",
                     }
                 ],
@@ -164,16 +164,16 @@ class TestTeacherPoolManager:
                 "geometry_type": "bbox_2d",
             },
             {
-                "images": ["square_teacher.jpg"],
+                "images": ["quad_teacher.jpg"],
                 "objects": [
                     {
-                        "square": [50, 60, 70, 65, 68, 80, 48, 75],
-                        "desc": "方形目标/测试",
+                        "quad": [50, 60, 70, 65, 68, 80, 48, 75],
+                        "desc": "四边形目标/测试",
                     }
                 ],
                 "width": 400,
                 "height": 300,
-                "geometry_type": "square",
+                "geometry_type": "quad",
             },
             {
                 "images": ["line_teacher.jpg"],
@@ -324,9 +324,9 @@ class TestTeacherPoolManager:
                 "height": 300,
             },
             {
-                "images": ["square_example.jpg"],
+                "images": ["quad_example.jpg"],
                 "objects": [
-                    {"square": [50, 60, 70, 65, 68, 80, 48, 75], "desc": "方形/测试"}
+                    {"quad": [50, 60, 70, 65, 68, 80, 48, 75], "desc": "四边形/测试"}
                 ],
                 "width": 400,
                 "height": 300,
@@ -436,7 +436,7 @@ class TestTeacherPoolManager:
             assert "desc" in obj
 
             # Must have exactly one geometry type
-            geometry_types = ["bbox_2d", "square", "line"]
+            geometry_types = ["bbox_2d", "quad", "line"]
             geometry_count = sum(1 for geo_type in geometry_types if geo_type in obj)
             assert geometry_count == 1
 

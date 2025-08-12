@@ -134,7 +134,7 @@ class TestEdgeCasesAndBoundaryConditions:
     def test_setup(self):
         """Set up test components."""
         # Load config
-        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_debug.yaml")
+        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
         if not config_path.exists():
             pytest.skip("Real config file not found")
 

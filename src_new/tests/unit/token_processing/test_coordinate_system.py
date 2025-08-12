@@ -63,7 +63,7 @@ class TestCoordinateTokenSystem:
 
         result = coordinate_converter.convert_objects_to_tokens(objects)
 
-        expected = "<|obj_ref_start|>Test device<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>"
+        expected = "<|object_ref_start|>Test device<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>"
         assert result == expected
 
     def test_coordinate_converter_quad(self, coordinate_converter):
@@ -136,52 +136,17 @@ class TestCoordinateTokenSystem:
     def test_token_processor_vocabulary_extension(
         self, token_processor, real_base_tokenizer
     ):
-        """Test tokenizer vocabulary extension with real tokenizer."""
-        # Get initial vocabulary size
-        initial_vocab_size = len(real_base_tokenizer)
-        initial_vocab = real_base_tokenizer.get_vocab()
+        """Test tokenizer vocabulary is pre-expanded and usable (no runtime extension)."""
+        # The model_path in bbu_v2_use_coord.yaml points to a pre-expanded cache with exact size 152692
+        final_vocab_size = len(real_base_tokenizer)
+        vocab = real_base_tokenizer.get_vocab()
 
-        # Extend vocabulary
-        extended_tokenizer = token_processor.extend_tokenizer_vocabulary(
-            real_base_tokenizer
-        )
-
-        # Check that vocabulary was extended
-        final_vocab_size = len(extended_tokenizer)
-        final_vocab = extended_tokenizer.get_vocab()
-
-        # Should have added coordinate and line tokens
-        assert final_vocab_size > initial_vocab_size
-
-        # Check that coordinate tokens were added
-        coord_tokens_found = 0
-        for i in range(
-            min(10, token_processor.config.max_coord_value + 1)
-        ):  # Check first 10 coordinate tokens
-            coord_token = f"<|coord_{i}|>"
-            if coord_token in final_vocab:
-                coord_tokens_found += 1
-
-        assert coord_tokens_found > 0, (
-            "No coordinate tokens found in extended vocabulary"
-        )
-
-        # Check that line tokens are present (may have been pre-existing or added)
-        line_start_present = "<|line_start|>" in final_vocab
-        line_end_present = "<|line_end|>" in final_vocab
-
-        # Log for debugging
-        print(
-            f"Line tokens present: start={line_start_present}, end={line_end_present}"
-        )
-        print(f"Coordinate tokens found: {coord_tokens_found}")
-        print(f"Vocab size change: {initial_vocab_size} -> {final_vocab_size}")
-
-        # At minimum, coordinate tokens should be added when enabled
-        if token_processor.config.coordinate_tokens_enabled:
-            assert coord_tokens_found > 0, (
-                "No coordinate tokens found when coordinate system is enabled"
-            )
+        # Validate required tokens and ranges for max_coord_1024 cache
+        assert vocab["<|line_start|>"] == 151665
+        assert vocab["<|line_end|>"] == 151666
+        ids = [vocab[f"<|coord_{i}|>"] for i in range(1025)]
+        assert min(ids) == 151667 and max(ids) == 152691
+        assert final_vocab_size == 152692
 
     def test_token_processor_coordinate_extraction(
         self, token_processor, real_extended_tokenizer
@@ -227,7 +192,7 @@ class TestCoordinateTokenSystem:
         """Test setting tokenizer in coordinate processor."""
         # Create mock tokenizer
         mock_tokenizer = Mock()
-        vocab = {"<|pad|>": 0}
+        vocab = {"<|line_start|>": 151665, "<|line_end|>": 151666}
         for i in range(1025):
             vocab[f"<|coord_{i}|>"] = 151667 + i
         mock_tokenizer.get_vocab.return_value = vocab
@@ -265,7 +230,7 @@ class TestCoordinateTokenSystem:
         """Test coordinate logit masking."""
         # Set up coordinate processor
         mock_tokenizer = Mock()
-        vocab = {}
+        vocab = {"<|line_start|>": 151665, "<|line_end|>": 151666}
         for i in range(1025):
             vocab[f"<|coord_{i}|>"] = 151667 + i
         mock_tokenizer.get_vocab.return_value = vocab
@@ -300,14 +265,29 @@ class TestCoordinateTokenSystem:
         assert "<|coord_400|>" in token_string
 
         # Create mock tokenizer
-        mock_tokenizer = Mock()
-        vocab = {"<|pad|>": 0}
-        for i in range(1025):
-            vocab[f"<|coord_{i}|>"] = 151667 + i
-        mock_tokenizer.get_vocab.return_value = vocab
+        class SimpleTok:
+            def __init__(self):
+                self._v = {f"tok_{i}": i for i in range(151665)}
 
-        # Token processor should be able to handle these tokens
+            def get_vocab(self):
+                return dict(self._v)
+
+            def add_special_tokens(self, d):
+                toks = d.get("additional_special_tokens", [])
+                for t in toks:
+                    if t not in self._v:
+                        self._v[t] = len(self._v)
+                return len(toks)
+
+        mock_tokenizer = SimpleTok()
+
+        # Token processor should extend and then include coordinate tokens
         extended_tokenizer = token_processor.extend_tokenizer_vocabulary(mock_tokenizer)
+        vocab = extended_tokenizer.get_vocab()
+        assert vocab["<|line_start|>"] == 151665
+        assert vocab["<|line_end|>"] == 151666
+        ids = [vocab[f"<|coord_{i}|>"] for i in range(1025)]
+        assert min(ids) == 151667 and max(ids) == 152691
         assert extended_tokenizer is not None
 
     def test_coordinate_system_disabled(self, real_base_tokenizer):
@@ -321,25 +301,14 @@ class TestCoordinateTokenSystem:
 
         disabled_processor = TokenProcessor(disabled_config)
 
-        # Get initial vocabulary size
+        # Get current vocabulary size (already-expanded tokenizer)
         initial_vocab_size = len(real_base_tokenizer)
 
-        # Should handle disabled state gracefully
+        # Should handle disabled state gracefully: return tokenizer unchanged
         extended_tokenizer = disabled_processor.extend_tokenizer_vocabulary(
             real_base_tokenizer
         )
 
         # Should return tokenizer without coordinate token modification
         final_vocab_size = len(extended_tokenizer)
-
-        # Vocabulary size should not increase significantly (maybe some minimal changes)
-        # but no coordinate tokens should be added
-        vocab = extended_tokenizer.get_vocab()
-        coord_tokens_found = sum(
-            1 for token in vocab.keys() if token.startswith("<|coord_")
-        )
-
-        # Should have no coordinate tokens when disabled
-        assert coord_tokens_found == 0, (
-            f"Found {coord_tokens_found} coordinate tokens when system is disabled"
-        )
+        assert final_vocab_size == initial_vocab_size

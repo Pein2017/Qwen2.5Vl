@@ -218,7 +218,9 @@ class TeacherPoolManager:
         image_path = self._normalize_path(image_path)
 
         # Get teacher indices for image
-        teacher_indices = self.image_to_teachers.get(image_path, [])
+        if image_path not in self.image_to_teachers:
+            return []
+        teacher_indices = self.image_to_teachers[image_path]
         if not teacher_indices:
             return []
 

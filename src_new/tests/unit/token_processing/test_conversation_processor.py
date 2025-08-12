@@ -44,7 +44,7 @@ class TestConversationProcessor(unittest.TestCase):
         self.mock_processor.return_value = mock_inputs
 
         self.conversation_processor = ConversationProcessor(
-            processor=self.mock_processor, max_coord_value=2048
+            processor=self.mock_processor, max_coord_value=1024
         )
 
     def test_initialization_valid(self):
@@ -56,7 +56,7 @@ class TestConversationProcessor(unittest.TestCase):
     def test_initialization_none_processor(self):
         """Test initialization with None processor raises ValueError."""
         with self.assertRaises(ValueError) as cm:
-            ConversationProcessor(None)
+            ConversationProcessor(None, max_coord_value=1025)
         self.assertIn("processor cannot be None", str(cm.exception))
 
     def test_simple_conversation_creation(self):
@@ -94,7 +94,9 @@ class TestConversationProcessor(unittest.TestCase):
         mock_image = Image.new("RGB", (100, 100), color="red")
 
         # Test non-dict sample
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import ConversationStructureError
+
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_simple_conversation(
                 "not_dict", [mock_image]
             )
@@ -105,7 +107,9 @@ class TestConversationProcessor(unittest.TestCase):
         sample = {"objects": [{"bbox_2d": [100, 200, 150, 250], "desc": "test"}]}
 
         # Test non-list images
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import ConversationStructureError
+
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_simple_conversation(sample, "not_list")
         self.assertIn("images must be a list", str(cm.exception))
 
@@ -114,7 +118,9 @@ class TestConversationProcessor(unittest.TestCase):
         sample = {"objects": []}
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import ConversationStructureError
+
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_simple_conversation(sample, [mock_image])
         self.assertIn("Sample must contain non-empty objects list", str(cm.exception))
 
@@ -160,7 +166,11 @@ class TestConversationProcessor(unittest.TestCase):
         ]
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
             self.conversation_processor.create_teacher_student_conversation(
                 "not_dict", teacher_samples, [mock_image], [[mock_image]]
             )
@@ -173,7 +183,11 @@ class TestConversationProcessor(unittest.TestCase):
         }
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
             self.conversation_processor.create_teacher_student_conversation(
                 student_sample, [], [mock_image], []
             )
@@ -189,7 +203,11 @@ class TestConversationProcessor(unittest.TestCase):
         ]
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
             self.conversation_processor.create_teacher_student_conversation(
                 student_sample,
                 teacher_samples,
@@ -208,7 +226,11 @@ class TestConversationProcessor(unittest.TestCase):
         teacher_samples = ["not_dict"]  # Invalid teacher sample
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
             self.conversation_processor.create_teacher_student_conversation(
                 student_sample, teacher_samples, [mock_image], [[mock_image]]
             )
@@ -222,9 +244,17 @@ class TestConversationProcessor(unittest.TestCase):
         teacher_samples = [{"objects": []}]  # Empty teacher objects
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
-            self.conversation_processor.create_teacher_student_conversation(
-                student_sample, teacher_samples, [mock_image], [[mock_image]]
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
+            self.conversation_processor.build_teacher_student_conversation_robust(
+                student_sample=student_sample,
+                teacher_samples=teacher_samples,
+                student_images=[mock_image],
+                teacher_images_list=[[mock_image]],
+                enable_recovery=False,
             )
         self.assertIn(
             "Teacher sample 0 must contain non-empty objects list", str(cm.exception)
@@ -238,7 +268,11 @@ class TestConversationProcessor(unittest.TestCase):
         ]
         mock_image = Image.new("RGB", (100, 100), color="red")
 
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import (
+            TeacherStudentValidationError,
+        )
+
+        with self.assertRaises(TeacherStudentValidationError) as cm:
             self.conversation_processor.create_teacher_student_conversation(
                 student_sample, teacher_samples, [mock_image], [[mock_image]]
             )
@@ -274,12 +308,14 @@ class TestConversationProcessor(unittest.TestCase):
         mock_image = Image.new("RGB", (100, 100), color="red")
 
         # Test empty prompt
-        with self.assertRaises(ValueError) as cm:
+        from src_new.processing.conversation_processor import ConversationStructureError
+
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_inference_conversation("", [mock_image])
         self.assertIn("user_prompt must be a non-empty string", str(cm.exception))
 
         # Test non-string prompt
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_inference_conversation(123, [mock_image])
         self.assertIn("user_prompt must be a non-empty string", str(cm.exception))
 
@@ -287,13 +323,15 @@ class TestConversationProcessor(unittest.TestCase):
         """Test inference conversation with invalid images raises ValueError."""
         user_prompt = "请检测图像中的设备"
 
+        from src_new.processing.conversation_processor import ConversationStructureError
+
         # Test empty images
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_inference_conversation(user_prompt, [])
         self.assertIn("images must be a non-empty list", str(cm.exception))
 
         # Test non-list images
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ConversationStructureError) as cm:
             self.conversation_processor.create_inference_conversation(
                 user_prompt, "not_list"
             )

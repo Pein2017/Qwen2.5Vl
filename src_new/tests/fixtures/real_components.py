@@ -21,8 +21,8 @@ from src_new.processing.token_processor import TokenConfig, TokenProcessor
 
 @pytest.fixture(scope="session")
 def real_config():
-    """Load real configuration from bbu_v2_debug.yaml."""
-    config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_debug.yaml")
+    """Load real configuration from bbu_v2_use_coord.yaml."""
+    config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
     config = load_config(config_path)
 
     # Override some settings for testing
@@ -37,32 +37,58 @@ def real_config():
 
 @pytest.fixture(scope="session")
 def real_base_tokenizer(real_config):
-    """Load the real base tokenizer from the model path."""
+    """Load the real tokenizer from model_path (expected pre-expanded cache).
+
+    Validates that the tokenizer already includes line and coordinate tokens with the
+    strict ID range derived from documentation:
+      - <|line_start|> == 151665
+      - <|line_end|>   == 151666
+      - <|coord_0|>.. <|coord_max|> starting at 151667 and ending at 151667+max_coord_value
+    """
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             real_config.model_path, trust_remote_code=True, use_fast=False
         )
+        vocab = tokenizer.get_vocab()
+        # Sanity: expanded vocab must be larger than the base 151665
+        assert len(vocab) > 151665, (
+            f"Expanded tokenizer vocab too small: {len(vocab)}; expected > 151665."
+        )
+        # Validate line tokens
+        assert vocab.get("<|line_start|>") == 151665, "<|line_start|> id mismatch"
+        assert vocab.get("<|line_end|>") == 151666, "<|line_end|> id mismatch"
+        # Validate coordinate tokens exist for configured max range (default 1024)
+        max_c = int(getattr(real_config, "max_coord_value", 1024))
+        coord_ids = [vocab.get(f"<|coord_{i}|>") for i in range(max_c + 1)]
+        assert None not in coord_ids, "Missing coordinate tokens in expanded tokenizer"
+        assert min(coord_ids) == 151667, "Coordinate ID start mismatch"
+        assert max(coord_ids) == 151667 + max_c, "Coordinate ID end mismatch"
         return tokenizer
     except Exception as e:
-        pytest.skip(f"Could not load real tokenizer: {e}")
+        pytest.skip(f"Could not load expanded tokenizer: {e}")
 
 
 @pytest.fixture(scope="session")
 def real_extended_tokenizer(real_base_tokenizer, real_config):
-    """Create extended tokenizer with coordinate and line tokens."""
-    # Create token processor
-    token_config = TokenConfig(
-        coordinate_tokens_enabled=real_config.coordinate_tokens_enabled,
-        max_coord_value=real_config.max_coord_value,
-    )
-    token_processor = TokenProcessor(token_config)
+    """Return the already-expanded tokenizer and strictly verify final size and IDs.
 
-    # Extend the tokenizer vocabulary
-    extended_tokenizer = token_processor.extend_tokenizer_vocabulary(
-        real_base_tokenizer
+    Keeps fixture name for backwards compatibility; does not perform re-extension.
+    """
+    tokenizer = real_base_tokenizer
+    vocab = tokenizer.get_vocab()
+
+    # Exact id checks
+    assert vocab.get("<|line_start|>") == 151665, "<|line_start|> id mismatch"
+    assert vocab.get("<|line_end|>") == 151666, "<|line_end|> id mismatch"
+
+    max_c = int(getattr(real_config, "max_coord_value", 1024))
+    coord_ids = [vocab.get(f"<|coord_{i}|>") for i in range(max_c + 1)]
+    assert None not in coord_ids, "Missing coordinate tokens after extension"
+    assert min(coord_ids) == 151667 and max(coord_ids) == 151667 + max_c, (
+        "Coordinate ID range mismatch"
     )
 
-    return extended_tokenizer
+    return tokenizer
 
 
 @pytest.fixture(scope="session")
@@ -74,7 +100,7 @@ def real_base_model(real_config):
             real_config.model_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
-            device_map="cpu",  # Keep on CPU for testing
+            device_map="auto" if torch.cuda.is_available() else "cpu",
             low_cpu_mem_usage=True,
         )
         model.eval()  # Set to eval mode for testing
@@ -172,7 +198,7 @@ def temp_test_data_dir():
                     {"from": "user", "value": "请识别图中的设备位置。"},
                     {
                         "from": "assistant",
-                        "value": "图中有一个BBU设备<|obj_ref_start|>BBU设备<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_150|>, <|coord_200|>, <|coord_250|>]<|box_end|>。",
+                        "value": "图中有一个BBU设备<|object_ref_start|>BBU设备<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_150|>, <|coord_200|>, <|coord_250|>]<|box_end|>。",
                     },
                 ],
                 "objects": [{"bbox_2d": [100, 150, 200, 250], "desc": "BBU设备"}],
@@ -185,7 +211,7 @@ def temp_test_data_dir():
                     {"from": "user", "value": "这个设备是什么？"},
                     {
                         "from": "assistant",
-                        "value": "这是一个光纤设备<|obj_ref_start|>光纤设备<|obj_ref_end|><|quad_start|>[<|coord_50|>, <|coord_60|>, <|coord_70|>, <|coord_80|>, <|coord_90|>, <|coord_100|>, <|coord_110|>, <|coord_120|>]<|quad_end|>。",
+                        "value": "这是一个光纤设备<|object_ref_start|>光纤设备<|object_ref_end|><|quad_start|>[<|coord_50|>, <|coord_60|>, <|coord_70|>, <|coord_80|>, <|coord_90|>, <|coord_100|>, <|coord_110|>, <|coord_120|>]<|quad_end|>。",
                     },
                 ],
                 "objects": [
@@ -211,7 +237,7 @@ def temp_test_data_dir():
                     {"from": "teacher", "value": "这是专业的设备识别结果。"},
                     {
                         "from": "assistant",
-                        "value": "设备位于<|obj_ref_start|>设备<|obj_ref_end|><|box_start|>[<|coord_300|>, <|coord_400|>, <|coord_500|>, <|coord_600|>]<|box_end|>。",
+                        "value": "设备位于<|object_ref_start|>设备<|object_ref_end|><|box_start|>[<|coord_300|>, <|coord_400|>, <|coord_500|>, <|coord_600|>]<|box_end|>。",
                     },
                 ],
                 "objects": [{"bbox_2d": [300, 400, 500, 600], "desc": "设备"}],
@@ -220,6 +246,7 @@ def temp_test_data_dir():
             }
         ]
 
+        # Write teacher pool data
         teacher_file = temp_path / "teacher_pool.jsonl"
         with open(teacher_file, "w", encoding="utf-8") as f:
             for item in teacher_data:

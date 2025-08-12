@@ -118,14 +118,14 @@ Raw Objects → Structured → Conversations → Batched → Model → Loss → 
 
 **After Coordinate Conversion**:
 ```
-<|obj_ref_start|>BBU设备<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>
+<|object_ref_start|>BBU设备<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>  # Inference accepts `<|obj_ref_*|>` synonymously
 ```
 
 **After Conversation Creation**:
 ```
 <|im_start|>system\n你是通信机房设备检测AI助手...<|im_end|>
 <|im_start|>user\n现在请你回答，请检测图像中的设备和部件:<image><|im_end|>
-<|im_start|>assistant\n<|obj_ref_start|>BBU设备<|obj_ref_end|>...<|im_end|>
+<|im_start|>assistant\n<|object_ref_start|>BBU设备<|object_ref_end|>...<|im_end|>
 ```
 
 **After Tokenization & Span Detection**:
@@ -172,7 +172,7 @@ Each training sample follows this exact structure:
 |------|--------|-------------|-----------------|
 | `bbox_2d` | `[x1, y1, x2, y2]` | Rectangular bounding box | BBU设备, 标签贴纸 |
 | `quad` | `[x1, y1, x2, y2, x3, y3, x4, y4]` | Four-point polygon | 倾斜的BBU设备 |
-| `square` | `[x1, y1, x2, y2, x3, y3, x4, y4]` | Square annotation | 正方形标签 |
+
 | `line` | `[x1, y1, x2, y2, ..., xn, yn]` | Multi-point line | 光纤, 电线 |
 
 ### Object Types
@@ -231,20 +231,27 @@ line_start_embedding = quad_start_embedding.clone()
 line_end_embedding = quad_end_embedding.clone()
 ```
 
-**Coordinate Tokens**: Initialized using positional encoding
+**Coordinate Tokens**: Deterministic sinusoidal initialization
 ```python
-# Positional encoding approach for coordinate tokens
-for i, coord_value in enumerate(range(max_coord_value + 1)):
-    # Create positional encoding based on coordinate value
-    embedding = create_positional_encoding(coord_value, embedding_dim)
-    coordinate_embeddings[i] = embedding
+# Sinusoidal (positional-encoding-like) initialization for coordinate tokens
+# Generates sin/cos features over scaled coordinate values and matches base std
+coord_ids = [tokenizer.get_vocab()[f"<|coord_{i}|>"] for i in range(max_coord_value + 1)]
+pos = torch.arange(0, max_coord_value + 1, dtype=torch.float32).unsqueeze(1)
+half = embedding_dim // 2
+inv_freq = torch.exp(torch.arange(0, half) * (-(math.log(10000.0) / max(1, half))))
+angles = (pos / max_coord_value * 10000.0) * inv_freq
+sin = torch.sin(angles); cos = torch.cos(angles)
+pe = torch.zeros(len(coord_ids), embedding_dim)
+pe[:, :half] = sin; pe[:, half:half*2] = cos
+pe = pe * base_std  # base_std from pretrained embedding slice
+input_embeddings.weight[coord_ids] = pe.to(input_embeddings.weight.dtype)
 ```
 
 #### **Coordinate Token Processing**
 
 **Coordinate Clamping**:
 ```python
-# All coordinates clamped to valid range
+# All coordinates clamped to valid range [0, max_coord_value]
 clamped_coord = max(0, min(int(coord), max_coord_value))
 coord_token = f"<|coord_{clamped_coord}|>"
 ```
@@ -255,20 +262,24 @@ coord_token = f"<|coord_{clamped_coord}|>"
 def create_coordinate_mask(input_ids, tokenizer):
     mask = torch.zeros_like(input_ids, dtype=torch.bool)
     # Mark positions where coordinate tokens appear
-    coord_positions = (input_ids >= 151667) & (input_ids <= 153715)
+    coord_positions = (input_ids >= 151667) & (input_ids <= 152691)
     mask[coord_positions] = True
     return mask
 ```
+
+- **Strict Inference Parsing (src_new/inference.py)**:
+  - Requires training-format blocks with `<|object_ref_start|>...<|object_ref_end|>` (synonyms `<|obj_ref_*|>` accepted), geometry tokens, and `<|coord_N|>`; otherwise raises.
+  - Geometry lengths must be exact: bbox 4, quad 8, line even ≥ 4; overlapping spans are rejected.
 
 ### Geometry Token Mapping
 
 ```python
 GEOMETRY_TOKENS = {
-    "bbox_2d": ("<|obj_ref_start|>", "<|obj_ref_end|>", "<|box_start|>", "<|box_end|>"),
-    "quad": ("<|obj_ref_start|>", "<|obj_ref_end|>", "<|quad_start|>", "<|quad_end|>"),
-    "square": ("<|obj_ref_start|>", "<|obj_ref_end|>", "<|quad_start|>", "<|quad_end|>"),
-    "line": ("<|obj_ref_start|>", "<|obj_ref_end|>", "<|line_start|>", "<|line_end|>")
+    "bbox_2d": ("<|object_ref_start|>", "<|object_ref_end|>", "<|box_start|>", "<|box_end|>"),
+    "quad": ("<|object_ref_start|>", "<|object_ref_end|>", "<|quad_start|>", "<|quad_end|>"),
+    "line": ("<|object_ref_start|>", "<|object_ref_end|>", "<|line_start|>", "<|line_end|>")
 }
+# Note: `<|obj_ref_*|>` and `<|object_ref_*|>` are treated synonymously at inference; training conversion uses `<|object_ref_*|>`.
 ```
 
 ### Conversion Process
@@ -283,7 +294,7 @@ GEOMETRY_TOKENS = {
 
 **Output Token String**:
 ```
-<|obj_ref_start|>BBU设备<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>
+<|object_ref_start|>BBU设备<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>
 ```
 
 ### Coordinate Clamping
@@ -337,7 +348,7 @@ The system creates multi-turn conversations with teacher examples followed by st
 <|im_end|>
 
 <|im_start|>assistant
-<|obj_ref_start|>BBU设备<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>
+<|object_ref_start|>BBU设备<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_300|>, <|coord_400|>]<|box_end|>
 <|im_end|>
 
 <|im_start|>user
@@ -345,7 +356,7 @@ The system creates multi-turn conversations with teacher examples followed by st
 <|im_end|>
 
 <|im_start|>assistant
-<|obj_ref_start|>标签贴纸<|obj_ref_end|><|box_start|>[<|coord_150|>, <|coord_250|>, <|coord_350|>, <|coord_450|>]<|box_end|>
+<|object_ref_start|>标签贴纸<|object_ref_end|><|box_start|>[<|coord_150|>, <|coord_250|>, <|coord_350|>, <|coord_450|>]<|box_end|>
 <|im_end|>
 ```
 
@@ -459,6 +470,11 @@ The system computes separate losses for different learning objectives:
 | `student_llm_loss` | Student response learning | Cross-entropy on student spans |
 | `teacher_l1_loss` | Teacher coordinate regression | Soft expectation + L1 loss |
 | `student_l1_loss` | Student coordinate regression | Soft expectation + L1 loss |
+
+Note (2025-08): We decouple supervision streams using label-aligned masks with next-token shifting.
+- CE counts only text tokens inside assistant spans (teacher/student) and excludes coordinate-token targets.
+- L1 counts only coordinate-token targets within assistant spans.
+- Soft-expectation temperature is configurable via `coordinate_temperature` (preferred; legacy: `coordinate_loss_temperature`).
 
 ### Soft Expectation Coordinate Loss
 
@@ -631,7 +647,8 @@ coordinate_tokens_enabled: true
 max_coord_value: 1024
 coordinate_loss_weight: 0.05
 regular_loss_weight: 1.0
-coordinate_loss_temperature: 1.0
+# Preferred key (legacy alias supported):
+coordinate_temperature: 1.0
 ```
 
 **Teacher-Student Training**:
@@ -751,7 +768,7 @@ model = DetectionModel(
 - **Use generation builders**: Build inputs with `ConversationProcessor.create_teacher_student_conversation_for_generation(...)` or `create_simple_conversation_for_generation(...)`. Avoid tokenizer-only re-tokenization after any truncation.
 - **Template placeholder check**: Before passing through the HF processor, ensure the number of `<|image_pad|>` placeholders in template text equals the number of images via `validate_image_token_consistency(...)`.
 - **Decode without skipping specials**: Use `skip_special_tokens=False` to preserve extended geometry tokens (e.g., `<|coord_xxx|>`).
-- **Generation-time validation**: Treat the large count of processed `<|image_pad|>` tokens as informational; enforce only the template placeholder-count check pre-tokenization.
+- **Strict parsing**: Inference strictly parses `<|object_ref_start|>...<|object_ref_end|>` (or `<|obj_ref_*|>`) with geometry tokens and `<|coord_N|>`. Any deviation raises immediately; no fallbacks.
 - **Operational tips**: Prefer `attn_implementation="eager"` for inference stability in this environment; keep batch size = 1 for teacher-guided inference.
 - **Canonical reference**: See `docs/INFERENCE_ROOT_CAUSE_AND_FIXES.md` for the root causes and full fix details.
 
@@ -1047,6 +1064,17 @@ coordinate_loss = F.l1_loss(expected_coords, target_coords.float())
 - `coord_mask`: boolean `[batch, seq_len]` true where coordinate tokens appear; generated from token IDs
 
 These details reflect the exact implementation used during training/inference. Adjust weights via config keys: `teacher_loss_weight`, `student_loss_weight`, `regular_loss_weight`, `coordinate_loss_weight`, and set `teacher_ratio`, `num_teacher_samples` for teacher sampling.
+
+---
+
+## 🔄 Data Conversion (Preprocessing Canonicalization)
+
+- `data_conversion/unified_processor.py` and `data_conversion/coordinate_manager.py` canonicalize geometry before training output:
+  - **Quad**: `_canonical_quad_ordering` produces clockwise order starting from top-left; values are clamped to image bounds and cast to int.
+  - **Line**: `_canonical_line_ordering` lexicographically orders 2‑point lines; multi‑point lines preserve path with canonical start; degenerate horizontal/vertical handled with minimal padding.
+  - **BBox**: normalized to `x1<x2, y1<y2`.
+
+This ensures model input uses a single deterministic coordinate ordering, eliminating randomness in vertex/direction permutations.
 
 ---
 

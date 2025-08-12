@@ -7,12 +7,12 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="730-use_coord-ep200"           # Latest checkpoint with SafeTensors
-MODEL_PATH="output-730-use_coord-ep200/checkpoint-2200"
-CONFIG_PATH="output-730-use_coord-ep200/bbu_v2_use_coord.yaml"
+EXP_NAME="730-use_coord-ep100"           # Latest checkpoint with SafeTensors
+MODEL_PATH="output-730-use_coord-ep100/checkpoint-500"  # Use existing checkpoint-500
+CONFIG_PATH="configs/bbu_v2_use_coord.yaml"
 
 # Dataset to process (single dataset per run)
-DATASET="val"                  # "train" or "val"
+DATASET="train"                  # "train" or "val"
 DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory containing dataset files (images/, train.jsonl, val.jsonl, teacher_pool.jsonl)
 
 # Teacher configuration (set manually)

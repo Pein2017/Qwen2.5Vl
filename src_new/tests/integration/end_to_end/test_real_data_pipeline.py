@@ -82,7 +82,7 @@ class TestRealDataPipeline:
     @pytest.fixture(scope="class")
     def real_config(self):
         """Load real configuration for testing."""
-        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_debug.yaml")
+        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
         if not config_path.exists():
             pytest.skip("Real config file not found")
 
@@ -148,7 +148,7 @@ class TestRealDataPipeline:
                 assert "desc" in obj, f"Teacher {i} object {j} missing description"
 
                 # Check geometry types
-                geometry_types = ["bbox_2d", "quad", "line", "square"]
+                geometry_types = ["bbox_2d", "quad", "line"]
                 has_geometry = any(geom in obj for geom in geometry_types)
                 assert has_geometry, f"Teacher {i} object {j} missing geometry"
 
@@ -240,10 +240,10 @@ class TestRealDataPipeline:
                 logger.info(f"📝 Token result preview: {token_result[:200]}...")
 
                 # Validate token format
-                assert "<|obj_ref_start|>" in token_result, (
+                assert "<|object_ref_start|>" in token_result, (
                     "Missing object reference start token"
                 )
-                assert "<|obj_ref_end|>" in token_result, (
+                assert "<|object_ref_end|>" in token_result, (
                     "Missing object reference end token"
                 )
 

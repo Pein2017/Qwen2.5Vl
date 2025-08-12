@@ -562,8 +562,31 @@ class TestCollatorIntegration:
         assert len(non_masked_positions) > 0  # Should have some non-masked tokens
 
         # In this mock example, positions 6, 7 (teacher assistant) and 12, 13 (student assistant) should not be masked
-        expected_non_masked = torch.tensor([6, 7, 12, 13])
-        # Note: In real implementation, the exact positions would depend on tokenization
+
+    def test_unified_assistant_spans_pass_through(self, mock_tokenizer):
+        """assistant_spans should be passed through by collator when provided."""
+        from src_new.data.collator import StandardDataCollator
+
+        sample = {
+            "input_ids": torch.tensor([1, 2, 3, 4, 5]),
+            "attention_mask": torch.tensor([1, 1, 1, 1, 1]),
+            "labels": torch.tensor([1, -100, -100, 4, 5]),
+            "assistant_spans": [(3, 5)],
+        }
+        collator = StandardDataCollator(tokenizer=mock_tokenizer)
+        batch = collator([sample])
+        assert "assistant_spans" in batch
+        assert isinstance(batch["assistant_spans"], list)
+        assert batch["assistant_spans"][0] == [(3, 5)]
+        # teacher/student spans remain optional
+        assert (
+            "teacher_assistant_spans" not in batch
+            or batch["teacher_assistant_spans"][0] == []
+        )
+        assert (
+            "student_assistant_spans" not in batch
+            or batch["student_assistant_spans"][0] == []
+        )
 
     def _mock_standard_collate_with_coords(
         self, samples: List[Dict[str, torch.Tensor]]

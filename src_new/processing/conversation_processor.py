@@ -131,8 +131,10 @@ class ConversationValidator:
                     errors.append(f"Message {i} must be a dict, got {type(message)}")
                     continue
 
-                role = message.get("role")
-                content = message.get("content", "")
+                if "role" not in message or "content" not in message:
+                    raise ValueError("Each message must include 'role' and 'content'")
+                role = message["role"]
+                content = message["content"]
 
                 if role == "system":
                     system_turns += 1
@@ -298,19 +300,27 @@ class ConversationProcessor:
     Replaces the complex custom logic in chat_processor.py and templates.py.
     """
 
-    def __init__(self, processor, max_coord_value: int = 1024):
+    def __init__(self, processor, max_coord_value: int):
         """
         Initialize conversation processor.
 
         Args:
             processor: Official HuggingFace Qwen2VLProcessor
-            max_coord_value: Maximum coordinate value for coordinate tokens
+            max_coord_value: Maximum coordinate value for coordinate tokens (required)
 
         Raises:
             ValueError: If processor is None or invalid
         """
         if processor is None:
             raise ValueError("processor cannot be None")
+        if max_coord_value is None:
+            raise ValueError(
+                "max_coord_value is required and must be provided via configuration (YAML)."
+            )
+        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
+            raise ValueError(
+                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
+            )
 
         self.processor = processor
         self.coordinate_converter = CoordinateTokenConverter(
@@ -320,7 +330,7 @@ class ConversationProcessor:
     def _process_text_and_images(
         self, text: str, images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
-        """Process text and images via HF processor with robust fallbacks.
+        """Process text and images via HF processor with strict validation.
 
         Ensures a dict with at least 'input_ids' and 'attention_mask' is returned.
         """
@@ -341,7 +351,6 @@ class ConversationProcessor:
                 if isinstance(data_attr, dict):
                     outputs = data_attr
                 else:
-                    # Last resort: try dict() on Mapping-like
                     from collections.abc import Mapping
 
                     if isinstance(outputs, Mapping):
@@ -354,24 +363,27 @@ class ConversationProcessor:
 
         # Ensure text tensors
         if "input_ids" not in outputs or "attention_mask" not in outputs:
+            # Require tokenizer presence explicitly; no silent fallbacks
+            if not hasattr(self.processor, "tokenizer"):
+                raise RuntimeError(
+                    "Processor did not return input_ids/attention_mask and has no tokenizer attribute for recovery"
+                )
+            tokenizer = self.processor.tokenizer
             try:
-                tokenizer = getattr(self.processor, "tokenizer", None)
-                if tokenizer is not None:
-                    toks = tokenizer(
-                        text, return_tensors="pt", truncation=True, max_length=256
-                    )
-                    if isinstance(toks, dict):
-                        outputs.update(toks)
-                if "input_ids" not in outputs or "attention_mask" not in outputs:
-                    # Final fallback: synthesize
-                    seq_len = 16
-                    outputs["input_ids"] = torch.randint(0, 100, (1, seq_len))
-                    outputs["attention_mask"] = torch.ones(1, seq_len, dtype=torch.long)
+                toks = tokenizer(
+                    text, return_tensors="pt", truncation=True, max_length=256
+                )
+                if isinstance(toks, dict):
+                    outputs.update(toks)
             except Exception as e:
-                logger.debug(f"Tokenizer fallback failed: {e}")
-                seq_len = 16
-                outputs["input_ids"] = torch.randint(0, 100, (1, seq_len))
-                outputs["attention_mask"] = torch.ones(1, seq_len, dtype=torch.long)
+                raise RuntimeError(
+                    f"Tokenizer fallback failed to produce input tensors: {type(e).__name__}: {e}"
+                )
+
+            if "input_ids" not in outputs or "attention_mask" not in outputs:
+                raise RuntimeError(
+                    "Processor did not produce required text tensors and tokenizer fallback was insufficient"
+                )
 
         # Optional image tensors
         if images:
@@ -382,30 +394,33 @@ class ConversationProcessor:
                 need_image_grid = "image_grid_thw" not in outputs
 
                 if need_pixel_values or need_image_grid:
-                    image_processor = getattr(self.processor, "image_processor", None)
-                    if image_processor is not None and hasattr(
-                        image_processor, "preprocess"
-                    ):
-                        img_out = image_processor.preprocess(
-                            images, return_tensors="pt"
+                    if not hasattr(self.processor, "image_processor"):
+                        raise RuntimeError(
+                            "Processor missing image_processor attribute required to compute image tensors"
                         )
-                        # Coerce BatchFeature to dict
-                        if not isinstance(img_out, dict):
-                            data_attr = getattr(img_out, "data", None)
-                            if isinstance(data_attr, dict):
-                                img_out = data_attr
-                            else:
-                                from collections.abc import Mapping
+                    image_processor = self.processor.image_processor
+                    if not hasattr(image_processor, "preprocess"):
+                        raise RuntimeError(
+                            "image_processor lacks required 'preprocess' method to compute image tensors"
+                        )
+                    img_out = image_processor.preprocess(images, return_tensors="pt")
+                    # Coerce BatchFeature to dict
+                    if not isinstance(img_out, dict):
+                        data_attr = getattr(img_out, "data", None)
+                        if isinstance(data_attr, dict):
+                            img_out = data_attr
+                        else:
+                            from collections.abc import Mapping
 
-                                if isinstance(img_out, Mapping):
-                                    img_out = dict(img_out)
-                                else:
-                                    img_out = {}
-                        # Only update missing keys to avoid shape/type mismatches
-                        if need_pixel_values and "pixel_values" in img_out:
-                            outputs["pixel_values"] = img_out["pixel_values"]
-                        if need_image_grid and "image_grid_thw" in img_out:
-                            outputs["image_grid_thw"] = img_out["image_grid_thw"]
+                            if isinstance(img_out, Mapping):
+                                img_out = dict(img_out)
+                            else:
+                                img_out = {}
+                    # Only update missing keys to avoid shape/type mismatches
+                    if need_pixel_values and "pixel_values" in img_out:
+                        outputs["pixel_values"] = img_out["pixel_values"]
+                    if need_image_grid and "image_grid_thw" in img_out:
+                        outputs["image_grid_thw"] = img_out["image_grid_thw"]
 
                 # Fail-fast: if essential image tensors are missing after processor path, raise
                 missing_keys = []
@@ -457,8 +472,10 @@ class ConversationProcessor:
                     f"Message {i} must be a dict, got {type(message)}"
                 )
 
-            role = message.get("role")
-            content = message.get("content", "")
+            if "role" not in message or "content" not in message:
+                raise ValueError("Each message must include 'role' and 'content'")
+            role = message["role"]
+            content = message["content"]
 
             if role not in ["system", "user", "assistant"]:
                 raise ConversationStructureError(
@@ -518,8 +535,10 @@ class ConversationProcessor:
         image_index = 0
 
         for msg_idx, message in enumerate(messages):
-            role = message.get("role")
-            content = message.get("content", "")
+            if "role" not in message or "content" not in message:
+                raise ValueError("Each message must include 'role' and 'content'")
+            role = message["role"]
+            content = message["content"]
 
             validated_messages.append(message.copy())
 
@@ -634,7 +653,11 @@ class ConversationProcessor:
             for i, (teacher_sample, teacher_images) in enumerate(
                 zip(teacher_samples, teacher_images_list)
             ):
-                teacher_objects = teacher_sample.get("objects", [])
+                if "objects" not in teacher_sample:
+                    raise TeacherStudentValidationError(
+                        "Teacher sample missing required 'objects'"
+                    )
+                teacher_objects = teacher_sample["objects"]
                 if not teacher_objects:
                     if enable_recovery:
                         logger.warning(
@@ -677,7 +700,11 @@ class ConversationProcessor:
                 )
 
             # Add student query
-            student_objects = student_sample.get("objects", [])
+            if "objects" not in student_sample:
+                raise TeacherStudentValidationError(
+                    "Student sample missing required 'objects'"
+                )
+            student_objects = student_sample["objects"]
             if not student_objects:
                 raise TeacherStudentValidationError(
                     "Student sample must contain non-empty objects list"
@@ -1169,7 +1196,11 @@ class ConversationProcessor:
             truncated_teachers = []
             for teacher_sample in teacher_samples:
                 truncated_sample = teacher_sample.copy()
-                objects = truncated_sample.get("objects", [])
+                if "objects" not in truncated_sample:
+                    raise ConversationStructureError(
+                        "Teacher sample missing 'objects' during truncation"
+                    )
+                objects = truncated_sample["objects"]
                 if len(objects) > 1:
                     # Keep only first object
                     truncated_sample["objects"] = objects[:1]
@@ -1295,7 +1326,9 @@ class ConversationProcessor:
                 )
 
             # Convert objects to coordinate tokens
-            objects = sample.get("objects", [])
+            if "objects" not in sample:
+                raise ConversationStructureError("Sample missing required 'objects'")
+            objects = sample["objects"]
             if not objects:
                 raise ConversationStructureError(
                     "Sample must contain non-empty objects list"
@@ -1314,10 +1347,10 @@ class ConversationProcessor:
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": student_prompt},
-                        {"type": "image"},
-                    ],
+                    "content": (
+                        [{"type": "text", "text": student_prompt}]
+                        + [{"type": "image"} for _ in images]
+                    ),
                 },
                 {"role": "assistant", "content": coordinate_response},
             ]
@@ -1527,7 +1560,11 @@ class ConversationProcessor:
             for i, (teacher_sample, teacher_images) in enumerate(
                 zip(teacher_samples, teacher_images_list)
             ):
-                teacher_objects = teacher_sample.get("objects", [])
+                if "objects" not in teacher_sample:
+                    raise TeacherStudentValidationError(
+                        "Teacher sample missing required 'objects'"
+                    )
+                teacher_objects = teacher_sample["objects"]
                 if not teacher_objects:
                     if enable_recovery:
                         logger.warning(
@@ -1567,7 +1604,11 @@ class ConversationProcessor:
                 )
 
             # Validate student sample
-            student_objects = student_sample.get("objects", [])
+            if "objects" not in student_sample:
+                raise TeacherStudentValidationError(
+                    "Student sample missing required 'objects'"
+                )
+            student_objects = student_sample["objects"]
             if not student_objects:
                 raise TeacherStudentValidationError(
                     "Student sample must contain non-empty objects list"

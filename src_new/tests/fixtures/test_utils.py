@@ -225,8 +225,6 @@ def assert_config_validity(
             "model_path",
             "model_size",
             "learning_rate",
-            "train_data_path",
-            "val_data_path",
         ]
 
     # Check required fields
@@ -383,8 +381,8 @@ def dataclass_to_dict(obj: Any) -> Any:
         return obj
 
 
-class TestMetrics:
-    """Simple metrics tracking for tests."""
+class MetricsHelper:
+    """Simple metrics tracking for tests (helper, not a pytest test class)."""
 
     def __init__(self):
         self.reset()

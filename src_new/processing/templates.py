@@ -22,9 +22,9 @@ CONSTANTS = {
     "SYSTEM_PROMPT": """你是通信机房设备检测AI助手。请识别图像中的所有目标并输出位置与类别，使用坐标令牌进行精确空间理解。
 
 输出格式：
-- 矩形对象: <|obj_ref_start|>类别/属性<|obj_ref_end|><|box_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>]<|box_end|>
-- 四边形对象: <|obj_ref_start|>类别/属性<|obj_ref_end|><|quad_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>, <|coord_x3|>, <|coord_y3|>, <|coord_x4|>, <|coord_y4|>]<|quad_end|>
-- 线缆对象: <|obj_ref_start|>类别/属性<|obj_ref_end|><|line_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>, ...]<|line_end|>""",
+- 矩形对象: <|object_ref_start|>类别/属性<|object_ref_end|><|box_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>]<|box_end|>
+- 四边形对象: <|object_ref_start|>类别/属性<|object_ref_end|><|quad_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>, <|coord_x3|>, <|coord_y3|>, <|coord_x4|>, <|coord_y4|>]<|quad_end|>
+- 线缆对象: <|object_ref_start|>类别/属性<|object_ref_end|><|line_start|>[<|coord_x1|>, <|coord_y1|>, <|coord_x2|>, <|coord_y2|>, ...]<|line_end|>""",
     # Teacher User Prompt - Learning from Reference Sample - Simplified
     "TEACHER_USER_PROMPT": "这是示例，请检测图像中的设备和部件:",
     # Student User Prompt - Analyze Current Image - Simplified

@@ -118,9 +118,9 @@ class Dataset(TorchDataset):
     def _initialize_processing_components(self):
         """Initialize HuggingFace-first processing components."""
         # Data processing settings
-        self.data_root = getattr(self.config, "data_root", "")
-        self.teacher_ratio = getattr(self.config, "teacher_ratio", 0.5)
-        self.num_teacher_samples = getattr(self.config, "num_teacher_samples", 1)
+        self.data_root = self.config.data_root
+        self.teacher_ratio = self.config.teacher_ratio
+        self.num_teacher_samples = self.config.num_teacher_samples
 
         # HuggingFace processor will be set by trainer
         self.hf_processor = None
@@ -147,7 +147,17 @@ class Dataset(TorchDataset):
 
         from src_new.processing.conversation_processor import ConversationProcessor
 
-        max_coord_value = getattr(self.config, "max_coord_value", 2048)
+        # Fail-fast: max_coord_value must come from YAML (no defaults allowed)
+        if not hasattr(self.config, "max_coord_value"):
+            raise ValueError(
+                "max_coord_value is required in configuration (YAML) but was not found on Config."
+            )
+        max_coord_value = self.config.max_coord_value
+        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
+            raise ValueError(
+                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
+            )
+
         self.conversation_processor = ConversationProcessor(
             processor=hf_processor, max_coord_value=max_coord_value
         )
@@ -180,7 +190,7 @@ class Dataset(TorchDataset):
 
         # Apply max_dataset_size limit if specified in config
         # -1 means use all samples, None or 0 means no limit, positive values limit the dataset
-        max_dataset_size = getattr(self.config, "max_dataset_size", None)
+        max_dataset_size = self.config.max_dataset_size
         if max_dataset_size is not None and max_dataset_size > 0:
             logger.debug(
                 f"🔧 DEBUG MODE: Limiting dataset from {len(valid_samples)} to {max_dataset_size} samples"
@@ -212,7 +222,7 @@ class Dataset(TorchDataset):
                 return False
 
             # Must have at least one geometry type
-            geometry_types = ["bbox_2d", "quad", "square", "line"]
+            geometry_types = ["bbox_2d", "quad", "line"]
             if not any(geom_type in obj for geom_type in geometry_types):
                 return False
 
@@ -294,7 +304,11 @@ class Dataset(TorchDataset):
         """
         try:
             # Extract teacher samples if present
-            teacher_samples = structured_sample.get("teacher_samples", [])
+            teacher_samples = (
+                structured_sample["teacher_samples"]
+                if "teacher_samples" in structured_sample
+                else []
+            )
             has_teachers = len(teacher_samples) > 0
 
             # Load images
@@ -302,12 +316,18 @@ class Dataset(TorchDataset):
                 # Load teacher images
                 teacher_images_list = []
                 for teacher_sample in teacher_samples:
-                    teacher_image_paths = teacher_sample.get("images", [])
+                    if "images" not in teacher_sample:
+                        raise ValueError(
+                            "Teacher sample missing required 'images' list"
+                        )
+                    teacher_image_paths = teacher_sample["images"]
                     teacher_images = self._load_images_from_paths(teacher_image_paths)
                     teacher_images_list.append(teacher_images)
 
                 # Load student images
-                student_image_paths = structured_sample.get("images", [])
+                if "images" not in structured_sample:
+                    raise ValueError("Sample missing required 'images' list")
+                student_image_paths = structured_sample["images"]
                 student_images = self._load_images_from_paths(student_image_paths)
 
                 # Use HuggingFace-first conversation processor
@@ -325,7 +345,9 @@ class Dataset(TorchDataset):
                 )
             else:
                 # Load student images only
-                image_paths = structured_sample.get("images", [])
+                if "images" not in structured_sample:
+                    raise ValueError("Sample missing required 'images' list")
+                image_paths = structured_sample["images"]
                 images = self._load_images_from_paths(image_paths)
 
                 # Use HuggingFace-first conversation processor
@@ -345,6 +367,8 @@ class Dataset(TorchDataset):
             inputs["labels"] = labels
             inputs["teacher_assistant_spans"] = teacher_spans
             inputs["student_assistant_spans"] = student_spans
+            # Do not populate unified assistant_spans in legacy mode to avoid overriding teacher/student logic
+            inputs.pop("assistant_spans", None)
 
             return inputs
 
@@ -549,7 +573,8 @@ class Dataset(TorchDataset):
         for img_path in image_paths:
             try:
                 resolved = path_manager.resolve_path(img_path)
-                image = Image.open(resolved).convert("RGB")
+                resolved_str = str(resolved)
+                image = Image.open(resolved_str).convert("RGB")
                 images.append(image)
             except Exception as e:
                 logger.error(f"Failed to load image {img_path}: {e}")

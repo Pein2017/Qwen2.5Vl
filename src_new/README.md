@@ -7,17 +7,19 @@
 ### Training
 ```bash
 cd /data3/Qwen2.5-VL-main
-bash scripts/run_new_train.sh
+source ~/.bashrc && conda activate ms
+bash /data3/Qwen2.5-VL-main/scripts/run_new_train.sh
 ```
 
 ### Inference
 ```bash
-python -m src_new.inference --config configs/bbu_v2.yaml --checkpoint path/to/checkpoint --image path/to/image.jpg
+source ~/.bashrc && conda activate ms
+python -m src_new.inference --config /abs/path/to/config.yaml --checkpoint /abs/path/to/checkpoint --image /abs/path/to/image.jpg
 ```
 
 ## 📚 Complete Documentation
 
-**📖 See docs hub: `../docs/SRC_NEW_REFERENCE.md`**
+**📖 See docs hub: `../docs/SRC_NEW_REFERENCE.md` and `src_new/UNIFIED_DOCUMENTATION.md`**
 
 This docs hub links to the single deep-dive source of truth and key guides:
 
@@ -39,6 +41,10 @@ Tokenization → Span Detection → Training → Model Checkpoints
 - **Multi-Task Training**: Teacher–student span-based loss splits
 - **Modular Architecture**: Clean component boundaries, plug-and-play design
 - **Loss Management**: Mode-aware switching between coordinate and LLM loss
+
+## ✅ Coordinate Loss Status
+
+The soft-expectation coordinate loss is implemented and active. Coordinate tokens map to values 0..max_coord and are trained via temperature-scaled soft expectation + L1. See `src_new/models/coordinate_loss.py` and `UNIFIED_DOCUMENTATION.md` for details.
 
 ## 🔧 Core Components
 
@@ -68,7 +74,7 @@ python run_comprehensive_tests.py
 - ✅ **Accurate Span Detection**: Offset mapping for token-level alignment
 - ✅ **Unified Documentation**: Single authoritative reference
 - ✅ **EOS Training Added**: `<|im_end|>` is now included in assistant span labels to teach proper termination
-- ✅ **Vision token expansion validation fixed**: We now validate the number of `<|image_pad|>` tokens against the expected count computed from image grids and merge size, i.e. `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)`. This matches the official Qwen2.5‑VL processor behavior and prevents spurious "Image token/grid mismatch" errors.
+- ✅ **Vision token expansion validation**: We validate the number of `<|image_pad|>` tokens against the expected count computed from image grids and merge size, i.e. `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)` to match the official Qwen2.5‑VL processor behavior.
 - ✅ **HF config exposure in wrapper**: `DetectionModel.config` now proxies the underlying HuggingFace model config (and keeps the training dataclass on `training_config`). This preserves integrations that call `model.config.to_json_string()` and similar APIs.
 
 ---

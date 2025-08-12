@@ -86,8 +86,6 @@ class TestTokenProcessor:
             coordinate_tokens_enabled=True,
             max_coord_value=100,  # Small for testing
             new_geometry_tokens=[
-                "<|square_start|>",
-                "<|square_end|>",
                 "<|line_start|>",
                 "<|line_end|>",
             ],
@@ -101,8 +99,6 @@ class TestTokenProcessor:
         vocab = extended_tokenizer.get_vocab()
 
         # Check geometry tokens
-        assert "<|square_start|>" in vocab
-        assert "<|square_end|>" in vocab
         assert "<|line_start|>" in vocab
         assert "<|line_end|>" in vocab
 
@@ -124,8 +120,8 @@ class TestTokenProcessor:
         wrapped = processor.wrap_object_with_tokens(bbox_obj)
 
         # Should contain all required components
-        assert "<|obj_ref_start|>" in wrapped
-        assert "<|obj_ref_end|>" in wrapped
+        assert "<|object_ref_start|>" in wrapped
+        assert "<|object_ref_end|>" in wrapped
         assert "<|box_start|>" in wrapped
         assert "<|box_end|>" in wrapped
         assert "测试设备/基础检测目标" in wrapped
@@ -186,7 +182,7 @@ class TestTokenProcessor:
         wrapped = processor.wrap_object_with_tokens(bbox_obj)
 
         # Should contain special tokens but not coordinate tokens
-        assert "<|obj_ref_start|>" in wrapped
+        assert "<|object_ref_start|>" in wrapped
         assert "<|box_start|>" in wrapped
         assert "[100, 150, 200, 250]" in wrapped  # Raw coordinates
         assert "<|coord_100|>" not in wrapped  # No coordinate tokens
@@ -287,12 +283,10 @@ class TestTokenProcessor:
 
         # Should contain standard tokens
         expected_tokens = [
-            "<|obj_ref_start|>",
-            "<|obj_ref_end|>",
+            "<|object_ref_start|>",
+            "<|object_ref_end|>",
             "<|box_start|>",
             "<|box_end|>",
-            "<|square_start|>",
-            "<|square_end|>",
             "<|line_start|>",
             "<|line_end|>",
         ]
@@ -332,12 +326,11 @@ class TestTokenProcessor:
         wrapped = processor.wrap_object_with_tokens(invalid_obj)
 
         # Should handle gracefully
-        assert "<|obj_ref_start|>" in wrapped
-        assert "<|obj_ref_end|>" in wrapped
+        assert "<|object_ref_start|>" in wrapped
+        assert "<|object_ref_end|>" in wrapped
         assert "测试对象/无几何信息" in wrapped
         # Should not contain geometry-specific tokens
         assert "<|box_start|>" not in wrapped
-        assert "<|square_start|>" not in wrapped
         assert "<|line_start|>" not in wrapped
 
     def test_coordinate_token_edge_cases(self):
@@ -372,8 +365,6 @@ class TestTokenProcessor:
                 self.new_geometry_tokens = config.get(
                     "new_geometry_tokens",
                     [
-                        "<|square_start|>",
-                        "<|square_end|>",
                         "<|line_start|>",
                         "<|line_end|>",
                     ],
@@ -452,39 +443,30 @@ class TestTokenProcessor:
                     if self.config.coordinate_tokens_enabled:
                         coord_tokens = self.coordinates_to_tokens(coords)
                         coord_str = ", ".join(coord_tokens)
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|box_start|>[{coord_str}]<|box_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|box_start|>[{coord_str}]<|box_end|>"
                     else:
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|box_start|>{coords}<|box_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|box_start|>{coords}<|box_end|>"
 
                 elif "quad" in obj:
                     coords = obj["quad"]
                     if self.config.coordinate_tokens_enabled:
                         coord_tokens = self.coordinates_to_tokens(coords)
                         coord_str = ", ".join(coord_tokens)
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|quad_start|>[{coord_str}]<|quad_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|quad_start|>[{coord_str}]<|quad_end|>"
                     else:
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|quad_start|>{coords}<|quad_end|>"
-
-                elif "square" in obj:
-                    coords = obj["square"]
-                    if self.config.coordinate_tokens_enabled:
-                        coord_tokens = self.coordinates_to_tokens(coords)
-                        coord_str = ", ".join(coord_tokens)
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|square_start|>[{coord_str}]<|square_end|>"
-                    else:
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|square_start|>{coords}<|square_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|quad_start|>{coords}<|quad_end|>"
 
                 elif "line" in obj:
                     coords = obj["line"]
                     if self.config.coordinate_tokens_enabled:
                         coord_tokens = self.coordinates_to_tokens(coords)
                         coord_str = ", ".join(coord_tokens)
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|line_start|>[{coord_str}]<|line_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|line_start|>[{coord_str}]<|line_end|>"
                     else:
-                        return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|line_start|>{coords}<|line_end|>"
+                        return f"<|object_ref_start|>{desc}<|object_ref_end|><|line_start|>{coords}<|line_end|>"
 
                 else:
-                    return f"<|obj_ref_start|>{desc}<|obj_ref_end|>"
+                    return f"<|object_ref_start|>{desc}<|object_ref_end|>"
 
             def extract_coordinates_from_tokens(self, input_ids, tokenizer):
                 # Mock coordinate extraction
@@ -534,8 +516,8 @@ class TestTokenProcessor:
                 token_ids = {}
 
                 standard_tokens = [
-                    "<|obj_ref_start|>",
-                    "<|obj_ref_end|>",
+                    "<|object_ref_start|>",
+                    "<|object_ref_end|>",
                     "<|box_start|>",
                     "<|box_end|>",
                 ]
@@ -592,7 +574,7 @@ class TestTokenProcessorIntegration:
         # Test with sample objects from different geometry types
         test_objects = [
             {"bbox_2d": [100, 150, 200, 250], "desc": "矩形/测试"},
-            {"square": [300, 400, 350, 410, 348, 425, 302, 415], "desc": "方形/测试"},
+            {"quad": [300, 400, 350, 410, 348, 425, 302, 415], "desc": "四边形/测试"},
             {"line": [50, 100, 150, 120, 250, 140], "desc": "线条/测试"},
         ]
 
@@ -600,15 +582,15 @@ class TestTokenProcessorIntegration:
             wrapped = processor.wrap_object_with_tokens(obj)
 
             # Should be valid wrapped format
-            assert wrapped.startswith("<|obj_ref_start|>")
-            assert "<|obj_ref_end|>" in wrapped
+            assert wrapped.startswith("<|object_ref_start|>")
+            assert "<|object_ref_end|>" in wrapped
             assert obj["desc"] in wrapped
 
             # Should contain appropriate geometry tokens
             if "bbox_2d" in obj:
                 assert "<|box_start|>" in wrapped and "<|box_end|>" in wrapped
-            elif "square" in obj:
-                assert "<|square_start|>" in wrapped and "<|square_end|>" in wrapped
+            elif "quad" in obj:
+                assert "<|quad_start|>" in wrapped and "<|quad_end|>" in wrapped
             elif "line" in obj:
                 assert "<|line_start|>" in wrapped and "<|line_end|>" in wrapped
 
@@ -624,8 +606,6 @@ class TestTokenProcessorIntegration:
                 self.new_geometry_tokens = config.get(
                     "new_geometry_tokens",
                     [
-                        "<|square_start|>",
-                        "<|square_end|>",
                         "<|line_start|>",
                         "<|line_end|>",
                     ],
@@ -665,12 +645,11 @@ class TestTokenProcessorIntegration:
             def wrap_object_with_tokens(self, obj):
                 desc = obj.get("desc", "")
                 if "bbox_2d" in obj:
-                    return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|box_start|>{obj['bbox_2d']}<|box_end|>"
-                elif "square" in obj:
-                    return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|square_start|>{obj['square']}<|square_end|>"
+                    return f"<|object_ref_start|>{desc}<|object_ref_end|><|box_start|>{obj['bbox_2d']}<|box_end|>"
+
                 elif "line" in obj:
-                    return f"<|obj_ref_start|>{desc}<|obj_ref_end|><|line_start|>{obj['line']}<|line_end|>"
+                    return f"<|object_ref_start|>{desc}<|object_ref_end|><|line_start|>{obj['line']}<|line_end|>"
                 else:
-                    return f"<|obj_ref_start|>{desc}<|obj_ref_end|>"
+                    return f"<|object_ref_start|>{desc}<|object_ref_end|>"
 
         return MockTokenProcessor(config)

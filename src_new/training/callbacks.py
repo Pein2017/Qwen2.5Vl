@@ -100,30 +100,30 @@ class LossTracker:
             loss_components: Loss components to track
         """
         # Extract loss components
-        main_loss = self._extract_loss_value(getattr(loss_components, "loss", None))
-        llm_loss = self._extract_loss_value(getattr(loss_components, "llm_loss", None))
+        main_loss = self._extract_loss_value(loss_components.loss if hasattr(loss_components, "loss") else None)
+        llm_loss = self._extract_loss_value(loss_components.llm_loss if hasattr(loss_components, "llm_loss") else None)
         coordinate_loss = self._extract_loss_value(
-            getattr(loss_components, "coordinate_loss", None)
+            loss_components.coordinate_loss if hasattr(loss_components, "coordinate_loss") else None
         )
         teacher_loss = self._extract_loss_value(
-            getattr(loss_components, "teacher_loss", None)
+            loss_components.teacher_loss if hasattr(loss_components, "teacher_loss") else None
         )
         student_loss = self._extract_loss_value(
-            getattr(loss_components, "student_loss", None)
+            loss_components.student_loss if hasattr(loss_components, "student_loss") else None
         )
 
         # Extract granular teacher-student loss components
         teacher_llm_loss = self._extract_loss_value(
-            getattr(loss_components, "teacher_llm_loss", None)
+            loss_components.teacher_llm_loss if hasattr(loss_components, "teacher_llm_loss") else None
         )
         teacher_l1_loss = self._extract_loss_value(
-            getattr(loss_components, "teacher_l1_loss", None)
+            loss_components.teacher_l1_loss if hasattr(loss_components, "teacher_l1_loss") else None
         )
         student_llm_loss = self._extract_loss_value(
-            getattr(loss_components, "student_llm_loss", None)
+            loss_components.student_llm_loss if hasattr(loss_components, "student_llm_loss") else None
         )
         student_l1_loss = self._extract_loss_value(
-            getattr(loss_components, "student_l1_loss", None)
+            loss_components.student_l1_loss if hasattr(loss_components, "student_l1_loss") else None
         )
 
         # Update histories

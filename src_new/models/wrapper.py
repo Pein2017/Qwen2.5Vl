@@ -86,6 +86,23 @@ class CoordinateProcessor:
                     logger.info(
                         f"🎯 Sample tokens: {sorted(coord_value_tokens)[:3]} ... {sorted(coord_value_tokens)[-3:]}"
                     )
+
+                    # Strict validation: enforce Qwen2.5-VL fixed coordinate token range
+                    HARD_START = 151667
+                    start_id, end_exclusive = self.coordinate_token_range
+                    end_inclusive = end_exclusive - 1
+                    expected_end_inclusive = HARD_START + int(self.max_coord_value)
+                    if not (
+                        start_id == HARD_START
+                        and end_inclusive == expected_end_inclusive
+                    ):
+                        raise ValueError(
+                            "❌ Tokenizer coordinate token range mismatch. "
+                            f"Expected inclusive range [{{HARD_START}}, {{expected_end_inclusive}}] for Qwen2.5-VL, "
+                            f"but found [{{start_id}}, {{end_inclusive}}]. "
+                            "This codebase only supports Qwen2.5-VL tokenizers with the fixed coordinate range. "
+                            "If you intentionally use a different tokenizer, update the hardcoded range accordingly."
+                        )
                 else:
                     # No coordinate tokens found - this could be before extension or intentionally disabled
                     if self.coordinate_tokens_enabled:
@@ -148,6 +165,20 @@ class CoordinateProcessor:
                 logger.info(
                     f"🎯 Final coordinate token range: {self.coordinate_token_range}"
                 )
+
+                # Strict validation again post-extension
+                HARD_START = 151667
+                start_id, end_exclusive = self.coordinate_token_range
+                end_inclusive = end_exclusive - 1
+                expected_end_inclusive = HARD_START + int(self.max_coord_value)
+                if not (
+                    start_id == HARD_START and end_inclusive == expected_end_inclusive
+                ):
+                    raise ValueError(
+                        "❌ Tokenizer coordinate token range mismatch after extension. "
+                        f"Expected inclusive range [{{HARD_START}}, {{expected_end_inclusive}}], "
+                        f"but found [{{start_id}}, {{end_inclusive}}]."
+                    )
             else:
                 logger.warning(
                     "⚠️ Warning: Tokenizer extension completed but no coordinate tokens found"
@@ -273,6 +304,7 @@ class DetectionModel(nn.Module):
         token_config = TokenConfig(
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
+            new_geometry_tokens=config.new_geometry_tokens,
         )
         self.token_processor = TokenProcessor(token_config)
 
@@ -313,10 +345,19 @@ class DetectionModel(nn.Module):
             if skip_expansion and self._coordinate_mode:
                 self.coordinate_processor.update_after_extension(final_tokenizer)
 
-        # CRITICAL: Initialize loss manager AFTER tokenizer extension to ensure coordinate tokens exist
-        self.loss_manager = LossManager(
-            config, token_processor=self.token_processor, tokenizer=final_tokenizer
-        )
+        # Initialize loss manager lazily to avoid requiring full loss config at construction time
+        self.loss_manager = None
+
+        def _init_loss_manager_if_needed():
+            if self.loss_manager is None:
+                self.loss_manager = LossManager(
+                    self.training_config,
+                    token_processor=self.token_processor,
+                    tokenizer=final_tokenizer,
+                )
+
+        # Store initializer for later use
+        self._ensure_loss_manager = _init_loss_manager_if_needed
 
         # Note: Embedding extension is now handled in the intelligent detection logic above
         # This prevents double extension when loading from checkpoints
@@ -337,7 +378,7 @@ class DetectionModel(nn.Module):
         Returns:
             Extended tokenizer or None if not available
         """
-        return getattr(self, "_extended_tokenizer", self.tokenizer)
+        return self._extended_tokenizer
 
     @staticmethod
     def detect_extended_checkpoint(model_path: str) -> bool:
@@ -354,7 +395,7 @@ class DetectionModel(nn.Module):
             from transformers import AutoConfig
 
             config = AutoConfig.from_pretrained(model_path, trust_remote_code=False)
-            vocab_size = getattr(config, "vocab_size", 151665)
+            vocab_size = config.vocab_size
             return vocab_size > 151665
         except Exception:
             return False
@@ -455,7 +496,7 @@ class DetectionModel(nn.Module):
             skip_vocab_extension: If True, assumes tokenizer already has coordinate tokens
         """
         # Set the skip flag in config temporarily
-        original_skip = getattr(config, "skip_vocab_extension", False)
+        original_skip = config.skip_vocab_extension
         config.skip_vocab_extension = skip_vocab_extension
 
         try:
@@ -477,8 +518,8 @@ class DetectionModel(nn.Module):
             Model output with loss components
         """
         # Extract inputs
-        input_ids = kwargs.get("input_ids")
-        labels = kwargs.get("labels")
+        input_ids = kwargs["input_ids"] if "input_ids" in kwargs else None
+        labels = kwargs["labels"] if "labels" in kwargs else None
 
         # CRITICAL FIX: Ensure image_grid_thw has correct shape before passing to base model
         if "image_grid_thw" in kwargs:
@@ -523,8 +564,10 @@ class DetectionModel(nn.Module):
                     )
 
         # PRE-FORWARD SAFETY: Validate multimodal tensor consistency to prevent CUDA OOB
-        pixel_values = kwargs.get("pixel_values")
-        image_grid_thw = kwargs.get("image_grid_thw")
+        pixel_values = kwargs["pixel_values"] if "pixel_values" in kwargs else None
+        image_grid_thw = (
+            kwargs["image_grid_thw"] if "image_grid_thw" in kwargs else None
+        )
         if pixel_values is not None and image_grid_thw is not None:
             try:
                 # Ensure 2D flattened patch format as expected by Qwen2.5-VL
@@ -560,23 +603,13 @@ class DetectionModel(nn.Module):
                         if isinstance(image_token_id_attr, int)
                         else None
                     )
-                    if (
-                        image_token_id_val is None
-                        and getattr(self, "tokenizer", None) is not None
-                    ):
-                        try:
-                            vocab = (
-                                self.tokenizer.get_vocab()
-                                if hasattr(self.tokenizer, "get_vocab")
-                                else {}
+                    if image_token_id_val is None and self.tokenizer is not None:
+                        vocab = self.tokenizer.get_vocab()
+                        if "<|image_pad|>" not in vocab:
+                            raise ValueError(
+                                "Tokenizer missing required <|image_pad|> token in vocab"
                             )
-                            image_token_id_val = int(vocab.get("<|image_pad|>", 151655))
-                        except Exception:
-                            image_token_id_val = None
-                    if image_token_id_val is None:
-                        image_token_id_val = (
-                            151655  # Fallback to known Qwen2.5-VL image token id
-                        )
+                        image_token_id_val = int(vocab["<|image_pad|>"])
 
                     mask_tensor = (
                         (input_ids == image_token_id_val)
@@ -586,20 +619,15 @@ class DetectionModel(nn.Module):
                     n_image_tokens = int(mask_tensor.sum().item())
 
                     # Determine spatial merge size used by processor/model (default to 2)
-                    spatial_merge_size = 2
+                    spatial_merge_size = None
                     vision_cfg = getattr(self.base_model.config, "vision_config", None)
                     if vision_cfg is not None and hasattr(
                         vision_cfg, "spatial_merge_size"
                     ):
-                        try:
-                            spatial_merge_size = int(
-                                getattr(vision_cfg, "spatial_merge_size")
-                            )
-                        except Exception:
-                            spatial_merge_size = 2
-                    else:
-                        # Fallback to training config if available
-                        spatial_merge_size = int(getattr(self.config, "merge_size", 2))
+                        spatial_merge_size = int(vision_cfg.spatial_merge_size)
+                    if spatial_merge_size is None:
+                        # Fallback to training config (explicit)
+                        spatial_merge_size = int(self.training_config.merge_size)
 
                     merge_length = spatial_merge_size * spatial_merge_size
                     # Expected image token count matches how HF processor expands <|image_pad|>
@@ -634,8 +662,16 @@ class DetectionModel(nn.Module):
         # This optimization reduces loss computation time by 60-70% when teacher-student
         # spans are provided by bypassing the base model's loss computation and using
         # our optimized single-pass cross-entropy method instead.
-        teacher_spans = kwargs.get("teacher_assistant_spans", None)
-        student_spans = kwargs.get("student_assistant_spans", None)
+        teacher_spans = (
+            kwargs["teacher_assistant_spans"]
+            if "teacher_assistant_spans" in kwargs
+            else None
+        )
+        student_spans = (
+            kwargs["student_assistant_spans"]
+            if "student_assistant_spans" in kwargs
+            else None
+        )
         should_bypass_official_loss = (
             (teacher_spans is not None or student_spans is not None)
             and input_ids is not None
@@ -647,6 +683,7 @@ class DetectionModel(nn.Module):
             "num_items_in_batch",
             "teacher_assistant_spans",
             "student_assistant_spans",
+            "assistant_spans",
         ]
         base_kwargs = {k: v for k, v in kwargs.items() if k not in excluded_args}
 
@@ -698,11 +735,31 @@ class DetectionModel(nn.Module):
             # SOLUTION 1: Handle both official and bypassed loss computation
             if input_ids is not None and labels is not None:
                 # Extract teacher and student spans from kwargs
-                teacher_spans = kwargs.get("teacher_assistant_spans", None)
-                student_spans = kwargs.get("student_assistant_spans", None)
+                teacher_spans = (
+                    kwargs["teacher_assistant_spans"]
+                    if "teacher_assistant_spans" in kwargs
+                    else None
+                )
+                student_spans = (
+                    kwargs["student_assistant_spans"]
+                    if "student_assistant_spans" in kwargs
+                    else None
+                )
+                # Unified assistant spans take precedence when available
+                unified_spans = (
+                    kwargs["assistant_spans"] if "assistant_spans" in kwargs else None
+                )
+                if unified_spans is not None and not (
+                    (teacher_spans is not None and len(teacher_spans) > 0)
+                    or (student_spans is not None and len(student_spans) > 0)
+                ):
+                    teacher_spans = None
+                    student_spans = unified_spans
 
                 # Use the loss manager to compute detailed components
                 # This will use the optimized single-pass method when teacher-student spans are provided
+                # Ensure loss manager is initialized before computing components
+                self._ensure_loss_manager()
                 loss_components = self.loss_manager.compute_loss_components(
                     logits=base_outputs.logits,
                     labels=labels,
@@ -711,7 +768,8 @@ class DetectionModel(nn.Module):
                     student_spans=student_spans,
                 )
                 # Store for callback access
-                self.loss_manager.last_loss_components = loss_components
+                if self.loss_manager is not None:
+                    self.loss_manager.last_loss_components = loss_components
 
                 # Log optimization status
                 if should_bypass_official_loss:
@@ -732,32 +790,35 @@ class DetectionModel(nn.Module):
                     student_llm_loss=base_outputs.loss,
                 )
                 # Store for callback access
-                self.loss_manager.last_loss_components = loss_components
+                if self.loss_manager is not None:
+                    self.loss_manager.last_loss_components = loss_components
             else:
                 # No loss available
                 loss_components = LossComponents(loss=None)
-                self.loss_manager.last_loss_components = loss_components
+                if self.loss_manager is not None:
+                    self.loss_manager.last_loss_components = loss_components
 
-            # Return simple dict-like object for DataParallel compatibility
-            # The trainer expects either a dict with 'loss' key or an object with loss attribute
-            class SimpleOutput:
+            # Return dict-like object for DataParallel compatibility
+            # Trainer accepts a dict with 'loss' key; dicts are safely gathered by DataParallel
+            class SimpleOutput(dict):
                 def __init__(self, loss, logits, loss_components, hidden_states=None):
+                    super().__init__(
+                        loss=loss,
+                        logits=logits,
+                        loss_components=loss_components,
+                        hidden_states=hidden_states,
+                    )
+                    # Also expose attributes for Trainer convenience
                     self.loss = loss
                     self.logits = logits
                     self.loss_components = loss_components
                     self.hidden_states = hidden_states
 
                 def __getitem__(self, key):
-                    if key == "loss":
-                        return self.loss
-                    elif key == "logits":
-                        return self.logits
-                    elif key == 0:  # tuple access
-                        return self.loss
-                    return getattr(self, key, None)
+                    return super().get(key, getattr(self, key))
 
                 def __contains__(self, key):
-                    return hasattr(self, key)
+                    return dict.__contains__(self, key) or hasattr(self, key)
 
             return SimpleOutput(
                 loss=base_outputs.loss if hasattr(base_outputs, "loss") else None,
@@ -787,29 +848,40 @@ class DetectionModel(nn.Module):
         Returns:
             Model output with coordinate loss components
         """
-        # Apply coordinate token masking to logits
-        masked_logits = self.coordinate_processor.mask_coordinate_logits(
-            base_outputs.logits,
-            input_ids,
-            self.coordinate_processor.coordinate_token_range,
-        )
+        # Use base logits directly. Do not globally mask coordinate logits by input positions,
+        # because next-token prediction requires coordinate vocab to be available at label positions.
+        masked_logits = base_outputs.logits
 
-        # Get coordinate mask
-        coord_mask = self.coordinate_processor.get_coordinate_mask(input_ids)
-
-        # Debug logging for coordinate mask
-        # Using module-level rank-aware logger
-
-        coord_count = coord_mask.sum().item() if coord_mask is not None else 0
-        logger.debug(
-            f"🎯 Coordinate mask: {coord_count} coordinate tokens found in batch"
-        )
+        # Build a coord mask over LABEL positions (what is being predicted): we pass None here to
+        # let LossManager derive the coord positions from labels with correct shifting. To preserve
+        # interface compatibility, we compute but do not rely on the input-id based mask.
+        coord_mask = None
 
         # Extract teacher and student spans from kwargs
-        teacher_spans = kwargs.get("teacher_assistant_spans", None)
-        student_spans = kwargs.get("student_assistant_spans", None)
+        teacher_spans = (
+            kwargs["teacher_assistant_spans"]
+            if "teacher_assistant_spans" in kwargs
+            else None
+        )
+        student_spans = (
+            kwargs["student_assistant_spans"]
+            if "student_assistant_spans" in kwargs
+            else None
+        )
+        # Unified assistant spans take precedence when available
+        unified_spans = (
+            kwargs["assistant_spans"] if "assistant_spans" in kwargs else None
+        )
+        if unified_spans is not None and not (
+            (teacher_spans is not None and len(teacher_spans) > 0)
+            or (student_spans is not None and len(student_spans) > 0)
+        ):
+            teacher_spans = None
+            student_spans = unified_spans
 
         # Compute loss components with teacher-student spans
+        # Ensure loss manager is initialized before computing components
+        self._ensure_loss_manager()
         loss_components = self.loss_manager.compute_loss_components(
             logits=masked_logits,
             labels=labels,
@@ -870,7 +942,11 @@ class DetectionModel(nn.Module):
         Returns:
             Loss components or None if not available
         """
-        return self.loss_manager.last_loss_components
+        return (
+            self.loss_manager.last_loss_components
+            if self.loss_manager is not None
+            else None
+        )
 
     def get_last_loss_components(self) -> Optional[LossComponents]:
         """
@@ -888,7 +964,7 @@ class DetectionModel(nn.Module):
         Args:
             epoch: Current training epoch
         """
-        if hasattr(self.loss_manager, "update_epoch"):
+        if self.loss_manager is not None and hasattr(self.loss_manager, "update_epoch"):
             self.loss_manager.update_epoch(epoch)
 
     def enable_coordinate_mode(self) -> None:
@@ -926,7 +1002,8 @@ class DetectionModel(nn.Module):
 
     @config.setter
     def config(self, config: "Config") -> None:
-        """Set configuration object.
+        """
+        Set configuration object.
 
         Keep HuggingFace model config as self._config for Trainer compatibility,
         and store the training-specific config in self.training_config.
@@ -981,13 +1058,8 @@ class DetectionModel(nn.Module):
             pad_to_multiple_of=128,  # ms-swift optimization
         )
 
-        # Update coordinate token range
-        if hasattr(self, "coordinate_processor"):
-            self.coordinate_processor.original_vocab_size = padded_size
-            self.coordinate_processor.coordinate_token_range = (
-                padded_size,
-                padded_size + self.coordinate_processor.max_coord_value,
-            )
+        # Do not update coordinate token range here; it must be derived from tokenizer IDs
+        # and validated via set_tokenizer/update_after_extension.
 
         return self.base_model.get_input_embeddings()
 

@@ -219,6 +219,14 @@ def patch_qwen25_forward_method() -> None:
         Patched forward method with improved label handling.
         """
         # Call original forward method
+        # Strip non-HF kwargs that may be plumbed by our training stack
+        if "assistant_spans" in kwargs:
+            kwargs.pop("assistant_spans", None)
+        if "teacher_assistant_spans" in kwargs:
+            kwargs.pop("teacher_assistant_spans", None)
+        if "student_assistant_spans" in kwargs:
+            kwargs.pop("student_assistant_spans", None)
+
         outputs = original_forward(
             self,
             input_ids=input_ids,

@@ -196,7 +196,7 @@ class TestLossManager:
         batch_size, seq_len, vocab_size = (
             1,
             15,
-            151665 + 2 + 1025,
+            151665 + 2 + 1026,
         )  # base + line_tokens + coord_tokens
 
         # Create test data
@@ -228,8 +228,9 @@ class TestLossManager:
             expected_total += loss_components.student_l1_loss
 
         # Allow for small floating point differences
+        # Avoid wrapping a tensor in torch.tensor() which raises a warning
         assert torch.allclose(
-            loss_components.loss, torch.tensor(expected_total), atol=1e-6
+            loss_components.loss, expected_total.clone().detach(), atol=1e-6
         )
 
     def test_empty_spans_handling(self, loss_manager):
@@ -237,7 +238,7 @@ class TestLossManager:
         batch_size, seq_len, vocab_size = (
             1,
             10,
-            151665 + 2 + 1025,
+            151665 + 2 + 1027,
         )  # base + line_tokens + coord_tokens
 
         # Create test data
@@ -261,7 +262,7 @@ class TestLossManager:
         batch_size, seq_len, vocab_size = (
             1,
             10,
-            151665 + 2 + 1025,
+            151665 + 2 + 1026,
         )  # base + line_tokens + coord_tokens
 
         # Create test data
@@ -281,3 +282,80 @@ class TestLossManager:
         # Should handle gracefully
         assert isinstance(loss_components, LossComponents)
         assert torch.isfinite(loss_components.loss)
+
+    def test_next_token_alignment_ce_min_loss_when_logits_match_next_label(
+        self, loss_manager
+    ):
+        """CE should be near-zero when logits[t] put mass on labels[t+1] (next-token alignment)."""
+        batch_size, seq_len = 1, 5
+        vocab_size = 151665 + 2 + 1025
+        logits = torch.zeros(batch_size, seq_len, vocab_size)
+        labels = torch.full((batch_size, seq_len), -100)
+
+        # Choose non-coordinate token ids well below coord_start
+        tok1, tok2, tok3 = 42, 43, 44
+        # Labels at t=1..3 (so next-token targets exist)
+        labels[0, 1] = tok1
+        labels[0, 2] = tok2
+        labels[0, 3] = tok3
+        # Make logits[t] peak at labels[t+1]
+        logits[0, 0, tok1] = 50.0
+        logits[0, 1, tok2] = 50.0
+        logits[0, 2, tok3] = 50.0
+        # The rest remain 0
+
+        comp = loss_manager.compute_loss_components(logits=logits, labels=labels)
+        assert comp.student_llm_loss is not None
+        # With strong peaks at the correct next labels, CE should be very small
+        assert comp.student_llm_loss.item() < 1e-3
+
+    def test_coordinate_alignment_with_spans_shifted(self, loss_manager):
+        """Coordinate L1 should align to next-token positions inside spans (label-based, shifted)."""
+        batch_size, seq_len = 1, 8
+        vocab_size = 151665 + 2 + 1025
+        coord_start = 151667
+        logits = torch.zeros(batch_size, seq_len, vocab_size)
+        labels = torch.full((batch_size, seq_len), -100)
+
+        # Put coordinate targets at positions 3 and 4 inside a teacher span [3,5)
+        labels[0, 3] = coord_start + 100
+        labels[0, 4] = coord_start + 200
+        teacher_spans = [[(3, 5)]]
+        student_spans = None
+
+        # Since the model predicts next token, set logits at t=2 and t=3 to peak at those coords
+        logits[0, 2, coord_start + 100] = 50.0  # predicts labels[3]
+        logits[0, 3, coord_start + 200] = 50.0  # predicts labels[4]
+
+        comp = loss_manager.compute_loss_components(
+            logits=logits,
+            labels=labels,
+            teacher_spans=teacher_spans,
+            student_spans=student_spans,
+        )
+        # Teacher coordinate loss should be very small (correct predictions)
+        assert comp.teacher_l1_loss is not None
+        assert comp.teacher_l1_loss.item() < 1e-3
+        # And CE on teacher side should be None because span contains only coordinate targets
+        assert comp.teacher_llm_loss is None
+
+    def test_llm_excludes_coordinate_targets_with_spans(self, loss_manager):
+        """When span contains only coordinate targets, CE component should be None (excluded)."""
+        batch_size, seq_len = 1, 6
+        vocab_size = 151665 + 2 + 1025
+        coord_start = 151667
+        logits = torch.randn(batch_size, seq_len, vocab_size)
+        labels = torch.full((batch_size, seq_len), -100)
+        # Coordinates in span
+        labels[0, 2] = coord_start + 5
+        labels[0, 3] = coord_start + 6
+        teacher_spans = [[(2, 4)]]
+
+        comp = loss_manager.compute_loss_components(
+            logits=logits, labels=labels, teacher_spans=teacher_spans
+        )
+        # LLM loss excluded for coordinate-only targets
+        assert comp.teacher_llm_loss is None
+        # Coordinate loss present
+        assert comp.teacher_l1_loss is not None
+        assert torch.isfinite(comp.teacher_l1_loss)

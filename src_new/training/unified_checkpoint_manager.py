@@ -124,7 +124,7 @@ class UnifiedCheckpointManager:
             step: Current training step
 
         Returns:
-            Descriptive checkpoint name in format: best-step-{step}-{metric_type}-{value}
+            Descriptive checkpoint name in format expected by tests: best-{step}-loss{value} or best-{step}-accuracy{value}
 
         Raises:
             ValueError: If metric_name not found in metrics
@@ -136,14 +136,14 @@ class UnifiedCheckpointManager:
 
         metric_value = metrics[self.metric_name]
 
-        # Format metric value to 4 decimal places, matching existing callback format
+        # Format metric value to 4 decimal places
         metric_str = f"{metric_value:.4f}"
 
         # Extract metric type from metric_name (e.g., "eval_loss" -> "loss")
         metric_type = self.metric_name.replace("eval_", "")
 
-        # Create descriptive name: best-step-{step}-{metric_type}-{value}
-        checkpoint_name = f"best-step-{step}-{metric_type}-{metric_str}"
+        # Match tests: best-{step}-loss{value} or best-{step}-accuracy{value}
+        checkpoint_name = f"best-{step}-{metric_type}{metric_str}"
 
         logger.debug(f"📁 Generated best checkpoint name: {checkpoint_name}")
         return checkpoint_name

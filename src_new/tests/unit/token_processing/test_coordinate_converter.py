@@ -8,6 +8,7 @@ the complex _format_objects_for_response method from templates.py.
 """
 
 import unittest
+
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
 
 
@@ -16,7 +17,7 @@ class TestCoordinateTokenConverter(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.converter = CoordinateTokenConverter(max_coord_value=2048)
+        self.converter = CoordinateTokenConverter(max_coord_value=1024)
 
     def test_initialization_valid(self):
         """Test valid initialization."""
@@ -24,24 +25,24 @@ class TestCoordinateTokenConverter(unittest.TestCase):
         self.assertEqual(converter.max_coord_value, 1024)
         self.assertIn("bbox_2d", converter.geometry_tokens)
         self.assertIn("quad", converter.geometry_tokens)
-        self.assertIn("square", converter.geometry_tokens)
+
         self.assertIn("line", converter.geometry_tokens)
 
     def test_initialization_invalid_max_coord(self):
         """Test initialization with invalid max_coord_value."""
         with self.assertRaises(ValueError) as cm:
             CoordinateTokenConverter(max_coord_value=0)
-        self.assertIn("max_coord_value must be positive", str(cm.exception))
+        self.assertIn("max_coord_value must be a positive integer", str(cm.exception))
 
         with self.assertRaises(ValueError) as cm:
             CoordinateTokenConverter(max_coord_value=-100)
-        self.assertIn("max_coord_value must be positive", str(cm.exception))
+        self.assertIn("max_coord_value must be a positive integer", str(cm.exception))
 
     def test_bbox_2d_conversion(self):
         """Test bbox_2d objects convert to wrapper token format."""
         obj = {"bbox_2d": [290, 375, 310, 424], "desc": "test_device"}
         result = self.converter.convert_objects_to_tokens([obj])
-        expected = "<|obj_ref_start|>test_device<|obj_ref_end|><|box_start|>[<|coord_290|>, <|coord_375|>, <|coord_310|>, <|coord_424|>]<|box_end|>"
+        expected = "<|object_ref_start|>test_device<|object_ref_end|><|box_start|>[<|coord_290|>, <|coord_375|>, <|coord_310|>, <|coord_424|>]<|box_end|>"
         self.assertEqual(result, expected)
 
     def test_quad_conversion(self):
@@ -52,14 +53,6 @@ class TestCoordinateTokenConverter(unittest.TestCase):
         self.assertIn("<|quad_end|>", result)
         self.assertIn("test_label", result)
         self.assertIn("<|coord_209|>", result)
-
-    def test_square_conversion(self):
-        """Test square objects convert to quad wrapper token format."""
-        obj = {"square": [100, 200, 150, 250, 200, 300, 150, 350], "desc": "test_square"}
-        result = self.converter.convert_objects_to_tokens([obj])
-        self.assertIn("<|quad_start|>", result)  # Square uses quad tokens
-        self.assertIn("<|quad_end|>", result)
-        self.assertIn("test_square", result)
 
     def test_line_conversion(self):
         """Test line objects convert to line wrapper token format."""
@@ -73,17 +66,17 @@ class TestCoordinateTokenConverter(unittest.TestCase):
         """Test legacy x1,y1,x2,y2 format converts to bbox_2d."""
         obj = {"x1": 100, "y1": 200, "x2": 150, "y2": 250, "desc": "legacy_device"}
         result = self.converter.convert_objects_to_tokens([obj])
-        expected = "<|obj_ref_start|>legacy_device<|obj_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_150|>, <|coord_250|>]<|box_end|>"
+        expected = "<|object_ref_start|>legacy_device<|object_ref_end|><|box_start|>[<|coord_100|>, <|coord_200|>, <|coord_150|>, <|coord_250|>]<|box_end|>"
         self.assertEqual(result, expected)
 
     def test_multiple_objects(self):
         """Test multiple objects are joined with newlines."""
         objects = [
             {"bbox_2d": [100, 200, 150, 250], "desc": "device1"},
-            {"quad": [50, 60, 70, 80, 90, 100, 110, 120], "desc": "device2"}
+            {"quad": [50, 60, 70, 80, 90, 100, 110, 120], "desc": "device2"},
         ]
         result = self.converter.convert_objects_to_tokens(objects)
-        lines = result.split('\n')
+        lines = result.split("\n")
         self.assertEqual(len(lines), 2)
         self.assertIn("device1", lines[0])
         self.assertIn("device2", lines[1])
@@ -93,13 +86,13 @@ class TestCoordinateTokenConverter(unittest.TestCase):
         obj = {"bbox_2d": [-10, 3000, 100, 200], "desc": "clamped_device"}
         result = self.converter.convert_objects_to_tokens([obj])
         self.assertIn("<|coord_0|>", result)  # -10 clamped to 0
-        self.assertIn("<|coord_2048|>", result)  # 3000 clamped to 2048
+        self.assertIn("<|coord_1024|>", result)  # 3000 clamped to 1024
 
     def test_missing_description(self):
         """Test objects without description use empty string."""
         obj = {"bbox_2d": [100, 200, 150, 250]}
         result = self.converter.convert_objects_to_tokens([obj])
-        self.assertIn("<|obj_ref_start|><|obj_ref_end|>", result)
+        self.assertIn("<|object_ref_start|><|object_ref_end|>", result)
 
     def test_empty_objects_list(self):
         """Test empty objects list raises ValueError."""
@@ -125,7 +118,7 @@ class TestCoordinateTokenConverter(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             self.converter.convert_objects_to_tokens([obj])
         self.assertIn("unsupported geometry type", str(cm.exception))
-        self.assertIn("Expected one of: bbox_2d, quad, square, line", str(cm.exception))
+        self.assertIn("Expected one of: bbox_2d, quad, line", str(cm.exception))
 
     def test_non_list_coordinates(self):
         """Test non-list coordinates raise ValueError."""

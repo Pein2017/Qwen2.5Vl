@@ -63,7 +63,7 @@ class StandardDataCollator:
             self.pad_token_id = self.tokenizer.pad_token_id
 
         if self.max_length is None and self.config is not None:
-            self.max_length = getattr(self.config, "max_total_length", 4096)
+            self.max_length = self.config.max_total_length
 
         logger.info(
             f"StandardDataCollator initialized with max_length={self.max_length}"
@@ -177,10 +177,13 @@ class StandardDataCollator:
         # Extract teacher-student spans if available
         teacher_assistant_spans = None
         student_assistant_spans = None
+        assistant_spans = None
         if "teacher_assistant_spans" in features[0]:
             teacher_assistant_spans = [f["teacher_assistant_spans"] for f in features]
         if "student_assistant_spans" in features[0]:
             student_assistant_spans = [f["student_assistant_spans"] for f in features]
+        if "assistant_spans" in features[0]:
+            assistant_spans = [f["assistant_spans"] for f in features]
 
         # Pad sequences
         padded_input_ids = self._pad_sequence(input_ids, self.pad_token_id)
@@ -219,6 +222,11 @@ class StandardDataCollator:
             batch["student_assistant_spans"] = student_assistant_spans
             logger.debug(
                 f"Added student_assistant_spans to batch: {len(student_assistant_spans)} samples"
+            )
+        if assistant_spans is not None:
+            batch["assistant_spans"] = assistant_spans
+            logger.debug(
+                f"Added assistant_spans to batch: {len(assistant_spans)} samples"
             )
 
         # PRE-BATCH VALIDATION: Ensure multimodal tensors are consistent to avoid CUDA OOB later
@@ -300,7 +308,7 @@ class PackedDataCollator:
             self.pad_token_id = self.tokenizer.pad_token_id
 
         if self.max_length is None and self.config is not None:
-            self.max_length = getattr(self.config, "max_total_length", 4096)
+            self.max_length = self.config.max_total_length
 
         logger.info(f"PackedDataCollator initialized with max_length={self.max_length}")
 
@@ -381,10 +389,13 @@ class PackedDataCollator:
         # Extract teacher-student spans if available
         teacher_assistant_spans = None
         student_assistant_spans = None
+        assistant_spans = None
         if "teacher_assistant_spans" in features[0]:
             teacher_assistant_spans = [f["teacher_assistant_spans"] for f in features]
         if "student_assistant_spans" in features[0]:
             student_assistant_spans = [f["student_assistant_spans"] for f in features]
+        if "assistant_spans" in features[0]:
+            assistant_spans = [f["assistant_spans"] for f in features]
 
         # Pad sequences
         padded_input_ids = self._pad_sequence(input_ids, self.pad_token_id)
@@ -471,6 +482,11 @@ class PackedDataCollator:
             batch["student_assistant_spans"] = student_assistant_spans
             logger.debug(
                 f"Added student_assistant_spans to batch: {len(student_assistant_spans)} samples"
+            )
+        if assistant_spans is not None:
+            batch["assistant_spans"] = assistant_spans
+            logger.debug(
+                f"Added assistant_spans to batch: {len(assistant_spans)} samples"
             )
 
         # PRE-BATCH VALIDATION: Ensure multimodal tensors are consistent to avoid CUDA OOB later

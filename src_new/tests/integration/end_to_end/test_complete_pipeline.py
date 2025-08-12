@@ -65,7 +65,7 @@ class TestCompletePipeline:
         logger.info("🚀 Setting up complete pipeline test environment...")
 
         # Load real configuration
-        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_debug.yaml")
+        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
         if not config_path.exists():
             pytest.skip("Real config file not found")
 
@@ -145,7 +145,7 @@ class TestCompletePipeline:
         logger.info("🔧 Step 2: Initializing processing components...")
         start_time = time.time()
 
-        # Create token processor
+        # Create token processor (no runtime extension; tokenizer already expanded)
         token_config = TokenConfig(
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
@@ -153,15 +153,7 @@ class TestCompletePipeline:
         )
         token_processor = TokenProcessor(token_config)
 
-        # Extend tokenizer vocabulary if needed
-        original_vocab_size = len(tokenizer)
-        if config.coordinate_tokens_enabled:
-            token_processor.extend_tokenizer_vocabulary(tokenizer)
-            logger.info(
-                f"🔧 Extended vocabulary: {original_vocab_size} -> {len(tokenizer)}"
-            )
-
-        # Update processor with extended tokenizer
+        # Update processor with pre-expanded tokenizer
         processor.tokenizer = tokenizer
 
         # Create conversation processor

@@ -41,11 +41,15 @@ src_new/tests/
 │       ├── test_token_masking.py          # Token masking and span validation
 │       └── test_trainer_*.py              # Trainer component tests
 ├── integration/                    # Integration and end-to-end tests
-│   ├── end_to_end/                # Complete pipeline integration tests
+│   ├── end_to_end/                 # Complete pipeline integration tests
 │   │   ├── test_training_pipeline_integration.py  # Full training pipeline tests
 │   │   └── test_real_data_pipeline.py             # Real dataset integration tests
+│   ├── inference/                 # Inference pipeline and eval integration
+│   │   ├── test_comprehensive_inference.py        # Comprehensive inference tests
+│   │   ├── test_end_to_end_pipeline.py            # End-to-end inference validation
+│   │   └── test_path_resolution.py                # PathManager integration tests
 │   └── real_data/                 # Real data validation tests
-│       └── test_validation_*.py           # Real data validation tests
+│       └── test_edge_cases.py               # Malformed data and boundary testing
 ├── fixtures/                      # Test fixtures and mock objects
 │   ├── mock_objects.py                    # Mock model and tokenizer objects
 │   └── sample_data.py                     # Sample data for testing
@@ -268,6 +272,7 @@ python src_new/tests/run_comprehensive_tests.py
 
 # Run specific test categories
 python src_new/tests/run_comprehensive_tests.py --category integration
+python src_new/tests/run_comprehensive_tests.py --category inference
 python src_new/tests/run_comprehensive_tests.py --category training
 python src_new/tests/run_comprehensive_tests.py --category validation
 
@@ -275,14 +280,14 @@ python src_new/tests/run_comprehensive_tests.py --category validation
 python src_new/tests/run_comprehensive_tests.py --verbose
 
 # Run individual test files
-python -m pytest src_new/tests/test_integration/test_real_data_pipeline.py -v
-python -m pytest src_new/tests/test_training/test_loss_computation.py -v
-python -m pytest src_new/tests/test_validation/test_edge_cases.py -v
+python -m pytest src_new/tests/integration/end_to_end/test_real_data_pipeline.py -v
+python -m pytest src_new/tests/unit/training_pipeline/test_loss_computation.py -v
+python -m pytest src_new/tests/integration/real_data/test_edge_cases.py -v
 ```
 
 ## 📋 Test Categories
 
-### 1. Integration Tests (`test_integration/`)
+### 1. Integration Tests (`integration/`)
 
 **Real Data Pipeline Tests** (`test_real_data_pipeline.py`):
 - ✅ Real dataset file loading and validation
@@ -298,7 +303,21 @@ python -m pytest src_new/tests/test_validation/test_edge_cases.py -v
 - ✅ Throughput measurement
 - ✅ Integration component testing
 
-### 2. Training Tests (`test_training/`)
+### 1.1 Inference Tests (`integration/inference/`)
+
+These tests validate the end-to-end inference pipeline, path resolution, and eval script compatibility without requiring heavy HF components:
+
+- `test_comprehensive_inference.py`: Single/multi-image, teacher-student, coordinate token parsing, edge cases, and performance.
+- `test_eval_script_simulation.py`: Simulated eval script integration, batch processing, and output format.
+- `test_path_resolution.py`: `PathManager` behavior in realistic scenarios.
+
+Run only inference tests:
+
+```bash
+python -m pytest src_new/tests/integration/inference -v
+```
+
+### 2. Training Tests (`unit/training_pipeline/`)
 
 **Loss Computation Tests** (`test_loss_computation.py`):
 - ✅ Coordinate token masking with real data
@@ -314,7 +333,7 @@ python -m pytest src_new/tests/test_validation/test_edge_cases.py -v
 - ✅ Assistant token identification
 - ✅ Image pad token handling
 
-### 3. Validation Tests (`test_validation/`)
+### 3. Validation Tests (`integration/real_data/`)
 
 **Edge Cases Tests** (`test_edge_cases.py`):
 - ✅ Empty objects list handling
@@ -419,9 +438,9 @@ Both test suites should be run to ensure complete coverage:
 
 ```bash
 # Run existing unit tests
-python -m pytest src_new/tests/test_config/ -v
-python -m pytest src_new/tests/test_data/ -v
-python -m pytest src_new/tests/test_processing/ -v
+python -m pytest src_new/tests/unit/configuration/ -v
+python -m pytest src_new/tests/unit/data_processing/ -v
+python -m pytest src_new/tests/unit/token_processing/ -v
 
 # Run comprehensive integration tests
 python src_new/tests/run_comprehensive_tests.py

@@ -44,11 +44,12 @@ class SoftExpectationCoordinateLoss:
     _last_warning_epoch = -1
     _warning_logged_this_epoch = False
 
+    # todo: change the coord_end_id
     def __init__(
         self,
-        coord_start_id: int = 151667,
-        coord_end_id: int = 153716,
-        temperature: float = 1.0,
+        coord_start_id: int,
+        coord_end_id: int,  # will be overridden by factory to exclusive end
+        temperature: float,
         numerical_stability: bool = True,
         device: Optional[torch.device] = None,
     ):
@@ -68,7 +69,7 @@ class SoftExpectationCoordinateLoss:
         self.numerical_stability = numerical_stability
         self.device = device
 
-        # Coordinate vocabulary size (2049 tokens: coord_0 to coord_MAX_COORD)
+        # Coordinate vocabulary size (number of coordinate tokens)
         self.coord_vocab_size = coord_end_id - coord_start_id
 
         # Pre-compute coordinate value indices for efficiency
@@ -95,19 +96,56 @@ class SoftExpectationCoordinateLoss:
 
     def _get_coord_values(self, device: torch.device) -> torch.Tensor:
         """
-        Get coordinate value indices tensor [0, 1, 2, ..., MAX_COORD].
+        Get ACTUAL coordinate values corresponding to coordinate token IDs.
 
         Args:
             device: Target device for tensor
 
         Returns:
-            Coordinate values tensor of shape [coord_vocab_size]
+            Coordinate values tensor of shape [coord_vocab_size], where index i
+            corresponds to token ID (coord_start_id + i) and value equals the
+            actual coordinate value represented by that token.
         """
         if self._coord_values is None or self._coord_values.device != device:
-            self._coord_values = torch.arange(
-                self.coord_vocab_size, device=device, dtype=torch.float32
+            # Mapping is linear for Qwen2.5-VL: <|coord_k|> has id coord_start_id + k
+            # Build via token-id arithmetic to make the dependency explicit.
+            token_ids = torch.arange(
+                self.coord_start_id,
+                self.coord_end_id,
+                dtype=torch.float32,
+                device=device,
             )
+            # Convert token IDs back to coordinate scalar values
+            self._coord_values = token_ids - self.coord_start_id
         return self._coord_values
+
+    def _extract_coord_value_from_token_id(self, token_id: int) -> int:
+        """
+        Extract the actual coordinate value represented by a coordinate token ID.
+        For Qwen2.5-VL coordinate tokens: value = token_id - coord_start_id.
+        Raises on out-of-range token IDs.
+        """
+        if token_id < self.coord_start_id or token_id >= self.coord_end_id:
+            raise ValueError(
+                f"Token ID {token_id} is out of coordinate range [{self.coord_start_id}, {self.coord_end_id})."
+            )
+        return int(token_id - self.coord_start_id)
+
+    def _validate_coordinate_mapping(self) -> None:
+        """Validate that coordinate tokens map to correct scalar values."""
+        # Use representative samples; clip to available vocab size
+        candidates = [0, 50, 123, 500, 1000]
+        max_idx = self.coord_vocab_size - 1
+        for expected in candidates:
+            test_idx = min(max(expected, 0), max_idx)
+            token_id = self.coord_start_id + test_idx
+            actual = self._extract_coord_value_from_token_id(token_id)
+            if actual != test_idx:
+                raise ValueError(
+                    "Coordinate mapping error: "
+                    f"token {token_id} maps to {actual}, expected {test_idx}"
+                )
+        logger.info("✅ Coordinate token mapping validated")
 
     def compute_soft_expectation(
         self, coord_logits: torch.Tensor, temperature: Optional[float] = None
@@ -186,8 +224,8 @@ class SoftExpectationCoordinateLoss:
             )
 
         # Step 1: Extract coordinate token logits from full vocabulary
-        # Input logits shape: [batch_size, seq_len, vocab_size=153716]
-        # Extract only coordinate token portion: [batch_size, seq_len, 2049]
+        # Input logits shape: [batch_size, seq_len, vocab_size]
+        # Extract only coordinate token portion: [batch_size, seq_len, coord_vocab_size]
         coord_logits_full = logits[:, :, self.coord_start_id : self.coord_end_id]
 
         # Step 2: Extract coordinate token positions
@@ -342,13 +380,57 @@ def create_coordinate_loss_from_token_processor(
                 "No coordinate tokens found in tokenizer. Ensure coordinate tokens are properly added to the tokenizer vocabulary."
             )
 
-    # Adjust end_id to be exclusive (add 1)
+    # Adjust end_id to be exclusive (ensure +1 semantics)
     coord_end_id = coord_end_id + 1
-    logger.info(f"Using coordinate token range: {coord_start_id} to {coord_end_id - 1}")
 
-    return SoftExpectationCoordinateLoss(
+    # Strict validation: enforce Qwen2.5-VL range based on tokenizer and config
+    # We infer expected end from start + max_coord_value, but keep the start fixed.
+    HARD_START = 151667
+    # Try to access max_coord_value if available
+    expected_end_inclusive = None
+    try:
+        if hasattr(token_processor, "config") and hasattr(
+            token_processor.config, "max_coord_value"
+        ):
+            expected_end_inclusive = HARD_START + int(
+                token_processor.config.max_coord_value
+            )
+    except Exception:
+        expected_end_inclusive = None
+
+    if expected_end_inclusive is not None:
+        expected_exclusive_end = expected_end_inclusive + 1
+        if not (
+            coord_start_id == HARD_START and coord_end_id == expected_exclusive_end
+        ):
+            raise ValueError(
+                "❌ Coordinate token ID range mismatch (coordinate_loss factory). "
+                f"Expected [{{HARD_START}}, {{expected_end_inclusive}}] inclusive, but got "
+                f"[{{coord_start_id}}, {{coord_end_id - 1}}]. Ensure you are using a Qwen2.5-VL tokenizer and max_coord_value matches."
+            )
+    else:
+        # Fallback strict check on start only
+        if coord_start_id != HARD_START:
+            raise ValueError(
+                "❌ Coordinate token ID range mismatch (coordinate_loss factory). "
+                f"Expected start {{HARD_START}}, but got start {{coord_start_id}}."
+            )
+
+    logger.info(
+        f"Using coordinate token range: {coord_start_id} to {coord_end_id - 1} (validated)"
+    )
+
+    loss_fn = SoftExpectationCoordinateLoss(
         coord_start_id=coord_start_id,
         coord_end_id=coord_end_id,
         temperature=temperature,
         **kwargs,
     )
+    # Validate coordinate token mapping explicitly at construction time
+    try:
+        loss_fn._validate_coordinate_mapping()
+    except Exception:
+        # Re-raise to fail-fast in training setup
+        raise
+
+    return loss_fn

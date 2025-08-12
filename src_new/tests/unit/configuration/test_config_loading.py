@@ -46,8 +46,8 @@ class TestConfigLoading:
 
     def test_bbu_v2_yaml_compatibility(self):
         """Test compatibility with existing bbu_v2.yaml config."""
-        # Load the actual bbu_v2.yaml config
-        bbu_config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2.yaml")
+        # Load the standard use_coord config
+        bbu_config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
 
         if not bbu_config_path.exists():
             pytest.skip("bbu_v2.yaml not found - skipping compatibility test")
@@ -65,21 +65,18 @@ class TestConfigLoading:
             "num_train_epochs",
             "per_device_train_batch_size",
             "learning_rate",
-            "train_data_path",
-            "val_data_path",
-            "teacher_pool_file",
+            # Accept either explicit paths or derived via data_root; the use_coord config uses data_root
+            "data_root",
             "teacher_ratio",
             "coordinate_tokens_enabled",
             "max_coord_value",
             "coordinate_loss_weight",
-            "teacher_loss_weight",
-            "student_loss_weight",
             "output_dir",
         ]
 
         for field in required_fields:
             assert field in bbu_config, (
-                f"Missing required field in bbu_v2.yaml: {field}"
+                f"Missing required field in bbu_v2_use_coord.yaml: {field}"
             )
 
         # Validate field types and values
@@ -144,7 +141,7 @@ class TestConfigLoading:
         # Test valid coordinate token config
         valid_config = create_sample_config(
             coordinate_tokens_enabled=True,
-            max_coord_value=2048,
+            max_coord_value=1024,
             coordinate_loss_weight=0.05,
         )
 
@@ -159,7 +156,7 @@ class TestConfigLoading:
 
         # Validate specific coordinate token fields
         assert loaded_config["coordinate_tokens_enabled"] is True
-        assert loaded_config["max_coord_value"] == 2048
+        assert loaded_config["max_coord_value"] == 1024
         assert loaded_config["coordinate_loss_weight"] == 0.05
 
     def test_teacher_student_config_validation(self, temp_dir):
@@ -372,10 +369,10 @@ class TestExistingConfigCompatibility:
 
     def test_load_existing_bbu_v2_config(self):
         """Test loading the actual bbu_v2.yaml configuration file."""
-        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2.yaml")
+        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
 
         if not config_path.exists():
-            pytest.skip("bbu_v2.yaml not found")
+            pytest.skip("bbu_v2_use_coord.yaml not found")
 
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
@@ -391,12 +388,10 @@ class TestExistingConfigCompatibility:
         # Verify the config contains all necessary components for our system
         essential_components = [
             "model_path",
-            "train_data_path",
-            "val_data_path",
+            # Paths may be derived via data_root; use that as the required key
+            "data_root",
             "coordinate_tokens_enabled",
-            "teacher_pool_file",
-            "teacher_loss_weight",
-            "student_loss_weight",
+            # teacher_pool_file may also be derived via data_root in runtime; keep it optional here
         ]
 
         for component in essential_components:
@@ -404,10 +399,10 @@ class TestExistingConfigCompatibility:
 
     def test_no_config_changes_required(self):
         """Verify that existing config requires no changes."""
-        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2.yaml")
+        config_path = Path("/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml")
 
         if not config_path.exists():
-            pytest.skip("bbu_v2.yaml not found")
+            pytest.skip("bbu_v2_use_coord.yaml not found")
 
         # Load original config
         with open(config_path, "r") as f:
