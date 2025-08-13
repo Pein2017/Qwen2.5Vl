@@ -114,7 +114,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
     # Create training arguments with direct config access
     training_args = TrainingArguments(
         # Output settings
-        output_dir=config.output_dir,
+        output_dir=config.run_output_dir,  # Use computed property for output/{run_name}/
         run_name=config.run_name,
         # Training parameters
         num_train_epochs=config.num_train_epochs,
@@ -145,7 +145,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         greater_is_better=config.greater_is_better,
         # Logging settings
         logging_steps=config.logging_steps,
-        logging_dir=config.logging_dir,
+        logging_dir=config.tensorboard_dir,  # TensorBoard events go to tb/{run_name}/
         report_to=config.report_to,
         disable_tqdm=config.disable_tqdm,
         # Performance settings
@@ -354,6 +354,16 @@ def create_trainer_with_new_architecture(
         config=config,
         tokenizer=tokenizer,
         skip_expansion=True,  # Expansion is externalized via migration script
+    )
+
+    # Create necessary directories for logging and TensorBoard
+    from pathlib import Path
+
+    Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.tensorboard_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.log_file_dir).mkdir(parents=True, exist_ok=True)
+    logger.info(
+        f"📁 Created directories: output={config.run_output_dir}, tb={config.tensorboard_dir}"
     )
 
     # Import BBUTrainer locally to ensure it's available in distributed training

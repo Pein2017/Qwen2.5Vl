@@ -1,5 +1,7 @@
 # System Architecture Diagrams
 
+Note: Supplementary diagrams. Canonical facts → `AI_ASSISTANT_KB.md` and `../src_new/UNIFIED_DOCUMENTATION.md`.
+
 **Visual representations of the Qwen2.5-VL BBU detection system architecture and data flow**
 
 > **Note**: For high-level overview and component descriptions, see [README.md](README.md). This document focuses on detailed architectural diagrams and technical schematics.

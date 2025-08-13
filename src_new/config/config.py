@@ -174,10 +174,18 @@ class Config:
     coordinate_loss_weight: float
     regular_loss_weight: float
     coordinate_temperature: float
-    coordinate_loss_temperature: float
-    coordinate_kl_weight: float
+    # Removed legacy Gaussian KL settings
     coordinate_label_sigma: float
     coordinate_init_mode: str
+
+    # Coordinate auxiliary losses (required)
+    coord_aux_enabled: bool
+    coord_aux_tau: float
+    coord_aux_sigma_bins: float
+    coord_aux_window_bins: int
+    coord_aux_topk: int
+    coord_aux_lambda_kce: float
+    coord_aux_lambda_unlike: float
 
     # Evaluation settings (required)
     eval_strategy: str
@@ -250,6 +258,22 @@ class Config:
     # Optional parameters that can have defaults
     new_geometry_tokens: Optional[List[str]] = None
     max_dataset_size: Optional[int] = None
+
+    # === COMPUTED PROPERTIES ===
+    @property
+    def run_output_dir(self) -> str:
+        """Computed output directory path."""
+        return str(Path(self.output_dir) / self.run_name)
+
+    @property
+    def tensorboard_dir(self) -> str:
+        """Computed TensorBoard directory path."""
+        return str(Path(self.tb_dir) / self.run_name)
+
+    @property
+    def log_file_dir(self) -> str:
+        """Computed log file directory path."""
+        return str(Path(self.run_output_dir) / "logs")
 
     def __post_init__(self) -> None:
         """
@@ -361,35 +385,25 @@ class Config:
             raise ValueError(
                 f"coordinate_temperature must be > 0, got {self.coordinate_temperature}"
             )
-        if self.coordinate_loss_temperature <= 0:
-            raise ValueError(
-                f"coordinate_loss_temperature must be > 0, got {self.coordinate_loss_temperature}"
-            )
 
-        # Optional KL fields validation (only if provided)
-        if self.coordinate_kl_weight is not None:
-            if self.coordinate_kl_weight < 0:
+        # Coordinate auxiliary losses validation
+        if self.coord_aux_enabled:
+            if self.coord_aux_tau <= 0:
+                raise ValueError(f"coord_aux_tau must be > 0, got {self.coord_aux_tau}")
+            if self.coord_aux_sigma_bins <= 0:
                 raise ValueError(
-                    f"coordinate_kl_weight cannot be negative, got {self.coordinate_kl_weight}"
+                    f"coord_aux_sigma_bins must be > 0, got {self.coord_aux_sigma_bins}"
                 )
-            # If a positive KL weight is provided, require a positive sigma
-            if self.coordinate_kl_weight > 0:
-                if (
-                    self.coordinate_label_sigma is None
-                    or self.coordinate_label_sigma <= 0
-                ):
-                    raise ValueError(
-                        "coordinate_kl_weight > 0 requires coordinate_label_sigma > 0 (in BIN units)"
-                    )
-
-        # Optional init mode validation (pass-through if unknown)
-        if self.coordinate_init_mode is not None:
-            allowed = {"fourier_ramp", "random"}
-            if self.coordinate_init_mode not in allowed:
+            if self.coord_aux_window_bins < 1:
                 raise ValueError(
-                    f"coordinate_init_mode must be one of {sorted(list(allowed))}, got {self.coordinate_init_mode!r}"
+                    f"coord_aux_window_bins must be >= 1, got {self.coord_aux_window_bins}"
                 )
-
+            if self.coord_aux_topk < 1:
+                raise ValueError(
+                    f"coord_aux_topk must be >= 1, got {self.coord_aux_topk}"
+                )
+            if self.coord_aux_lambda_kce < 0 or self.coord_aux_lambda_unlike < 0:
+                raise ValueError("coord_aux_lambda_kce/unlike must be non-negative")
         # Optional: validate coordinate init mode
         if self.coordinate_init_mode is not None:
             allowed = {"fourier_ramp", "random"}
@@ -398,11 +412,6 @@ class Config:
                     f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
                 )
 
-        # Optional: validate Gaussian KL parameters
-        if self.coordinate_kl_weight is not None and self.coordinate_kl_weight < 0:
-            raise ValueError(
-                f"coordinate_kl_weight cannot be negative, got {self.coordinate_kl_weight}"
-            )
         if self.coordinate_label_sigma is not None and self.coordinate_label_sigma <= 0:
             raise ValueError(
                 f"coordinate_label_sigma must be > 0, got {self.coordinate_label_sigma}"
@@ -462,33 +471,11 @@ def load_config(config_path: str) -> Config:
 
     # Convert scientific notation strings to floats
     data = _convert_scientific_notation(data)
-
-    # Backward/forward compatibility for coordinate temperature keys
-    # Prefer 'coordinate_temperature' if present; keep both keys in sync
-    try:
-        if (
-            "coordinate_temperature" in data
-            and data["coordinate_temperature"] is not None
-        ):
-            # If legacy exists but differs, override legacy with new
-            data["coordinate_loss_temperature"] = float(data["coordinate_temperature"])
-        elif (
-            "coordinate_loss_temperature" in data
-            and data["coordinate_loss_temperature"] is not None
-        ):
-            # Populate new key from legacy
-            data["coordinate_temperature"] = float(data["coordinate_loss_temperature"])
-        else:
-            # Both keys must be explicitly provided in configuration
-            if "coordinate_temperature" not in data:
-                raise ValueError(
-                    "coordinate_temperature must be explicitly specified in configuration"
-                )
-            if "coordinate_loss_temperature" not in data:
-                data["coordinate_loss_temperature"] = data["coordinate_temperature"]
-    except Exception:
-        # If mapping fails, let dataclass validation handle values
-        pass
+    # Require only 'coordinate_temperature' (single source of truth)
+    if "coordinate_temperature" not in data or data["coordinate_temperature"] is None:
+        raise ValueError(
+            "coordinate_temperature must be explicitly specified in configuration"
+        )
 
     # === Unified dataset path defaults ===
     # Auto-derive data paths from data_root using centralized data resolver

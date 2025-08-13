@@ -43,8 +43,6 @@ class UnifiedTokenManager:
     NEW_GEOMETRY_TOKENS = [
         "<|line_start|>",
         "<|line_end|>",
-        "<|square_start|>",
-        "<|square_end|>",
     ]
 
     # Vision tokens (existing)
@@ -469,7 +467,7 @@ class UnifiedTokenManager:
 
         Args:
             coords: List of coordinate values (integers or floats)
-            geometry_type: "bbox", "line", or "square"
+            geometry_type: "bbox", "line", or "quad"
 
         Returns:
             Token-wrapped coordinate string in format:
@@ -479,9 +477,9 @@ class UnifiedTokenManager:
         if geometry_type == "line":
             start_token = "<|line_start|>"
             end_token = "<|line_end|>"
-        elif geometry_type == "square":
-            start_token = "<|square_start|>"
-            end_token = "<|square_end|>"
+        elif geometry_type == "quad":
+            start_token = "<|quad_start|>"
+            end_token = "<|quad_end|>"
         else:  # bbox (default)
             start_token = "<|box_start|>"
             end_token = "<|box_end|>"
@@ -939,9 +937,9 @@ class SimpleCoordinateManager:
         if geometry_type == "line":
             start_token = "<|line_start|>"
             end_token = "<|line_end|>"
-        elif geometry_type == "square":
-            start_token = "<|square_start|>"
-            end_token = "<|square_end|>"
+        elif geometry_type == "quad":
+            start_token = "<|quad_start|>"
+            end_token = "<|quad_end|>"
         else:  # bbox (default)
             start_token = "<|box_start|>"
             end_token = "<|box_end|>"

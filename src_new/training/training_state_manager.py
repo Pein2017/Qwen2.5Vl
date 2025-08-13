@@ -98,6 +98,11 @@ class TrainingStateManager:
             "student_llm_loss",
             "teacher_l1_loss",
             "student_l1_loss",
+            # New separate coord losses
+            "teacher_kce_loss",
+            "teacher_unlike_loss",
+            "student_kce_loss",
+            "student_unlike_loss",
         }
 
         # Accumulate only the meaningful loss components
@@ -215,6 +220,8 @@ class TrainingStateManager:
         # Update step count
         self._step_count += 1
 
+        # IMPORTANT: Keep metrics numeric for TensorBoard; do not convert to strings here.
+        # Any pretty-printing should happen only at display time, not in the logged dict.
         return logs
 
     def log_metrics_batch(
@@ -293,8 +300,13 @@ class TrainingStateManager:
         for key in [
             "teacher_llm_loss",
             "student_llm_loss",
-            "teacher_l1_loss",
-            "student_l1_loss",
+            # Sum separate coord components instead of legacy aggregate
+            "teacher_kce_loss",
+            "teacher_unlike_loss",
+            "student_kce_loss",
+            "student_unlike_loss",
+            "laplace_1_loss",
+            "laplace_2_loss",
         ]:
             if key in logs and logs[key] is not None:
                 component_sum += logs[key]

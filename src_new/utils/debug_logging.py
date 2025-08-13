@@ -84,7 +84,7 @@ class DebugLogger:
         we get exactly one training sample and one evaluation sample logged.
         """
         logger.info(
-            "🚀 Debug logging: Started new training run - will log one training and one evaluation sample"
+            "🚀 Started new training run - will log one training and one evaluation sample"
         )
 
     def reset_for_new_run(self) -> None:

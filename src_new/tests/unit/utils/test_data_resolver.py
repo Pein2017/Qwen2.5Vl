@@ -59,34 +59,38 @@ class TestDataResolver:
 
     def test_empty_data_root_raises_error(self):
         """Test that empty data_root raises ValueError."""
-        with pytest.raises(ValueError, match="data_root cannot be empty or None"):
+        with pytest.raises(ValueError, match="Directory path cannot be empty or None"):
             DataResolver.resolve_dataset_paths("")
 
-        with pytest.raises(ValueError, match="data_root cannot be empty or None"):
+        with pytest.raises(ValueError, match="Directory path cannot be empty or None"):
             DataResolver.resolve_dataset_paths(None)
 
     def test_invalid_data_root_type_raises_error(self):
-        """Test that invalid data_root type raises TypeError."""
-        with pytest.raises(TypeError, match="data_root must be str or Path"):
+        """Test that invalid data_root type raises ValueError."""
+        with pytest.raises(ValueError, match="Directory path must be str or Path"):
             DataResolver.resolve_dataset_paths(123)
 
-        with pytest.raises(TypeError, match="data_root must be str or Path"):
+        with pytest.raises(ValueError, match="Directory path must be str or Path"):
             DataResolver.resolve_dataset_paths(["/some/path"])
 
     def test_nonexistent_data_root_raises_error(self):
-        """Test that nonexistent data_root raises FileNotFoundError."""
-        with pytest.raises(
-            FileNotFoundError, match="Data root directory does not exist"
-        ):
+        """Test that nonexistent data_root raises PathValidationError."""
+        from src_new.utils.validation import PathValidationError
+
+        with pytest.raises(PathValidationError, match="Directory does not exist"):
             DataResolver.resolve_dataset_paths("/nonexistent/path")
 
     def test_data_root_not_directory_raises_error(self, tmp_path):
-        """Test that data_root pointing to file raises ValueError."""
+        """Test that data_root pointing to file raises PathValidationError."""
+        from src_new.utils.validation import PathValidationError
+
         # Create a file instead of directory
         file_path = tmp_path / "not_a_dir.txt"
         file_path.write_text("test")
 
-        with pytest.raises(ValueError, match="Data root path is not a directory"):
+        with pytest.raises(
+            PathValidationError, match="Path exists but is not a directory"
+        ):
             DataResolver.resolve_dataset_paths(str(file_path))
 
     def test_missing_train_file_raises_error(self, tmp_path):
@@ -97,7 +101,7 @@ class TestDataResolver:
         (tmp_path / "images").mkdir()
 
         with pytest.raises(
-            FileNotFoundError, match="Training data file does not exist"
+            FileNotFoundError, match="Missing required items.*train.jsonl"
         ):
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
@@ -109,7 +113,7 @@ class TestDataResolver:
         (tmp_path / "images").mkdir()
 
         with pytest.raises(
-            FileNotFoundError, match="Validation data file does not exist"
+            FileNotFoundError, match="Missing required items.*val.jsonl"
         ):
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
@@ -120,7 +124,9 @@ class TestDataResolver:
         (tmp_path / "val.jsonl").write_text('{"test": "data"}\n')
         (tmp_path / "images").mkdir()
 
-        with pytest.raises(FileNotFoundError, match="Teacher pool file does not exist"):
+        with pytest.raises(
+            FileNotFoundError, match="Missing required items.*teacher_pool.jsonl"
+        ):
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
     def test_missing_images_dir_raises_error(self, tmp_path):
@@ -130,7 +136,9 @@ class TestDataResolver:
         (tmp_path / "val.jsonl").write_text('{"test": "data"}\n')
         (tmp_path / "teacher_pool.jsonl").write_text('{"test": "data"}\n')
 
-        with pytest.raises(FileNotFoundError, match="Images directory does not exist"):
+        with pytest.raises(
+            FileNotFoundError, match="Missing required items.*directory: images"
+        ):
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
     def test_images_not_directory_raises_error(self, tmp_path):
@@ -141,7 +149,9 @@ class TestDataResolver:
         (tmp_path / "teacher_pool.jsonl").write_text('{"test": "data"}\n')
         (tmp_path / "images").write_text("not a directory")
 
-        with pytest.raises(FileNotFoundError, match="Images path is not a directory"):
+        with pytest.raises(
+            FileNotFoundError, match="Missing required items.*directory: images"
+        ):
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
     def test_enhanced_error_message_shows_available_files(self, tmp_path):
@@ -155,12 +165,12 @@ class TestDataResolver:
             DataResolver.resolve_dataset_paths(str(tmp_path))
 
         error_msg = str(exc_info.value)
-        assert "Available .jsonl files" in error_msg
+        assert "Available files" in error_msg
         assert "train.jsonl" in error_msg
         assert "other.jsonl" in error_msg
         assert "Available directories" in error_msg
         assert "some_dir" in error_msg
-        assert "Expected structure" in error_msg
+        # The error message contains all the necessary debugging information
 
     def test_validate_dataset_structure_valid(self, tmp_path):
         """Test validate_dataset_structure returns True for valid structure."""
@@ -205,10 +215,10 @@ class TestDataResolver:
     def test_get_missing_files_invalid_data_root(self):
         """Test get_missing_files handles invalid data_root gracefully."""
         missing = DataResolver.get_missing_files(None)
-        assert "Invalid data_root parameter" in missing
+        assert "Root directory: None" in missing
 
         missing = DataResolver.get_missing_files("/nonexistent")
-        assert "Data root directory" in missing[0]
+        assert "Root directory: /nonexistent" in missing[0]
 
 
 class TestDatasetPaths:

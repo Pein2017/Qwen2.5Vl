@@ -20,7 +20,7 @@ def mock_config():
     c.max_coord_value = 1024
     c.coordinate_loss_weight = 0.05
     c.regular_loss_weight = 1.0
-    c.coordinate_loss_temperature = 1.0
+    c.coordinate_temperature = 1.0  # Fixed: use coordinate_temperature
     c.teacher_loss_weight = 0.3
     c.student_loss_weight = 1.0
     return c

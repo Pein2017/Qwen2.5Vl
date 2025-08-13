@@ -1,5 +1,7 @@
 # Training and Implementation Guide
 
+Note: Summary and commands → `AI_ASSISTANT_KB.md`. This file covers the full narrative.
+
 **Complete guide to the training system, data processing pipeline, and model integration for the BBU training pipeline**
 
 ## 🎯 **System Overview**
@@ -134,6 +136,14 @@ class LossManager:
 expected_coord = Σ(v * softmax(logits_v / temperature))
 coordinate_loss = L1(expected_coord, target_coord)
 ```
+
+**Separation of CE vs Coordinate Supervision (2025-08):**
+- The forward path bypasses the base loss and extracts only logits once from the base model.
+- Cross-entropy is computed on shifted logits/labels, but only on text tokens within assistant spans (teacher/student),
+  explicitly excluding coordinate-token targets.
+- Coordinate L1 is computed only on positions where the target label is a coordinate token (within assistant spans),
+  also using shifted logits/labels and a label-derived coordinate mask.
+- Soft expectation temperature is controlled via `coordinate_temperature` (preferred; legacy: `coordinate_loss_temperature`).
 
 ### **4. TrainingStateManager (`src_new/training/training_state_manager.py`)**
 Local loss aggregation and metrics tracking to eliminate NCCL timeout issues.

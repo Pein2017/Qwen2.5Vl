@@ -79,8 +79,7 @@ class TestFailFastBehavior:
                 "coordinate_tokens_enabled": True,
                 "coordinate_loss_weight": 0.1,
                 "regular_loss_weight": 1.0,
-                # Missing both coordinate_temperature and coordinate_loss_temperature - should cause failure
-                "coordinate_kl_weight": 0.0,
+                # Missing coordinate_temperature - should cause failure
                 "coordinate_label_sigma": 16,
                 "coordinate_init_mode": "fourier_ramp",
                 "eval_strategy": "steps",
@@ -113,7 +112,7 @@ class TestFailFastBehavior:
 
         try:
             with pytest.raises(
-                TypeError, match="Configuration contains invalid field types"
+                ValueError, match="coordinate_temperature must be explicitly specified"
             ):
                 load_config(temp_path)
         finally:

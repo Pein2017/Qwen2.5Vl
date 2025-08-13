@@ -1,5 +1,7 @@
 # Troubleshooting Guide
 
+Note: Quick fixes list also in `AI_ASSISTANT_KB.md`. This file provides full context and procedures.
+
 **Comprehensive troubleshooting guide for the BBU training pipeline with all critical fixes and common issues**
 
 ## 🚨 **Quick Fixes for Common Issues**

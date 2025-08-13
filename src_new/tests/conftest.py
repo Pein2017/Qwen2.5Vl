@@ -54,7 +54,7 @@ SAMPLE_CONFIG_DATA = {
     "max_coord_value": 1024,  # Updated to match documentation
     "coordinate_loss_weight": 0.05,
     "regular_loss_weight": 1.0,
-    "coordinate_loss_temperature": 1.0,
+    "coordinate_temperature": 1.0,  # Fixed: use coordinate_temperature
     # Teacher-student training
     "teacher_ratio": 0.5,
     "num_teacher_samples": 1,

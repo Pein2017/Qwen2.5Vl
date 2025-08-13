@@ -57,34 +57,125 @@ def test_images(temp_dir):
 @pytest.fixture
 def mock_inference_engine(temp_dir):
     """Create mock inference engine for testing without real model."""
-    # Create minimal valid config for testing (all required fields present)
+    # Create complete valid config for testing (all required fields present)
     config_data = {
-        # Model
+        # === REQUIRED FIELDS ===
+        # Model settings
         "model_path": temp_dir,
         "model_size": "3B",
         "model_max_length": 32000,
         "attn_implementation": "flash_attention_2",
         "torch_dtype": "bfloat16",
-        "model_hidden_size": 2048,
-        # Training (minimal values)
+        # Training settings
         "num_train_epochs": 1,
         "per_device_train_batch_size": 1,
+        "per_device_eval_batch_size": 1,
+        "gradient_accumulation_steps": 1,
         "learning_rate": 5e-6,
         "vision_lr": 5e-7,
         "merger_lr": 1e-5,
         "llm_lr": 5e-6,
-        # Data paths (synthetic in temp_dir)
+        "adapter_lr": 0.0,
+        "warmup_ratio": 0.1,
+        "weight_decay": 0.0001,
+        "max_grad_norm": 0.5,
+        "lr_scheduler_type": "cosine",
+        "gradient_checkpointing": True,
+        "bf16": True,
+        "fp16": False,
+        "use_flash_attention": True,
+        "mixed_precision": "bf16",
+        # Data settings - only data_root needed after migration
         "data_root": temp_dir,
-        "train_data_path": os.path.join(temp_dir, "train.jsonl"),
-        "val_data_path": os.path.join(temp_dir, "val.jsonl"),
-        "teacher_pool_file": os.path.join(temp_dir, "teacher_pool.jsonl"),
-        # Output
+        "max_total_length": 12000,
+        "num_teacher_samples": 1,
+        "collator_type": "packed",
+        "teacher_ratio": 0.5,
+        "language": "chinese",
+        # Output settings
         "output_dir": os.path.join(temp_dir, "out"),
         "run_name": "inference_test",
-        # Coordinates
         "max_coord_value": 1024,
+        "model_hidden_size": 2048,
+        # Coordinate token configuration (required)
         "coordinate_tokens_enabled": True,
+        "coordinate_loss_weight": 0,
+        "regular_loss_weight": 1.0,
+        "coordinate_temperature": 0.7,
+        "coordinate_label_sigma": 16,
+        "coordinate_init_mode": "fourier_ramp",
+        # Coordinate auxiliary losses (required)
+        "coord_aux_enabled": False,
+        "coord_aux_tau": 1.2,
+        "coord_aux_sigma_bins": 8.0,
+        "coord_aux_window_bins": 32,
+        "coord_aux_topk": 100,
+        "coord_aux_lambda_kce": 0.5,
+        "coord_aux_lambda_unlike": 0.05,
+        "coord_aux_lambda_lap1": 1e-4,
+        "coord_aux_lambda_lap2": 1e-5,
+        # Evaluation settings (required)
+        "eval_strategy": "steps",
+        "eval_steps": 10,
+        "save_strategy": "steps",
+        "save_steps": 20,
+        "save_total_limit": 2,
+        # Logging settings (required)
+        "logging_steps": 5,
+        "logging_dir": os.path.join(temp_dir, "logs"),
+        "report_to": "none",
+        "disable_tqdm": True,
+        "verbose": False,
+        # Essential settings (required)
+        "remove_unused_columns": False,
+        # Dataloader performance settings (required)
+        "dataloader_num_workers": 0,
+        "pin_memory": False,
+        "prefetch_factor": 2,
+        # Output settings (required)
+        "tb_dir": os.path.join(temp_dir, "tb"),
+        # Teacher-student loss weights (required)
+        "teacher_loss_weight": 0.3,
+        "student_loss_weight": 1.0,
+        # Vision processing parameters (required)
+        "patch_size": 14,
+        "merge_size": 2,
+        "temporal_patch_size": 2,
+        "max_pixels": 401408,
+        # Training control flags (required)
+        "training_prompt_style": True,
+        "use_consistent_prompts": True,
+        # Model loading control flags (required)
+        "skip_vocab_extension": False,
     }
+
+    # Create required data files for DataResolver
+    os.makedirs(os.path.join(temp_dir, "images"), exist_ok=True)
+
+    # Create a test image file
+    import numpy as np
+    from PIL import Image
+
+    test_image = Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8))
+    test_image.save(os.path.join(temp_dir, "test_image.jpg"))
+
+    with open(os.path.join(temp_dir, "train.jsonl"), "w") as f:
+        f.write('{"test": "data"}\n')
+    with open(os.path.join(temp_dir, "val.jsonl"), "w") as f:
+        f.write('{"test": "data"}\n')
+    with open(os.path.join(temp_dir, "teacher_pool.jsonl"), "w") as f:
+        # Create a valid teacher sample with required fields
+        teacher_sample = {
+            "images": ["test_image.jpg"],
+            "objects": [{"desc": "test object", "bbox_2d": [100, 100, 200, 200]}],
+            "conversation": [
+                {"role": "user", "content": "What do you see?"},
+                {"role": "assistant", "content": "I see a test object."},
+            ],
+        }
+        import json
+
+        f.write(json.dumps(teacher_sample) + "\n")
 
     config_path = os.path.join(temp_dir, "test_config.yaml")
     with open(config_path, "w") as f:

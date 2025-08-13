@@ -303,10 +303,8 @@ class TestConfigCompatibility:
             "gradient_checkpointing",
             "bf16",
             "fp16",
-            # Data settings
-            "train_data_path",
-            "val_data_path",
-            "teacher_pool_file",
+            # Data settings - only data_root needed after migration
+            "data_root",
             "teacher_ratio",
             "collator_type",
             "language",
@@ -351,10 +349,8 @@ class TestConfigCompatibility:
         assert isinstance(config["teacher_ratio"], (int, float))
         assert 0 <= config["teacher_ratio"] <= 1
 
-        # Test path formats (should be strings)
-        assert isinstance(config["train_data_path"], str)
-        assert isinstance(config["val_data_path"], str)
-        assert isinstance(config["teacher_pool_file"], str)
+        # Test data root format (should be string) - paths are auto-resolved
+        assert isinstance(config["data_root"], str)
 
         # Test learning rate formats
         assert isinstance(config["learning_rate"], (int, float))

@@ -34,7 +34,7 @@ class TestLossManager:
         config.max_coord_value = 1024
         config.coordinate_loss_weight = 0.05
         config.regular_loss_weight = 1.0
-        config.coordinate_loss_temperature = 1.0
+        config.coordinate_temperature = 1.0  # Updated to match LossManager expectation
         config.teacher_loss_weight = 0.3
         config.student_loss_weight = 1.0
         return config

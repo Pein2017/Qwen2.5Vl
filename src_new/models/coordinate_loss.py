@@ -24,47 +24,6 @@ from ..utils.rank_aware_logging import get_rank_aware_logger
 logger = get_rank_aware_logger(__name__)
 
 
-class GaussianKLRegularizer:
-    """
-    Numerically-stable Gaussian KL regularizer over coordinate bins.
-
-    Computes KL(p_target || p_pred) where p_target is a Gaussian over bins centered at
-a scalar ground-truth coordinate and p_pred comes from model logits via log_softmax.
-    """
-
-    def __init__(self, eps: float = 1e-8) -> None:
-        self.eps = float(eps)
-
-    def __call__(
-        self,
-        logits_valid: torch.Tensor,  # [N_valid, V]
-        target_coords: torch.Tensor,  # [N_valid]
-        coord_values: torch.Tensor,  # [V]
-        temperature: float,
-        sigma_bins: float,
-    ) -> torch.Tensor:
-        # Ensure float32 path for numerical stability
-        logits_f32 = logits_valid.float()
-
-        # Use log_softmax directly for stability
-        log_p_pred = F.log_softmax(logits_f32 / float(temperature), dim=-1)
-
-        # Build Gaussian targets over bins (in BIN units)
-        # dist shape: [N_valid, V]
-        dist = coord_values.unsqueeze(0) - target_coords.float().unsqueeze(1)
-        sigma = float(max(sigma_bins, 1.0))  # σ sanity in bins
-        denom = 2.0 * (sigma ** 2)
-        p_tgt_unnorm = torch.exp(- (dist ** 2) / denom)
-
-        # Normalize with epsilon guard
-        p_tgt = p_tgt_unnorm / (p_tgt_unnorm.sum(dim=-1, keepdim=True) + self.eps)
-        p_tgt = torch.clamp(p_tgt, min=self.eps)
-
-        # KL expects log-probs for input and probs for target
-        kl = F.kl_div(log_p_pred, p_tgt, reduction="batchmean")
-        return kl
-
-
 class SoftExpectationCoordinateLoss:
     """
     Implements soft expectation + L1 loss for coordinate token regression.
@@ -93,8 +52,6 @@ class SoftExpectationCoordinateLoss:
         temperature: float,
         numerical_stability: bool = True,
         device: Optional[torch.device] = None,
-        kl_weight: float = 0.0,
-        label_sigma: Optional[float] = None,
     ):
         """
         Initialize soft expectation coordinate loss.
@@ -105,16 +62,12 @@ class SoftExpectationCoordinateLoss:
             temperature: Softmax temperature for sharpness control
             numerical_stability: Enable numerical stability improvements
             device: Device for tensor operations
-            kl_weight: Weight for Gaussian KL regularizer (0 disables KL)
-            label_sigma: Gaussian sigma in BIN units; required if kl_weight>0
         """
         self.coord_start_id = coord_start_id
         self.coord_end_id = coord_end_id
         self.temperature = temperature
         self.numerical_stability = numerical_stability
         self.device = device
-        self.kl_weight = float(kl_weight)
-        self.label_sigma = None if label_sigma is None else float(label_sigma)
 
         # Coordinate vocabulary size (number of coordinate tokens)
         self.coord_vocab_size = coord_end_id - coord_start_id
@@ -122,14 +75,11 @@ class SoftExpectationCoordinateLoss:
         # Pre-compute coordinate value indices for efficiency
         self._coord_values = None
 
-        # KL helper
-        self._gaussian_kl = GaussianKLRegularizer(eps=1e-8)
-
         logger.info(
             f"🎯 Initialized SoftExpectationCoordinateLoss: "
             f"range=[{coord_start_id}, {coord_end_id}), "
             f"vocab_size={self.coord_vocab_size}, "
-            f"temperature={temperature}, kl_weight={self.kl_weight}, label_sigma={self.label_sigma}"
+            f"temperature={temperature}"
         )
 
     @classmethod
@@ -270,7 +220,6 @@ class SoftExpectationCoordinateLoss:
                     "coordinate_l1_loss": 0.0,
                     "mean_expected_coord": 0.0,
                     "mean_target_coord": 0.0,
-                    "coordinate_kl": 0.0,
                 },
             )
 
@@ -317,7 +266,6 @@ class SoftExpectationCoordinateLoss:
                 "valid_coord_tokens": 0,
                 "avg_expected_coord": 0.0,
                 "avg_target_coord": 0.0,
-                "coordinate_kl": 0.0,
             }
 
         # Filter to only valid positions
@@ -350,28 +298,6 @@ class SoftExpectationCoordinateLoss:
         coordinate_l1_loss = F.l1_loss(expected_coords, target_coords.float())
         coordinate_loss = coordinate_l1_loss
 
-        # Optional Gaussian KL term (numerically stable)
-        coordinate_kl = 0.0
-        if self.kl_weight > 0.0:
-            if self.label_sigma is None or self.label_sigma <= 0.0:
-                raise ValueError(
-                    "coordinate_kl_weight > 0 requires a positive coordinate_label_sigma in BIN units"
-                )
-            # Compute only when we have valid positions
-            if valid_coord_logits.numel() > 0:
-                # Get coordinate values for current device
-                coord_values = self._get_coord_values(valid_coord_logits.device)
-                # Compute KL in float32 along coord vocab
-                coordinate_kl_tensor = self._gaussian_kl(
-                    logits_valid=valid_coord_logits,
-                    target_coords=target_coords,
-                    coord_values=coord_values,
-                    temperature=temperature if temperature is not None else self.temperature,
-                    sigma_bins=float(self.label_sigma),
-                )
-                coordinate_loss = coordinate_loss + self.kl_weight * coordinate_kl_tensor
-                coordinate_kl = float(coordinate_kl_tensor.detach().item())
-
         # Prepare loss information for logging
         loss_info = {
             "num_coord_tokens": len(coord_positions[0]),
@@ -379,13 +305,12 @@ class SoftExpectationCoordinateLoss:
             "coordinate_l1_loss": float(coordinate_l1_loss.detach().item()),
             "mean_expected_coord": float(expected_coords.mean().item()),
             "mean_target_coord": float(target_coords.float().mean().item()),
-            "coordinate_kl": coordinate_kl,
         }
 
         logger.debug(
             f"🎯 Soft expectation coordinate loss: {coordinate_loss.item():.6f} "
             f"(tokens: {loss_info['valid_coord_tokens']}, "
-            f"L1: {loss_info['coordinate_l1_loss']:.6f}, KL: {loss_info['coordinate_kl']:.6f})"
+            f"L1: {loss_info['coordinate_l1_loss']:.6f})"
         )
 
         return coordinate_loss, loss_info
@@ -424,7 +349,6 @@ def create_coordinate_loss_from_token_processor(
         token_processor: TokenProcessor instance with coordinate token mapping
         tokenizer: Extended tokenizer with coordinate tokens
         temperature: Softmax temperature
-        **kwargs: Additional arguments for SoftExpectationCoordinateLoss
 
     Returns:
         Configured coordinate loss function with correct token IDs
@@ -495,7 +419,6 @@ def create_coordinate_loss_from_token_processor(
         coord_start_id=coord_start_id,
         coord_end_id=coord_end_id,
         temperature=temperature,
-        **kwargs,
     )
     # Validate coordinate token mapping explicitly at construction time
     try:
@@ -505,3 +428,150 @@ def create_coordinate_loss_from_token_processor(
         raise
 
     return loss_fn
+
+
+def build_kernel_indices_and_q(
+    y: torch.Tensor, K: int, sigma: float, window: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Build per-sample sparse kernel window around ground-truth bin indices.
+
+    Args:
+        y: Tensor of shape [N] with integer ground-truth in [0, K]
+        K: Maximum bin value (inclusive). Total bins = K+1
+        sigma: Kernel width in bins (Gaussian). Must be > 0
+        window: Half-window size (radius). Output width = 2*window + 1
+
+    Returns:
+        idxs: Long tensor [N, W] with clamped indices in [0, K]
+        q_vals: Float tensor [N, W] with unnormalized kernel values per index
+    """
+    if y is None or y.numel() == 0:
+        width = 2 * int(window) + 1
+        return (
+            torch.empty(0, width, dtype=torch.long),
+            torch.empty(0, width, dtype=torch.float32),
+        )
+
+    if not torch.is_tensor(y):
+        raise TypeError("y must be a torch.Tensor")
+
+    y_long = y.to(dtype=torch.long)
+    N = y_long.shape[0]
+    width = 2 * int(window) + 1
+
+    # Offsets [-window, ..., +window]
+    offsets = torch.arange(-window, window + 1, dtype=torch.long, device=y.device)
+    # Broadcast to [N, W]
+    idxs = y_long.unsqueeze(1) + offsets.unsqueeze(0)
+    # Clamp to [0, K]
+    idxs = torch.clamp(idxs, min=0, max=int(K))
+
+    # Distances for kernel (in bins)
+    d = (idxs - y_long.unsqueeze(1)).to(dtype=torch.float32)
+    sigma_val = float(max(sigma, 1e-6))
+    q_vals = torch.exp(-(d * d) / (2.0 * (sigma_val**2)))
+
+    return idxs, q_vals
+
+
+def kernelized_kl_sparse(
+    coord_logits: torch.Tensor,  # [N, K+1]
+    idxs: torch.Tensor,  # [N, W]
+    q_vals: torch.Tensor,  # [N, W]
+    tau: float,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Compute KL(q||p) where q is a sparse kernel distribution on a window and p
+    is the model distribution over full coordinate bins.
+
+    If inputs are empty (N==0), returns 0.0 on the correct device.
+    """
+    # Handle empty batch
+    if (
+        coord_logits is None
+        or coord_logits.numel() == 0
+        or idxs is None
+        or idxs.numel() == 0
+    ):
+        device = (
+            coord_logits.device
+            if isinstance(coord_logits, torch.Tensor) and coord_logits.numel() > 0
+            else None
+        )
+        return coord_logits.new_tensor(0.0) if device is not None else torch.tensor(0.0)
+
+    # Ensure float32 and clamp for numerical stability
+    logits = (coord_logits.float() / float(max(tau, eps))).clamp(-50.0, 50.0)
+    p_full = torch.softmax(logits, dim=-1)
+
+    # Gather probabilities on the sparse window
+    if idxs.dtype != torch.long:
+        idxs = idxs.to(dtype=torch.long)
+    p_w = p_full.gather(dim=-1, index=idxs)
+
+    # Normalize q over the window
+    q_w = q_vals.to(dtype=torch.float32)
+    q_w = q_w / (q_w.sum(dim=-1, keepdim=True) + eps)
+
+    # KL(q||p) over window: sum q * (log q - log p)
+    kl_vec = (q_w * (torch.log(q_w + eps) - torch.log(p_w + eps))).sum(dim=-1)
+
+    out = torch.nan_to_num(kl_vec.mean(), nan=0.0, posinf=1e6, neginf=1e6)
+    return out
+
+
+def unlikelihood_topk_text(
+    logits_all: torch.Tensor,  # [B, T, V]
+    coord_mask: torch.Tensor,  # [B, T]
+    noncoord_vocab_mask: torch.BoolTensor,  # [V]
+    topk: int = 100,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Unlikelihood loss on non-coordinate tokens at coordinate positions.
+
+    Select top-k probabilities within the non-coordinate sub-vocab and penalize
+    them via -log(1 - p). Returns 0.0 when coord_mask has no true positions.
+    """
+    if coord_mask is None:
+        return logits_all.new_tensor(0.0)
+
+    # Strict shape checks (fail-fast)
+    if coord_mask.dim() != 2:
+        raise ValueError(
+            f"coord_mask must be 2D [B,T], got shape={tuple(coord_mask.shape)}"
+        )
+    if logits_all.dim() != 3:
+        raise ValueError(
+            f"logits_all must be 3D [B,T,V], got shape={tuple(logits_all.shape)}"
+        )
+    B, T, V = logits_all.shape
+    if coord_mask.shape[0] != B or coord_mask.shape[1] != T:
+        raise ValueError(
+            f"Shape mismatch: logits_all[0:2]={B, T} vs coord_mask={tuple(coord_mask.shape)}"
+        )
+    if noncoord_vocab_mask is None or noncoord_vocab_mask.numel() != V:
+        raise ValueError(
+            f"noncoord_vocab_mask must have length V={V}, got {None if noncoord_vocab_mask is None else noncoord_vocab_mask.numel()}"
+        )
+
+    # Slice logits to non-coordinate vocab
+    logits_text = logits_all[..., noncoord_vocab_mask].float().clamp(-50.0, 50.0)
+    probs_text = torch.softmax(logits_text, dim=-1)
+
+    k = int(min(int(topk), probs_text.size(-1)))
+    if k <= 0:
+        return logits_all.new_tensor(0.0)
+
+    # Top-k over non-coordinate probabilities
+    top_vals, _ = torch.topk(probs_text, k=k, dim=-1)
+    loss = -torch.log(1.0 - top_vals + eps)  # [B, T, k]
+
+    denom = coord_mask.sum() * k + eps
+    out = (loss * coord_mask.unsqueeze(-1).float()).sum() / denom
+    return torch.nan_to_num(out, nan=0.0, posinf=1e6, neginf=1e6)
+
+
+# Laplacian regularizer removed

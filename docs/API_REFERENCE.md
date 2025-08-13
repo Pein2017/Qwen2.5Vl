@@ -1,5 +1,7 @@
 # API Reference and Migration Guide
 
+Note: For the fastest lookups, see `AI_ASSISTANT_KB.md`. This file documents full APIs and migration notes.
+
 **Complete API documentation and migration guide for the BBU training pipeline**
 
 ## 🏗️ **Core API Components**

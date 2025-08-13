@@ -54,68 +54,79 @@ def fixed_apply_multimodal_rotary_pos_emb(
     but our fine-tuned checkpoint already has the correct doubled values in the config.
     This leads to mrope_section being doubled twice, causing dimension mismatches.
     """
+    # Collect debug information for error reporting
+    debug_info = []
+
     # Ensure mrope_section is a list
     if isinstance(mrope_section, torch.Tensor):
         mrope_section = mrope_section.tolist()
 
-    logger.debug(f"🔍 Input mrope_section: {mrope_section}")
-    logger.debug(f"🔍 cos shape: {cos.shape}")
+    debug_info.append(f"🔍 Input mrope_section: {mrope_section}")
+    debug_info.append(f"🔍 cos shape: {cos.shape}")
 
     # Get actual tensor dimension
     actual_dim = cos.shape[-1]
     original_sum = sum(mrope_section)
 
-    logger.debug(f"🔍 mrope_section sum: {original_sum}, cos dim: {actual_dim}")
+    debug_info.append(f"🔍 mrope_section sum: {original_sum}, cos dim: {actual_dim}")
 
     # CRITICAL FIX: The transformers library doubles mrope_section automatically,
     # but our checkpoint config already has the doubled values.
     # We need to prevent this double-doubling.
 
-    if original_sum == actual_dim:
-        # Perfect match - use as is
-        final_mrope_section = mrope_section
-        logger.debug("✅ Using mrope_section as-is (perfect match)")
-    elif original_sum == actual_dim * 2:
-        # mrope_section is doubled but cos dim is half - need to halve mrope_section
-        # This happens when config has doubled values but cos tensor is not doubled
-        final_mrope_section = [x // 2 for x in mrope_section]
-        logger.debug(
-            f"✅ Halving mrope_section: {mrope_section} -> {final_mrope_section}"
-        )
-    elif original_sum * 2 == actual_dim:
-        # Need to double mrope_section to match cos dim
-        final_mrope_section = mrope_section * 2
-        logger.debug(
-            f"✅ Doubling mrope_section: {mrope_section} -> {final_mrope_section}"
-        )
-    else:
-        # Try to detect if mrope_section was already doubled by checking for patterns
-        if len(mrope_section) == 12 and len(set(mrope_section[::2])) <= 3:
-            # Looks like a doubled pattern [a,b,c,a,b,c,a,b,c,a,b,c] -> [a,b,c,a,b,c]
-            half_len = len(mrope_section) // 2
-            first_half = mrope_section[:half_len]
-            second_half = mrope_section[half_len:]
-            if first_half == second_half and sum(first_half) == actual_dim:
-                final_mrope_section = first_half
-                logger.debug(
-                    f"✅ Detected doubled pattern, using first half: {final_mrope_section}"
-                )
+    try:
+        if original_sum == actual_dim:
+            # Perfect match - use as is
+            final_mrope_section = mrope_section
+            debug_info.append("✅ Using mrope_section as-is (perfect match)")
+        elif original_sum == actual_dim * 2:
+            # mrope_section is doubled but cos dim is half - need to halve mrope_section
+            # This happens when config has doubled values but cos tensor is not doubled
+            final_mrope_section = [x // 2 for x in mrope_section]
+            debug_info.append(
+                f"✅ Halving mrope_section: {mrope_section} -> {final_mrope_section}"
+            )
+        elif original_sum * 2 == actual_dim:
+            # Need to double mrope_section to match cos dim
+            final_mrope_section = mrope_section * 2
+            debug_info.append(
+                f"✅ Doubling mrope_section: {mrope_section} -> {final_mrope_section}"
+            )
+        else:
+            # Try to detect if mrope_section was already doubled by checking for patterns
+            if len(mrope_section) == 12 and len(set(mrope_section[::2])) <= 3:
+                # Looks like a doubled pattern [a,b,c,a,b,c,a,b,c,a,b,c] -> [a,b,c,a,b,c]
+                half_len = len(mrope_section) // 2
+                first_half = mrope_section[:half_len]
+                second_half = mrope_section[half_len:]
+                if first_half == second_half and sum(first_half) == actual_dim:
+                    final_mrope_section = first_half
+                    debug_info.append(
+                        f"✅ Detected doubled pattern, using first half: {final_mrope_section}"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Cannot resolve mrope_section: sum={original_sum}, cos_dim={actual_dim}"
+                    )
             else:
                 raise RuntimeError(
                     f"Cannot resolve mrope_section: sum={original_sum}, cos_dim={actual_dim}"
                 )
-        else:
+
+        # Final validation
+        if sum(final_mrope_section) != actual_dim:
             raise RuntimeError(
-                f"Cannot resolve mrope_section: sum={original_sum}, cos_dim={actual_dim}"
+                f"Final validation failed: {sum(final_mrope_section)} != {actual_dim}"
             )
 
-    # Final validation
-    if sum(final_mrope_section) != actual_dim:
-        raise RuntimeError(
-            f"Final validation failed: {sum(final_mrope_section)} != {actual_dim}"
-        )
+        debug_info.append(f"✅ Final mrope_section: {final_mrope_section}")
 
-    logger.debug(f"✅ Final mrope_section: {final_mrope_section}")
+    except RuntimeError as e:
+        # Log all collected debug information when an error occurs
+        logger.debug("🚨 Error in fixed_apply_multimodal_rotary_pos_emb - Debug trace:")
+        for debug_msg in debug_info:
+            logger.debug(debug_msg)
+        raise e
 
     # Apply the rotary position embedding with the corrected mrope_section
     cos = torch.cat(

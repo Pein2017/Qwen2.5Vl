@@ -1,12 +1,12 @@
 # Data Conversion Reference Hub
 
-Central hub for `data_conversion/` unified processing pipeline with minimal redundancy.
+Thin pointer for AI assistants.
 
-## Start here
-- **Full guide (single source of truth)**: `../data_conversion/README.md`
-- **Architecture**: Unified processor with coordinate transformation management
+## Canonical
+- AI KB: `AI_ASSISTANT_KB.md`
+- Deep dive: `../data_conversion/README.md`
 
-## Quick start
+## Quick
 ```bash
 cd /data3/Qwen2.5-VL-main
 ./data_conversion/convert_dataset.sh
@@ -24,13 +24,11 @@ RESIZE="true"
 SEED="17"
 ```
 
-## Object types
-- `bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`
+Object types: `bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`
 
-## Outputs
-- `data/<dataset>/train.jsonl`, `val.jsonl`, `teacher.jsonl`, `all_samples.jsonl`, `label_vocabulary.json`, `images/`
+Outputs: `data/<dataset>/{train.jsonl,val.jsonl,teacher.jsonl,all_samples.jsonl,label_vocabulary.json,images/}`
 
-## Python API
+Python API:
 ```python
 from data_conversion.unified_processor import UnifiedProcessor
 from data_conversion.config import DataConversionConfig
@@ -39,8 +37,5 @@ processor = UnifiedProcessor(config)
 results = processor.process()
 ```
 
-## Common gotchas
-- Use exact object type names; line geometries for `fiber`/`wire` only
-- If zero samples after filtering, try `OBJECT_TYPES="full"`
-
-For details (hierarchical descriptions, geometry constraints, advanced combos), see `../data_conversion/README.md`. 
+Gotchas: use exact object names; `fiber`/`wire` require line geometry; try `OBJECT_TYPES="full"` if filtering to zero.
+ 

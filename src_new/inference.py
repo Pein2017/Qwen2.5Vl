@@ -795,7 +795,7 @@ class InferenceEngine:
         max_new_tokens: int,
         temperature: float = 0.000001,
         do_sample: bool = False,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,  # Changed from 1.1 to 1.0 for coordinate tokens
     ) -> str:
         """Generate response using the model with pre-processed inputs."""
 
@@ -881,6 +881,98 @@ class InferenceEngine:
                     "Image token mismatch: No tokens found in text but image data present"
                 )
 
+        # Create constrained decoding function for coordinate tokens
+        def create_coordinate_constrained_fn():
+            """Create a prefix_allowed_tokens_fn that constrains coordinate generation."""
+
+            # Get coordinate token range
+            if self.config.coordinate_tokens_enabled:
+                coord_min, coord_max = self.token_processor.get_coordinate_token_range(
+                    self.tokenizer
+                )
+                coord_token_ids = set(range(coord_min, coord_max + 1))
+            else:
+                coord_token_ids = set()
+
+            # Get geometry token IDs
+            geometry_token_ids = set()
+            punctuation_token_ids = set()
+
+            # Geometry tokens
+            for token in [
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
+                "<|box_start|>",
+                "<|box_end|>",
+                "<|quad_start|>",
+                "<|quad_end|>",
+                "<|line_start|>",
+                "<|line_end|>",
+            ]:
+                token_id = self.tokenizer.convert_tokens_to_ids(token)
+                if token_id != self.tokenizer.unk_token_id:
+                    geometry_token_ids.add(token_id)
+
+            # Punctuation tokens commonly used in coordinate lists
+            for token in ["[", "]", ",", " ", ", "]:
+                token_ids = self.tokenizer.convert_tokens_to_ids(token)
+                if isinstance(token_ids, list):
+                    punctuation_token_ids.update(token_ids)
+                elif token_ids != self.tokenizer.unk_token_id:
+                    punctuation_token_ids.add(token_ids)
+
+            def prefix_allowed_tokens_fn(
+                batch_id: int, input_ids: torch.Tensor
+            ) -> List[int]:
+                """Constrain tokens based on current generation state."""
+
+                # Convert to list for easier processing
+                ids = input_ids.tolist()
+
+                # Check if we're inside a coordinate section by looking for unclosed brackets
+                # after geometry start tokens
+                inside_coord_section = False
+
+                # Look for geometry start patterns followed by unclosed brackets
+                for i in range(
+                    len(ids) - 1, max(-1, len(ids) - 50), -1
+                ):  # Check last 50 tokens
+                    token_id = ids[i]
+
+                    # Check if this is a closing bracket - if so, we're not inside
+                    token_str = self.tokenizer.decode([token_id])
+                    if token_str in ["]"]:
+                        break
+
+                    # Check if this is an opening bracket after geometry start
+                    if token_str in ["["]:
+                        # Look backwards for geometry start token
+                        for j in range(i - 1, max(-1, i - 10), -1):
+                            prev_token_str = self.tokenizer.decode([ids[j]])
+                            if prev_token_str in [
+                                "<|box_start|>",
+                                "<|quad_start|>",
+                                "<|line_start|>",
+                            ]:
+                                inside_coord_section = True
+                                break
+                        break
+
+                if inside_coord_section:
+                    # Inside coordinate section: allow only coordinate tokens and punctuation
+                    allowed = list(coord_token_ids | punctuation_token_ids)
+                    # Also allow closing bracket and geometry end tokens
+                    for token in ["]", "<|box_end|>", "<|quad_end|>", "<|line_end|>"]:
+                        token_id = self.tokenizer.convert_tokens_to_ids(token)
+                        if token_id != self.tokenizer.unk_token_id:
+                            allowed.append(token_id)
+                    return allowed
+                else:
+                    # Outside coordinate section: allow all tokens (normal generation)
+                    return list(range(len(self.tokenizer.get_vocab())))
+
+            return prefix_allowed_tokens_fn
+
         # Generate response with enhanced error handling
         try:
             with torch.no_grad():
@@ -900,30 +992,35 @@ class InferenceEngine:
                 logger.debug(f"   Max new tokens: {max_new_tokens}")
                 logger.debug(f"   Temperature: {temperature}")
                 logger.debug(f"   Do sample: {do_sample}")
+                logger.debug(f"   Repetition penalty: {repetition_penalty}")
                 logger.debug(f"   EOS token ID: {endoftext_token_id}")
 
-                # Force assistant content to begin with object_ref_start to match training grammar
-                forced_start_id = self.tokenizer.convert_tokens_to_ids(
-                    "<|object_ref_start|>"
-                )
-                if forced_start_id is not None and forced_start_id != -1:
-                    try:
-                        forced_ids = torch.tensor(
-                            [[forced_start_id]],
-                            device=self.model.device,
-                            dtype=inputs["input_ids"].dtype,
-                        )
-                        forced_mask = torch.ones_like(forced_ids)
-                        inputs["input_ids"] = torch.cat(
-                            [inputs["input_ids"], forced_ids], dim=1
-                        )
-                        inputs["attention_mask"] = torch.cat(
-                            [inputs["attention_mask"], forced_mask], dim=1
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to force prefix token <|object_ref_start|>: {e}"
-                        )
+                # REMOVED: Force assistant content to begin with object_ref_start
+                # This aligns with training where the model naturally learns to start with object_ref_start
+                # Training uses add_generation_prompt=False (complete conversations), so the model
+                # should generate the object_ref_start token naturally
+
+                # Prepare EOS tokens including geometry end tokens for clean stopping
+                eos_tokens = set()
+                for token in [
+                    "<|im_end|>",
+                    "<|endoftext|>",
+                    "<|box_end|>",
+                    "<|quad_end|>",
+                    "<|line_end|>",
+                ]:
+                    token_id = self.tokenizer.convert_tokens_to_ids(token)
+                    if token_id is not None and token_id != -1:
+                        eos_tokens.add(token_id)
+
+                if self.tokenizer.eos_token_id is not None:
+                    eos_tokens.add(self.tokenizer.eos_token_id)
+
+                # Create constrained decoding function if coordinate tokens are enabled
+                prefix_allowed_tokens_fn = None
+                if self.config.coordinate_tokens_enabled:
+                    prefix_allowed_tokens_fn = create_coordinate_constrained_fn()
+                    logger.debug("✅ Coordinate-constrained decoding enabled")
 
                 output_ids = self.model.generate(
                     **inputs,
@@ -932,17 +1029,9 @@ class InferenceEngine:
                     temperature=temperature if do_sample else 1.0,
                     repetition_penalty=repetition_penalty,
                     pad_token_id=self.tokenizer.pad_token_id,
-                    # Dynamically resolve EOS tokens to ensure correct stopping
-                    eos_token_id=[
-                        t_id
-                        for t_id in {
-                            self.tokenizer.convert_tokens_to_ids("<|im_end|>"),
-                            self.tokenizer.eos_token_id,
-                            self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
-                        }
-                        if t_id is not None and t_id != -1
-                    ],
+                    eos_token_id=list(eos_tokens),
                     use_cache=True,
+                    prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
                 )
 
         except RuntimeError as e:
@@ -1242,6 +1331,7 @@ class InferenceEngine:
 
         Strict requirements:
         - Geometry blocks must use training-format tokens with <|object_ref_start|> / <|object_ref_end|>
+          or synonyms <|obj_ref_start|> / <|obj_ref_end|>
         - Coordinates must be expressed as <|coord_N|> tokens (no raw number fallback)
         - Geometry lengths must be exact (bbox: 4, quad: 8, line: even >= 4)
         - No overlapping geometry spans
@@ -1251,16 +1341,17 @@ class InferenceEngine:
         objects: List[Dict[str, Any]] = []
         consumed_spans: List[Tuple[int, int]] = []
 
-        # Strict: only accept the training-format tokens generated during training
+        # Support both object_ref_* and obj_ref_* synonyms as mentioned in docs
+        # Training uses object_ref_*, but inference accepts obj_ref_* synonymously
         geometry_patterns = {
             "bbox": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|>(?:<\|box_start\|>|<\|bbox_start\|>)\[(.*?)\](?:<\|box_end\|>|<\|bbox_end\|>)"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>(?:<\|box_start\|>|<\|bbox_start\|>)\[(.*?)\](?:<\|box_end\|>|<\|bbox_end\|>)"
             ),
             "quad": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
             ),
             "line": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
             ),
         }
 
@@ -1273,35 +1364,66 @@ class InferenceEngine:
                     raise ValueError("Overlapping geometry spans detected in response")
 
                 desc, coords_section = m.group(1), m.group(2)
-                coord_tokens = self._extract_coordinate_tokens(
-                    coords_section
-                )  # strict; raises if none
-                coords = [int(token) for token in coord_tokens]
+                try:
+                    coord_tokens = self._extract_coordinate_tokens(
+                        coords_section
+                    )  # strict; raises if none
+                    coords = [int(token) for token in coord_tokens]
+                except ValueError as e:
+                    # Log the problematic section for debugging
+                    logger.warning(
+                        f"Failed to extract coordinates from section '{coords_section}': {e}"
+                    )
+                    continue  # Skip this geometry block but continue parsing others
 
                 if geom_type == "bbox":
                     if len(coords) != 4:
-                        raise ValueError(
-                            f"Invalid bbox length: expected 4, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"bbox_2d": coords, "desc": desc.strip()})
                 elif geom_type == "quad":
                     if len(coords) != 8:
-                        raise ValueError(
-                            f"Invalid quad length: expected 8, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"quad": coords, "desc": desc.strip()})
                 elif geom_type == "line":
                     if len(coords) < 4 or len(coords) % 2 != 0:
-                        raise ValueError(
-                            f"Invalid line length: expected even number >= 4, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"line": coords, "desc": desc.strip()})
 
                 consumed_spans.append(span)
                 found_any = True
 
+        # If no complete geometry blocks found, try to extract partial information
+        # This helps with debugging and provides more informative error messages
         if not found_any or not objects:
-            # Return empty list to handle invalid/partial geometry gracefully in lower-level parser
+            # Check if there are any partial geometry patterns that might indicate issues
+            partial_patterns = [
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>",  # Description only
+                r"<\|(?:box_start|quad_start|line_start)\|>\[(.*?)\]",  # Coordinates only
+                r"<\|coord_\d+\|>",  # Any coordinate tokens
+            ]
+
+            partial_matches = []
+            for pattern in partial_patterns:
+                matches = re.findall(pattern, response)
+                if matches:
+                    partial_matches.extend(matches)
+
+            if partial_matches:
+                logger.warning(
+                    f"Found partial geometry patterns but no complete blocks: {partial_matches[:3]}"
+                )
+                logger.warning(f"Full response for debugging: '{response}'")
+
+            # Return empty list to handle invalid/partial geometry gracefully
             return []
 
         return objects
@@ -1451,7 +1573,7 @@ class InferenceEngine:
         data_root: str,
         max_new_tokens: int = 1024,
         temperature: float = 0.1,
-        do_sample: bool = True,
+        do_sample: bool = False,
         repetition_penalty: float = 1.0,
         max_samples: int = -1,
         dataset: str = "bbu",
@@ -1533,7 +1655,7 @@ class InferenceEngine:
         sample: dict,
         max_new_tokens: int = 1024,
         temperature: float = 0.1,
-        do_sample: bool = True,
+        do_sample: bool = False,
         repetition_penalty: float = 1.0,
     ) -> dict:
         """Process a single sample and return the result.
@@ -1612,7 +1734,7 @@ class InferenceEngine:
         conversations: list,
         max_new_tokens: int = 1024,
         temperature: float = 0.1,
-        do_sample: bool = True,
+        do_sample: bool = False,
         repetition_penalty: float = 1.0,
     ) -> str:
         """Generate response for given image and conversations.
@@ -1756,7 +1878,7 @@ def main():
         "--input_file", type=str, required=False, help="Path to input JSONL file"
     )
     parser.add_argument(
-        "--output_file", type=str, required=True, help="Path to output JSON file"
+        "--output_file", type=str, required=True, help="Path to output JSONL file"
     )
     parser.add_argument(
         "--data_root", type=str, required=True, help="Root directory for data files"

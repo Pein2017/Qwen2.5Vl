@@ -1,0 +1,26 @@
+{
+  "validation_summary": {
+    "total_samples_processed": 674,
+    "total_objects_processed": 674,
+    "valid_samples": 674,
+    "invalid_samples": 0,
+    "validation_success_rate": 1.0,
+    "total_errors": 1,
+    "error_type_counts": {
+      "object_too_small": 1
+    },
+    "severity_counts": {
+      "critical": 0,
+      "warning": 1,
+      "info": 0
+    }
+  },
+  "validation_config": {
+    "validation_mode": "strict",
+    "min_object_size": 10,
+    "max_coordinate_value": 50000,
+    "require_non_empty_description": true,
+    "check_coordinate_bounds": true
+  },
+  "timestamp": "2025-08-08T15:16:40.610139"
+}

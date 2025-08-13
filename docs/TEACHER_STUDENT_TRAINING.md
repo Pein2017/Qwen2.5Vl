@@ -1,5 +1,7 @@
 # Teacher-Student Training Guide
 
+Note: Core spans, weights, and masking behaviors are summarized in `AI_ASSISTANT_KB.md`. This file provides full narrative and examples.
+
 **Complete guide to the teacher-student training system with 60-70% performance optimization and production-ready dual-role training**
 
 ## 🎯 **Overview**
@@ -107,7 +109,7 @@ max_steps: 1000
 #### **2. LossManager Class (`src_new/models/loss_manager.py`)**
 - **`_compute_granular_teacher_student_loss()`**: Compute all loss components with Solution 1 optimization
 - **`_compute_per_token_cross_entropy()`**: Single-pass cross-entropy computation for 60-70% performance improvement
-- **Returns**: `teacher_llm_loss`, `teacher_l1_loss`, `student_llm_loss`, `student_l1_loss`
+- **Final weighted outputs** (actual scalars used by the trainer): `teacher_llm_loss`, `teacher_l1_loss`, `student_llm_loss`, `student_l1_loss`; `total_loss = sum(all)`
 
 #### **3. TeacherPoolManager Class (`src_new/data/teacher_pool.py`)**
 - **`get_random_teachers()`**: Sample random teachers for student assignment

@@ -181,7 +181,8 @@ launch_single_gpu() {
     
     python scripts/train_new.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL"
+        --log_level "$LOG_LEVEL" \
+        --enable-coord-aux "${ENABLE_COORD_AUX:-}"
 }
 
 launch_deepspeed() {
