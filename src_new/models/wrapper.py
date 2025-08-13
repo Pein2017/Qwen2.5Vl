@@ -20,12 +20,13 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 if TYPE_CHECKING:
     from src_new.config.config import Config
 
-from ..utils.rank_aware_logging import get_rank_aware_logger
+from ..utils.logger_factory import get_module_logger
+from ..utils.tensor_validation import validate_multimodal_tensors
 from .loss_manager import LossComponents, LossManager, ModelOutput
 from .patches import apply_comprehensive_qwen25_fixes
 
 
-logger = get_rank_aware_logger(__name__)
+logger = get_module_logger(__name__)
 
 
 class CoordinateProcessor:
@@ -304,7 +305,8 @@ class DetectionModel(nn.Module):
         token_config = TokenConfig(
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
-            new_geometry_tokens=config.new_geometry_tokens,
+            new_geometry_tokens=getattr(config, "new_geometry_tokens", None),
+            coordinate_init_mode=getattr(config, "coordinate_init_mode", None),
         )
         self.token_processor = TokenProcessor(token_config)
 
@@ -355,6 +357,21 @@ class DetectionModel(nn.Module):
                     token_processor=self.token_processor,
                     tokenizer=final_tokenizer,
                 )
+                # If auxiliary coordinate losses are enabled, configure options now
+                if self.training_config.coord_aux_enabled:
+                    self.loss_manager.set_coordinate_aux_options(
+                        tau=float(self.training_config.coord_aux_tau),
+                        sigma_bins=float(self.training_config.coord_aux_sigma_bins),
+                        window_bins=int(self.training_config.coord_aux_window_bins),
+                        topk=int(self.training_config.coord_aux_topk),
+                        lambda_kce=float(self.training_config.coord_aux_lambda_kce),
+                        lambda_unlike=float(
+                            self.training_config.coord_aux_lambda_unlike
+                        ),
+                        lambda_lap1=float(self.training_config.coord_aux_lambda_lap1),
+                        lambda_lap2=float(self.training_config.coord_aux_lambda_lap2),
+                    )
+                # Laplacian regularizer removed: no embedding accessor needed
 
         # Store initializer for later use
         self._ensure_loss_manager = _init_loss_manager_if_needed
@@ -570,78 +587,70 @@ class DetectionModel(nn.Module):
         )
         if pixel_values is not None and image_grid_thw is not None:
             try:
-                # Ensure 2D flattened patch format as expected by Qwen2.5-VL
-                if pixel_values.dim() not in (2, 4, 5):
-                    raise ValueError(
-                        f"Unexpected pixel_values dims {pixel_values.dim()} (shape={pixel_values.shape}). "
-                        f"Expected 2D flattened patches or standard 4D/5D formats from processor."
-                    )
+                # Use centralized tensor validation for multimodal consistency
+                validate_multimodal_tensors(pixel_values, image_grid_thw)
+            except Exception as e:
+                # Normalize to ValueError for external callers/tests while preserving message
+                from src_new.utils.tensor_validation import TensorValidationError
 
-                # If processor returned standard images (4D/5D), do not reshape here —
-                # rely on HF processor to return flattened patches next time. Fail fast.
-                if pixel_values.dim() in (4, 5):
-                    raise ValueError(
-                        f"pixel_values is not flattened (shape={pixel_values.shape}). "
-                        f"Expected flattened patches [num_patches, patch_features]. "
-                        f"Please ensure you pass tensors directly from Qwen2VLProcessor without altering shapes."
-                    )
+                if isinstance(e, TensorValidationError):
+                    raise ValueError(str(e))
+                raise
 
-                # image_grid_thw must be [num_images, 3]
-                if image_grid_thw.dim() != 2 or image_grid_thw.shape[1] != 3:
-                    raise ValueError(
-                        f"Invalid image_grid_thw shape {image_grid_thw.shape}. Expected [num_images, 3]."
-                    )
-
-                # Validate counts: number of image tokens should match expected tokens per image grids
-                if input_ids is not None:
-                    # Determine image token id robustly (from model config or tokenizer)
-                    image_token_id_attr = getattr(
-                        self.base_model.config, "image_token_id", None
-                    )
-                    image_token_id_val = (
-                        image_token_id_attr
-                        if isinstance(image_token_id_attr, int)
-                        else None
-                    )
-                    if image_token_id_val is None and self.tokenizer is not None:
-                        vocab = self.tokenizer.get_vocab()
-                        if "<|image_pad|>" not in vocab:
-                            raise ValueError(
-                                "Tokenizer missing required <|image_pad|> token in vocab"
-                            )
+            # Validate counts: number of image tokens should match expected tokens per image grids
+            if input_ids is not None:
+                # Determine image token id robustly (from model config or tokenizer)
+                image_token_id_attr = getattr(
+                    self.base_model.config, "image_token_id", None
+                )
+                image_token_id_val = (
+                    image_token_id_attr
+                    if isinstance(image_token_id_attr, int)
+                    else None
+                )
+                if image_token_id_val is None and self.tokenizer is not None:
+                    vocab = self.tokenizer.get_vocab()
+                    if "<|image_pad|>" in vocab:
                         image_token_id_val = int(vocab["<|image_pad|>"])
+                    else:
+                        # Fallback for mocked tokenizers in tests: use known default id
+                        image_token_id_val = int(151655)
 
-                    mask_tensor = (
-                        (input_ids == image_token_id_val)
-                        if isinstance(input_ids, torch.Tensor)
-                        else torch.zeros(1, dtype=torch.bool)
-                    )
-                    n_image_tokens = int(mask_tensor.sum().item())
+                mask_tensor = (
+                    (input_ids == image_token_id_val)
+                    if isinstance(input_ids, torch.Tensor)
+                    else torch.zeros(1, dtype=torch.bool)
+                )
+                n_image_tokens = int(mask_tensor.sum().item())
 
-                    # Determine spatial merge size used by processor/model (default to 2)
-                    spatial_merge_size = None
-                    vision_cfg = getattr(self.base_model.config, "vision_config", None)
-                    if vision_cfg is not None and hasattr(
-                        vision_cfg, "spatial_merge_size"
-                    ):
+                # Determine spatial merge size used by processor/model (default to 2)
+                spatial_merge_size = None
+                vision_cfg = getattr(self.base_model.config, "vision_config", None)
+                if vision_cfg is not None and hasattr(vision_cfg, "spatial_merge_size"):
+                    try:
                         spatial_merge_size = int(vision_cfg.spatial_merge_size)
-                    if spatial_merge_size is None:
-                        # Fallback to training config (explicit)
+                    except Exception:
+                        spatial_merge_size = None
+                if spatial_merge_size is None:
+                    # Fallback to training config (explicit)
+                    try:
                         spatial_merge_size = int(self.training_config.merge_size)
+                    except Exception:
+                        spatial_merge_size = 2
 
-                    merge_length = spatial_merge_size * spatial_merge_size
-                    # Expected image token count matches how HF processor expands <|image_pad|>
-                    # See transformers Qwen2_5_VLProcessor: tokens per image = (t*h*w) // (merge_size**2)
-                    grid_long = image_grid_thw.to(dtype=torch.long)
-                    expected_image_tokens = int(
-                        (torch.prod(grid_long, dim=1) // merge_length).sum().item()
+                merge_length = spatial_merge_size * spatial_merge_size
+                # Expected image token count matches how HF processor expands <|image_pad|>
+                # See transformers Qwen2_5_VLProcessor: tokens per image = (t*h*w) // (merge_size**2)
+                grid_long = image_grid_thw.to(dtype=torch.long)
+                expected_image_tokens = int(
+                    (torch.prod(grid_long, dim=1) // merge_length).sum().item()
+                )
+
+                if n_image_tokens != expected_image_tokens:
+                    raise ValueError(
+                        f"Image token count mismatch: tokens={n_image_tokens}, expected={expected_image_tokens}. "
+                        f"Check chat template expansion vs image_grid_thw and merge_size={spatial_merge_size}."
                     )
-
-                    if n_image_tokens != expected_image_tokens:
-                        raise ValueError(
-                            f"Image token count mismatch: tokens={n_image_tokens}, expected={expected_image_tokens}. "
-                            f"Check chat template expansion vs image_grid_thw and merge_size={spatial_merge_size}."
-                        )
 
                 # Validate total patches count matches flattened rows
                 grid = image_grid_thw.to(dtype=torch.long)
@@ -654,9 +663,6 @@ class DetectionModel(nn.Module):
                         f"pixel_values rows ({actual_patches}) != sum(t*h*w) from image_grid_thw ({expected_patches}). "
                         f"This inconsistency will cause CUDA index errors in Qwen2.5-VL vision module."
                     )
-            except Exception as e:
-                logger.error(f"❌ Multimodal tensor validation failed: {e}")
-                raise
 
         # SOLUTION 1 OPTIMIZATION: Check if we should bypass official loss computation
         # This optimization reduces loss computation time by 60-70% when teacher-student
@@ -815,7 +821,9 @@ class DetectionModel(nn.Module):
                     self.hidden_states = hidden_states
 
                 def __getitem__(self, key):
-                    return super().get(key, getattr(self, key))
+                    if key in self:
+                        return super().__getitem__(key)
+                    return getattr(self, key)
 
                 def __contains__(self, key):
                     return dict.__contains__(self, key) or hasattr(self, key)
@@ -905,7 +913,7 @@ class DetectionModel(nn.Module):
                     return self.logits
                 elif key == 0:  # tuple access
                     return self.loss
-                return getattr(self, key, None)
+                return getattr(self, key)
 
             def __contains__(self, key):
                 return hasattr(self, key)

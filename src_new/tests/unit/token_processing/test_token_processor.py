@@ -646,7 +646,8 @@ class TestTokenProcessorIntegration:
                 desc = obj.get("desc", "")
                 if "bbox_2d" in obj:
                     return f"<|object_ref_start|>{desc}<|object_ref_end|><|box_start|>{obj['bbox_2d']}<|box_end|>"
-
+                elif "quad" in obj:
+                    return f"<|object_ref_start|>{desc}<|object_ref_end|><|quad_start|>{obj['quad']}<|quad_end|>"
                 elif "line" in obj:
                     return f"<|object_ref_start|>{desc}<|object_ref_end|><|line_start|>{obj['line']}<|line_end|>"
                 else:

@@ -1,5 +1,7 @@
 # Coordinate System Guide
 
+Note: For quick facts, see `AI_ASSISTANT_KB.md`. This file remains the deep technical guide.
+
 **Complete guide to the coordinate token system, multi-geometry support, and coordinate processing in the BBU training pipeline**
 
 ## 🎯 **System Overview**

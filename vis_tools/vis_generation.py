@@ -27,8 +27,8 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "exp_det_coordinates/730-use_coord-ep200/val/inference/predictions.json"
-OUTPUT_DIR = "vis_generation/730-use_coord-ep200-val"
+INPUT_FILE = "exp_det_coordinates/730-use_coord-ep100/val/inference/predictions.json"
+OUTPUT_DIR = "vis_generation/730-use_coord-ep100-val"
 BASE_PATH = "."
 # Data root directory for image files
 DATA_ROOT_DIR = "data/ds_v2_bbu_bbu_shield/images"

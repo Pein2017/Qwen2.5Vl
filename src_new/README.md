@@ -46,6 +46,35 @@ Tokenization → Span Detection → Training → Model Checkpoints
 
 The soft-expectation coordinate loss is implemented and active. Coordinate tokens map to values 0..max_coord and are trained via temperature-scaled soft expectation + L1. See `src_new/models/coordinate_loss.py` and `UNIFIED_DOCUMENTATION.md` for details.
 
+### Optional Auxiliary Coordinate Losses (production default in debug config)
+- Kernelized‑KL (sparse window) around the correct coordinate bin
+- Unlikelihood on non‑coordinate tokens at coordinate positions (top‑K)
+- Laplacian regularizer has been removed
+
+Behavior when enabled (via YAML):
+- CE path is unchanged and continues to train all assistant tokens.
+- LossManager reports and uses separate weighted components:
+  - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
+- `teacher_l1_loss` / `student_l1_loss` are not used under the aux path.
+
+YAML keys (see `configs/bbu_v2_debug.yaml`):
+```
+coord_aux_enabled: true
+coord_aux_tau: 1.2
+coord_aux_sigma_bins: 8
+coord_aux_window_bins: 32
+coord_aux_topk: 100
+coord_aux_lambda_kce: 1
+coord_aux_lambda_unlike: 1
+```
+
+Run a quick debug training with aux losses enabled:
+```bash
+cd /data3/Qwen2.5-VL-main
+source ~/.bashrc && conda activate ms
+bash scripts/run_debug.sh
+```
+
 ## 🔧 Core Components
 
 1. **Data Processing** (`src_new/data/`) - Dataset loading, teacher-student conversations, coordinate conversion
@@ -76,6 +105,8 @@ python run_comprehensive_tests.py
 - ✅ **EOS Training Added**: `<|im_end|>` is now included in assistant span labels to teach proper termination
 - ✅ **Vision token expansion validation**: We validate the number of `<|image_pad|>` tokens against the expected count computed from image grids and merge size, i.e. `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)` to match the official Qwen2.5‑VL processor behavior.
 - ✅ **HF config exposure in wrapper**: `DetectionModel.config` now proxies the underlying HuggingFace model config (and keeps the training dataclass on `training_config`). This preserves integrations that call `model.config.to_json_string()` and similar APIs.
+- ✅ **Joint Training Loss**: Cross-Entropy loss now covers all assistant tokens (text + coordinate tokens) while L1 loss remains exclusively for coordinate tokens, enabling joint learning of language and coordinate prediction.
+- ✅ **Aux Coordinate Losses**: Kernelized‑KL + Unlikelihood available via YAML; Laplacian regularizer removed.
 
 ---
 

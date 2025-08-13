@@ -471,9 +471,9 @@ The system computes separate losses for different learning objectives:
 | `teacher_l1_loss` | Teacher coordinate regression | Soft expectation + L1 loss |
 | `student_l1_loss` | Student coordinate regression | Soft expectation + L1 loss |
 
-Note (2025-08): We decouple supervision streams using label-aligned masks with next-token shifting.
-- CE counts only text tokens inside assistant spans (teacher/student) and excludes coordinate-token targets.
-- L1 counts only coordinate-token targets within assistant spans.
+Note (2025-08): We use joint training with span-aligned masks and next-token shifting.
+- CE covers all assistant tokens (text + coordinate tokens) within teacher/student spans for comprehensive language learning.
+- L1 covers only coordinate-token targets within assistant spans for precise coordinate regression.
 - Soft-expectation temperature is configurable via `coordinate_temperature` (preferred; legacy: `coordinate_loss_temperature`).
 
 ### Soft Expectation Coordinate Loss
@@ -496,18 +496,16 @@ l1_loss = |expected_coord - target_coord|
 
 The system implements a sophisticated dual-loss architecture combining language modeling and coordinate regression:
 
-#### **Loss Components**
-
 | Component | Purpose | Computation Method | Weight |
 |-----------|---------|-------------------|---------|
 | `teacher_llm_loss` | Teacher example learning | Cross-entropy on teacher spans | `teacher_loss_weight` |
 | `student_llm_loss` | Student response learning | Cross-entropy on student spans | `student_loss_weight` |
-| `teacher_l1_loss` | Teacher coordinate regression | Soft expectation + L1 loss | `coordinate_loss_weight` |
-| `student_l1_loss` | Student coordinate regression | Soft expectation + L1 loss | `coordinate_loss_weight` |
+| `teacher_l1_loss` | Teacher coordinate regression | See below (soft-expectation baseline or auxiliary aggregate) | `coordinate_loss_weight` |
+| `student_l1_loss` | Student coordinate regression | See below (soft-expectation baseline or auxiliary aggregate) | `coordinate_loss_weight` |
 
-#### **Soft Expectation Coordinate Loss**
+### Soft Expectation Coordinate Loss (Baseline)
 
-Instead of cross-entropy, coordinate tokens use soft expectation for better regression:
+By default (when auxiliary features are disabled), coordinate tokens use the soft expectation + L1 path:
 
 ```python
 # Soft expectation formula (src_new/models/coordinate_loss.py)
@@ -516,7 +514,40 @@ expected_coord = Σ(v * P(coord_value = v))  # v ∈ [0, MAX_COORD]
 coordinate_loss = L1(expected_coord, ground_truth_coord)
 ```
 
-#### **Optimized Loss Computation**
+This path remains the baseline and is fully compatible with existing training runs.
+
+### Optional Auxiliary Coordinate Losses (Kernelized‑KL + Unlikelihood)
+
+When enabled via YAML, `LossManager` switches the coordinate path at shifted positions whose labels are coordinate tokens and computes separate components:
+
+- Kernelized‑KL (sparse window) around the correct bin (temperature-scaled)
+- Unlikelihood on non‑coordinate tokens at coordinate positions (top‑K)
+
+Behavior and wiring:
+- CE path is unchanged and continues to train language tokens (including coordinate targets) under span masks.
+- Separate components are exposed for logging and total loss summation:
+  - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
+- The legacy `teacher_l1_loss`/`student_l1_loss` remain used only when aux is disabled.
+- Laplacian regularizer on the coordinate embedding slice has been removed.
+
+YAML configuration:
+```yaml
+coord_aux_enabled: true
+coord_aux_tau: 1.2
+coord_aux_sigma_bins: 8
+coord_aux_window_bins: 32
+coord_aux_topk: 100
+coord_aux_lambda_kce: 1
+coord_aux_lambda_unlike: 1
+```
+
+Implementation highlights:
+- `src_new/models/coordinate_loss.py` provides:
+  - `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`
+- `src_new/models/loss_manager.py` computes auxiliary losses at shifted coordinate positions (teacher/student separately) and returns separate components for logging and weighting.
+- Laplacian code and metrics were removed entirely to simplify the system.
+
+### Optimized Loss Computation
 
 **Solution 1 Optimization** (60-70% performance improvement):
 - Single-pass cross-entropy computation for all tokens
@@ -596,89 +627,27 @@ def perform_pre_distributed_expansion(base_model, tokenizer, config):
 
 ### Configuration System (`src_new/config/config.py`)
 
-The configuration system uses a unified dataclass approach with comprehensive validation:
+The configuration uses a unified dataclass with explicit, required fields. In addition to the baseline coordinate settings, the following keys enable and configure the auxiliary coordinate losses:
 
-#### **Configuration Loading**
-```python
-from src_new.config.config import load_config
-
-# Load and validate configuration
-config = load_config("configs/bbu_v2.yaml")
-
-# Automatic validation with detailed error messages
-# - File existence checks
-# - Type validation
-# - Range validation
-# - Fail-fast error handling
-```
-
-#### **Key Configuration Categories**
-
-**Model Settings**:
 ```yaml
-model_path: "/path/to/Qwen2.5-VL-3B-Instruct"
-model_size: "3B"
-model_max_length: 32000
-attn_implementation: "flash_attention_2"
-torch_dtype: "bfloat16"
-use_cache: false
-model_hidden_size: 2048
+# Coordinate auxiliary losses
+coord_aux_enabled: true        # Enable the auxiliary path (default false in baseline configs)
+coord_aux_tau: 1.2             # Temperature for coordinate slice during Kernelized‑KL
+coord_aux_sigma_bins: 8        # Gaussian sigma in BIN units for target kernel
+coord_aux_window_bins: 32      # Half-window radius in BIN units (total width = 2*window+1)
+coord_aux_topk: 100            # Top‑K non‑coordinate tokens for Unlikelihood
+coord_aux_lambda_kce: 0.5      # Weight for Kernelized‑KL
+coord_aux_lambda_unlike: 0.05  # Weight for Unlikelihood
+coord_aux_lambda_lap1: 1e-4    # Weight for 1st‑order Laplacian (embedding smoothness)
+coord_aux_lambda_lap2: 1e-5    # Weight for 2nd‑order Laplacian (curvature penalty)
 ```
 
-**Training Parameters**:
-```yaml
-num_train_epochs: 20
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 2
-learning_rate: 5e-6
-vision_lr: 5e-7      # Vision encoder learning rate
-merger_lr: 1e-5      # Vision-language merger learning rate
-llm_lr: 5e-6         # Language model learning rate
-warmup_ratio: 0.1
-weight_decay: 0.0001
-lr_scheduler_type: "cosine"
-gradient_checkpointing: true
-bf16: true
-```
+- Debug config (example): `configs/bbu_v2_debug.yaml` sets `coord_aux_enabled: true` with the knobs above so you can smoke‑test the new features.
+- Baseline training config: `configs/bbu_v2_use_coord.yaml` includes the fields but keeps `coord_aux_enabled: false` for backward compatibility.
 
-**Coordinate Token System**:
-```yaml
-coordinate_tokens_enabled: true
-max_coord_value: 1024
-coordinate_loss_weight: 0.05
-regular_loss_weight: 1.0
-# Preferred key (legacy alias supported):
-coordinate_temperature: 1.0
-```
-
-**Teacher-Student Training**:
-```yaml
-teacher_ratio: 0.5           # 50% of samples get teachers
-num_teacher_samples: 1       # Number of teachers per student
-teacher_loss_weight: 0.3     # Weight for teacher loss component
-student_loss_weight: 1.0     # Weight for student loss component
-```
-
-**Data Processing**:
-```yaml
-train_data_path: "data/train.jsonl"
-val_data_path: "data/val.jsonl"
-teacher_pool_file: "data/teacher_pool.jsonl"
-max_total_length: 12000
-collator_type: "packed"      # or "standard"
-language: "chinese"
-max_pixels: 401408           # Image processor pixel limit
-```
-
-**Performance Optimization**:
-```yaml
-use_flash_attention: true
-mixed_precision: "bf16"
-dataloader_num_workers: 4
-pin_memory: true
-prefetch_factor: 2
-save_safetensors: true       # Use SafeTensors format
-```
+Runtime wiring:
+- The wrapper configures `LossManager` with these knobs at initialization when `coord_aux_enabled` is true.
+- Laplacian regularization activates only when `coord_aux_lambda_lap1` and/or `coord_aux_lambda_lap2` are positive.
 
 #### **Training Entry Point** (`scripts/train_new.py`)
 

@@ -36,7 +36,7 @@ def make_loss_manager(max_coord_value=1025):
     cfg.regular_loss_weight = 1.0
     cfg.teacher_loss_weight = 0.3
     cfg.student_loss_weight = 1.0
-    cfg.coordinate_loss_temperature = 1.0
+    cfg.coordinate_temperature = 1.0  # Fixed: use coordinate_temperature
 
     tp = TokenProcessor(
         TokenConfig(max_coord_value=max_coord_value, coordinate_tokens_enabled=True)

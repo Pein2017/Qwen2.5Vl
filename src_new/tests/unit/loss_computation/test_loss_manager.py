@@ -34,7 +34,7 @@ class TestLossManager:
         config.max_coord_value = 1024
         config.coordinate_loss_weight = 0.05
         config.regular_loss_weight = 1.0
-        config.coordinate_loss_temperature = 1.0
+        config.coordinate_temperature = 1.0  # Updated to match LossManager expectation
         config.teacher_loss_weight = 0.3
         config.student_loss_weight = 1.0
         return config
@@ -336,11 +336,12 @@ class TestLossManager:
         # Teacher coordinate loss should be very small (correct predictions)
         assert comp.teacher_l1_loss is not None
         assert comp.teacher_l1_loss.item() < 1e-3
-        # And CE on teacher side should be None because span contains only coordinate targets
-        assert comp.teacher_llm_loss is None
+        # CE now includes coordinate targets as well
+        assert comp.teacher_llm_loss is not None
+        assert torch.isfinite(comp.teacher_llm_loss)
 
-    def test_llm_excludes_coordinate_targets_with_spans(self, loss_manager):
-        """When span contains only coordinate targets, CE component should be None (excluded)."""
+    def test_llm_includes_coordinate_targets_with_spans(self, loss_manager):
+        """When span contains only coordinate targets, CE component should still be present (included)."""
         batch_size, seq_len = 1, 6
         vocab_size = 151665 + 2 + 1025
         coord_start = 151667
@@ -354,8 +355,9 @@ class TestLossManager:
         comp = loss_manager.compute_loss_components(
             logits=logits, labels=labels, teacher_spans=teacher_spans
         )
-        # LLM loss excluded for coordinate-only targets
-        assert comp.teacher_llm_loss is None
+        # LLM loss included for coordinate-only targets
+        assert comp.teacher_llm_loss is not None
+        assert torch.isfinite(comp.teacher_llm_loss)
         # Coordinate loss present
         assert comp.teacher_l1_loss is not None
         assert torch.isfinite(comp.teacher_l1_loss)

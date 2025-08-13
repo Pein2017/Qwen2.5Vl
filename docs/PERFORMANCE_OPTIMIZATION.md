@@ -1,5 +1,7 @@
 # Performance Optimization Guide
 
+Note: Core performance pointers are summarized in `AI_ASSISTANT_KB.md`. This file contains full details.
+
 **Complete guide to performance optimization, FlashAttention v2 setup, and advanced tuning for the BBU training pipeline**
 
 ## 🚀 **Performance Overview**

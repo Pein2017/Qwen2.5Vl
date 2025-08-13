@@ -174,9 +174,8 @@ class CoordinateTokenConverter:
             coord_tokens.append(f"<|coord_{clamped_coord}|>")
 
         coord_string = ", ".join(coord_tokens)
-        if "desc" not in obj:
-            raise ValueError(f"Object {obj_index} missing required 'desc' field")
-        description = obj["desc"]
+        # Use empty string if description is missing (graceful handling)
+        description = obj.get("desc", "")
 
         # Format complete token string (exact same format as current system)
         return (

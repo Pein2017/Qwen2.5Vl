@@ -1,12 +1,12 @@
 # BBU Qwen2.5-VL Training Config
 
 # OUTPUT SETTINGS
-output_dir: "output-730-use_coord-ep100"
-run_name: "7-30-use_coord-ep100"
+output_dir: "output-730-use_coord-ep100-coord_aux"
+run_name: "7-30-use_coord-ep100-coord_aux"
 tb_dir: "tb"
 
-# MODEL SETTINGS
-model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024"
+# MODEL SETTINGSd
+model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
 model_size: "3B"
 model_max_length: 32000  
 attn_implementation: "flash_attention_2"
@@ -19,13 +19,13 @@ model_num_attention_heads: 16
 model_vocab_size: 151665
 # TRAINING SETTINGS
 num_train_epochs: 100
-per_device_train_batch_size: 8
-per_device_eval_batch_size: 8
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1
 learning_rate: 5e-5
-vision_lr: 1e-6
+vision_lr: 1e-7
 merger_lr: 5e-5
-llm_lr: 1e-5
+llm_lr: 5e-6
 
 adapter_lr: 0.0
 warmup_ratio: 0.1
@@ -43,7 +43,7 @@ data_root: "data/ds_v2_bbu_bbu_shield"
 max_total_length: 12000
 num_teacher_samples: 1
 collator_type: "packed"
-teacher_ratio: 1  
+teacher_ratio: 0.5  
 language: "chinese"
 max_dataset_size: -1
 
@@ -56,6 +56,12 @@ save_strategy: "steps"
 save_steps: 200  # Increased to reduce checkpoint frequency
 save_total_limit: 2  # Keep more checkpoints for safety
 
+# BEST CHECKPOINT TRACKING
+load_best_model_at_end: true  # Enable automatic best checkpoint saving
+metric_for_best_model: "eval_loss"  # Track evaluation loss for best model
+greater_is_better: false  # Lower eval_loss is better
+save_on_each_node: false  # EFFICIENCY: Only rank 0 saves checkpoints
+
 # LOGGING SETTINGS
 logging_steps: 10  # Reduced logging overhead
 logging_dir: "logs"
@@ -67,9 +73,20 @@ verbose: false
 # COORDINATE TOKEN CONFIG
 coordinate_tokens_enabled: true
 max_coord_value: 1024
-coordinate_loss_weight: 0.5
+coordinate_loss_weight: 1
 regular_loss_weight: 1.0
-coordinate_temperature: 0.5
+coordinate_temperature: 0.7
+coordinate_init_mode: "fourier_ramp"  # new: deterministic coord embedding init
+coordinate_label_sigma: 16
+
+# COORDINATE AUXILIARY LOSSES (enable to use new feature)
+coord_aux_enabled: true
+coord_aux_tau: 1.2  # Temperature for coord-slice softmax in Kernelized-KL (higher = smoother p)
+coord_aux_sigma_bins: 8  # Gaussian sigma (in bins) for target kernel q; larger = broader tolerance
+coord_aux_window_bins: 32  # Half-window around GT (in bins); compute KL only on [y-window, y+window]
+coord_aux_topk: 100  # Unlikelihood: top-k non-coordinate tokens to suppress at coord positions
+coord_aux_lambda_kce: 1  # Weight for Kernelized-KL term in coord aux loss
+coord_aux_lambda_unlike: 1  # Weight for Unlikelihood term penalizing non-coordinate mass at coord positions
 
 # ESSENTIAL SETTINGS
 remove_unused_columns: false
@@ -94,3 +111,6 @@ max_pixels: 401408  # 512 * 28 * 28 - controls Qwen2VL image processor pixel lim
 # TRAINING CONTROL FLAGS
 training_prompt_style: true
 use_consistent_prompts: true
+
+# MODEL LOADING CONTROL FLAGS
+skip_vocab_extension: false

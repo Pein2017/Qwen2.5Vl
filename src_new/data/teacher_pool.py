@@ -7,7 +7,6 @@ This module provides:
 """
 
 import json
-import logging
 import os
 import random
 from pathlib import Path
@@ -18,30 +17,10 @@ if TYPE_CHECKING:
     from src_new.config.config import Config
 
 
-def get_teacher_logger() -> logging.Logger:
-    """Get rank-aware logger for teacher pool module."""
-    try:
-        from ..utils.rank_aware_logging import get_rank_aware_logger
-
-        return get_rank_aware_logger("teacher_pool")
-    except ImportError:
-        # Fallback to config system
-        from src_new.config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
-
-        logger = logging.getLogger("teacher_pool")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(_GLOBAL_LOG_LEVEL)
-            _CONFIGURED_LOGGERS.add("teacher_pool")
-        return logger
+from ..utils.logger_factory import get_module_logger
 
 
-logger = get_teacher_logger()
+logger = get_module_logger("teacher_pool")
 
 
 class TeacherPoolManager:

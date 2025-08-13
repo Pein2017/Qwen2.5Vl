@@ -1,0 +1,454 @@
+🚀 New Architecture Training Launcher (src_new)
+   📄 Config: bbu_v2_use_coord | 🖥️ GPUs: 0,1,2,3,4,5,6,7 | 📊 Log: INFO
+   🏗️  Architecture: src_new (simplified, modular design)
+   📄 Output redirected to run_new.log
+🌍 Setting up environment for new architecture...
+✅ Environment configured for new architecture (Python: /root/miniconda3/envs/ms/bin/python)
+🚀 Optimized setup - removed performance-limiting environment variables
+🚀 Multi-GPU detected (8 GPUs) - DeepSpeed ENABLED
+   🔧 BBU_DEEPSPEED_ENABLED=true
+   ⚙️  BBU_DEEPSPEED_CONFIG=scripts/zero2.json
+   🖥️  BBU_NUM_GPUS=8
+🔍 Validating configuration for new architecture...
+🧪 Testing config loading with src_new...
+[2025-08-13 07:40:11,645] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+✅ Config loading successful with new architecture
+   Model: 3B
+   Coordinate tokens: True
+   Teacher ratio: 0.5
+✅ DeepSpeed config validated: scripts/zero2.json
+✅ Configuration validation passed for new architecture
+ℹ️ Not using flash_attention_2 — unsetting Triton/FlashAttention env
+🚀 Multi-GPU Training with New Architecture + DeepSpeed
+   🖥️  GPUs: 8 devices (0,1,2,3,4,5,6,7)
+   ⚙️  DeepSpeed Config: scripts/zero2.json
+   📄 Training Config: bbu_v2_use_coord
+   📊 Log Level: INFO
+   🔗 Master Port: 28253
+[2025-08-13 07:40:28,954] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,134] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,370] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,430] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,443] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,445] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,447] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:29,447] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-13 07:40:30,729] [INFO] [comm.py:669:init_distributed] cdb=None
+[W813 07:40:30.699808740 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[2025-08-13 07:40:30,946] [INFO] [comm.py:669:init_distributed] cdb=None
+[W813 07:40:30.912442711 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[2025-08-13 07:40:31,099] [INFO] [comm.py:669:init_distributed] cdb=None
+[W813 07:40:31.067237456 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[2025-08-13 07:40:31,139] [INFO] [comm.py:669:init_distributed] cdb=None
+[2025-08-13 07:40:31,140] [INFO] [comm.py:669:init_distributed] cdb=None
+2025-08-13 07:40:31,162 [patches] INFO: 🔧 Applied torch.library.wrap_triton compatibility patch for PyTorch 2.5.1
+2025-08-13 07:40:31,163 [patches] INFO: Applying comprehensive Qwen2.5-VL compatibility patches...
+2025-08-13 07:40:31,163 [patches] INFO: Patching Qwen2.5-VL forward method...
+2025-08-13 07:40:31,163 [patches] INFO: ✅ Qwen2.5-VL forward method patched successfully
+2025-08-13 07:40:31,164 [patches] INFO: Patching Qwen2.5-VL prepare_inputs_for_generation method...
+2025-08-13 07:40:31,164 [patches] INFO: ✅ Qwen2.5-VL prepare_inputs_for_generation method patched successfully
+2025-08-13 07:40:31,164 [patches] INFO: Patching Qwen2.5-VL attention implementation...
+2025-08-13 07:40:31,164 [patches] INFO: ✓ flash_attn package found, no attention implementation patch needed
+2025-08-13 07:40:31,164 [patches] INFO: ✅ Qwen2.5-VL multimodal rotary position embedding patched successfully
+2025-08-13 07:40:31,164 [patches] INFO:    - Fixed dimension mismatch issue
+2025-08-13 07:40:31,164 [patches] INFO:    - Added intelligent mrope_section handling
+2025-08-13 07:40:31,164 [patches] INFO:    - Prevents batch duplication errors
+2025-08-13 07:40:31,164 [patches] INFO: ✅ All Qwen2.5-VL compatibility patches applied successfully
+2025-08-13 07:40:31,175 [src_new.utils.validation] INFO: ✅ Directory structure validated: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+2025-08-13 07:40:31,175 [src_new.utils.data_resolver] INFO: ✅ Dataset paths resolved successfully from: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+2025-08-13 07:40:31,176 [src_new.utils.data_resolver] INFO: 📁 Train: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/train.jsonl
+2025-08-13 07:40:31,176 [src_new.utils.data_resolver] INFO: 📁 Val: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/val.jsonl
+2025-08-13 07:40:31,176 [src_new.utils.data_resolver] INFO: 📁 Teacher pool: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/teacher_pool.jsonl
+2025-08-13 07:40:31,176 [src_new.utils.data_resolver] INFO: 📁 Images: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/images
+2025-08-13 07:40:31,176 [config] INFO: ✅ Configuration validation passed
+[W813 07:40:31.105338036 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+2025-08-13 07:40:31,176 [config] INFO: ✅ Configuration loaded successfully from configs/bbu_v2_use_coord.yaml
+2025-08-13 07:40:31,176 [config] INFO: 📋 Model: 3B at /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier
+2025-08-13 07:40:31,176 [config] INFO: 📋 Data: train=/data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/train.jsonl, val=/data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/val.jsonl
+2025-08-13 07:40:31,176 [config] INFO: 📋 Coordinate tokens: enabled
+2025-08-13 07:40:31,176 [config] INFO: 📋 Teacher ratio: 0.5
+[W813 07:40:31.106328232 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[2025-08-13 07:40:31,178] [INFO] [comm.py:669:init_distributed] cdb=None
+[2025-08-13 07:40:31,178] [INFO] [comm.py:700:init_distributed] Initializing TorchBackend in DeepSpeed with backend nccl
+[2025-08-13 07:40:31,193] [INFO] [comm.py:669:init_distributed] cdb=None
+[2025-08-13 07:40:31,209] [INFO] [comm.py:669:init_distributed] cdb=None
+[W813 07:40:31.143081864 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[W813 07:40:31.158032677 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[W813 07:40:31.177940000 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  4.90it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.30it/s]
+2025-08-13 07:40:32,154 [training.train_new] INFO: 🚀 Fast checkpoint mode enabled - inference-ready checkpoints only (30s vs 200-400s)
+2025-08-13 07:40:32,154 [training.train_new] INFO: Loading tokenizer and processor from /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+2025-08-13 07:40:32,601 [teacher_pool] INFO: ✅ Teacher pool loaded with 10 examples
+2025-08-13 07:40:32,601 [teacher_pool] INFO: ✅ Image index built with 10 images
+2025-08-13 07:40:32,601 [training.train_new] INFO: Creating datasets...
+2025-08-13 07:40:32,601 [data] INFO: 🎯 HuggingFace-first processing components initialized
+2025-08-13 07:40:32,605 [data] INFO: 📊 Using all 365 samples (max_dataset_size=-1)
+2025-08-13 07:40:32,605 [data] INFO: Filtered 365 valid samples from 365 total
+2025-08-13 07:40:32,605 [data] INFO: ✅ HuggingFace-first dataset initialized with 365 samples
+2025-08-13 07:40:32,605 [data] INFO: 🎯 HuggingFace-first processing components initialized
+2025-08-13 07:40:32,605 [data] INFO: 📊 Using all 40 samples (max_dataset_size=-1)
+2025-08-13 07:40:32,606 [data] INFO: Filtered 40 valid samples from 40 total
+2025-08-13 07:40:32,606 [data] INFO: ✅ HuggingFace-first dataset initialized with 40 samples
+2025-08-13 07:40:32,606 [collator] INFO: PackedDataCollator initialized with max_length=12000
+2025-08-13 07:40:32,606 [training.train_new] INFO: Loading model from /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+You are attempting to use Flash Attention 2.0 with a model not initialized on GPU. Make sure to move the model to GPU after initializing it on CPU with `model.to('cuda')`.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  4.10it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.93it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  3.85it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  4.05it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.52it/s]
+2025-08-13 07:40:33,123 [training.train_new] INFO: ✅ Pre-expanded checkpoint validated: tokenizer=152692, embeddings_rows=152704, max_coord=1024
+2025-08-13 07:40:33,132 [src_new.models.wrapper] INFO: 🚀 Skipping tokenizer/model expansion - already completed in pre-distributed phase
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.84it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  4.02it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  3.97it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  3.95it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  3.93it/s]2025-08-13 07:40:33,210 [src_new.models.wrapper] INFO: 🎯 Found 1025 coordinate value tokens
+2025-08-13 07:40:33,210 [src_new.models.wrapper] INFO: 🎯 Original vocab size: 151667
+2025-08-13 07:40:33,210 [src_new.models.wrapper] INFO: 🎯 Coordinate token range: (151667, 152692)
+2025-08-13 07:40:33,211 [src_new.models.wrapper] INFO: 🎯 Sample tokens: ['<|coord_0|>', '<|coord_1000|>', '<|coord_1001|>'] ... ['<|coord_999|>', '<|coord_99|>', '<|coord_9|>']
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.79it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.71it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.67it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  6.64it/s]
+2025-08-13 07:40:33,294 [src_new.models.wrapper] INFO: 🎯 Updated after extension: 1025 coordinate tokens
+2025-08-13 07:40:33,294 [src_new.models.wrapper] INFO: 🎯 Final coordinate token range: (151667, 152692)
+2025-08-13 07:40:33,298 [patches] INFO: Applying comprehensive Qwen2.5-VL compatibility patches...
+2025-08-13 07:40:33,298 [patches] INFO: Patching Qwen2.5-VL forward method...
+2025-08-13 07:40:33,298 [patches] INFO: ✅ Qwen2.5-VL forward method patched successfully
+2025-08-13 07:40:33,299 [patches] INFO: Patching Qwen2.5-VL prepare_inputs_for_generation method...
+2025-08-13 07:40:33,299 [patches] INFO: ✅ Qwen2.5-VL prepare_inputs_for_generation method patched successfully
+2025-08-13 07:40:33,299 [patches] INFO: Patching Qwen2.5-VL attention implementation...
+2025-08-13 07:40:33,299 [patches] INFO: ✓ flash_attn package found, no attention implementation patch needed
+2025-08-13 07:40:33,299 [patches] INFO: ✅ Qwen2.5-VL multimodal rotary position embedding patched successfully
+2025-08-13 07:40:33,299 [patches] INFO:    - Fixed dimension mismatch issue
+2025-08-13 07:40:33,299 [patches] INFO:    - Added intelligent mrope_section handling
+2025-08-13 07:40:33,299 [patches] INFO:    - Prevents batch duplication errors
+2025-08-13 07:40:33,299 [patches] INFO: ✅ All Qwen2.5-VL compatibility patches applied successfully
+2025-08-13 07:40:33,362 [src_new.training.bbu_trainer] INFO: 🌐 Distributed Training Information:
+2025-08-13 07:40:33,362 [src_new.training.bbu_trainer] INFO:    World Size: 8
+2025-08-13 07:40:33,363 [src_new.training.bbu_trainer] INFO:    Current Rank: 0
+2025-08-13 07:40:33,363 [src_new.training.bbu_trainer] INFO:    Is Main Process: True
+2025-08-13 07:40:33,363 [src_new.training.bbu_trainer] INFO:    Logging Strategy: INFO/DEBUG on rank 0 only, ERROR/WARNING on all ranks
+2025-08-13 07:40:33,366 [training.train_new] INFO: ✅ Pre-created optimizer before staged freezing
+2025-08-13 07:40:33,366 [training.train_new] INFO: 🔧 ProgressiveUnfreezeCallback temporarily disabled - training with standard setup
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+2025-08-13 07:40:34,470 [training.train_new] INFO: 🔧 Set tokenizer as processing_class for automatic checkpoint saving
+2025-08-13 07:40:34,471 [data] INFO: ✅ HuggingFace processor and conversation processor initialized
+2025-08-13 07:40:34,471 [src_new.training.bbu_trainer] INFO: ✅ Set HuggingFace processor on training dataset
+2025-08-13 07:40:34,472 [data] INFO: ✅ HuggingFace processor and conversation processor initialized
+2025-08-13 07:40:34,472 [src_new.training.bbu_trainer] INFO: ✅ Set HuggingFace processor on evaluation dataset
+2025-08-13 07:40:34,472 [training.train_new] INFO: ✅ Set HuggingFace processor on trainer and datasets
+2025-08-13 07:40:34,472 [debug_logging] INFO: Logger reconfigured with current global settings
+2025-08-13 07:40:34,472 [debug_logging] INFO: 🚀 Debug logging: Started new training run - will log one training and one evaluation sample
+2025-08-13 07:40:49,666 [src_new.models.coordinate_loss] INFO: Using coordinate token range: 151667 to 152691 (validated)
+2025-08-13 07:40:49,666 [src_new.models.coordinate_loss] INFO: 🎯 Initialized SoftExpectationCoordinateLoss: range=[151667, 152692), vocab_size=1025, temperature=0.7
+2025-08-13 07:40:49,666 [src_new.models.coordinate_loss] INFO: ✅ Coordinate token mapping validated
+{'loss': '9.3727', 'teacher_llm_loss': '1.2434', 'student_llm_loss': '3.9295', 'teacher_kce_loss': '0.8932', 'teacher_unlike_loss': '0.0016', 'student_kce_loss': '3.299', 'student_unlike_loss': '0.0059', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 191.674, 'train_runtime': 58.352, 'train_samples_per_second': 0.0, 'remaining_hrs': 1.7667325639062457, 'learning_rate': '9.09e-09', 'vision_lr': '9.09e-09', 'merger_lr': '4.55e-06', 'llm_lr': '4.55e-07', 'epoch': 0.9090909090909091}
+{'loss': '9.3994', 'teacher_llm_loss': '1.2255', 'student_llm_loss': '3.8441', 'teacher_kce_loss': '0.9986', 'teacher_unlike_loss': '0.0018', 'student_kce_loss': '3.3233', 'student_unlike_loss': '0.0061', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 132.702, 'train_runtime': 102.532, 'train_samples_per_second': 0.01, 'remaining_hrs': 1.5379774618148803, 'learning_rate': '1.82e-08', 'vision_lr': '1.82e-08', 'merger_lr': '9.09e-06', 'llm_lr': '9.09e-07', 'epoch': 1.8181818181818183}
+{'eval_loss': 9.6478, 'eval_runtime': 6.161, 'eval_samples_per_second': 6.493, 'eval_steps_per_second': 0.325, 'learning_rate': '1.82e-08', 'vision_lr': '1.82e-08', 'merger_lr': '9.09e-06', 'llm_lr': '9.09e-07', 'epoch': 1.8181818181818183}
+2025-08-13 07:42:22,079 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    loss: 9.9936
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 1.0983
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 4.5254
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.9987
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0019
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 3.3607
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0086
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:42:22,080 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '8.6388', 'teacher_llm_loss': '0.9252', 'student_llm_loss': '3.54', 'teacher_kce_loss': '0.8919', 'teacher_unlike_loss': '0.0018', 'student_kce_loss': '3.272', 'student_unlike_loss': '0.008', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 103.003, 'train_runtime': 151.984, 'train_samples_per_second': 0.013, 'remaining_hrs': 1.505771200634815, 'learning_rate': '2.73e-08', 'vision_lr': '2.73e-08', 'merger_lr': '1.36e-05', 'llm_lr': '1.36e-06', 'epoch': 2.7272727272727275}
+{'loss': '7.2389', 'teacher_llm_loss': '0.7605', 'student_llm_loss': '2.1967', 'teacher_kce_loss': '0.9829', 'teacher_unlike_loss': '0.0021', 'student_kce_loss': '3.2885', 'student_unlike_loss': '0.0082', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 46.643, 'train_runtime': 196.448, 'train_samples_per_second': 0.015, 'remaining_hrs': 1.4460782597131199, 'learning_rate': '3.64e-08', 'vision_lr': '3.64e-08', 'merger_lr': '1.82e-05', 'llm_lr': '1.82e-06', 'epoch': 3.6363636363636362}
+{'eval_loss': 6.5593, 'eval_runtime': 4.739, 'eval_samples_per_second': 8.44, 'eval_steps_per_second': 0.422, 'learning_rate': '3.64e-08', 'vision_lr': '3.64e-08', 'merger_lr': '1.82e-05', 'llm_lr': '1.82e-06', 'epoch': 3.6363636363636362}
+2025-08-13 07:43:54,572 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    loss: 6.8044
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.6568
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.8394
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.9580
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0025
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 3.3385
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0092
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:43:54,573 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '6.3514', 'teacher_llm_loss': '0.5216', 'student_llm_loss': '1.609', 'teacher_kce_loss': '0.9673', 'teacher_unlike_loss': '0.0025', 'student_kce_loss': '3.2427', 'student_unlike_loss': '0.0084', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 59.086, 'train_runtime': 246.116, 'train_samples_per_second': 0.016, 'remaining_hrs': 1.4356790473063787, 'learning_rate': '4.55e-08', 'vision_lr': '4.55e-08', 'merger_lr': '2.27e-05', 'llm_lr': '2.27e-06', 'epoch': 4.545454545454545}
+{'loss': '5.6275', 'teacher_llm_loss': '0.3525', 'student_llm_loss': '1.2181', 'teacher_kce_loss': '0.9469', 'teacher_unlike_loss': '0.0019', 'student_kce_loss': '3.1029', 'student_unlike_loss': '0.0053', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 25.936, 'train_runtime': 289.923, 'train_samples_per_second': 0.017, 'remaining_hrs': 1.3959234265927916, 'learning_rate': '5.45e-08', 'vision_lr': '5.45e-08', 'merger_lr': '2.73e-05', 'llm_lr': '2.73e-06', 'epoch': 5.454545454545454}
+{'eval_loss': 5.4231, 'eval_runtime': 4.229, 'eval_samples_per_second': 9.458, 'eval_steps_per_second': 0.473, 'learning_rate': '5.45e-08', 'vision_lr': '5.45e-08', 'merger_lr': '2.73e-05', 'llm_lr': '2.73e-06', 'epoch': 5.454545454545454}
+2025-08-13 07:45:27,541 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:45:27,541 [src_new.training.bbu_trainer] INFO:    loss: 5.6860
+2025-08-13 07:45:27,541 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.3196
+2025-08-13 07:45:27,541 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.2870
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.9017
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0015
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 3.1707
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0055
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:45:27,542 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '5.21', 'teacher_llm_loss': '0.3069', 'student_llm_loss': '1.1455', 'teacher_kce_loss': '0.853', 'teacher_unlike_loss': '0.0016', 'student_kce_loss': '2.8978', 'student_unlike_loss': '0.0053', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 33.506, 'train_runtime': 339.059, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.3858351961771647, 'learning_rate': '6.36e-08', 'vision_lr': '6.36e-08', 'merger_lr': '3.18e-05', 'llm_lr': '3.18e-06', 'epoch': 6.363636363636363}
+{'loss': '4.8378', 'teacher_llm_loss': '0.2579', 'student_llm_loss': '1.115', 'teacher_kce_loss': '0.7109', 'teacher_unlike_loss': '0.0016', 'student_kce_loss': '2.7463', 'student_unlike_loss': '0.006', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 25.466, 'train_runtime': 381.303, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.350449003080527, 'learning_rate': '7.27e-08', 'vision_lr': '7.27e-08', 'merger_lr': '3.64e-05', 'llm_lr': '3.64e-06', 'epoch': 7.2727272727272725}
+{'eval_loss': 4.7085, 'eval_runtime': 3.88, 'eval_samples_per_second': 10.309, 'eval_steps_per_second': 0.515, 'learning_rate': '7.27e-08', 'vision_lr': '7.27e-08', 'merger_lr': '3.64e-05', 'llm_lr': '3.64e-06', 'epoch': 7.2727272727272725}
+2025-08-13 07:46:58,569 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    loss: 5.0906
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.2655
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.2218
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.6421
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0017
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.9536
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0058
+2025-08-13 07:46:58,570 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:46:58,571 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '4.8609', 'teacher_llm_loss': '0.2922', 'student_llm_loss': '1.122', 'teacher_kce_loss': '0.7568', 'teacher_unlike_loss': '0.0017', 'student_kce_loss': '2.6824', 'student_unlike_loss': '0.0058', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 28.71, 'train_runtime': 430.211, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.3410881101570011, 'learning_rate': '8.18e-08', 'vision_lr': '8.18e-08', 'merger_lr': '4.09e-05', 'llm_lr': '4.09e-06', 'epoch': 8.181818181818182}
+{'loss': '4.2582', 'teacher_llm_loss': '0.2731', 'student_llm_loss': '0.9883', 'teacher_kce_loss': '0.6865', 'teacher_unlike_loss': '0.0017', 'student_kce_loss': '2.3028', 'student_unlike_loss': '0.0058', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 53.347, 'train_runtime': 474.603, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.3183409578270382, 'learning_rate': '9.09e-08', 'vision_lr': '9.09e-08', 'merger_lr': '4.55e-05', 'llm_lr': '4.55e-06', 'epoch': 9.090909090909092}
+{'eval_loss': 4.2916, 'eval_runtime': 3.723, 'eval_samples_per_second': 10.744, 'eval_steps_per_second': 0.537, 'learning_rate': '9.09e-08', 'vision_lr': '9.09e-08', 'merger_lr': '4.55e-05', 'llm_lr': '4.55e-06', 'epoch': 9.090909090909092}
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    loss: 4.7846
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.2601
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.1594
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.6555
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0018
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.7020
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0057
+2025-08-13 07:48:31,713 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:48:31,714 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '4.1483', 'teacher_llm_loss': '0.2503', 'student_llm_loss': '1.005', 'teacher_kce_loss': '0.6192', 'teacher_unlike_loss': '0.0017', 'student_kce_loss': '2.2667', 'student_unlike_loss': '0.0055', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 72.582, 'train_runtime': 522.434, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.3060852956771851, 'learning_rate': '1.00e-07', 'vision_lr': '1.00e-07', 'merger_lr': '5.00e-05', 'llm_lr': '5.00e-06', 'epoch': 10.0}
+{'loss': '3.67', 'teacher_llm_loss': '0.2287', 'student_llm_loss': '0.9365', 'teacher_kce_loss': '0.5247', 'teacher_unlike_loss': '0.0016', 'student_kce_loss': '1.9728', 'student_unlike_loss': '0.0056', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 37.026, 'train_runtime': 566.984, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.2862145863087089, 'learning_rate': '1.00e-07', 'vision_lr': '1.00e-07', 'merger_lr': '5.00e-05', 'llm_lr': '5.00e-06', 'epoch': 10.909090909090908}
+{'eval_loss': 3.5659, 'eval_runtime': 5.832, 'eval_samples_per_second': 6.859, 'eval_steps_per_second': 0.343, 'learning_rate': '1.00e-07', 'vision_lr': '1.00e-07', 'merger_lr': '5.00e-05', 'llm_lr': '5.00e-06', 'epoch': 10.909090909090908}
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    loss: 4.1287
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.2157
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.1010
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.4280
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0015
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.3767
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0057
+2025-08-13 07:50:06,205 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:50:06,206 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '3.3022', 'teacher_llm_loss': '0.2268', 'student_llm_loss': '0.8968', 'teacher_kce_loss': '0.4531', 'teacher_unlike_loss': '0.0015', 'student_kce_loss': '1.7189', 'student_unlike_loss': '0.0052', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 39.338, 'train_runtime': 618.489, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.2819099343536247, 'learning_rate': '9.99e-08', 'vision_lr': '9.99e-08', 'merger_lr': '4.99e-05', 'llm_lr': '4.99e-06', 'epoch': 11.818181818181818}
+{'loss': '3.1326', 'teacher_llm_loss': '0.1805', 'student_llm_loss': '0.8879', 'teacher_kce_loss': '0.308', 'teacher_unlike_loss': '0.0014', 'student_kce_loss': '1.7495', 'student_unlike_loss': '0.0053', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 45.297, 'train_runtime': 661.109, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.2592554392133442, 'learning_rate': '9.98e-08', 'vision_lr': '9.98e-08', 'merger_lr': '4.99e-05', 'llm_lr': '4.99e-06', 'epoch': 12.727272727272727}
+{'eval_loss': 3.2286, 'eval_runtime': 4.258, 'eval_samples_per_second': 9.393, 'eval_steps_per_second': 0.47, 'learning_rate': '9.98e-08', 'vision_lr': '9.98e-08', 'merger_lr': '4.99e-05', 'llm_lr': '4.99e-06', 'epoch': 12.727272727272727}
+2025-08-13 07:51:38,755 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    loss: 3.7187
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.2063
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0260
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.3528
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0014
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.1272
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0051
+2025-08-13 07:51:38,756 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:51:38,757 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '2.5854', 'teacher_llm_loss': '0.1641', 'student_llm_loss': '0.8077', 'teacher_kce_loss': '0.2676', 'teacher_unlike_loss': '0.0013', 'student_kce_loss': '1.3399', 'student_unlike_loss': '0.0048', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 28.437, 'train_runtime': 708.023, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.2455960403327586, 'learning_rate': '9.96e-08', 'vision_lr': '9.96e-08', 'merger_lr': '4.98e-05', 'llm_lr': '4.98e-06', 'epoch': 13.636363636363637}
+{'loss': '2.5869', 'teacher_llm_loss': '0.1913', 'student_llm_loss': '0.8037', 'teacher_kce_loss': '0.2879', 'teacher_unlike_loss': '0.0014', 'student_kce_loss': '1.2975', 'student_unlike_loss': '0.005', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 43.201, 'train_runtime': 750.796, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.2252568662001027, 'learning_rate': '9.94e-08', 'vision_lr': '9.94e-08', 'merger_lr': '4.97e-05', 'llm_lr': '4.97e-06', 'epoch': 14.545454545454545}
+{'eval_loss': 2.9812, 'eval_runtime': 3.742, 'eval_samples_per_second': 10.69, 'eval_steps_per_second': 0.535, 'learning_rate': '9.94e-08', 'vision_lr': '9.94e-08', 'merger_lr': '4.97e-05', 'llm_lr': '4.97e-06', 'epoch': 14.545454545454545}
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    loss: 3.4392
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1798
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0171
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.2103
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0014
+2025-08-13 07:53:07,921 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.0255
+2025-08-13 07:53:07,922 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0051
+2025-08-13 07:53:07,922 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:53:07,922 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '2.4348', 'teacher_llm_loss': '0.1621', 'student_llm_loss': '0.7725', 'teacher_kce_loss': '0.2855', 'teacher_unlike_loss': '0.0013', 'student_kce_loss': '1.2086', 'student_unlike_loss': '0.0049', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 33.526, 'train_runtime': 797.961, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.2125870361281377, 'learning_rate': '9.91e-08', 'vision_lr': '9.91e-08', 'merger_lr': '4.95e-05', 'llm_lr': '4.95e-06', 'epoch': 15.454545454545455}
+{'loss': '2.3364', 'teacher_llm_loss': '0.1459', 'student_llm_loss': '0.7646', 'teacher_kce_loss': '0.2183', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '1.2015', 'student_unlike_loss': '0.0049', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 34.443, 'train_runtime': 838.994, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.191164091428121, 'learning_rate': '9.88e-08', 'vision_lr': '9.88e-08', 'merger_lr': '4.94e-05', 'llm_lr': '4.94e-06', 'epoch': 16.363636363636363}
+{'eval_loss': 2.9079, 'eval_runtime': 4.399, 'eval_samples_per_second': 9.092, 'eval_steps_per_second': 0.455, 'learning_rate': '9.88e-08', 'vision_lr': '9.88e-08', 'merger_lr': '4.94e-05', 'llm_lr': '4.94e-06', 'epoch': 16.363636363636363}
+2025-08-13 07:54:36,780 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    loss: 3.4183
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1796
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0039
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.2398
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0014
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.9886
+2025-08-13 07:54:36,781 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0048
+2025-08-13 07:54:36,782 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:54:36,782 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '2.2179', 'teacher_llm_loss': '0.1581', 'student_llm_loss': '0.7302', 'teacher_kce_loss': '0.1993', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '1.1243', 'student_unlike_loss': '0.0048', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 48.104, 'train_runtime': 888.3, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.1818027377756017, 'learning_rate': '9.84e-08', 'vision_lr': '9.84e-08', 'merger_lr': '4.92e-05', 'llm_lr': '4.92e-06', 'epoch': 17.272727272727273}
+{'loss': '2.0927', 'teacher_llm_loss': '0.1314', 'student_llm_loss': '0.7599', 'teacher_kce_loss': '0.1411', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '1.0545', 'student_unlike_loss': '0.0047', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 52.162, 'train_runtime': 929.988, 'train_samples_per_second': 0.02, 'remaining_hrs': 1.162484566271305, 'learning_rate': '9.80e-08', 'vision_lr': '9.80e-08', 'merger_lr': '4.90e-05', 'llm_lr': '4.90e-06', 'epoch': 18.181818181818183}
+{'eval_loss': 2.8388, 'eval_runtime': 3.671, 'eval_samples_per_second': 10.897, 'eval_steps_per_second': 0.545, 'learning_rate': '9.80e-08', 'vision_lr': '9.80e-08', 'merger_lr': '4.90e-05', 'llm_lr': '4.90e-06', 'epoch': 18.181818181818183}
+2025-08-13 07:56:07,045 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 07:56:07,045 [src_new.training.bbu_trainer] INFO:    loss: 3.2372
+2025-08-13 07:56:07,045 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1768
+2025-08-13 07:56:07,045 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 0.9885
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.2039
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0014
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.8616
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0050
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 07:56:07,046 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 
+🚀 [FAST CHECKPOINT] Starting inference-ready checkpoint save at 2025-08-13 07:56:07
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 📁 Checkpoint location: output-730-use_coord-ep100-coord_aux/checkpoint-200
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 📊 Training step: 200
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 📈 Epoch: 18.182
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 🚀 Creating inference-ready checkpoint at output-730-use_coord-ep100-coord_aux/checkpoint-200
+2025-08-13 07:56:07,047 [src_new.training.bbu_trainer] INFO: 💾 Extracting model weights for inference-only checkpoint...
+2025-08-13 07:58:36,783 [src_new.training.bbu_trainer] INFO: ✅ Inference-ready model weights saved in 149.74s
+2025-08-13 07:58:36,783 [src_new.training.bbu_trainer] INFO: 🔤 Saving extended tokenizer...
+2025-08-13 07:58:37,009 [src_new.training.bbu_trainer] INFO: 💾 Saving processor configuration...
+2025-08-13 07:58:37,696 [src_new.training.bbu_trainer] INFO: ✅ Auxiliary files saved in 0.91s
+2025-08-13 07:58:37,697 [src_new.training.bbu_trainer] INFO: 🚀 Inference checkpoint ready for: DetectionModel.from_pretrained('output-730-use_coord-ep100-coord_aux/checkpoint-200')
+2025-08-13 07:58:37,697 [src_new.training.bbu_trainer] INFO: 🏆 Creating best checkpoint by direct folder copy
+2025-08-13 07:58:37,697 [src_new.training.bbu_trainer] INFO: 📁 Direct copy: checkpoint-200 → best-200-loss2.8388
+2025-08-13 07:59:20,338 [src_new.training.bbu_trainer] INFO: ✅ Best checkpoint folder copied in 42.64s
+2025-08-13 07:59:20,339 [src_new.training.unified_checkpoint_manager] INFO: ✅ Updated best checkpoint tracking: eval_loss=2.8388, path=best-200-loss2.8388
+2025-08-13 07:59:20,339 [src_new.training.bbu_trainer] INFO: ✅ Best checkpoint ready: best-200-loss2.8388
+2025-08-13 07:59:20,339 [src_new.training.bbu_trainer] INFO: 📊 Best eval_loss: 2.8388
+2025-08-13 07:59:20,340 [src_new.training.bbu_trainer] INFO: ✅ [FAST INFERENCE CHECKPOINT] Completed successfully in 193.29s
+2025-08-13 07:59:20,340 [src_new.training.bbu_trainer] INFO: 💾 Checkpoint saved to: output-730-use_coord-ep100-coord_aux/checkpoint-200
+2025-08-13 07:59:20,340 [src_new.training.bbu_trainer] INFO: 📊 Training statistics:
+2025-08-13 07:59:20,340 [src_new.training.bbu_trainer] INFO:    micro_batch_count: 2
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO:    training_runtime: 1126.9780099391937
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO:    step_count: 20
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO:    coordinate_tokens_enabled: True
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO:    accumulated_components: 0
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO:    components_count: 0
+2025-08-13 07:59:20,341 [src_new.training.bbu_trainer] INFO: ────────────────────────────────────────────────────────────
+{'loss': '2.0184', 'teacher_llm_loss': '0.1404', 'student_llm_loss': '0.7244', 'teacher_kce_loss': '0.1301', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '1.0176', 'student_unlike_loss': '0.0047', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 41.554, 'train_runtime': 1169.732, 'train_samples_per_second': 0.017, 'remaining_hrs': 1.3770654484645397, 'learning_rate': '9.75e-08', 'vision_lr': '9.75e-08', 'merger_lr': '4.88e-05', 'llm_lr': '4.88e-06', 'epoch': 19.09090909090909}
+{'loss': '1.7487', 'teacher_llm_loss': '0.1334', 'student_llm_loss': '0.7019', 'teacher_kce_loss': '0.1184', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '0.7893', 'student_unlike_loss': '0.0045', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 58.489, 'train_runtime': 1211.898, 'train_samples_per_second': 0.017, 'remaining_hrs': 1.3465533359845479, 'learning_rate': '9.70e-08', 'vision_lr': '9.70e-08', 'merger_lr': '4.85e-05', 'llm_lr': '4.85e-06', 'epoch': 20.0}
+{'eval_loss': 2.8126, 'eval_runtime': 4.112, 'eval_samples_per_second': 9.727, 'eval_steps_per_second': 0.486, 'learning_rate': '9.70e-08', 'vision_lr': '9.70e-08', 'merger_lr': '4.85e-05', 'llm_lr': '4.85e-06', 'epoch': 20.0}
+2025-08-13 08:00:49,396 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:00:49,396 [src_new.training.bbu_trainer] INFO:    loss: 3.3269
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1509
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0235
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.1647
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0014
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.9813
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0051
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:00:49,397 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '1.7195', 'teacher_llm_loss': '0.1374', 'student_llm_loss': '0.675', 'teacher_kce_loss': '0.0918', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '0.8097', 'student_unlike_loss': '0.0045', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 42.853, 'train_runtime': 1259.91, 'train_samples_per_second': 0.017, 'remaining_hrs': 1.3238181108495464, 'learning_rate': '9.64e-08', 'vision_lr': '9.64e-08', 'merger_lr': '4.82e-05', 'llm_lr': '4.82e-06', 'epoch': 20.90909090909091}
+{'loss': '1.7206', 'teacher_llm_loss': '0.1555', 'student_llm_loss': '0.6772', 'teacher_kce_loss': '0.1526', 'teacher_unlike_loss': '0.0013', 'student_kce_loss': '0.7294', 'student_unlike_loss': '0.0046', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 69.276, 'train_runtime': 1303.767, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.2977306028317523, 'learning_rate': '9.58e-08', 'vision_lr': '9.58e-08', 'merger_lr': '4.79e-05', 'llm_lr': '4.79e-06', 'epoch': 21.818181818181817}
+{'eval_loss': 2.736, 'eval_runtime': 3.984, 'eval_samples_per_second': 10.041, 'eval_steps_per_second': 0.502, 'learning_rate': '9.58e-08', 'vision_lr': '9.58e-08', 'merger_lr': '4.79e-05', 'llm_lr': '4.79e-06', 'epoch': 21.818181818181817}
+2025-08-13 08:02:21,135 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    loss: 3.1598
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1295
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 0.9898
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.1779
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0015
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.8563
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0048
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:02:21,136 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '1.5414', 'teacher_llm_loss': '0.1483', 'student_llm_loss': '0.6383', 'teacher_kce_loss': '0.0948', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '0.6544', 'student_unlike_loss': '0.0044', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 41.123, 'train_runtime': 1353.686, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.2784815044667985, 'learning_rate': '9.51e-08', 'vision_lr': '9.51e-08', 'merger_lr': '4.76e-05', 'llm_lr': '4.76e-06', 'epoch': 22.727272727272727}
+{'loss': '1.3895', 'teacher_llm_loss': '0.1487', 'student_llm_loss': '0.5992', 'teacher_kce_loss': '0.0902', 'teacher_unlike_loss': '0.0013', 'student_kce_loss': '0.5455', 'student_unlike_loss': '0.0045', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 37.052, 'train_runtime': 1398.473, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.2550395352718158, 'learning_rate': '9.44e-08', 'vision_lr': '9.44e-08', 'merger_lr': '4.72e-05', 'llm_lr': '4.72e-06', 'epoch': 23.636363636363637}
+{'eval_loss': 2.7349, 'eval_runtime': 4.307, 'eval_samples_per_second': 9.288, 'eval_steps_per_second': 0.464, 'learning_rate': '9.44e-08', 'vision_lr': '9.44e-08', 'merger_lr': '4.72e-05', 'llm_lr': '4.72e-06', 'epoch': 23.636363636363637}
+2025-08-13 08:03:56,168 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:03:56,168 [src_new.training.bbu_trainer] INFO:    loss: 3.1072
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1446
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 0.9900
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.1546
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0013
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.8117
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0049
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:03:56,169 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '1.3102', 'teacher_llm_loss': '0.1437', 'student_llm_loss': '0.6027', 'teacher_kce_loss': '0.119', 'teacher_unlike_loss': '0.0013', 'student_kce_loss': '0.4392', 'student_unlike_loss': '0.0042', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 39.46, 'train_runtime': 1448.122, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.236564674092909, 'learning_rate': '9.37e-08', 'vision_lr': '9.37e-08', 'merger_lr': '4.68e-05', 'llm_lr': '4.68e-06', 'epoch': 24.545454545454547}
+{'loss': '1.2598', 'teacher_llm_loss': '0.1187', 'student_llm_loss': '0.6295', 'teacher_kce_loss': '0.0288', 'teacher_unlike_loss': '0.001', 'student_kce_loss': '0.4775', 'student_unlike_loss': '0.0043', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 35.005, 'train_runtime': 1489.729, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.2118823723187524, 'learning_rate': '9.29e-08', 'vision_lr': '9.29e-08', 'merger_lr': '4.64e-05', 'llm_lr': '4.64e-06', 'epoch': 25.454545454545453}
+{'eval_loss': 2.6944, 'eval_runtime': 3.814, 'eval_samples_per_second': 10.488, 'eval_steps_per_second': 0.524, 'learning_rate': '9.29e-08', 'vision_lr': '9.29e-08', 'merger_lr': '4.64e-05', 'llm_lr': '4.64e-06', 'epoch': 25.454545454545453}
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO:    loss: 3.0184
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.0689
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0180
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.0527
+2025-08-13 08:05:26,931 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0006
+2025-08-13 08:05:26,932 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.8734
+2025-08-13 08:05:26,932 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0049
+2025-08-13 08:05:26,932 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:05:26,932 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '1.1685', 'teacher_llm_loss': '0.134', 'student_llm_loss': '0.5935', 'teacher_kce_loss': '0.0477', 'teacher_unlike_loss': '0.0012', 'student_kce_loss': '0.3879', 'student_unlike_loss': '0.0042', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 35.796, 'train_runtime': 1539.625, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.194536709888228, 'learning_rate': '9.21e-08', 'vision_lr': '9.21e-08', 'merger_lr': '4.60e-05', 'llm_lr': '4.60e-06', 'epoch': 26.363636363636363}
+{'loss': '1.1083', 'teacher_llm_loss': '0.129', 'student_llm_loss': '0.5879', 'teacher_kce_loss': '0.0443', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '0.3419', 'student_unlike_loss': '0.0042', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 57.359, 'train_runtime': 1584.795, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.1739220693376329, 'learning_rate': '9.12e-08', 'vision_lr': '9.12e-08', 'merger_lr': '4.56e-05', 'llm_lr': '4.56e-06', 'epoch': 27.272727272727273}
+{'eval_loss': 2.7285, 'eval_runtime': 4.746, 'eval_samples_per_second': 8.428, 'eval_steps_per_second': 0.421, 'learning_rate': '9.12e-08', 'vision_lr': '9.12e-08', 'merger_lr': '4.56e-05', 'llm_lr': '4.56e-06', 'epoch': 27.272727272727273}
+2025-08-13 08:07:02,930 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:07:02,931 [src_new.training.bbu_trainer] INFO:    loss: 3.1881
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1336
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0530
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.0350
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0011
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 1.9605
+2025-08-13 08:07:02,932 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0049
+2025-08-13 08:07:02,933 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:07:02,933 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '0.8432', 'teacher_llm_loss': '0.1147', 'student_llm_loss': '0.5417', 'teacher_kce_loss': '0.0518', 'teacher_unlike_loss': '0.001', 'student_kce_loss': '0.1299', 'student_unlike_loss': '0.004', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 44.784, 'train_runtime': 1633.761, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.1565156004633954, 'learning_rate': '9.03e-08', 'vision_lr': '9.03e-08', 'merger_lr': '4.51e-05', 'llm_lr': '4.51e-06', 'epoch': 28.181818181818183}
+{'loss': '0.9896', 'teacher_llm_loss': '0.1247', 'student_llm_loss': '0.54', 'teacher_kce_loss': '0.0405', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '0.2793', 'student_unlike_loss': '0.004', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 43.687, 'train_runtime': 1678.252, 'train_samples_per_second': 0.018, 'remaining_hrs': 1.1363166918233036, 'learning_rate': '8.93e-08', 'vision_lr': '8.93e-08', 'merger_lr': '4.47e-05', 'llm_lr': '4.47e-06', 'epoch': 29.09090909090909}
+{'eval_loss': 2.8088, 'eval_runtime': 4.252, 'eval_samples_per_second': 9.407, 'eval_steps_per_second': 0.47, 'learning_rate': '8.93e-08', 'vision_lr': '8.93e-08', 'merger_lr': '4.47e-05', 'llm_lr': '4.47e-06', 'epoch': 29.09090909090909}
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO:    loss: 3.3259
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1248
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0815
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.0287
+2025-08-13 08:08:35,892 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0011
+2025-08-13 08:08:35,893 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.0848
+2025-08-13 08:08:35,893 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0049
+2025-08-13 08:08:35,893 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:08:35,893 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '0.9487', 'teacher_llm_loss': '0.0931', 'student_llm_loss': '0.5462', 'teacher_kce_loss': '0.0149', 'teacher_unlike_loss': '8.74e-04', 'student_kce_loss': '0.2895', 'student_unlike_loss': '0.0041', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 25.361, 'train_runtime': 1723.556, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.1171193565704205, 'learning_rate': '8.83e-08', 'vision_lr': '8.83e-08', 'merger_lr': '4.42e-05', 'llm_lr': '4.42e-06', 'epoch': 30.0}
+{'loss': '0.6814', 'teacher_llm_loss': '0.1247', 'student_llm_loss': '0.5008', 'teacher_kce_loss': '0.0122', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '0.0389', 'student_unlike_loss': '0.0038', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 24.401, 'train_runtime': 1767.571, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.0975115744974098, 'learning_rate': '8.73e-08', 'vision_lr': '8.73e-08', 'merger_lr': '4.36e-05', 'llm_lr': '4.36e-06', 'epoch': 30.90909090909091}
+{'eval_loss': 2.8198, 'eval_runtime': 5.241, 'eval_samples_per_second': 7.632, 'eval_steps_per_second': 0.382, 'learning_rate': '8.73e-08', 'vision_lr': '8.73e-08', 'merger_lr': '4.36e-05', 'llm_lr': '4.36e-06', 'epoch': 30.90909090909091}
+2025-08-13 08:10:06,202 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:10:06,202 [src_new.training.bbu_trainer] INFO:    loss: 3.2658
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1258
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.0867
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.0248
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0011
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.0225
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0049
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:10:06,203 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '0.7909', 'teacher_llm_loss': '0.1278', 'student_llm_loss': '0.5206', 'teacher_kce_loss': '0.0166', 'teacher_unlike_loss': '0.0011', 'student_kce_loss': '0.1212', 'student_unlike_loss': '0.0037', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 30.87, 'train_runtime': 1818.956, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.0827120860417685, 'learning_rate': '8.62e-08', 'vision_lr': '8.62e-08', 'merger_lr': '4.31e-05', 'llm_lr': '4.31e-06', 'epoch': 31.818181818181817}
+{'loss': '0.7839', 'teacher_llm_loss': '0.1149', 'student_llm_loss': '0.5167', 'teacher_kce_loss': '0.0037', 'teacher_unlike_loss': '0.001', 'student_kce_loss': '0.1439', 'student_unlike_loss': '0.0038', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 30.503, 'train_runtime': 1862.886, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.0636848311255007, 'learning_rate': '8.51e-08', 'vision_lr': '8.51e-08', 'merger_lr': '4.25e-05', 'llm_lr': '4.25e-06', 'epoch': 32.72727272727273}
+{'eval_loss': 2.7605, 'eval_runtime': 3.59, 'eval_samples_per_second': 11.141, 'eval_steps_per_second': 0.557, 'learning_rate': '8.51e-08', 'vision_lr': '8.51e-08', 'merger_lr': '4.25e-05', 'llm_lr': '4.25e-06', 'epoch': 32.72727272727273}
+2025-08-13 08:11:39,865 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    loss: 3.2068
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.0599
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.1065
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: -0.0004
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0005
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.0356
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0047
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:11:39,866 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '0.6037', 'teacher_llm_loss': '0.1042', 'student_llm_loss': '0.4853', 'teacher_kce_loss': '0.024', 'teacher_unlike_loss': '9.29e-04', 'student_kce_loss': '-0.0144', 'student_unlike_loss': '0.0036', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 20.917, 'train_runtime': 1911.246, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.0474545180188999, 'learning_rate': '8.39e-08', 'vision_lr': '8.39e-08', 'merger_lr': '4.20e-05', 'llm_lr': '4.20e-06', 'epoch': 33.63636363636363}
+{'loss': '0.6355', 'teacher_llm_loss': '0.1087', 'student_llm_loss': '0.4866', 'teacher_kce_loss': '0.021', 'teacher_unlike_loss': '9.17e-04', 'student_kce_loss': '0.0148', 'student_unlike_loss': '0.0035', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 73.484, 'train_runtime': 1953.771, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.028300734319185, 'learning_rate': '8.27e-08', 'vision_lr': '8.27e-08', 'merger_lr': '4.14e-05', 'llm_lr': '4.14e-06', 'epoch': 34.54545454545455}
+{'eval_loss': 2.8715, 'eval_runtime': 4.228, 'eval_samples_per_second': 9.462, 'eval_steps_per_second': 0.473, 'learning_rate': '8.27e-08', 'vision_lr': '8.27e-08', 'merger_lr': '4.14e-05', 'llm_lr': '4.14e-06', 'epoch': 34.54545454545455}
+2025-08-13 08:13:11,385 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    loss: 3.3357
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1172
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.1095
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: 0.0042
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0010
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.0990
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0048
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:13:11,386 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+{'loss': '0.6282', 'teacher_llm_loss': '0.0846', 'student_llm_loss': '0.4921', 'teacher_kce_loss': '-0.0254', 'teacher_unlike_loss': '7.46e-04', 'student_kce_loss': '0.0725', 'student_unlike_loss': '0.0036', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'grad_norm': 31.878, 'train_runtime': 2000.064, 'train_samples_per_second': 0.019, 'remaining_hrs': 1.011428270034301, 'learning_rate': '8.15e-08', 'vision_lr': '8.15e-08', 'merger_lr': '4.08e-05', 'llm_lr': '4.08e-06', 'epoch': 35.45454545454545}
+{'loss': '0.4544', 'student_llm_loss': '0.4911', 'student_kce_loss': '-0.1342', 'student_unlike_loss': '0.0034', 'laplace_1_loss': '7.45e-07', 'laplace_2_loss': '2.20e-07', 'teacher_llm_loss': '0.0996', 'teacher_kce_loss': '-0.0063', 'teacher_unlike_loss': '8.79e-04', 'grad_norm': 29.642, 'train_runtime': 2043.112, 'train_samples_per_second': 0.019, 'remaining_hrs': 0.9931791827413771, 'learning_rate': '8.03e-08', 'vision_lr': '8.03e-08', 'merger_lr': '4.01e-05', 'llm_lr': '4.01e-06', 'epoch': 36.36363636363637}
+{'eval_loss': 2.8278, 'eval_runtime': 4.167, 'eval_samples_per_second': 9.598, 'eval_steps_per_second': 0.48, 'learning_rate': '8.03e-08', 'vision_lr': '8.03e-08', 'merger_lr': '4.01e-05', 'llm_lr': '4.01e-06', 'epoch': 36.36363636363637}
+2025-08-13 08:14:40,667 [src_new.training.bbu_trainer] INFO: 🔍 Evaluation components captured: ['loss', 'teacher_llm_loss', 'student_llm_loss', 'teacher_kce_loss', 'teacher_unlike_loss', 'student_kce_loss', 'student_unlike_loss', 'laplace_1_loss', 'laplace_2_loss']
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    loss: 3.3480
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    teacher_llm_loss: 0.1149
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    student_llm_loss: 1.1106
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    teacher_kce_loss: -0.0075
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    teacher_unlike_loss: 0.0010
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    student_kce_loss: 2.1245
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    student_unlike_loss: 0.0046
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    laplace_1_loss: 0.0000
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO:    laplace_2_loss: 0.0000
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO: 
+🚀 [FAST CHECKPOINT] Starting inference-ready checkpoint save at 2025-08-13 08:14:40
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO: 📁 Checkpoint location: output-730-use_coord-ep100-coord_aux/checkpoint-400
+2025-08-13 08:14:40,668 [src_new.training.bbu_trainer] INFO: 📊 Training step: 400
+2025-08-13 08:14:40,669 [src_new.training.bbu_trainer] INFO: 📈 Epoch: 36.364
+2025-08-13 08:14:40,669 [src_new.training.bbu_trainer] INFO: 🚀 Creating inference-ready checkpoint at output-730-use_coord-ep100-coord_aux/checkpoint-400
+2025-08-13 08:14:40,669 [src_new.training.bbu_trainer] INFO: 💾 Extracting model weights for inference-only checkpoint...
+2025-08-13 08:15:25,338 [src_new.training.bbu_trainer] INFO: ✅ Inference-ready model weights saved in 44.67s
+2025-08-13 08:15:25,338 [src_new.training.bbu_trainer] INFO: 🔤 Saving extended tokenizer...
+2025-08-13 08:15:25,682 [src_new.training.bbu_trainer] INFO: 💾 Saving processor configuration...
+2025-08-13 08:15:26,639 [src_new.training.bbu_trainer] INFO: ✅ Auxiliary files saved in 1.30s
+2025-08-13 08:15:26,639 [src_new.training.bbu_trainer] INFO: 🚀 Inference checkpoint ready for: DetectionModel.from_pretrained('output-730-use_coord-ep100-coord_aux/checkpoint-400')

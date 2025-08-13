@@ -1,5 +1,7 @@
 # Setup and Configuration Guide
 
+Note: Quick config keys and behaviors are summarized in `AI_ASSISTANT_KB.md`. This file covers full setup and examples.
+
 **Complete guide for setting up and configuring the BBU training pipeline with coordinate token system**
 
 ## 🚀 **Quick Setup (15 minutes)**
@@ -213,12 +215,12 @@ teacher_pool_file: "data/teacher_pool.jsonl"
 coordinate_tokens_enabled: false
 max_coord_value: 1024
 coordinate_loss_weight: 0.05
-coordinate_loss_temperature: 1.0
+# Preferred key for soft-expectation temperature (legacy: coordinate_loss_temperature)
+coordinate_temperature: 0.5
 
 # Teacher-Student Training
-teacher_ratio: 0.5           # 50% of samples get teachers
-teacher_loss_weight: 0.3     # Weight for teacher loss component
-student_loss_weight: 1.0     # Weight for student loss component
+teacher_ratio: 0.5
+num_teacher_samples: 1
 
 # Performance Optimization
 use_flash_attention: true
@@ -496,6 +498,15 @@ pm.validate_paths()
 print('✅ All paths valid')
 "
 ```
+
+## ✅ Best-practice configuration notes
+
+- Set `coordinate_temperature` to 0.3–0.7 to sharpen the soft expectation over coordinate logits. The loader keeps
+  legacy `coordinate_loss_temperature` in sync for backward compatibility.
+- Use `max_grad_norm: 1.0` (or 2.0) for effective L1 learning. Values like `0.1` can over-clip large early coordinate
+  errors and slow down regression.
+- Keep CE and coordinate losses decoupled by masking: CE counts only text tokens within assistant spans; L1 counts only
+  coordinate tokens (also within assistant spans). This is handled automatically by `LossManager`.
 
 ---
 

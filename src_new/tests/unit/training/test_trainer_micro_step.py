@@ -70,6 +70,24 @@ class DummyCfg:
     best_checkpoint_metric = "eval_loss"
     best_checkpoint_greater_is_better = False
 
+    # Loss manager required attributes
+    coordinate_loss_weight = 0.05
+    regular_loss_weight = 1.0
+    teacher_loss_weight = 0.3
+    student_loss_weight = 1.0
+    coordinate_temperature = 1.0
+
+    # Coordinate auxiliary loss attributes (disabled for testing)
+    coord_aux_enabled = False
+    coord_aux_tau = 1.2
+    coord_aux_sigma_bins = 8.0
+    coord_aux_window_bins = 32
+    coord_aux_topk = 100
+    coord_aux_lambda_kce = 0.5
+    coord_aux_lambda_unlike = 0.05
+    coord_aux_lambda_lap1 = 1e-4
+    coord_aux_lambda_lap2 = 1e-5
+
 
 def test_trainer_micro_step_and_checkpoint(tmp_path):
     # Ensure CPU-only execution to avoid CUDA/DataParallel issues in unit test

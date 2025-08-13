@@ -9,10 +9,10 @@ import json
 from pathlib import Path
 from typing import Dict, Tuple
 
-from .rank_aware_logging import get_rank_aware_logger
+from .logger_factory import get_module_logger
+from .validation import PathValidator, PathValidationError
 
-
-logger = get_rank_aware_logger(__name__)
+logger = get_module_logger(__name__)
 
 
 class CheckpointValidator:

@@ -1,5 +1,7 @@
 # Qwen2.5-VL Inference: Root Cause Analysis and Fixes (Canonical)
 
+Note: A concise operational checklist lives in `AI_ASSISTANT_KB.md` (Inference Specifics). This file preserves the full root-cause analysis and complete fix set.
+
 This document is the single source of truth for the inference issue that caused empty predictions and alignment warnings in the `src_new/` inference path. It consolidates the prior analyses into one practical guide with causes, fixes, and operational notes.
 
 ---

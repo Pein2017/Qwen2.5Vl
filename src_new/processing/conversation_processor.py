@@ -21,13 +21,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from PIL import Image
 
-from src_new.utils.rank_aware_logging import get_rank_aware_logger
+from src_new.utils.logger_factory import get_processing_logger
+from src_new.utils.error_formatting import ErrorMessageBuilder
 
 from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS
 
 
-logger = get_rank_aware_logger(__name__)
+logger = get_processing_logger(__name__)
 
 
 # Custom Exception Classes for Enhanced Error Handling

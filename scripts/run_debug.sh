@@ -25,7 +25,6 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
 PROJECT_ROOT="/data3/Qwen2.5-VL-main"
-BASE_MODEL_PATH="/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
 
 # Training configuration
 CONFIG_NAME="bbu_v2_debug"                      # Config to use: bbu_v2 
@@ -151,30 +150,7 @@ except Exception as e:
     echo "✅ Configuration validation passed for new architecture"
 }
 
-ensure_expanded_checkpoint() {
-    echo "🔧 Ensuring expanded checkpoint exists for selected config..."
-    MODEL_PATH=$(python -c "from src_new.config.config import load_config; cfg=load_config('configs/${CONFIG_NAME}.yaml'); print(cfg.model_path)" | cat)
-    MAX_COORD=$(python -c "from src_new.config.config import load_config; cfg=load_config('configs/${CONFIG_NAME}.yaml'); print(cfg.max_coord_value)" | cat)
 
-    if [[ -z "$MODEL_PATH" || -z "$MAX_COORD" ]]; then
-        echo "❌ Failed to resolve model_path/max_coord_value from configs/${CONFIG_NAME}.yaml"
-        exit 1
-    fi
-
-    if [[ -d "$MODEL_PATH" && -f "$MODEL_PATH/tokenizer.json" ]]; then
-        echo "✅ Expanded checkpoint already present: $MODEL_PATH"
-        return
-    fi
-
-    echo "📦 Expanded checkpoint not found. Creating at: $MODEL_PATH (max_coord=$MAX_COORD)"
-    python /data3/Qwen2.5-VL-main/scripts/migrate_to_expanded_cache.py \
-        --base_model_path "$BASE_MODEL_PATH" \
-        --output_dir "$MODEL_PATH" \
-        --max_coord_value "$MAX_COORD" \
-        --dtype bfloat16
-
-    echo "✅ Expanded checkpoint created: $MODEL_PATH"
-}
 
 # =============================================================================
 # TRAINING LAUNCH FUNCTIONS
@@ -185,7 +161,8 @@ launch_single_gpu() {
     
     python scripts/train_new.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL"
+        --log_level "$LOG_LEVEL" \
+        --enable-coord-aux "${ENABLE_COORD_AUX:-}"
 }
 
 launch_deepspeed() {
@@ -231,7 +208,6 @@ main() {
     setup_environment
     determine_deepspeed_usage
     validate_config
-    ensure_expanded_checkpoint
     
     # Launch training
     if [[ $DEEPSPEED_ENABLED == true ]]; then

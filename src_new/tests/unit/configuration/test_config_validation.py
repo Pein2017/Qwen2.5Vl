@@ -46,54 +46,96 @@ class TestConfigValidation:
 
     @pytest.fixture
     def valid_config_dict(self):
-        """Create a valid configuration dictionary."""
+        """Create a valid configuration dictionary with all required fields."""
         return {
+            # === REQUIRED FIELDS ===
             # Model settings
             "model_path": "/fake/path/to/model",
             "model_size": "3B",
             "model_max_length": 32000,
             "attn_implementation": "flash_attention_2",
             "torch_dtype": "bfloat16",
-            "use_cache": False,
-            "model_hidden_size": 2048,
-            # Training parameters
+            # Training settings
             "num_train_epochs": 20,
             "per_device_train_batch_size": 1,
+            "per_device_eval_batch_size": 1,
             "gradient_accumulation_steps": 2,
             "learning_rate": 5e-6,
             "vision_lr": 5e-7,
             "merger_lr": 1e-5,
             "llm_lr": 5e-6,
+            "adapter_lr": 0.0,
             "warmup_ratio": 0.1,
             "weight_decay": 0.0001,
+            "max_grad_norm": 0.5,
             "lr_scheduler_type": "cosine",
             "gradient_checkpointing": True,
             "bf16": True,
-            # Coordinate token system
-            "coordinate_tokens_enabled": True,
-            "max_coord_value": 1024,
-            "coordinate_loss_weight": 0.05,
-            "regular_loss_weight": 1.0,
-            # Teacher-student training
-            "teacher_ratio": 0.5,
-            "num_teacher_samples": 1,
-            "teacher_loss_weight": 0.3,
-            "student_loss_weight": 1.0,
-            # Data processing
-            "train_data_path": "data/train.jsonl",
-            "val_data_path": "data/val.jsonl",
+            "fp16": False,
+            "use_flash_attention": True,
+            "mixed_precision": "bf16",
+            # Data settings - only data_root needed, resolver will handle the rest
             "data_root": "data",
-            "teacher_pool_file": "data/teacher_pool.jsonl",
             "max_total_length": 12000,
+            "num_teacher_samples": 1,
             "collator_type": "packed",
+            "teacher_ratio": 0.5,
             "language": "chinese",
-            "max_pixels": 401408,
             # Output settings
             "output_dir": "output",
             "run_name": "test_run",
-            "logging_steps": 10,
-            "save_steps": 500,
+            "max_coord_value": 1024,
+            "model_hidden_size": 2048,
+            # Coordinate token configuration (required)
+            "coordinate_tokens_enabled": True,
+            "coordinate_loss_weight": 0,  # Match bbu_v2_use_coord.yaml (int, not float)
+            "regular_loss_weight": 1.0,
+            "coordinate_temperature": 0.7,
+            "coordinate_label_sigma": 16,  # Match YAML (int, not float)
+            "coordinate_init_mode": "fourier_ramp",
+            # Coordinate auxiliary losses (required)
+            "coord_aux_enabled": False,
+            "coord_aux_tau": 1.2,
+            "coord_aux_sigma_bins": 8.0,
+            "coord_aux_window_bins": 32,
+            "coord_aux_topk": 100,
+            "coord_aux_lambda_kce": 0.5,
+            "coord_aux_lambda_unlike": 0.05,
+            "coord_aux_lambda_lap1": 1e-4,
+            "coord_aux_lambda_lap2": 1e-5,
+            # Evaluation settings (required)
+            "eval_strategy": "steps",
             "eval_steps": 500,
+            "save_strategy": "steps",
+            "save_steps": 500,
+            "save_total_limit": 2,
+            # Logging settings (required)
+            "logging_steps": 10,
+            "logging_dir": "logs",
+            "report_to": "tensorboard",
+            "disable_tqdm": False,
+            "verbose": False,
+            # Essential settings (required)
+            "remove_unused_columns": False,
+            # Dataloader performance settings (required)
+            "dataloader_num_workers": 4,
+            "pin_memory": True,
+            "prefetch_factor": 2,
+            # Output settings (required)
+            "tb_dir": "tb",
+            # Teacher-student loss weights (required)
+            "teacher_loss_weight": 0.3,
+            "student_loss_weight": 1.0,
+            # Vision processing parameters (required)
+            "patch_size": 14,
+            "merge_size": 2,
+            "temporal_patch_size": 2,
+            "max_pixels": 401408,
+            # Training control flags (required)
+            "training_prompt_style": True,
+            "use_consistent_prompts": True,
+            # Model loading control flags (required)
+            "skip_vocab_extension": False,
         }
 
     @pytest.fixture

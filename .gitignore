@@ -29,6 +29,7 @@
 !vis_tools/**
 !todo/
 !todo/**
+!.augment-guidelines
 
 # Allow essential root files
 !.gitignore
@@ -37,6 +38,7 @@
 
 # Ignore all other directories and files at root level except the allowed ones
 /.claude
+**/__pycache__/
 /.cursor
 /.git
 /.kiro

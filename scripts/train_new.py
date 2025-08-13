@@ -18,7 +18,6 @@ Usage:
 """
 
 import argparse
-import logging
 import os
 import warnings
 from typing import TYPE_CHECKING
@@ -58,25 +57,9 @@ warnings.filterwarnings("ignore", message=".*Trainer.tokenizer is deprecated.*")
 
 def get_logger():
     """Get rank-aware logger for training script."""
-    try:
-        from src_new.utils.rank_aware_logging import get_rank_aware_logger
+    from src_new.utils.logger_factory import get_training_logger
 
-        return get_rank_aware_logger("train_new")
-    except ImportError:
-        # Fallback to config system
-        from src_new.config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
-
-        logger = logging.getLogger("train_new")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(_GLOBAL_LOG_LEVEL)
-            _CONFIGURED_LOGGERS.add("train_new")
-        return logger
+    return get_training_logger("train_new")
 
 
 def parse_args():
@@ -131,7 +114,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
     # Create training arguments with direct config access
     training_args = TrainingArguments(
         # Output settings
-        output_dir=config.output_dir,
+        output_dir=config.run_output_dir,  # Use computed property for output/{run_name}/
         run_name=config.run_name,
         # Training parameters
         num_train_epochs=config.num_train_epochs,
@@ -162,7 +145,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         greater_is_better=config.greater_is_better,
         # Logging settings
         logging_steps=config.logging_steps,
-        logging_dir=config.logging_dir,
+        logging_dir=config.tensorboard_dir,  # TensorBoard events go to tb/{run_name}/
         report_to=config.report_to,
         disable_tqdm=config.disable_tqdm,
         # Performance settings
@@ -373,6 +356,16 @@ def create_trainer_with_new_architecture(
         skip_expansion=True,  # Expansion is externalized via migration script
     )
 
+    # Create necessary directories for logging and TensorBoard
+    from pathlib import Path
+
+    Path(config.run_output_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.tensorboard_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.log_file_dir).mkdir(parents=True, exist_ok=True)
+    logger.info(
+        f"📁 Created directories: output={config.run_output_dir}, tb={config.tensorboard_dir}"
+    )
+
     # Import BBUTrainer locally to ensure it's available in distributed training
     BBUTrainer = __import__("src_new.training", fromlist=["BBUTrainer"]).BBUTrainer
 
@@ -386,6 +379,35 @@ def create_trainer_with_new_architecture(
         eval_dataset=val_dataset,
         data_collator=data_collator,
         # callbacks=[]  # No BestCheckpointCallback needed - integrated into trainer
+    )
+
+    # Pre-create optimizer so that all params are registered once
+    try:
+        trainer.create_optimizer()
+        logger.info("✅ Pre-created optimizer before staged freezing")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not pre-create optimizer: {e}")
+
+    # TODO: Register progressive unfreeze callback (freeze vision+LLM for first X epochs)
+    # Temporarily disabled - needs further testing for HF Transformers compatibility
+    # try:
+    #     from src_new.training.callbacks import ProgressiveUnfreezeCallback
+    #
+    #     freeze_epochs = getattr(config, "freeze_vision_llm_epochs", 1)
+    #     callback = ProgressiveUnfreezeCallback(
+    #         freeze_vision_llm_epochs=int(freeze_epochs), coord_slice_only=True
+    #     )
+    #     # Store trainer reference for HF compatibility
+    #     callback._trainer_ref = trainer
+    #     trainer.add_callback(callback)
+    #     logger.info(
+    #         f"✅ Registered ProgressiveUnfreezeCallback (freeze_vision_llm_epochs={freeze_epochs})"
+    #     )
+    # except Exception as e:
+    #     logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
+
+    logger.info(
+        "🔧 ProgressiveUnfreezeCallback temporarily disabled - training with standard setup"
     )
 
     # Create and set processor for checkpoint saving with updated components

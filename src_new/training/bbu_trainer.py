@@ -112,7 +112,7 @@ class BBUTrainer(HFTrainer):
 
         # Initialize training state manager for local loss aggregation
         # Use training_config (contains coordinate_tokens_enabled) instead of model.config (HF model config)
-        training_config = getattr(model, "training_config", None)
+        training_config = model.training_config
         self.training_state_manager = TrainingStateManager(
             config=training_config,
             model=model,
@@ -121,10 +121,6 @@ class BBUTrainer(HFTrainer):
 
         # Initialize unified checkpoint manager
         # Extract checkpoint settings from training_config or use defaults
-        if training_config is None:
-            raise ValueError(
-                "Model is missing training_config required for checkpoint manager initialization"
-            )
         best_checkpoint_metric = training_config.best_checkpoint_metric
         best_checkpoint_greater_is_better = (
             training_config.best_checkpoint_greater_is_better

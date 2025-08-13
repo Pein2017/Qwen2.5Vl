@@ -13,53 +13,16 @@ Key Features:
 - Simple global flags with no complex session management
 """
 
-import logging
 import re
 from typing import List, Optional, Tuple
 
 import torch
 
-
-# Configure logger using rank-aware system
-def get_debug_logger():
-    """Get rank-aware logger for debug logging module."""
-    try:
-        from .rank_aware_logging import get_rank_aware_logger
-
-        return get_rank_aware_logger("debug_logging")
-    except ImportError:
-        # Fallback to centralized config system
-        try:
-            from ..config.config import _CONFIGURED_LOGGERS, _GLOBAL_LOG_LEVEL
-
-            logger = logging.getLogger("debug_logging")
-            if not logger.handlers:
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter(
-                    "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-                )
-                handler.setFormatter(formatter)
-                logger.addHandler(handler)
-                logger.setLevel(_GLOBAL_LOG_LEVEL)
-                _CONFIGURED_LOGGERS.add("debug_logging")
-            return logger
-        except ImportError:
-            # Final fallback to standard logging
-            fallback_logger = logging.getLogger(__name__)
-            if not fallback_logger.handlers:
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter(
-                    "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-                )
-                handler.setFormatter(formatter)
-                fallback_logger.addHandler(handler)
-                # Use the root logger's level or DEBUG if explicitly set
-                root_level = logging.getLogger().getEffectiveLevel()
-                fallback_logger.setLevel(root_level)
-            return fallback_logger
+# Configure logger using centralized logger factory
+from .logger_factory import get_module_logger
 
 
-logger = get_debug_logger()
+logger = get_module_logger("debug_logging")
 
 
 class DebugLogger:
@@ -121,7 +84,7 @@ class DebugLogger:
         we get exactly one training sample and one evaluation sample logged.
         """
         logger.info(
-            "🚀 Debug logging: Started new training run - will log one training and one evaluation sample"
+            "🚀 Started new training run - will log one training and one evaluation sample"
         )
 
     def reset_for_new_run(self) -> None:
@@ -659,17 +622,9 @@ class DebugLogger:
     def reconfigure_logger(self, force_debug: bool = False) -> None:
         """Reconfigure logger to use current global log level."""
         global logger
-        logger = get_debug_logger()
+        from .logger_factory import reconfigure_logger
 
-        # Force DEBUG level if requested
-        if force_debug:
-            logger.setLevel(logging.DEBUG)
-            for handler in logger.handlers:
-                handler.setLevel(logging.DEBUG)
-
-        logger.info("Debug logger reconfigured with current global log level")
-        logger.info(f"Current logger level: {logger.level}")
-        logger.info(f"Current logger effective level: {logger.getEffectiveLevel()}")
+        reconfigure_logger(logger, force_debug)
 
     def log_comprehensive_conversation_analysis(
         self,

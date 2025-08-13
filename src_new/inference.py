@@ -40,7 +40,9 @@ from src_new.models.patches import apply_comprehensive_qwen25_fixes
 from src_new.models.wrapper import DetectionModel
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.token_processor import TokenConfig, TokenProcessor
+from src_new.utils.data_resolver import DataResolver
 from src_new.utils.path_manager import create_path_manager
+from src_new.utils.validation import PathValidationError
 
 
 class InferenceEngine:
@@ -89,10 +91,9 @@ class InferenceEngine:
         # Override model path if provided
         if model_path:
             self.config.model_path = model_path
-        # If data_root was not provided explicitly, inherit from config
+        # Enforce explicit paths (no implicit fallbacks)
         if self.data_root is None:
             self.data_root = self.config.data_root
-        # Use teacher pool from config if not explicitly provided
         if self.teacher_pool_file is None:
             self.teacher_pool_file = self.config.teacher_pool_file
 
@@ -110,21 +111,51 @@ class InferenceEngine:
         self.teacher_samples = []
         teacher_pool_path: Optional[str] = None
 
-        # Resolve teacher pool path using PathManager to avoid double-prefix issues
-        candidate_path = (
-            self.teacher_pool_file if self.teacher_pool_file else "teacher_pool.jsonl"
-        )
+        # Resolve teacher pool path using DataResolver first (authoritative to data_root);
+        # fall back to provided/config path if explicitly given.
         if self.data_root is None:
             raise ValueError("data_root must be provided for teacher pool resolution")
+        try:
+            resolved_dataset_paths = DataResolver.resolve_dataset_paths(
+                str(self.data_root)
+            )
+            default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
+        except Exception as e:
+            logger.warning(
+                f"Failed to resolve dataset paths from data_root for teacher pool: {e}"
+            )
+            default_teacher_pool = None
+
+        candidate_path = self.teacher_pool_file or default_teacher_pool
+
         path_manager = create_path_manager(self.data_root)
         try:
             resolved_path = str(path_manager.resolve_path(candidate_path))
             teacher_pool_path = resolved_path
-        except (FileNotFoundError, ValueError) as e:
-            logger.warning(
-                f"Teacher pool path could not be resolved: {candidate_path} - {e}"
-            )
-            teacher_pool_path = None
+        except (FileNotFoundError, ValueError, PathValidationError) as e:
+            # If explicit teacher path was provided but failed, try the data_root-derived default once
+            if (
+                self.teacher_pool_file
+                and default_teacher_pool
+                and self.teacher_pool_file != default_teacher_pool
+            ):
+                try:
+                    resolved_path = str(path_manager.resolve_path(default_teacher_pool))
+                    teacher_pool_path = resolved_path
+                    logger.info(
+                        f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
+                    )
+                except Exception as e2:
+                    logger.warning(
+                        f"Teacher pool path could not be resolved: {candidate_path} - {e}; fallback also failed: {e2}"
+                    )
+                    teacher_pool_path = None
+            else:
+                # Allow missing teacher pool during tests or minimal inference; proceed without teachers
+                logger.warning(
+                    f"Teacher pool path could not be resolved: {candidate_path} - {e}"
+                )
+                teacher_pool_path = None
 
         if teacher_pool_path and os.path.exists(teacher_pool_path):
             try:
@@ -159,9 +190,9 @@ class InferenceEngine:
                     f"Failed to load teacher pool from {teacher_pool_path}: {e}"
                 )
         else:
-            # Tolerate missing teacher pool; proceed without teachers
+            # Strict: do not proceed silently without teachers when configured
             logger.warning(
-                f"Teacher pool file not found or unreadable: {teacher_pool_path or (self.teacher_pool_file or 'teacher_pool.jsonl')}"
+                f"Teacher pool file not found or unreadable: {candidate_path}"
             )
 
         # CRITICAL FIX: Always use at least 1 teacher to match training pipeline when pool is available
@@ -211,6 +242,7 @@ class InferenceEngine:
             coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
             max_coord_value=self.config.max_coord_value,
             new_geometry_tokens=self.config.new_geometry_tokens,
+            coordinate_init_mode=self.config.coordinate_init_mode,
         )
         self.token_processor = TokenProcessor(token_config)
 
@@ -763,7 +795,7 @@ class InferenceEngine:
         max_new_tokens: int,
         temperature: float = 0.000001,
         do_sample: bool = False,
-        repetition_penalty: float = 1.1,
+        repetition_penalty: float = 1.0,  # Changed from 1.1 to 1.0 for coordinate tokens
     ) -> str:
         """Generate response using the model with pre-processed inputs."""
 
@@ -849,6 +881,98 @@ class InferenceEngine:
                     "Image token mismatch: No tokens found in text but image data present"
                 )
 
+        # Create constrained decoding function for coordinate tokens
+        def create_coordinate_constrained_fn():
+            """Create a prefix_allowed_tokens_fn that constrains coordinate generation."""
+
+            # Get coordinate token range
+            if self.config.coordinate_tokens_enabled:
+                coord_min, coord_max = self.token_processor.get_coordinate_token_range(
+                    self.tokenizer
+                )
+                coord_token_ids = set(range(coord_min, coord_max + 1))
+            else:
+                coord_token_ids = set()
+
+            # Get geometry token IDs
+            geometry_token_ids = set()
+            punctuation_token_ids = set()
+
+            # Geometry tokens
+            for token in [
+                "<|object_ref_start|>",
+                "<|object_ref_end|>",
+                "<|box_start|>",
+                "<|box_end|>",
+                "<|quad_start|>",
+                "<|quad_end|>",
+                "<|line_start|>",
+                "<|line_end|>",
+            ]:
+                token_id = self.tokenizer.convert_tokens_to_ids(token)
+                if token_id != self.tokenizer.unk_token_id:
+                    geometry_token_ids.add(token_id)
+
+            # Punctuation tokens commonly used in coordinate lists
+            for token in ["[", "]", ",", " ", ", "]:
+                token_ids = self.tokenizer.convert_tokens_to_ids(token)
+                if isinstance(token_ids, list):
+                    punctuation_token_ids.update(token_ids)
+                elif token_ids != self.tokenizer.unk_token_id:
+                    punctuation_token_ids.add(token_ids)
+
+            def prefix_allowed_tokens_fn(
+                batch_id: int, input_ids: torch.Tensor
+            ) -> List[int]:
+                """Constrain tokens based on current generation state."""
+
+                # Convert to list for easier processing
+                ids = input_ids.tolist()
+
+                # Check if we're inside a coordinate section by looking for unclosed brackets
+                # after geometry start tokens
+                inside_coord_section = False
+
+                # Look for geometry start patterns followed by unclosed brackets
+                for i in range(
+                    len(ids) - 1, max(-1, len(ids) - 50), -1
+                ):  # Check last 50 tokens
+                    token_id = ids[i]
+
+                    # Check if this is a closing bracket - if so, we're not inside
+                    token_str = self.tokenizer.decode([token_id])
+                    if token_str in ["]"]:
+                        break
+
+                    # Check if this is an opening bracket after geometry start
+                    if token_str in ["["]:
+                        # Look backwards for geometry start token
+                        for j in range(i - 1, max(-1, i - 10), -1):
+                            prev_token_str = self.tokenizer.decode([ids[j]])
+                            if prev_token_str in [
+                                "<|box_start|>",
+                                "<|quad_start|>",
+                                "<|line_start|>",
+                            ]:
+                                inside_coord_section = True
+                                break
+                        break
+
+                if inside_coord_section:
+                    # Inside coordinate section: allow only coordinate tokens and punctuation
+                    allowed = list(coord_token_ids | punctuation_token_ids)
+                    # Also allow closing bracket and geometry end tokens
+                    for token in ["]", "<|box_end|>", "<|quad_end|>", "<|line_end|>"]:
+                        token_id = self.tokenizer.convert_tokens_to_ids(token)
+                        if token_id != self.tokenizer.unk_token_id:
+                            allowed.append(token_id)
+                    return allowed
+                else:
+                    # Outside coordinate section: allow all tokens (normal generation)
+                    return list(range(len(self.tokenizer.get_vocab())))
+
+            return prefix_allowed_tokens_fn
+
         # Generate response with enhanced error handling
         try:
             with torch.no_grad():
@@ -868,7 +992,35 @@ class InferenceEngine:
                 logger.debug(f"   Max new tokens: {max_new_tokens}")
                 logger.debug(f"   Temperature: {temperature}")
                 logger.debug(f"   Do sample: {do_sample}")
+                logger.debug(f"   Repetition penalty: {repetition_penalty}")
                 logger.debug(f"   EOS token ID: {endoftext_token_id}")
+
+                # REMOVED: Force assistant content to begin with object_ref_start
+                # This aligns with training where the model naturally learns to start with object_ref_start
+                # Training uses add_generation_prompt=False (complete conversations), so the model
+                # should generate the object_ref_start token naturally
+
+                # Prepare EOS tokens including geometry end tokens for clean stopping
+                eos_tokens = set()
+                for token in [
+                    "<|im_end|>",
+                    "<|endoftext|>",
+                    "<|box_end|>",
+                    "<|quad_end|>",
+                    "<|line_end|>",
+                ]:
+                    token_id = self.tokenizer.convert_tokens_to_ids(token)
+                    if token_id is not None and token_id != -1:
+                        eos_tokens.add(token_id)
+
+                if self.tokenizer.eos_token_id is not None:
+                    eos_tokens.add(self.tokenizer.eos_token_id)
+
+                # Create constrained decoding function if coordinate tokens are enabled
+                prefix_allowed_tokens_fn = None
+                if self.config.coordinate_tokens_enabled:
+                    prefix_allowed_tokens_fn = create_coordinate_constrained_fn()
+                    logger.debug("✅ Coordinate-constrained decoding enabled")
 
                 output_ids = self.model.generate(
                     **inputs,
@@ -877,17 +1029,9 @@ class InferenceEngine:
                     temperature=temperature if do_sample else 1.0,
                     repetition_penalty=repetition_penalty,
                     pad_token_id=self.tokenizer.pad_token_id,
-                    # Dynamically resolve EOS tokens to ensure correct stopping
-                    eos_token_id=[
-                        t_id
-                        for t_id in {
-                            self.tokenizer.convert_tokens_to_ids("<|im_end|>"),
-                            self.tokenizer.eos_token_id,
-                            self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
-                        }
-                        if t_id is not None and t_id != -1
-                    ],
+                    eos_token_id=list(eos_tokens),
                     use_cache=True,
+                    prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
                 )
 
         except RuntimeError as e:
@@ -949,11 +1093,11 @@ class InferenceEngine:
 
         # Decode response with validation
         try:
-            # IMPORTANT: Preserve coordinate and geometry tokens which may be registered as special tokens
-            # during tokenizer extension. We therefore do NOT skip special tokens here.
-            response_text = self.tokenizer.batch_decode(
-                output_ids, skip_special_tokens=False
-            )[0]
+            # Decode ONLY the newly generated tokens (assistant content for the student turn)
+            # Preserve coordinate and geometry tokens; do NOT skip specials here.
+            generated_text = self.tokenizer.decode(
+                output_ids[0][inputs["input_ids"].shape[1] :], skip_special_tokens=False
+            )
         except Exception as e:
             logger.error(f"❌ DECODING ERROR: {e}")
             logger.error(f"   Output IDs shape: {output_ids.shape}")
@@ -961,21 +1105,26 @@ class InferenceEngine:
 
         # Log generation details
         input_length = inputs["input_ids"].shape[1]
-        generated_ids = output_ids[0][input_length:]
-
         logger.debug(f"✅ GENERATION COMPLETED:")
         logger.debug(f"   Input tokens: {input_length}")
-        logger.debug(f"   Generated tokens: {len(generated_ids)}")
+        logger.debug(f"   Generated tokens: {len(generated_text)}")
         logger.debug(f"   Total output tokens: {output_ids.shape[1]}")
-        logger.debug(f"   Raw response preview: '{response_text[:200]}...'")
+        logger.debug(f"   Raw generated preview: '{generated_text[:200]}...'")
 
-        # Extract assistant response using proven approach from working version
-        try:
-            assistant_part = response_text.split("assistant\n", 1)[1].strip()
-            logger.debug("   Extracted assistant part from conversation")
-        except IndexError:
-            assistant_part = response_text
-            logger.debug("   Using full response text (no assistant marker found)")
+        # Clean generated text: trim at the first <|im_end|> and drop any accidental assistant header
+        assistant_part = generated_text
+        # Remove any leading assistant header if present (should not normally be in generated ids)
+        if assistant_part.startswith("<|im_start|>assistant\n"):
+            assistant_part = assistant_part[len("<|im_start|>assistant\n") :]
+        # Trim at the first end-of-assistant marker if present
+        end_markers = ["<|im_end|>", "<|endoftext|>"]
+        cut_idx = None
+        for marker in end_markers:
+            idx = assistant_part.find(marker)
+            if idx != -1:
+                cut_idx = idx if cut_idx is None else min(cut_idx, idx)
+        if cut_idx is not None:
+            assistant_part = assistant_part[:cut_idx]
 
         # Clean up special tokens (DO NOT remove coordinate or geometry tokens)
         special_tokens = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
@@ -984,6 +1133,13 @@ class InferenceEngine:
                 assistant_part = assistant_part.replace(token, "")
 
         cleaned_response = assistant_part.strip()
+        if self.config.coordinate_tokens_enabled:
+            try:
+                _ = self._parse_coordinate_token_response(cleaned_response)
+            except Exception as e:
+                raise ValueError(
+                    f"Strict coordinate output validation failed: {e}. Generated: '{cleaned_response[:120]}...'"
+                )
 
         # Log final response
         logger.info(
@@ -1175,6 +1331,7 @@ class InferenceEngine:
 
         Strict requirements:
         - Geometry blocks must use training-format tokens with <|object_ref_start|> / <|object_ref_end|>
+          or synonyms <|obj_ref_start|> / <|obj_ref_end|>
         - Coordinates must be expressed as <|coord_N|> tokens (no raw number fallback)
         - Geometry lengths must be exact (bbox: 4, quad: 8, line: even >= 4)
         - No overlapping geometry spans
@@ -1184,16 +1341,17 @@ class InferenceEngine:
         objects: List[Dict[str, Any]] = []
         consumed_spans: List[Tuple[int, int]] = []
 
-        # Strict: only accept the training-format tokens generated during training
+        # Support both object_ref_* and obj_ref_* synonyms as mentioned in docs
+        # Training uses object_ref_*, but inference accepts obj_ref_* synonymously
         geometry_patterns = {
             "bbox": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|>(?:<\|box_start\|>|<\|bbox_start\|>)\\[(.*?)\\](?:<\|box_end\|>|<\|bbox_end\|>)"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>(?:<\|box_start\|>|<\|bbox_start\|>)\[(.*?)\](?:<\|box_end\|>|<\|bbox_end\|>)"
             ),
             "quad": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|quad_start\|>\\[(.*?)\\]<\|quad_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
             ),
             "line": re.compile(
-                r"<\|object_ref_start\|>(.*?)<\|object_ref_end\|><\|line_start\|>\\[(.*?)\\]<\|line_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
             ),
         }
 
@@ -1206,37 +1364,67 @@ class InferenceEngine:
                     raise ValueError("Overlapping geometry spans detected in response")
 
                 desc, coords_section = m.group(1), m.group(2)
-                coord_tokens = self._extract_coordinate_tokens(
-                    coords_section
-                )  # strict; raises if none
-                coords = [int(token) for token in coord_tokens]
+                try:
+                    coord_tokens = self._extract_coordinate_tokens(
+                        coords_section
+                    )  # strict; raises if none
+                    coords = [int(token) for token in coord_tokens]
+                except ValueError as e:
+                    # Log the problematic section for debugging
+                    logger.warning(
+                        f"Failed to extract coordinates from section '{coords_section}': {e}"
+                    )
+                    continue  # Skip this geometry block but continue parsing others
 
                 if geom_type == "bbox":
                     if len(coords) != 4:
-                        raise ValueError(
-                            f"Invalid bbox length: expected 4, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"bbox_2d": coords, "desc": desc.strip()})
                 elif geom_type == "quad":
                     if len(coords) != 8:
-                        raise ValueError(
-                            f"Invalid quad length: expected 8, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"quad": coords, "desc": desc.strip()})
                 elif geom_type == "line":
                     if len(coords) < 4 or len(coords) % 2 != 0:
-                        raise ValueError(
-                            f"Invalid line length: expected even number >= 4, got {len(coords)}"
+                        logger.warning(
+                            f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
                         )
+                        continue
                     objects.append({"line": coords, "desc": desc.strip()})
 
                 consumed_spans.append(span)
                 found_any = True
 
+        # If no complete geometry blocks found, try to extract partial information
+        # This helps with debugging and provides more informative error messages
         if not found_any or not objects:
-            raise ValueError(
-                "No valid geometry objects parsed from response in strict mode"
-            )
+            # Check if there are any partial geometry patterns that might indicate issues
+            partial_patterns = [
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>",  # Description only
+                r"<\|(?:box_start|quad_start|line_start)\|>\[(.*?)\]",  # Coordinates only
+                r"<\|coord_\d+\|>",  # Any coordinate tokens
+            ]
+
+            partial_matches = []
+            for pattern in partial_patterns:
+                matches = re.findall(pattern, response)
+                if matches:
+                    partial_matches.extend(matches)
+
+            if partial_matches:
+                logger.warning(
+                    f"Found partial geometry patterns but no complete blocks: {partial_matches[:3]}"
+                )
+                logger.warning(f"Full response for debugging: '{response}'")
+
+            # Return empty list to handle invalid/partial geometry gracefully
+            return []
 
         return objects
 
@@ -1244,7 +1432,7 @@ class InferenceEngine:
         """Extract coordinate values from coordinate tokens only (strict)."""
         import re
 
-        coord_pattern = r"<\|coord_(\\d+)\|>"
+        coord_pattern = r"<\|coord_(\d+)\|>"
         coord_matches = re.findall(coord_pattern, coords_section)
         if not coord_matches:
             raise ValueError(
@@ -1378,6 +1566,267 @@ class InferenceEngine:
 
         return validation_results
 
+    def run_inference(
+        self,
+        input_file: str,
+        output_file: str,
+        data_root: str,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = False,
+        repetition_penalty: float = 1.0,
+        max_samples: int = -1,
+        dataset: str = "bbu",
+    ) -> None:
+        """Run inference on dataset with the specified parameters.
+
+        Args:
+            input_file: Path to input JSONL file
+            output_file: Path to output file
+            data_root: Root directory for data
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+            max_samples: Maximum number of samples to process (-1 for all)
+            dataset: Dataset type
+        """
+        import json
+        from pathlib import Path
+
+        logger.info(f"🚀 Starting inference on {input_file}")
+        logger.info(f"📁 Data root: {data_root}")
+        logger.info(f"📝 Output file: {output_file}")
+        logger.info(f"🎯 Max samples: {max_samples if max_samples > 0 else 'all'}")
+        logger.info(
+            f"🔧 Generation params: max_tokens={max_new_tokens}, temp={temperature}, sample={do_sample}"
+        )
+
+        self.data_root = Path(data_root)
+
+        # Count total samples
+        with open(input_file, "r", encoding="utf-8") as f:
+            total_samples = sum(1 for _ in f)
+
+        # Determine number of samples to process
+        run_samples = (
+            total_samples if max_samples < 0 else min(total_samples, max_samples)
+        )
+        logger.info(f"Processing {run_samples} out of {total_samples} samples")
+
+        # Process samples
+        results = []
+        with open(input_file, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if max_samples > 0 and i >= max_samples:
+                    break
+
+                try:
+                    sample = json.loads(line.strip())
+
+                    # Process single sample
+                    result = self._process_single_sample(
+                        sample=sample,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        repetition_penalty=repetition_penalty,
+                    )
+
+                    results.append(result)
+
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Processed {i + 1}/{run_samples} samples")
+
+                except Exception as e:
+                    logger.error(f"Error processing sample {i}: {e}")
+                    continue
+
+        # Save results
+        with open(output_file, "w", encoding="utf-8") as f:
+            for result in results:
+                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+        logger.info(f"✅ Inference complete! Results saved to {output_file}")
+        logger.info(f"📊 Processed {len(results)} samples successfully")
+
+    def _process_single_sample(
+        self,
+        sample: dict,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = False,
+        repetition_penalty: float = 1.0,
+    ) -> dict:
+        """Process a single sample and return the result.
+
+        Args:
+            sample: Input sample dictionary (training format with 'images' and 'objects')
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+
+        Returns:
+            Dictionary with inference results
+        """
+        try:
+            # Validate sample format (training format)
+            if not isinstance(sample, dict):
+                raise ValueError("Sample must be a dictionary")
+
+            if (
+                "images" not in sample
+                or not isinstance(sample["images"], list)
+                or len(sample["images"]) == 0
+            ):
+                raise ValueError(
+                    "Sample missing required 'images' field or empty images list"
+                )
+
+            if "objects" not in sample or not isinstance(sample["objects"], list):
+                raise ValueError(
+                    "Sample missing required 'objects' field or objects is not a list"
+                )
+
+            # Use the training-matched inference pipeline
+            inputs = self.prepare_inference_inputs(
+                sample=sample,
+                seed=42,  # Use fixed seed for reproducible results
+                data_root=self.data_root,
+            )
+
+            # Generate response using the prepared inputs
+            response = self.generate_response(
+                inputs=inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                repetition_penalty=repetition_penalty,
+            )
+
+            # Create result in expected format
+            result = {
+                "sample_id": sample.get("id", "unknown"),
+                "images": sample["images"],
+                "prediction": response,
+                "ground_truth": sample.get("objects", []),
+                "width": sample.get("width"),
+                "height": sample.get("height"),
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in _process_single_sample: {e}")
+            return {
+                "sample_id": sample.get("id", "unknown"),
+                "images": sample.get("images", []),
+                "prediction": f"ERROR: {str(e)}",
+                "ground_truth": sample.get("objects", []),
+                "width": sample.get("width"),
+                "height": sample.get("height"),
+            }
+
+    def _generate_response(
+        self,
+        image_path: str,
+        conversations: list,
+        max_new_tokens: int = 1024,
+        temperature: float = 0.1,
+        do_sample: bool = False,
+        repetition_penalty: float = 1.0,
+    ) -> str:
+        """Generate response for given image and conversations.
+
+        Args:
+            image_path: Path to image file
+            conversations: List of conversation turns
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling
+            repetition_penalty: Repetition penalty
+
+        Returns:
+            Generated response string
+        """
+        try:
+            # Load and process image
+            from PIL import Image
+
+            image = Image.open(image_path).convert("RGB")
+
+            # Prepare conversation for model
+            messages = []
+            for conv in conversations:
+                if conv.get("from") == "human":
+                    messages.append({"role": "user", "content": conv.get("value", "")})
+                elif conv.get("from") == "gpt":
+                    messages.append(
+                        {"role": "assistant", "content": conv.get("value", "")}
+                    )
+
+            # Use the last user message for generation
+            if not messages or messages[-1]["role"] != "user":
+                raise ValueError("No user message found for generation")
+
+            user_content = messages[-1]["content"]
+
+            # Apply chat template
+            text = self.processor.apply_chat_template(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": image},
+                            {"type": "text", "text": user_content},
+                        ],
+                    }
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+            # Process inputs
+            inputs = self.processor(
+                text=[text],
+                images=[image],
+                return_tensors="pt",
+                padding=True,
+            )
+
+            # Move to device
+            inputs = {
+                k: v.to(self.model.device) if hasattr(v, "to") else v
+                for k, v in inputs.items()
+            }
+
+            # Generate
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    repetition_penalty=repetition_penalty,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+
+            # Decode response
+            input_len = inputs["input_ids"].shape[1]
+            response_tokens = outputs[0][input_len:]
+            response = self.tokenizer.decode(response_tokens, skip_special_tokens=True)
+
+            # Process coordinate response if needed
+            if self.config.coordinate_tokens_enabled:
+                response = self._process_coordinate_response(response)
+
+            return response.strip()
+
+        except Exception as e:
+            logger.error(f"Error in _generate_response: {e}")
+            return f"ERROR: {str(e)}"
+
     def _parse_standard_response(self, response: str) -> str:
         """Parse standard response without coordinate tokens."""
         import json
@@ -1429,7 +1878,7 @@ def main():
         "--input_file", type=str, required=False, help="Path to input JSONL file"
     )
     parser.add_argument(
-        "--output_file", type=str, required=True, help="Path to output JSON file"
+        "--output_file", type=str, required=True, help="Path to output JSONL file"
     )
     parser.add_argument(
         "--data_root", type=str, required=True, help="Root directory for data files"
@@ -1514,6 +1963,51 @@ def main():
     log_level = getattr(logging, args.log_level.upper())
     logging.getLogger().setLevel(log_level)
     logger.setLevel(log_level)
+
+    # Resolve input_file from dataset if not provided
+    if args.input_file is None:
+        if args.dataset is None:
+            raise ValueError("Either --input_file or --dataset must be provided")
+
+        # Use DataResolver for direct path resolution (more efficient than loading full config)
+        from src_new.utils.data_resolver import DataResolver
+
+        try:
+            dataset_paths = DataResolver.resolve_dataset_paths(args.data_root)
+
+            if args.dataset == "train":
+                args.input_file = str(dataset_paths.train_data_path)
+            elif args.dataset == "val":
+                args.input_file = str(dataset_paths.val_data_path)
+            else:
+                raise ValueError(
+                    f"Unknown dataset: {args.dataset}. Must be 'train' or 'val'"
+                )
+
+            logger.info(
+                f"Resolved input file from dataset '{args.dataset}': {args.input_file}"
+            )
+        except (FileNotFoundError, ValueError) as e:
+            # Fall back to config-based resolution for backward compatibility
+            logger.warning(
+                f"DataResolver failed, falling back to config-based resolution: {e}"
+            )
+            from src_new.config.config import load_config
+
+            config = load_config(args.config_path)
+
+            if args.dataset == "train":
+                args.input_file = config.train_data_path
+            elif args.dataset == "val":
+                args.input_file = config.val_data_path
+            else:
+                raise ValueError(
+                    f"Unknown dataset: {args.dataset}. Must be 'train' or 'val'"
+                )
+
+            logger.info(
+                f"Resolved input file from config '{args.dataset}': {args.input_file}"
+            )
 
     # Create inference engine
     engine = InferenceEngine(

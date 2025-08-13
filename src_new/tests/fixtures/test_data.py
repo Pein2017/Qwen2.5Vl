@@ -10,15 +10,18 @@ import torch
 def create_sample_config(**overrides) -> Dict[str, Any]:
     """Create a sample configuration with optional overrides."""
     config = {
+        # === REQUIRED FIELDS ===
         # Model settings
         "model_path": "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024",
         "model_size": "3B",
         "model_max_length": 120000,
         "attn_implementation": "flash_attention_2",
         "torch_dtype": "bfloat16",
+        # Optional model settings (included for compatibility)
         "use_cache": False,
         "model_hidden_size": 2048,
         "model_num_layers": 36,
+        "model_num_attention_heads": 16,
         "model_vocab_size": 151665,
         # Training settings
         "num_train_epochs": 5,  # Reduced for testing
@@ -29,6 +32,7 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
         "vision_lr": 5e-7,
         "merger_lr": 5e-5,
         "llm_lr": 5e-6,
+        "adapter_lr": 0.0,
         "warmup_ratio": 0.1,
         "weight_decay": 0.0001,
         "max_grad_norm": 1.0,
@@ -36,47 +40,69 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
         "gradient_checkpointing": True,
         "bf16": True,
         "fp16": False,
-        # Data settings
-        "train_data_path": "test_data/train.jsonl",
-        "val_data_path": "test_data/val.jsonl",
-        "teacher_pool_file": "test_data/teacher_pool.jsonl",
-        "teacher_ratio": 0.5,
-        "collator_type": "packed",
-        "language": "chinese",
+        "use_flash_attention": True,
+        "mixed_precision": "bf16",
+        # Data settings - only data_root needed, resolver will handle the rest
+        "data_root": "test_data",
         "max_total_length": 12000,
         "num_teacher_samples": 1,
-        "max_examples": 1,
-        # Coordinate token settings
-        "coordinate_tokens_enabled": True,
+        "collator_type": "packed",
+        "teacher_ratio": 0.5,
+        "language": "chinese",
+        # Output settings
+        "output_dir": "test_output",
+        "run_name": "test_run",
         "max_coord_value": 1024,
-        "coordinate_loss_weight": 0.05,
+        # Coordinate token configuration (required)
+        "coordinate_tokens_enabled": True,
+        "coordinate_loss_weight": 0,  # Match bbu_v2_use_coord.yaml (int, not float)
         "regular_loss_weight": 1.0,
-        # Teacher-student settings
-        "teacher_loss_weight": 0.3,
-        "student_loss_weight": 1.0,
-        # Evaluation settings
+        "coordinate_temperature": 0.7,
+        "coordinate_label_sigma": 16,  # Match YAML (int, not float)
+        "coordinate_init_mode": "fourier_ramp",
+        # Coordinate auxiliary losses (required)
+        "coord_aux_enabled": False,
+        "coord_aux_tau": 1.2,
+        "coord_aux_sigma_bins": 8.0,
+        "coord_aux_window_bins": 32,
+        "coord_aux_topk": 100,
+        "coord_aux_lambda_kce": 0.5,
+        "coord_aux_lambda_unlike": 0.05,
+        "coord_aux_lambda_lap1": 1e-4,
+        "coord_aux_lambda_lap2": 1e-5,
+        # Evaluation settings (required)
         "eval_strategy": "steps",
         "eval_steps": 10,
         "save_strategy": "steps",
         "save_steps": 20,
         "save_total_limit": 2,
-        # Logging settings
+        # Logging settings (required)
         "logging_steps": 5,
         "logging_dir": "test_logs",
         "report_to": "none",  # Disable wandb/tensorboard for testing
         "disable_tqdm": True,
         "verbose": False,
-        # Output settings
-        "output_dir": "test_output",
-        "run_name": "test_run",
-        # Training control
-        "training_prompt_style": True,
-        "use_consistent_prompts": True,
+        # Essential settings (required)
         "remove_unused_columns": False,
-        # Performance settings
+        # Dataloader performance settings (required)
         "dataloader_num_workers": 0,  # Disable multiprocessing for testing
         "pin_memory": False,
-        "prefetch_factor": None,
+        "prefetch_factor": 2,
+        # Output settings (required)
+        "tb_dir": "test_tb",
+        # Teacher-student loss weights (required)
+        "teacher_loss_weight": 0.3,
+        "student_loss_weight": 1.0,
+        # Vision processing parameters (required)
+        "patch_size": 14,
+        "merge_size": 2,
+        "temporal_patch_size": 2,
+        "max_pixels": 401408,
+        # Training control flags (required)
+        "training_prompt_style": True,
+        "use_consistent_prompts": True,
+        # Model loading control flags (required)
+        "skip_vocab_extension": False,
     }
 
     # Apply overrides

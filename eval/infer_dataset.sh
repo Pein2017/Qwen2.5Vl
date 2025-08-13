@@ -7,13 +7,15 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="730-use_coord-ep100"           # Latest checkpoint with SafeTensors
-MODEL_PATH="output-730-use_coord-ep100/checkpoint-500"  # Use existing checkpoint-500
+EXP_NAME="730-use_coord-ep100-coord_loss_0"           # Latest checkpoint with SafeTensors
+MODEL_PATH="output-730-use_coord-ep100-coord_loss_0/checkpoint-500"  # Use existing checkpoint-500
 CONFIG_PATH="configs/bbu_v2_use_coord.yaml"
 
 # Dataset to process (single dataset per run)
 DATASET="train"                  # "train" or "val"
-DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory containing dataset files (images/, train.jsonl, val.jsonl, teacher_pool.jsonl)
+DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory - centralized data resolver will auto-discover all files
+OUTPUT_BASE="infer_results" 
+
 
 # Teacher configuration (set manually)
 NUM_TEACHERS=1
@@ -23,9 +25,10 @@ NUM_TEACHERS=1
 MODEL_NAME="qwen2_5_vl"
 # Use the EXACT training configuration to ensure coordinate tokens are properly detected
 
-
 # Generation parameters (optimized for coordinate token models)
-MAX_NEW_TOKENS=128
+# Coordinate token models may need more tokens to complete complex coordinate sequences
+# Each coordinate token is ~15 characters, complex objects may need 100+ tokens
+MAX_NEW_TOKENS=1024
 BATCH_SIZE=1          # Use batch_size=1 for coordinate token models
 NUM_WORKERS=4         # Use 0 workers to avoid memory issues
 ENABLE_TORCH_COMPILE=false
@@ -33,7 +36,9 @@ ENABLE_TORCH_COMPILE=false
 FORCE_EAGER_ATTENTION=true
 
 # Debug parameters (set to limit samples for faster testing)
-MAX_SAMPLES=3       
+# NOTE: When testing MAX_NEW_TOKENS effects, use more samples or remove MAX_SAMPLES limit
+# Small sample sizes may not show truncation effects clearly
+MAX_SAMPLES=5       
 
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
@@ -44,6 +49,12 @@ export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export CUDA_VISIBLE_DEVICES=6
 
+# Normalize to absolute paths per repository rules
+ABS_REPO_ROOT="/data3/Qwen2.5-VL-main"
+ABS_CONFIG_PATH=$(readlink -f "$ABS_REPO_ROOT/$CONFIG_PATH")
+ABS_MODEL_PATH=$(readlink -f "$ABS_REPO_ROOT/$MODEL_PATH")
+ABS_DATA_ROOT=$(readlink -f "$ABS_REPO_ROOT/$DATA_ROOT")
+
 # Validate dataset parameter
 if [[ "$DATASET" != "train" && "$DATASET" != "val" ]]; then
     echo "❌ DATASET must be 'train' or 'val', got: $DATASET"
@@ -51,7 +62,6 @@ if [[ "$DATASET" != "train" && "$DATASET" != "val" ]]; then
 fi
 
 # Create clean experiment structure
-OUTPUT_BASE="exp_det_coordinates"
 EXPERIMENT_DIR="${OUTPUT_BASE}/${EXP_NAME}"
 DATASET_DIR="${EXPERIMENT_DIR}/${DATASET}"
 INFERENCE_DIR="${DATASET_DIR}/inference"
@@ -65,7 +75,7 @@ mkdir -p "${INFERENCE_DIR}"
 
 # Generate output file names
 OUTPUT_SUFFIX="predictions"
-OUTPUT_FILE="${INFERENCE_DIR}/${OUTPUT_SUFFIX}.json"
+OUTPUT_FILE="${INFERENCE_DIR}/${OUTPUT_SUFFIX}.jsonl"
 LOG_FILE="${INFERENCE_DIR}/inference.log"
 
 # Save experiment configuration (for bookkeeping only)
@@ -75,7 +85,7 @@ cat > "$CONFIG_FILE" << EOF
   "exp_name": "$EXP_NAME",
   "model": {
     "name": "$MODEL_NAME",
-    "path": "$MODEL_PATH"
+    "path": "$ABS_MODEL_PATH"
   },
   "generation": {
     "max_new_tokens": $MAX_NEW_TOKENS,
@@ -105,20 +115,21 @@ else
 fi
 
 # Validate config file exists
-if [ ! -f "$CONFIG_PATH" ]; then
-    echo "❌ Configuration file not found: $CONFIG_PATH"
+if [ ! -f "$ABS_CONFIG_PATH" ]; then
+    echo "❌ Configuration file not found: $ABS_CONFIG_PATH"
     echo "Available config files:"
-    ls -1 configs/*.yaml 2>/dev/null || echo "  (none found)"
+    ls -1 $ABS_REPO_ROOT/configs/*.yaml 2>/dev/null || echo "  (none found)"
     exit 1
 fi
 
-# Build inference command
-INFERENCE_CMD="python src_new/inference.py \
-    --config_path \"$CONFIG_PATH\" \
-    --model_path \"$MODEL_PATH\" \
+# Build inference command (use ms env's python directly)
+PY_BIN="/root/miniconda3/envs/ms/bin/python"
+INFERENCE_CMD="$PY_BIN $ABS_REPO_ROOT/src_new/inference.py \
+    --config_path \"$ABS_CONFIG_PATH\" \
+    --model_path \"$ABS_MODEL_PATH\" \
     --dataset \"$DATASET\" \
     --output_file \"$OUTPUT_FILE\" \
-    --data_root \"${DATA_ROOT}\" \
+    --data_root \"${ABS_DATA_ROOT}\" \
     --max_new_tokens $MAX_NEW_TOKENS \
     --batch_size $BATCH_SIZE \
     --num_workers $NUM_WORKERS \
@@ -138,21 +149,19 @@ if [ "$FORCE_EAGER_ATTENTION" = true ]; then
     INFERENCE_CMD="$INFERENCE_CMD --force_eager_attention"
 fi
 
-# Resolve dataset file via config (derived from data_root) for logging and stats
-DERIVED_DATASET_FILE=$(python - << PY
-from src_new.config.config import load_config
-import sys
-cfg = load_config("$CONFIG_PATH")
-print(cfg.train_data_path if "$DATASET"=="train" else cfg.val_data_path)
+# Resolve dataset file using centralized data resolver for logging and stats
+DERIVED_DATASET_FILE=$($PY_BIN - << PY
+from src_new.utils.data_resolver import DataResolver
+print(DataResolver.resolve_dataset_paths("$ABS_DATA_ROOT").train_data_path if "$DATASET"=="train" else DataResolver.resolve_dataset_paths("$ABS_DATA_ROOT").val_data_path)
 PY
 )
 
 echo ""
 echo "🔧 Configuration:"
-echo "   Config: $CONFIG_PATH"
-echo "   Model: $MODEL_PATH"
+echo "   Config: $ABS_CONFIG_PATH"
+echo "   Model: $ABS_MODEL_PATH"
 echo "   Dataset file (derived): $DERIVED_DATASET_FILE"
-echo "   Data root: ${DATA_ROOT}"
+echo "   Data root: ${ABS_DATA_ROOT}"
 echo "   Output: $OUTPUT_FILE"
 echo "   Teachers: $NUM_TEACHERS"
 echo "   Max tokens: $MAX_NEW_TOKENS"
@@ -174,16 +183,13 @@ if eval "$INFERENCE_CMD" 2>&1 | tee "$LOG_FILE"; then
         else
             TOTAL_SAMPLES=0
         fi
-        OUTPUT_SAMPLES=$(python -c "
+        OUTPUT_SAMPLES=$($PY_BIN -c "
 import json
 try:
     with open('$OUTPUT_FILE') as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        print(len(data))
-    else:
-        print('1')
-except:
+        data = [line for line in f if line.strip()]
+    print(len(data))
+except Exception:
     print('0')
 " 2>/dev/null || echo "0")
         
