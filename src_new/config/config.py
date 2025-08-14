@@ -173,9 +173,6 @@ class Config:
     coordinate_tokens_enabled: bool
     coordinate_loss_weight: float
     regular_loss_weight: float
-    coordinate_temperature: float
-    # Removed legacy Gaussian KL settings
-    coordinate_label_sigma: float
     coordinate_init_mode: str
 
     # Coordinate auxiliary losses (required)
@@ -259,6 +256,19 @@ class Config:
     new_geometry_tokens: Optional[List[str]] = None
     max_dataset_size: Optional[int] = None
 
+    # Progressive unfreeze (optional; enabled via YAML)
+    prog_unfreeze_enabled: bool = False
+    prog_unfreeze_epoch_stage0_end: Optional[int] = None
+    prog_unfreeze_epoch_stage1_end: Optional[int] = None
+    prog_unfreeze_top_k_layers: Optional[int] = None
+    prog_unfreeze_coord_slice_only: bool = True
+
+    # Learning rate overrides for progressive unfreeze groups (optional)
+    lr_merger: Optional[float] = None
+    lr_coord_slice: Optional[float] = None
+    lr_top_layers: Optional[float] = None
+    lr_full_model: Optional[float] = None
+
     # === COMPUTED PROPERTIES ===
     @property
     def run_output_dir(self) -> str:
@@ -290,6 +300,7 @@ class Config:
         self._validate_training_settings()
         self._validate_data_settings()
         self._validate_coordinate_settings()
+        self._validate_progressive_unfreeze_settings()
 
         logger.info("✅ Configuration validation passed")
 
@@ -380,12 +391,6 @@ class Config:
                 f"regular_loss_weight must be positive, got {self.regular_loss_weight}"
             )
 
-        # Validate temperatures
-        if self.coordinate_temperature <= 0:
-            raise ValueError(
-                f"coordinate_temperature must be > 0, got {self.coordinate_temperature}"
-            )
-
         # Coordinate auxiliary losses validation
         if self.coord_aux_enabled:
             if self.coord_aux_tau <= 0:
@@ -404,18 +409,17 @@ class Config:
                 )
             if self.coord_aux_lambda_kce < 0 or self.coord_aux_lambda_unlike < 0:
                 raise ValueError("coord_aux_lambda_kce/unlike must be non-negative")
-        # Optional: validate coordinate init mode
-        if self.coordinate_init_mode is not None:
-            allowed = {"fourier_ramp", "random"}
+        # Required: validate coordinate init mode
+        if self.coordinate_tokens_enabled:
+            if self.coordinate_init_mode is None:
+                raise ValueError(
+                    "coordinate_init_mode is required when coordinate_tokens_enabled=True"
+                )
+            allowed = {"ms_mean", "fourier_ramp"}
             if self.coordinate_init_mode not in allowed:
                 raise ValueError(
                     f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
                 )
-
-        if self.coordinate_label_sigma is not None and self.coordinate_label_sigma <= 0:
-            raise ValueError(
-                f"coordinate_label_sigma must be > 0, got {self.coordinate_label_sigma}"
-            )
 
         # Initialize new_geometry_tokens if not provided
         if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
@@ -424,6 +428,51 @@ class Config:
                 "<|line_start|>",
                 "<|line_end|>",
             ]
+
+    def _validate_progressive_unfreeze_settings(self) -> None:
+        """Validate progressive unfreeze related settings when enabled."""
+        if not self.prog_unfreeze_enabled:
+            return
+
+        # Epoch boundaries
+        if (
+            self.prog_unfreeze_epoch_stage0_end is None
+            or self.prog_unfreeze_epoch_stage0_end < 1
+        ):
+            raise ValueError(
+                f"prog_unfreeze_epoch_stage0_end must be >= 1 when prog_unfreeze_enabled, got {self.prog_unfreeze_epoch_stage0_end}"
+            )
+        if (
+            self.prog_unfreeze_epoch_stage1_end is None
+            or self.prog_unfreeze_epoch_stage1_end
+            <= self.prog_unfreeze_epoch_stage0_end
+        ):
+            raise ValueError(
+                "prog_unfreeze_epoch_stage1_end must be > prog_unfreeze_epoch_stage0_end when prog_unfreeze_enabled"
+            )
+
+        # Top-K layers
+        if (
+            self.prog_unfreeze_top_k_layers is None
+            or self.prog_unfreeze_top_k_layers < 1
+        ):
+            raise ValueError(
+                f"prog_unfreeze_top_k_layers must be >= 1 when prog_unfreeze_enabled, got {self.prog_unfreeze_top_k_layers}"
+            )
+
+        # Learning rates (if provided) must be positive
+        for lr_name in (
+            "lr_merger",
+            "lr_coord_slice",
+            "lr_top_layers",
+            "lr_full_model",
+        ):
+            if hasattr(self, lr_name):
+                lr_value = getattr(self, lr_name)
+                if lr_value is not None and lr_value <= 0:
+                    raise ValueError(
+                        f"{lr_name} must be positive when provided, got {lr_value}"
+                    )
 
 
 def load_config(config_path: str) -> Config:
@@ -471,11 +520,6 @@ def load_config(config_path: str) -> Config:
 
     # Convert scientific notation strings to floats
     data = _convert_scientific_notation(data)
-    # Require only 'coordinate_temperature' (single source of truth)
-    if "coordinate_temperature" not in data or data["coordinate_temperature"] is None:
-        raise ValueError(
-            "coordinate_temperature must be explicitly specified in configuration"
-        )
 
     # === Unified dataset path defaults ===
     # Auto-derive data paths from data_root using centralized data resolver
@@ -485,26 +529,25 @@ def load_config(config_path: str) -> Config:
     #   - val.jsonl
     #   - teacher_pool.jsonl
     try:
-        data_root_value = data.get("data_root")
-        if data_root_value:
+        if "data_root" in data and data["data_root"]:
+            data_root_value = data["data_root"]
             # Use DataResolver for automatic path discovery and validation
             # Only derive paths if they're not explicitly provided (backward compatibility)
-            if not all(
-                [
-                    data.get("train_data_path"),
-                    data.get("val_data_path"),
-                    data.get("teacher_pool_file"),
-                ]
-            ):
+            missing_paths = [
+                key
+                for key in ["train_data_path", "val_data_path", "teacher_pool_file"]
+                if key not in data or not data[key]
+            ]
+            if missing_paths:
                 try:
                     dataset_paths = DataResolver.resolve_dataset_paths(data_root_value)
 
                     # Only set paths that weren't explicitly provided
-                    if not data.get("train_data_path"):
+                    if "train_data_path" not in data or not data["train_data_path"]:
                         data["train_data_path"] = str(dataset_paths.train_data_path)
-                    if not data.get("val_data_path"):
+                    if "val_data_path" not in data or not data["val_data_path"]:
                         data["val_data_path"] = str(dataset_paths.val_data_path)
-                    if not data.get("teacher_pool_file"):
+                    if "teacher_pool_file" not in data or not data["teacher_pool_file"]:
                         data["teacher_pool_file"] = str(dataset_paths.teacher_pool_file)
 
                     logger.debug(
@@ -516,11 +559,11 @@ def load_config(config_path: str) -> Config:
                     )
                     # Fall back to manual derivation for backward compatibility
                     data_root_path = Path(data_root_value)
-                    if not data.get("train_data_path"):
+                    if "train_data_path" not in data or not data["train_data_path"]:
                         data["train_data_path"] = str(data_root_path / "train.jsonl")
-                    if not data.get("val_data_path"):
+                    if "val_data_path" not in data or not data["val_data_path"]:
                         data["val_data_path"] = str(data_root_path / "val.jsonl")
-                    if not data.get("teacher_pool_file"):
+                    if "teacher_pool_file" not in data or not data["teacher_pool_file"]:
                         data["teacher_pool_file"] = str(
                             data_root_path / "teacher_pool.jsonl"
                         )

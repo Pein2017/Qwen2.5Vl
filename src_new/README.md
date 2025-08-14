@@ -44,22 +44,21 @@ Tokenization → Span Detection → Training → Model Checkpoints
 
 ## ✅ Coordinate Loss Status
 
-The soft-expectation coordinate loss is implemented and active. Coordinate tokens map to values 0..max_coord and are trained via temperature-scaled soft expectation + L1. See `src_new/models/coordinate_loss.py` and `UNIFIED_DOCUMENTATION.md` for details.
+Coordinate tokens map to values 0..max_coord and are trained using auxiliary coordinate losses. See `src_new/models/coordinate_loss.py` and `UNIFIED_DOCUMENTATION.md` for details.
 
-### Optional Auxiliary Coordinate Losses (production default in debug config)
+### Auxiliary Coordinate Losses (always enabled)
 - Kernelized‑KL (sparse window) around the correct coordinate bin
 - Unlikelihood on non‑coordinate tokens at coordinate positions (top‑K)
-- Laplacian regularizer has been removed
 
-Behavior when enabled (via YAML):
+Behavior:
 - CE path is unchanged and continues to train all assistant tokens.
 - LossManager reports and uses separate weighted components:
   - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
-- `teacher_l1_loss` / `student_l1_loss` are not used under the aux path.
+- These replace the legacy soft-expectation L1 loss which has been removed.
 
-YAML keys (see `configs/bbu_v2_debug.yaml`):
+YAML keys (see `configs/bbu_v2_use_coord.yaml`):
 ```
-coord_aux_enabled: true
+coord_aux_enabled: true  # Must be true (auxiliary losses are always enabled)
 coord_aux_tau: 1.2
 coord_aux_sigma_bins: 8
 coord_aux_window_bins: 32
@@ -68,7 +67,7 @@ coord_aux_lambda_kce: 1
 coord_aux_lambda_unlike: 1
 ```
 
-Run a quick debug training with aux losses enabled:
+Run training with auxiliary coordinate losses:
 ```bash
 cd /data3/Qwen2.5-VL-main
 source ~/.bashrc && conda activate ms

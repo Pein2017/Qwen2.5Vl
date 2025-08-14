@@ -299,5 +299,6 @@ def real_token_processor(real_config):
     token_config = TokenConfig(
         coordinate_tokens_enabled=real_config.coordinate_tokens_enabled,
         max_coord_value=real_config.max_coord_value,
+        coordinate_init_mode="fourier_ramp",
     )
     return TokenProcessor(token_config)

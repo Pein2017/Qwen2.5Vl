@@ -34,7 +34,6 @@ class TestLossManager:
         config.max_coord_value = 1024
         config.coordinate_loss_weight = 0.05
         config.regular_loss_weight = 1.0
-        config.coordinate_temperature = 1.0  # Updated to match LossManager expectation
         config.teacher_loss_weight = 0.3
         config.student_loss_weight = 1.0
         return config
@@ -60,6 +59,7 @@ class TestLossManager:
         token_config = TokenConfig(
             coordinate_tokens_enabled=mock_config.coordinate_tokens_enabled,
             max_coord_value=mock_config.max_coord_value,
+            coordinate_init_mode="fourier_ramp",
         )
         return TokenProcessor(token_config)
 
@@ -76,9 +76,7 @@ class TestLossManager:
         assert loss_manager.teacher_loss_weight == mock_config.teacher_loss_weight
         assert loss_manager.student_loss_weight == mock_config.student_loss_weight
 
-        # Check that coordinate loss function is initialized
-        assert hasattr(loss_manager, "coordinate_loss_fn")
-        assert loss_manager.coordinate_loss_fn is not None
+        # Coordinate aux path is configured via set_coordinate_aux_options; no legacy compat expected
 
     def test_compute_loss_components_basic(self, loss_manager):
         """Test basic loss computation without spans."""
@@ -187,9 +185,9 @@ class TestLossManager:
             student_spans=None,
         )
 
-        # Should have coordinate loss
-        assert loss_components.student_l1_loss is not None
-        assert torch.isfinite(loss_components.student_l1_loss)
+        # Should have valid loss components (coordinate loss handled via auxiliary losses)
+        assert loss_components.loss is not None
+        assert torch.isfinite(loss_components.loss)
 
     def test_loss_aggregation_weights(self, loss_manager, mock_config):
         """Test that loss components are properly weighted."""
@@ -222,10 +220,15 @@ class TestLossManager:
             expected_total += loss_components.teacher_llm_loss
         if loss_components.student_llm_loss is not None:
             expected_total += loss_components.student_llm_loss
-        if loss_components.teacher_l1_loss is not None:
-            expected_total += loss_components.teacher_l1_loss
-        if loss_components.student_l1_loss is not None:
-            expected_total += loss_components.student_l1_loss
+        # Note: coordinate losses are now handled via auxiliary loss components
+        if loss_components.teacher_kce_loss is not None:
+            expected_total += loss_components.teacher_kce_loss
+        if loss_components.teacher_unlike_loss is not None:
+            expected_total += loss_components.teacher_unlike_loss
+        if loss_components.student_kce_loss is not None:
+            expected_total += loss_components.student_kce_loss
+        if loss_components.student_unlike_loss is not None:
+            expected_total += loss_components.student_unlike_loss
 
         # Allow for small floating point differences
         # Avoid wrapping a tensor in torch.tensor() which raises a warning
@@ -309,37 +312,6 @@ class TestLossManager:
         # With strong peaks at the correct next labels, CE should be very small
         assert comp.student_llm_loss.item() < 1e-3
 
-    def test_coordinate_alignment_with_spans_shifted(self, loss_manager):
-        """Coordinate L1 should align to next-token positions inside spans (label-based, shifted)."""
-        batch_size, seq_len = 1, 8
-        vocab_size = 151665 + 2 + 1025
-        coord_start = 151667
-        logits = torch.zeros(batch_size, seq_len, vocab_size)
-        labels = torch.full((batch_size, seq_len), -100)
-
-        # Put coordinate targets at positions 3 and 4 inside a teacher span [3,5)
-        labels[0, 3] = coord_start + 100
-        labels[0, 4] = coord_start + 200
-        teacher_spans = [[(3, 5)]]
-        student_spans = None
-
-        # Since the model predicts next token, set logits at t=2 and t=3 to peak at those coords
-        logits[0, 2, coord_start + 100] = 50.0  # predicts labels[3]
-        logits[0, 3, coord_start + 200] = 50.0  # predicts labels[4]
-
-        comp = loss_manager.compute_loss_components(
-            logits=logits,
-            labels=labels,
-            teacher_spans=teacher_spans,
-            student_spans=student_spans,
-        )
-        # Teacher coordinate loss should be very small (correct predictions)
-        assert comp.teacher_l1_loss is not None
-        assert comp.teacher_l1_loss.item() < 1e-3
-        # CE now includes coordinate targets as well
-        assert comp.teacher_llm_loss is not None
-        assert torch.isfinite(comp.teacher_llm_loss)
-
     def test_llm_includes_coordinate_targets_with_spans(self, loss_manager):
         """When span contains only coordinate targets, CE component should still be present (included)."""
         batch_size, seq_len = 1, 6
@@ -358,6 +330,6 @@ class TestLossManager:
         # LLM loss included for coordinate-only targets
         assert comp.teacher_llm_loss is not None
         assert torch.isfinite(comp.teacher_llm_loss)
-        # Coordinate loss present
-        assert comp.teacher_l1_loss is not None
-        assert torch.isfinite(comp.teacher_l1_loss)
+        # Coordinate losses are now handled via auxiliary loss components
+        assert comp.loss is not None
+        assert torch.isfinite(comp.loss)

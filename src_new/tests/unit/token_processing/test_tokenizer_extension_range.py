@@ -41,7 +41,11 @@ def test_tokenizer_extension_adds_exact_coord_range():
     }
     tok = DummyTokenizer(base_vocab)
 
-    cfg = TokenConfig(max_coord_value=1024, coordinate_tokens_enabled=True)
+    cfg = TokenConfig(
+        max_coord_value=1024,
+        coordinate_tokens_enabled=True,
+        coordinate_init_mode="fourier_ramp",
+    )
     tp = TokenProcessor(cfg)
     tok_ext = tp.extend_tokenizer_vocabulary(tok)
 

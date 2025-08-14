@@ -160,25 +160,19 @@ class LossManager:
         self.regular_loss_weight = config.regular_loss_weight
         self.teacher_loss_weight = config.teacher_loss_weight
         self.student_loss_weight = config.student_loss_weight
+        # Keep full config for feature flags (e.g., coordinate_tokens_enabled)
+        self.config = config
 
         self.last_loss_components = None
 
-        # Resolve coordinate temperature from config first (prefer new key)
-        self.coordinate_loss_temperature = float(config.coordinate_temperature)
-
-        # Initialize soft expectation coordinate loss function with token processor
-        # Pass the configured temperature so initialization logs reflect the actual setting
-        from .coordinate_loss import create_coordinate_loss_from_token_processor
-
-        self.coordinate_loss_fn = create_coordinate_loss_from_token_processor(
-            token_processor=token_processor,
-            tokenizer=tokenizer,
-            temperature=self.coordinate_loss_temperature,
-            numerical_stability=True,
-        )
-
-        # Store tokenizer for optional auxiliary losses and mask building
+        # Store tokenizer and token processor for auxiliary losses and coordinate token range
         self._tokenizer = tokenizer
+        self._token_processor = token_processor
+
+        # Get coordinate token range from token processor
+        self._coord_start_id, self._coord_end_id = (
+            token_processor.get_coordinate_token_range(tokenizer)
+        )
 
         # Optional coordinate auxiliary losses (disabled by default)
         self._coord_aux_enabled = False
@@ -192,15 +186,7 @@ class LossManager:
         self._lambda_lap2 = 0.0
         self._embedding_accessor = None
 
-    def update_epoch(self, epoch: int):
-        """
-        Update the current epoch for coordinate loss warning control.
-
-        Args:
-            epoch: Current training epoch
-        """
-        if hasattr(self.coordinate_loss_fn, "update_epoch"):
-            self.coordinate_loss_fn.update_epoch(epoch)
+        # No legacy coordinate loss function; coordinate losses are handled via auxiliary path only.
 
     def set_coordinate_aux_options(
         self,
@@ -285,13 +271,19 @@ class LossManager:
                 )
 
             # Weight teacher coord components separately
-            if granular_losses.get("teacher_kce_loss") is not None:
+            if (
+                "teacher_kce_loss" in granular_losses
+                and granular_losses["teacher_kce_loss"] is not None
+            ):
                 teacher_kce_weighted = (
                     self.teacher_loss_weight
                     * self.coordinate_loss_weight
                     * granular_losses["teacher_kce_loss"]
                 )
-            if granular_losses.get("teacher_unlike_loss") is not None:
+            if (
+                "teacher_unlike_loss" in granular_losses
+                and granular_losses["teacher_unlike_loss"] is not None
+            ):
                 teacher_unlike_weighted = (
                     self.teacher_loss_weight
                     * self.coordinate_loss_weight
@@ -307,13 +299,19 @@ class LossManager:
                 )
 
             # Weight student coord components separately
-            if granular_losses.get("student_kce_loss") is not None:
+            if (
+                "student_kce_loss" in granular_losses
+                and granular_losses["student_kce_loss"] is not None
+            ):
                 student_kce_weighted = (
                     self.student_loss_weight
                     * self.coordinate_loss_weight
                     * granular_losses["student_kce_loss"]
                 )
-            if granular_losses.get("student_unlike_loss") is not None:
+            if (
+                "student_unlike_loss" in granular_losses
+                and granular_losses["student_unlike_loss"] is not None
+            ):
                 student_unlike_weighted = (
                     self.student_loss_weight
                     * self.coordinate_loss_weight
@@ -415,50 +413,6 @@ class LossManager:
         # Compute loss
         return loss_fct(logits_flat, labels_flat)
 
-    def _compute_coordinate_loss(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-        coord_mask: Optional[torch.Tensor],
-        spans: Optional[List[List[Tuple[int, int]]]] = None,
-        span_type: str = "",
-        temperature: float = 1.0,
-    ) -> Optional[torch.Tensor]:
-        """
-        Compute coordinate token loss using soft expectation + L1 loss.
-
-        Args:
-            logits: Prediction logits [batch_size, seq_len, vocab_size]
-            labels: Target labels [batch_size, seq_len]
-            coord_mask: Coordinate token mask [batch_size, seq_len]
-            spans: List of token spans per batch item (optional)
-            span_type: "teacher" or "student" for logging
-
-        Returns:
-            Coordinate loss tensor
-        """
-        # Use soft expectation coordinate loss function
-        coordinate_loss, loss_info = self.coordinate_loss_fn(
-            logits=logits,
-            labels=labels,
-            coord_mask=coord_mask,
-            temperature=temperature,
-        )
-
-        # Log detailed coordinate loss information (only if present)
-        if "num_coord_tokens" in loss_info and loss_info["num_coord_tokens"] > 0:
-            parts = [
-                f"L1={loss_info['coordinate_l1_loss']:.6f}",
-                f"tokens={loss_info['num_coord_tokens']}",
-            ]
-            if "mean_expected_coord" in loss_info:
-                parts.append(f"expected_avg={loss_info['mean_expected_coord']:.2f}")
-            if "mean_target_coord" in loss_info:
-                parts.append(f"target_avg={loss_info['mean_target_coord']:.2f}")
-            logger.debug("🎯 Coordinate loss details: " + ", ".join(parts))
-
-        return coordinate_loss
-
     def _compute_teacher_student_loss(
         self,
         logits: torch.Tensor,
@@ -554,10 +508,8 @@ class LossManager:
                         student_mask[i, start:end] = True
 
         # Determine coordinate-token positions from LABELS (what we are predicting)
-        coord_start = getattr(self.coordinate_loss_fn, "coord_start_id", None)
-        coord_end_exclusive = getattr(self.coordinate_loss_fn, "coord_end_id", None)
-        if coord_start is None or coord_end_exclusive is None:
-            raise RuntimeError("Coordinate loss function missing coord range ids")
+        coord_start = self._coord_start_id
+        coord_end_exclusive = self._coord_end_id
         # coord_label_mask marks positions whose label token IS a coordinate token
         coord_label_mask = (labels >= coord_start) & (labels < coord_end_exclusive)
 
@@ -601,102 +553,99 @@ class LossManager:
         student_kce = None
         student_unlike = None
 
-        if self._coord_aux_enabled:
-            # Auxiliary losses: Kernelized-KL + Unlikelihood
+        # Only compute auxiliary losses if enabled and coordinate tokens are present
+        should_compute_aux = (
+            self._coord_aux_enabled
+            and getattr(self.config, "coordinate_tokens_enabled", True)
+            and (teacher_coord_mask_shifted.any() or student_coord_mask_shifted.any())
+        )
+
+        if should_compute_aux:
             from .coordinate_loss import (
                 build_kernel_indices_and_q,
                 kernelized_kl_sparse,
                 unlikelihood_topk_text,
             )
 
-            coord_start = int(self.coordinate_loss_fn.coord_start_id)
-            coord_end_exclusive = int(self.coordinate_loss_fn.coord_end_id)
+            coord_start = int(self._coord_start_id)
+            coord_end_exclusive = int(self._coord_end_id)
             K = (coord_end_exclusive - coord_start) - 1  # inclusive max bin
 
             coord_logits_full = shifted_logits[..., coord_start:coord_end_exclusive]
 
-            # Fail-fast validations for aux path
-            total_coord_positions = (
-                (teacher_coord_mask_shifted | student_coord_mask_shifted).sum().item()
-            )
-            if total_coord_positions == 0:
-                raise ValueError(
-                    "coord_aux_enabled is true, but no coordinate positions were found inside spans (after shift). "
-                    "Check that labels at span positions are coordinate tokens and spans align to assistant content."
-                )
+            # Skip if no coordinate positions
+            if not (teacher_coord_mask_shifted | student_coord_mask_shifted).any():
+                zero = shifted_logits.new_tensor(0.0)
+                teacher_l1_loss = student_l1_loss = zero
+                teacher_kce = teacher_unlike = student_kce = student_unlike = zero
+            else:
+                V = shifted_logits.size(-1)
+                coord_vocab = coord_end_exclusive - coord_start
+                if V <= coord_vocab:
+                    raise ValueError(
+                        f"Invalid vocab size: V={V}, coord_vocab={coord_vocab}"
+                    )
 
-            V = shifted_logits.size(-1)
-            coord_vocab = coord_end_exclusive - coord_start
-            noncoord_vocab_size = int(V - coord_vocab)
-            if noncoord_vocab_size <= 0:
-                raise ValueError(
-                    f"Non-coordinate sub-vocab is empty (V={V}, coord_vocab={coord_vocab}). "
-                    f"Ensure tokenizer vocab contains non-coordinate tokens and coordinate range is correct."
-                )
+                def _compute_group_aux(group_mask: torch.Tensor):
+                    if group_mask is None or not group_mask.any():
+                        zero = shifted_logits.new_tensor(0.0)
+                        return zero, zero
+                    pos = group_mask.nonzero(as_tuple=False)
+                    coord_logits = coord_logits_full[pos[:, 0], pos[:, 1], :]
+                    y_ids = shifted_labels[pos[:, 0], pos[:, 1]]
+                    y = (y_ids - coord_start).clamp(0, K)
 
-            def _compute_group_aux(group_mask: torch.Tensor):
-                if group_mask is None or not group_mask.any():
-                    zero = shifted_logits.new_tensor(0.0)
-                    return zero, zero
-                pos = group_mask.nonzero(as_tuple=False)
-                coord_logits = coord_logits_full[pos[:, 0], pos[:, 1], :]
-                y_ids = shifted_labels[pos[:, 0], pos[:, 1]]
-                y = (y_ids - coord_start).clamp(0, K)
-                idxs, q_vals = build_kernel_indices_and_q(
-                    y=y,
-                    K=K,
-                    sigma=self._coord_aux_sigma_bins,
-                    window=self._coord_aux_window_bins,
-                )
-                kce = kernelized_kl_sparse(
-                    coord_logits=coord_logits,
-                    idxs=idxs,
-                    q_vals=q_vals,
-                    tau=self._coord_aux_tau,
-                )
-                # Non-coordinate vocab mask on the fly
-                noncoord_mask = torch.ones(
-                    V, dtype=torch.bool, device=shifted_logits.device
-                )
-                noncoord_mask[coord_start:coord_end_exclusive] = False
-                unlike = unlikelihood_topk_text(
-                    logits_all=shifted_logits,
-                    coord_mask=group_mask,
-                    noncoord_vocab_mask=noncoord_mask,
-                    topk=self._coord_aux_topk,
-                )
-                return kce, unlike
+                    idxs, q_vals = build_kernel_indices_and_q(
+                        y=y,
+                        K=K,
+                        sigma=self._coord_aux_sigma_bins,
+                        window=self._coord_aux_window_bins,
+                    )
+                    kce = kernelized_kl_sparse(
+                        coord_logits=coord_logits,
+                        idxs=idxs,
+                        q_vals=q_vals,
+                        tau=self._coord_aux_tau,
+                        eps=1e-6,  # Explicit epsilon value
+                    )
 
-            if teacher_coord_mask_shifted.any():
-                kce_t, ul_t = _compute_group_aux(teacher_coord_mask_shifted)
-                teacher_kce = self._lambda_kce * kce_t
-                teacher_unlike = self._lambda_unlike * ul_t
-                teacher_l1_loss = teacher_kce + teacher_unlike
-            if student_coord_mask_shifted.any():
-                kce_s, ul_s = _compute_group_aux(student_coord_mask_shifted)
-                student_kce = self._lambda_kce * kce_s
-                student_unlike = self._lambda_unlike * ul_s
-                student_l1_loss = student_kce + student_unlike
+                    # Non-coordinate vocab mask on the fly
+                    noncoord_mask = torch.ones(
+                        V, dtype=torch.bool, device=shifted_logits.device
+                    )
+                    noncoord_mask[coord_start:coord_end_exclusive] = False
+                    unlike = unlikelihood_topk_text(
+                        logits_all=shifted_logits,
+                        coord_mask=group_mask,
+                        noncoord_vocab_mask=noncoord_mask,
+                        topk=self._coord_aux_topk,
+                        eps=1e-6,  # Explicit epsilon value
+                    )
+                    return kce, unlike
+
+                if teacher_coord_mask_shifted.any():
+                    kce_t, ul_t = _compute_group_aux(teacher_coord_mask_shifted)
+                    teacher_kce = self._lambda_kce * kce_t
+                    teacher_unlike = self._lambda_unlike * ul_t
+                    teacher_l1_loss = teacher_kce + teacher_unlike
+                if student_coord_mask_shifted.any():
+                    kce_s, ul_s = _compute_group_aux(student_coord_mask_shifted)
+                    student_kce = self._lambda_kce * kce_s
+                    student_unlike = self._lambda_unlike * ul_s
+                    student_l1_loss = student_kce + student_unlike
         else:
-            # Legacy soft-expectation L1 path
-            if teacher_coord_mask_shifted.any():
-                teacher_l1_loss = self._compute_coordinate_loss(
-                    logits=shifted_logits,
-                    labels=shifted_labels,
-                    coord_mask=teacher_coord_mask_shifted,
-                    spans=teacher_spans,
-                    span_type="teacher",
-                    temperature=self.coordinate_loss_temperature,
-                )
-            if student_coord_mask_shifted.any():
-                student_l1_loss = self._compute_coordinate_loss(
-                    logits=shifted_logits,
-                    labels=shifted_labels,
-                    coord_mask=student_coord_mask_shifted,
-                    spans=student_spans,
-                    span_type="student",
-                    temperature=self.coordinate_loss_temperature,
-                )
+            # When auxiliary losses are not enabled, set all coordinate loss components to zero
+            has_coord_tokens = (
+                teacher_coord_mask_shifted.any() or student_coord_mask_shifted.any()
+            )
+            if has_coord_tokens:
+                zero_tensor = logits.new_tensor(0.0)
+                teacher_l1_loss = zero_tensor
+                student_l1_loss = zero_tensor
+                teacher_kce = zero_tensor
+                teacher_unlike = zero_tensor
+                student_kce = zero_tensor
+                student_unlike = zero_tensor
 
         return {
             "teacher_llm_loss": teacher_llm_loss,
@@ -770,6 +719,8 @@ class LossManager:
             return masked_loss.sum() / mask_sum
         else:
             return torch.tensor(0.0, device=per_token_loss.device)
+
+    # No legacy coordinate loss function; coordinate losses are handled via auxiliary path only.
 
     def _compute_masked_loss(
         self, logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor

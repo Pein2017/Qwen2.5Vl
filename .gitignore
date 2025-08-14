@@ -30,6 +30,8 @@
 !todo/
 !todo/**
 !.augment-guidelines
+!src_coord_pretrain/
+!src_coord_pretrain/**
 
 # Allow essential root files
 !.gitignore

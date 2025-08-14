@@ -85,8 +85,6 @@ class DummyCfg:
     coord_aux_topk = 100
     coord_aux_lambda_kce = 0.5
     coord_aux_lambda_unlike = 0.05
-    coord_aux_lambda_lap1 = 1e-4
-    coord_aux_lambda_lap2 = 1e-5
 
 
 def test_trainer_micro_step_and_checkpoint(tmp_path):
@@ -110,7 +108,11 @@ def test_trainer_micro_step_and_checkpoint(tmp_path):
 
     tok = Tok()
     tp = TokenProcessor(
-        TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024)
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
     )
     # Extend vocabulary and model embeddings to keep ids in range
     tok = tp.extend_tokenizer_vocabulary(tok)

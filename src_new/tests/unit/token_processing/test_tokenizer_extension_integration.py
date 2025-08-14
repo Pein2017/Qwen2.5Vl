@@ -20,7 +20,11 @@ def test_extend_official_tokenizer_adds_coord_tokens():
         base, local_files_only=True, trust_remote_code=True
     )
 
-    cfg = TokenConfig(max_coord_value=1025, coordinate_tokens_enabled=True)
+    cfg = TokenConfig(
+        max_coord_value=1025,
+        coordinate_tokens_enabled=True,
+        coordinate_init_mode="fourier_ramp",
+    )
     tp = TokenProcessor(cfg)
     tok_ext = tp.extend_tokenizer_vocabulary(tok)
 

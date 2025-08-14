@@ -1,0 +1,240 @@
+🌍 Setting up environment for coord bootstrap...
+✅ Environment configured (Python: /root/miniconda3/envs/ms/bin/python)
+🚀 Launch: 8 GPUs (port 22643)
+[2025-08-14 10:06:18,986] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,021] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,286] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,299] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,506] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,506] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,532] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-14 10:06:19,581] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+Using a slow image processor as `use_fast` is unset and a slow processor was saved with this model. `use_fast=True` will be the default behavior in v4.52, even if the model was saved with a slow processor. This will result in minor differences in outputs. You'll still be able to use a slow processor with `use_fast=False`.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+You are using a model of type qwen2_5_vl to instantiate a model of type qwen2_vl. This is not supported for all configurations of models and can yield errors.
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+Loading checkpoint shards:   0%|          | 0/2 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 335, in <module>
+    main()
+  File "/data3/Qwen2.5-VL-main/src_coord_pretrain/training/trainer.py", line 252, in main
+    model = Qwen2VLForConditionalGeneration.from_pretrained(str(model_path))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 279, in _wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4399, in from_pretrained
+    ) = cls._load_pretrained_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4833, in _load_pretrained_model
+    disk_offload_index, cpu_offload_index = _load_state_dict_into_meta_model(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 824, in _load_state_dict_into_meta_model
+    _load_parameter_into_model(model, param_name, param.to(param_device))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/transformers/modeling_utils.py", line 712, in _load_parameter_into_model
+    module.load_state_dict({param_type: tensor}, strict=False, assign=True)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2584, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for Linear:
+	size mismatch for bias: copying a param with shape torch.Size([2048]) from checkpoint, the shape in current model is torch.Size([1280]).
+W0814 10:06:27.190000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623435 closing signal SIGTERM
+W0814 10:06:27.191000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623436 closing signal SIGTERM
+W0814 10:06:27.192000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623437 closing signal SIGTERM
+W0814 10:06:27.193000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623438 closing signal SIGTERM
+W0814 10:06:27.193000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623439 closing signal SIGTERM
+W0814 10:06:27.194000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623440 closing signal SIGTERM
+W0814 10:06:27.194000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 623442 closing signal SIGTERM
+E0814 10:06:27.811000 623397 site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 6 (pid: 623441) of binary: /root/miniconda3/envs/ms/bin/python3.10
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/ms/bin/torchrun", line 8, in <module>
+    sys.exit(main())
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 919, in main
+    run(args)
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 910, in run
+    elastic_launch(
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+src_coord_pretrain/training/trainer.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-08-14_10:06:27
+  host      : bms-aizjmx01
+  rank      : 6 (local_rank: 6)
+  exitcode  : 1 (pid: 623441)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

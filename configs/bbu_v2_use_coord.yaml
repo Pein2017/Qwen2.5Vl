@@ -1,14 +1,14 @@
 # BBU Qwen2.5-VL Training Config
 
 # OUTPUT SETTINGS
-output_dir: "output-730-use_coord-ep100-coord_aux"
-run_name: "7-30-use_coord-ep100-coord_aux"
+output_dir: "output-814-msmean-ep50-coord_aux-Prog_longer"
+run_name: "814-msmean-ep50-coord_aux-Prog_longer"
 tb_dir: "tb"
 
 # MODEL SETTINGSd
-model_path: "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
+model_path: "model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024_msmean"
 model_size: "3B"
-model_max_length: 32000  
+model_max_length: 12000  
 attn_implementation: "flash_attention_2"
 torch_dtype: "bfloat16"
 use_cache: false
@@ -18,7 +18,7 @@ model_num_layers: 36
 model_num_attention_heads: 16
 model_vocab_size: 151665
 # TRAINING SETTINGS
-num_train_epochs: 100
+num_train_epochs: 50
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1
@@ -75,9 +75,8 @@ coordinate_tokens_enabled: true
 max_coord_value: 1024
 coordinate_loss_weight: 1
 regular_loss_weight: 1.0
-coordinate_temperature: 0.7
+
 coordinate_init_mode: "fourier_ramp"  # new: deterministic coord embedding init
-coordinate_label_sigma: 16
 
 # COORDINATE AUXILIARY LOSSES (enable to use new feature)
 coord_aux_enabled: true
@@ -96,8 +95,6 @@ dataloader_num_workers: 4
 pin_memory: true
 prefetch_factor: 2
 
-
-
 # TEACHER-STUDENT LOSS WEIGHTS
 teacher_loss_weight: 0.3
 student_loss_weight: 1.0
@@ -114,3 +111,16 @@ use_consistent_prompts: true
 
 # MODEL LOADING CONTROL FLAGS
 skip_vocab_extension: false
+
+# PROGRESSIVE UNFREEZE (staged training)
+prog_unfreeze_enabled: true
+prog_unfreeze_epoch_stage0_end: 2
+prog_unfreeze_epoch_stage1_end: 6
+prog_unfreeze_top_k_layers: 4
+prog_unfreeze_coord_slice_only: true
+
+# Optional LR overrides for groups
+lr_merger: 1.0e-5
+lr_coord_slice: 5.0e-5
+lr_top_layers: 1.2e-5
+lr_full_model: 1.0e-5

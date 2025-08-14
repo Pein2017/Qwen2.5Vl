@@ -22,6 +22,9 @@ class DummyConfig:
     use_cache = False
     torch_dtype = "float32"
     attn_implementation = "eager"
+    # Required by TokenConfig in DetectionModel
+    new_geometry_tokens = []
+    coordinate_init_mode = "fourier"
 
 
 @pytest.fixture

@@ -14,8 +14,6 @@ def _make_loss_manager():
     config.regular_loss_weight = 1.0
     config.teacher_loss_weight = 0.3
     config.student_loss_weight = 1.0
-    # Feature knobs (will be wired in LossManager later); keep present for future use
-    setattr(config, "coordinate_temperature", 1.2)
 
     # Minimal tokenizer with line + coord tokens
     vocab = {"<|line_start|>": 151665, "<|line_end|>": 151666}
@@ -24,26 +22,50 @@ def _make_loss_manager():
     tokenizer = Mock()
     tokenizer.get_vocab.return_value = vocab
 
-    token_processor = TokenProcessor(TokenConfig(True, config.max_coord_value))
-    return LossManager(config, token_processor, tokenizer)
+    token_processor = TokenProcessor(
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=config.max_coord_value,
+            coordinate_init_mode="fourier_ramp",
+        )
+    )
+    lm = LossManager(config, token_processor, tokenizer)
+    # Enable coordinate auxiliary loss (now required)
+    lm.set_coordinate_aux_options(
+        tau=1.2,
+        sigma_bins=2.0,
+        window_bins=3,
+        topk=5,
+        lambda_kce=0.5,
+        lambda_unlike=0.05,
+        lambda_lap1=0.0,
+        lambda_lap2=0.0,
+    )
+    return lm
 
 
 def test_teacher_student_paths_still_compute_ce_and_coord_l1():
     lm = _make_loss_manager()
     B, T = 1, 10
-    V = 151667 + 33  # up to coord_32 inclusive
+
+    # Get actual coordinate token range from loss manager
+    coord_start = lm._coord_start_id
+    coord_end = lm._coord_end_id
+    V = coord_end + 100  # Make vocab size large enough
+
     logits = torch.zeros(B, T, V)
     labels = torch.full((B, T), -100)
-    coord_start = 151667
 
-    # Put a teacher span [3,7) with two coordinate targets at 4 and 6
-    teacher_spans = [[(3, 7)]]
-    labels[0, 4] = coord_start + 5
-    labels[0, 6] = coord_start + 8
+    # Put a teacher span [3,8) with two coordinate targets at 4 and 6
+    # After shifting, this becomes span [2,7) with coordinate targets at 3 and 5
+    teacher_spans = [[(3, 8)]]
+    # Use small coordinate values to ensure they're within range
+    labels[0, 4] = coord_start + 2  # coord_2
+    labels[0, 6] = coord_start + 5  # coord_5
 
     # Make logits[t] peak at labels[t+1] (for CE)
-    logits[0, 3, coord_start + 5] = 50.0
-    logits[0, 5, coord_start + 8] = 50.0
+    logits[0, 3, coord_start + 2] = 50.0
+    logits[0, 5, coord_start + 5] = 50.0
 
     comp = lm.compute_loss_components(
         logits=logits, labels=labels, teacher_spans=teacher_spans

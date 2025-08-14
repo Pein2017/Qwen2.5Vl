@@ -158,7 +158,9 @@ class TestPipelineStressTesting:
         processor.tokenizer = tokenizer
 
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
         )
 
         # Create large mock images to simulate memory pressure
@@ -224,7 +226,10 @@ class TestPipelineStressTesting:
 
         from src_new.processing.coordinate_converter import CoordinateTokenConverter
 
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         results = []
         errors = []
@@ -337,7 +342,8 @@ class TestPipelineStressTesting:
                     )
 
                     converter = CoordinateTokenConverter(
-                        max_coord_value=config.max_coord_value
+                        max_coord_value=config.max_coord_value,
+                        coordinate_tokens_enabled=config.coordinate_tokens_enabled,
                     )
 
                     try:

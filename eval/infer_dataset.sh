@@ -7,12 +7,12 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-EXP_NAME="730-use_coord-ep100-coord_loss_0"           # Latest checkpoint with SafeTensors
-MODEL_PATH="output-730-use_coord-ep100-coord_loss_0/checkpoint-500"  # Use existing checkpoint-500
-CONFIG_PATH="configs/bbu_v2_use_coord.yaml"
+MODEL_PATH="output-814-base-ep50/8-14-base/checkpoint-200"  
+EXP_NAME="output-814-base-ep50"           
+CONFIG_PATH="configs/bbu_v2_base.yaml"
 
 # Dataset to process (single dataset per run)
-DATASET="train"                  # "train" or "val"
+DATASET="val"                  # "train" or "val"
 DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory - centralized data resolver will auto-discover all files
 OUTPUT_BASE="infer_results" 
 
@@ -23,11 +23,6 @@ NUM_TEACHERS=1
 # Model configuration
 
 MODEL_NAME="qwen2_5_vl"
-# Use the EXACT training configuration to ensure coordinate tokens are properly detected
-
-# Generation parameters (optimized for coordinate token models)
-# Coordinate token models may need more tokens to complete complex coordinate sequences
-# Each coordinate token is ~15 characters, complex objects may need 100+ tokens
 MAX_NEW_TOKENS=1024
 BATCH_SIZE=1          # Use batch_size=1 for coordinate token models
 NUM_WORKERS=4         # Use 0 workers to avoid memory issues
@@ -35,10 +30,7 @@ ENABLE_TORCH_COMPILE=false
 # Force eager attention to avoid Flash Attention triton issues
 FORCE_EAGER_ATTENTION=true
 
-# Debug parameters (set to limit samples for faster testing)
-# NOTE: When testing MAX_NEW_TOKENS effects, use more samples or remove MAX_SAMPLES limit
-# Small sample sizes may not show truncation effects clearly
-MAX_SAMPLES=5       
+MAX_SAMPLES=200      
 
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
@@ -47,7 +39,7 @@ LOG_LEVEL="debug"                       # "debug" for detailed validation info, 
 export PYTHONPATH=/data3/Qwen2.5-VL-main:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-export CUDA_VISIBLE_DEVICES=6
+export CUDA_VISIBLE_DEVICES=7
 
 # Normalize to absolute paths per repository rules
 ABS_REPO_ROOT="/data3/Qwen2.5-VL-main"

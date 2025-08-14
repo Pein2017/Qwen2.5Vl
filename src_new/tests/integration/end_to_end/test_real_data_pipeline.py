@@ -223,7 +223,9 @@ class TestRealDataPipeline:
             teacher_data = [json.loads(line.strip()) for line in f if line.strip()]
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=2048)
+        converter = CoordinateTokenConverter(
+            max_coord_value=2048, coordinate_tokens_enabled=True
+        )
 
         # Test conversion with real objects
         for i, teacher in enumerate(teacher_data[:2]):  # Test first 2 teachers
@@ -285,7 +287,9 @@ class TestRealDataPipeline:
 
         # Initialize conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=real_config.max_coord_value
+            processor=processor,
+            max_coord_value=real_config.max_coord_value,
+            coordinate_tokens_enabled=real_config.coordinate_tokens_enabled,
         )
 
         # Test simple conversation (student only)

@@ -305,8 +305,8 @@ class DetectionModel(nn.Module):
         token_config = TokenConfig(
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
-            new_geometry_tokens=getattr(config, "new_geometry_tokens", None),
-            coordinate_init_mode=getattr(config, "coordinate_init_mode", None),
+            new_geometry_tokens=getattr(config, "new_geometry_tokens", []),
+            coordinate_init_mode=config.coordinate_init_mode,
         )
         self.token_processor = TokenProcessor(token_config)
 
@@ -368,8 +368,8 @@ class DetectionModel(nn.Module):
                         lambda_unlike=float(
                             self.training_config.coord_aux_lambda_unlike
                         ),
-                        lambda_lap1=float(self.training_config.coord_aux_lambda_lap1),
-                        lambda_lap2=float(self.training_config.coord_aux_lambda_lap2),
+                        lambda_lap1=0.0,  # Laplacian regularizer removed
+                        lambda_lap2=0.0,  # Laplacian regularizer removed
                     )
                 # Laplacian regularizer removed: no embedding accessor needed
 
@@ -456,7 +456,17 @@ class DetectionModel(nn.Module):
             )
 
         # OPTIMIZATION 2: Load base model with optimized parameters
-        torch_dtype = getattr(torch, config.torch_dtype)
+        dtype_map = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "auto": torch.bfloat16,
+        }
+        if config.torch_dtype not in dtype_map:
+            raise ValueError(
+                f"Unsupported torch_dtype: {config.torch_dtype}. Supported: {list(dtype_map.keys())}"
+            )
+        torch_dtype = dtype_map[config.torch_dtype]
         attn_implementation = config.attn_implementation
 
         # Extract conflicting parameters from kwargs to avoid conflicts
@@ -600,14 +610,11 @@ class DetectionModel(nn.Module):
             # Validate counts: number of image tokens should match expected tokens per image grids
             if input_ids is not None:
                 # Determine image token id robustly (from model config or tokenizer)
-                image_token_id_attr = getattr(
-                    self.base_model.config, "image_token_id", None
-                )
-                image_token_id_val = (
-                    image_token_id_attr
-                    if isinstance(image_token_id_attr, int)
-                    else None
-                )
+                image_token_id_val = None
+                if hasattr(self.base_model.config, "image_token_id"):
+                    image_token_id_attr = self.base_model.config.image_token_id
+                    if isinstance(image_token_id_attr, int):
+                        image_token_id_val = image_token_id_attr
                 if image_token_id_val is None and self.tokenizer is not None:
                     vocab = self.tokenizer.get_vocab()
                     if "<|image_pad|>" in vocab:
@@ -625,7 +632,9 @@ class DetectionModel(nn.Module):
 
                 # Determine spatial merge size used by processor/model (default to 2)
                 spatial_merge_size = None
-                vision_cfg = getattr(self.base_model.config, "vision_config", None)
+                vision_cfg = None
+                if hasattr(self.base_model.config, "vision_config"):
+                    vision_cfg = self.base_model.config.vision_config
                 if vision_cfg is not None and hasattr(vision_cfg, "spatial_merge_size"):
                     try:
                         spatial_merge_size = int(vision_cfg.spatial_merge_size)
@@ -829,7 +838,9 @@ class DetectionModel(nn.Module):
                     return dict.__contains__(self, key) or hasattr(self, key)
 
             return SimpleOutput(
-                loss=base_outputs.loss if hasattr(base_outputs, "loss") else None,
+                loss=loss_components.loss
+                if loss_components.loss is not None
+                else (base_outputs.loss if hasattr(base_outputs, "loss") else None),
                 logits=base_outputs.logits if hasattr(base_outputs, "logits") else None,
                 loss_components=loss_components,
                 hidden_states=base_outputs.hidden_states

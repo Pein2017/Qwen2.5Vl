@@ -1374,6 +1374,28 @@ class BBUTrainer(HFTrainer):
             merger_params = []
             # LLM parameters (medium LR)
             llm_params = []
+            # Optional groups
+            top_layers_params = []
+            coord_slice_params = []
+
+            # Resolve optional staged settings
+            top_k_layers = (
+                int(getattr(config, "prog_unfreeze_top_k_layers", 0))
+                if getattr(config, "prog_unfreeze_enabled", False)
+                else 0
+            )
+            num_layers = int(getattr(config, "model_num_layers", 0) or 0)
+
+            def _extract_layer_index(param_name: str):
+                marker = "model.layers."
+                if marker not in param_name:
+                    return None
+                try:
+                    after = param_name.split(marker, 1)[1]
+                    idx_str = after.split(".", 1)[0]
+                    return int(idx_str)
+                except Exception:
+                    return None
 
             for name, param in self.model.named_parameters():
                 if not param.requires_grad:
@@ -1386,6 +1408,20 @@ class BBUTrainer(HFTrainer):
                 elif "visual" in name:
                     # Vision encoder gets vision_lr (lowest)
                     vision_params.append(param)
+                elif top_k_layers > 0 and _extract_layer_index(name) is not None:
+                    idx = _extract_layer_index(name)
+                    if (
+                        idx is not None
+                        and num_layers > 0
+                        and idx >= max(0, num_layers - top_k_layers)
+                    ):
+                        top_layers_params.append(param)
+                    else:
+                        llm_params.append(param)
+                elif any(
+                    key in name for key in ("embed_tokens.weight", "lm_head.weight")
+                ):
+                    coord_slice_params.append(param)
                 else:
                     # Default to LLM parameters (includes model.layers, embed_tokens, lm_head, etc.)
                     llm_params.append(param)
@@ -1420,12 +1456,42 @@ class BBUTrainer(HFTrainer):
                 )
                 self._param_group_mapping.append("merger")
 
+            # Top layers group (optional)
+            if top_layers_params:
+                tlr = getattr(config, "lr_top_layers", None)
+                param_groups.append(
+                    {
+                        "params": top_layers_params,
+                        "lr": tlr
+                        if (tlr is not None)
+                        else getattr(config, "llm_lr", self.args.learning_rate),
+                        "name": "top_layers",
+                    }
+                )
+                self._param_group_mapping.append("top_layers")
+
+            # Coord slice group (optional; embeddings/head rows masked by callback)
+            if coord_slice_params:
+                clr = getattr(config, "lr_coord_slice", None)
+                param_groups.append(
+                    {
+                        "params": coord_slice_params,
+                        "lr": clr
+                        if (clr is not None)
+                        else getattr(config, "llm_lr", self.args.learning_rate),
+                        "name": "coord_slice",
+                    }
+                )
+                self._param_group_mapping.append("coord_slice")
+
             # LLM group
             if llm_params:
                 param_groups.append(
                     {
                         "params": llm_params,
-                        "lr": config.llm_lr
+                        "lr": getattr(config, "lr_full_model", None)
+                        if getattr(config, "lr_full_model", None) is not None
+                        else config.llm_lr
                         if hasattr(config, "llm_lr")
                         else self.args.learning_rate,
                         "name": "llm",

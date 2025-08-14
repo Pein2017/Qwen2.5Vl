@@ -235,7 +235,7 @@ class TestPathValidator:
         )
 
         assert len(missing) == 1
-        assert "Data root directory" in missing[0]
+        assert "Root directory" in missing[0]
 
 
 class TestConvenienceFunctions:

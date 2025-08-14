@@ -388,27 +388,35 @@ def create_trainer_with_new_architecture(
     except Exception as e:
         logger.warning(f"⚠️ Could not pre-create optimizer: {e}")
 
-    # TODO: Register progressive unfreeze callback (freeze vision+LLM for first X epochs)
-    # Temporarily disabled - needs further testing for HF Transformers compatibility
-    # try:
-    #     from src_new.training.callbacks import ProgressiveUnfreezeCallback
-    #
-    #     freeze_epochs = getattr(config, "freeze_vision_llm_epochs", 1)
-    #     callback = ProgressiveUnfreezeCallback(
-    #         freeze_vision_llm_epochs=int(freeze_epochs), coord_slice_only=True
-    #     )
-    #     # Store trainer reference for HF compatibility
-    #     callback._trainer_ref = trainer
-    #     trainer.add_callback(callback)
-    #     logger.info(
-    #         f"✅ Registered ProgressiveUnfreezeCallback (freeze_vision_llm_epochs={freeze_epochs})"
-    #     )
-    # except Exception as e:
-    #     logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
+    # Register progressive unfreeze callback when enabled via YAML
+    try:
+        if getattr(config, "prog_unfreeze_enabled", False):
+            from src_new.training.callbacks import ProgressiveUnfreezeCallback
 
-    logger.info(
-        "🔧 ProgressiveUnfreezeCallback temporarily disabled - training with standard setup"
-    )
+            callback = ProgressiveUnfreezeCallback(
+                freeze_vision_llm_epochs=int(
+                    getattr(config, "prog_unfreeze_epoch_stage1_end", 1)
+                    or getattr(config, "num_train_epochs", 1)
+                ),
+                coord_slice_only=bool(
+                    getattr(config, "prog_unfreeze_coord_slice_only", True)
+                ),
+                stage0_end_epoch=getattr(config, "prog_unfreeze_epoch_stage0_end", None),
+                stage1_end_epoch=getattr(config, "prog_unfreeze_epoch_stage1_end", None),
+                top_k_layers=getattr(config, "prog_unfreeze_top_k_layers", None),
+            )
+            # Store trainer reference for HF compatibility
+            callback._trainer_ref = trainer
+            trainer.add_callback(callback)
+            logger.info(
+                "✅ Registered ProgressiveUnfreezeCallback (staged unfreeze enabled)"
+            )
+        else:
+            logger.info(
+                "🔧 Progressive unfreeze disabled by config - training with standard setup"
+            )
+    except Exception as e:
+        logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
     from transformers import Qwen2VLProcessor

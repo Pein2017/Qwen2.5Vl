@@ -17,11 +17,11 @@ class TestCoordinateTokenConverter(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        self.converter = CoordinateTokenConverter(max_coord_value=1024)
+        self.converter = CoordinateTokenConverter(max_coord_value=1024, coordinate_tokens_enabled=True)
 
     def test_initialization_valid(self):
         """Test valid initialization."""
-        converter = CoordinateTokenConverter(max_coord_value=1024)
+        converter = CoordinateTokenConverter(max_coord_value=1024, coordinate_tokens_enabled=True)
         self.assertEqual(converter.max_coord_value, 1024)
         self.assertIn("bbox_2d", converter.geometry_tokens)
         self.assertIn("quad", converter.geometry_tokens)
@@ -31,11 +31,11 @@ class TestCoordinateTokenConverter(unittest.TestCase):
     def test_initialization_invalid_max_coord(self):
         """Test initialization with invalid max_coord_value."""
         with self.assertRaises(ValueError) as cm:
-            CoordinateTokenConverter(max_coord_value=0)
+            CoordinateTokenConverter(max_coord_value=0, coordinate_tokens_enabled=True)
         self.assertIn("max_coord_value must be a positive integer", str(cm.exception))
 
         with self.assertRaises(ValueError) as cm:
-            CoordinateTokenConverter(max_coord_value=-100)
+            CoordinateTokenConverter(max_coord_value=-100, coordinate_tokens_enabled=True)
         self.assertIn("max_coord_value must be a positive integer", str(cm.exception))
 
     def test_bbox_2d_conversion(self):

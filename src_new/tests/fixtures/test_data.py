@@ -58,7 +58,6 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
         "coordinate_loss_weight": 0,  # Match bbu_v2_use_coord.yaml (int, not float)
         "regular_loss_weight": 1.0,
         "coordinate_temperature": 0.7,
-        "coordinate_label_sigma": 16,  # Match YAML (int, not float)
         "coordinate_init_mode": "fourier_ramp",
         # Coordinate auxiliary losses (required)
         "coord_aux_enabled": False,
@@ -68,8 +67,6 @@ def create_sample_config(**overrides) -> Dict[str, Any]:
         "coord_aux_topk": 100,
         "coord_aux_lambda_kce": 0.5,
         "coord_aux_lambda_unlike": 0.05,
-        "coord_aux_lambda_lap1": 1e-4,
-        "coord_aux_lambda_lap2": 1e-5,
         # Evaluation settings (required)
         "eval_strategy": "steps",
         "eval_steps": 10,

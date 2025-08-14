@@ -150,6 +150,7 @@ class TestCompletePipeline:
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
             new_geometry_tokens=[],
+            coordinate_init_mode="fourier_ramp",
         )
         token_processor = TokenProcessor(token_config)
 
@@ -158,7 +159,9 @@ class TestCompletePipeline:
 
         # Create conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
         )
 
         # Create loss manager

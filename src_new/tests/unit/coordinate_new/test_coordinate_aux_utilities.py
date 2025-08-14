@@ -30,8 +30,8 @@ def test_kernelized_kl_sparse_decreases_when_logits_peak_near_target():
     coord_logits_far[:, 0] = 6.0
     coord_logits_far[:, 1] = 4.0
 
-    kl_close = kernelized_kl_sparse(coord_logits_close, idxs, q_vals, tau=1.0)
-    kl_far = kernelized_kl_sparse(coord_logits_far, idxs, q_vals, tau=1.0)
+    kl_close = kernelized_kl_sparse(coord_logits_close, idxs, q_vals, tau=1.0, eps=1e-6)
+    kl_far = kernelized_kl_sparse(coord_logits_far, idxs, q_vals, tau=1.0, eps=1e-6)
     assert torch.isfinite(kl_close)
     assert torch.isfinite(kl_far)
     assert kl_close.item() < kl_far.item()
@@ -43,7 +43,7 @@ def test_kernelized_kl_sparse_handles_empty_inputs():
     idxs = torch.empty(0, 3, dtype=torch.long)
     q_vals = torch.empty(0, 3, dtype=torch.float32)
     coord_logits = torch.empty(0, K + 1, dtype=torch.float32)
-    kl = kernelized_kl_sparse(coord_logits, idxs, q_vals, tau=1.0)
+    kl = kernelized_kl_sparse(coord_logits, idxs, q_vals, tau=1.0, eps=1e-6)
     assert torch.isfinite(kl)
     assert kl.item() == 0.0
 
@@ -60,6 +60,7 @@ def test_unlikelihood_topk_text_empty_mask_returns_zero():
         coord_mask=coord_mask,
         noncoord_vocab_mask=noncoord_vocab_mask,
         topk=5,
+        eps=1e-6,
     )
     assert torch.isfinite(loss)
     assert loss.item() == 0.0
@@ -90,12 +91,14 @@ def test_unlikelihood_topk_text_decreases_when_noncoord_mass_is_suppressed():
         coord_mask=coord_mask,
         noncoord_vocab_mask=noncoord_vocab_mask,
         topk=5,
+        eps=1e-6,
     )
     loss_b = unlikelihood_topk_text(
         logits_all=logits_b,
         coord_mask=coord_mask,
         noncoord_vocab_mask=noncoord_vocab_mask,
         topk=5,
+        eps=1e-6,
     )
     assert torch.isfinite(loss_a) and torch.isfinite(loss_b)
     assert loss_b.item() < loss_a.item()

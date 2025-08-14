@@ -71,7 +71,11 @@ def test_embedding_resize_alignment(base_len, hidden):
 
     # Extend tokenizer with coord system
     tp = TokenProcessor(
-        TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024)
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
     )
     tok = tp.extend_tokenizer_vocabulary(tok)
 

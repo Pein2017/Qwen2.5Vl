@@ -62,7 +62,11 @@ def test_detection_model_embedding_extension_and_processor_update():
     base = TinyModel()
     # Setup DetectionModel with token processor
     token_processor = TokenProcessor(
-        TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024)
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
     )
 
     class DummyCfg:

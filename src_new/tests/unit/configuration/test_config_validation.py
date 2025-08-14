@@ -90,8 +90,6 @@ class TestConfigValidation:
             "coordinate_tokens_enabled": True,
             "coordinate_loss_weight": 0,  # Match bbu_v2_use_coord.yaml (int, not float)
             "regular_loss_weight": 1.0,
-            "coordinate_temperature": 0.7,
-            "coordinate_label_sigma": 16,  # Match YAML (int, not float)
             "coordinate_init_mode": "fourier_ramp",
             # Coordinate auxiliary losses (required)
             "coord_aux_enabled": False,
@@ -101,8 +99,6 @@ class TestConfigValidation:
             "coord_aux_topk": 100,
             "coord_aux_lambda_kce": 0.5,
             "coord_aux_lambda_unlike": 0.05,
-            "coord_aux_lambda_lap1": 1e-4,
-            "coord_aux_lambda_lap2": 1e-5,
             # Evaluation settings (required)
             "eval_strategy": "steps",
             "eval_steps": 500,
@@ -382,6 +378,62 @@ class TestConfigValidation:
             assert config.per_device_train_batch_size == 2
             assert config.gradient_accumulation_steps == 4
             # Effective batch size would be 2 * 4 = 8
+        finally:
+            Path(temp_file).unlink()
+            import shutil
+
+            shutil.rmtree(temp_dir)
+
+    def test_coordinate_init_mode_validation(self, valid_config_dict):
+        """Test coordinate_init_mode validation constraints."""
+        # Set up temporary paths
+        temp_dir = self._setup_temp_paths(valid_config_dict)
+
+        # Test with valid modes
+        for valid_mode in ["ms_mean", "fourier_ramp"]:
+            valid_config_dict["coordinate_init_mode"] = valid_mode
+            valid_config_dict["coordinate_tokens_enabled"] = True
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".yaml", delete=False
+            ) as f:
+                yaml.safe_dump(valid_config_dict, f)
+                temp_file = f.name
+
+            try:
+                config = load_config(temp_file)
+                assert config.coordinate_init_mode == valid_mode
+            finally:
+                Path(temp_file).unlink()
+
+        # Test with invalid mode
+        valid_config_dict["coordinate_init_mode"] = "invalid_mode"
+        valid_config_dict["coordinate_tokens_enabled"] = True
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.safe_dump(valid_config_dict, f)
+            temp_file = f.name
+
+        try:
+            with pytest.raises(ValueError, match="coordinate_init_mode must be one of"):
+                load_config(temp_file)
+        finally:
+            Path(temp_file).unlink()
+
+        # Test with None when coordinate tokens enabled
+        valid_config_dict["coordinate_init_mode"] = None
+        valid_config_dict["coordinate_tokens_enabled"] = True
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.safe_dump(valid_config_dict, f)
+            temp_file = f.name
+
+        try:
+            with pytest.raises(
+                ValueError,
+                match="coordinate_init_mode is required when coordinate_tokens_enabled=True",
+            ):
+                load_config(temp_file)
         finally:
             Path(temp_file).unlink()
             import shutil

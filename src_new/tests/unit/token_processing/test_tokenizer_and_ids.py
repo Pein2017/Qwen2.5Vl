@@ -29,7 +29,13 @@ class DummyTokenizer:
 
 def test_tokenizer_extension_exact_ids_and_final_size():
     tok = DummyTokenizer()
-    tp = TokenProcessor(TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024))
+    tp = TokenProcessor(
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
+    )
     tok = tp.extend_tokenizer_vocabulary(tok)
 
     v = tok.get_vocab()
@@ -58,10 +64,15 @@ def test_tokenizer_extension_missing_tokens_raises():
             return len(toks[:10])
 
     tok = Partial()
-    tp = TokenProcessor(TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024))
+    tp = TokenProcessor(
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
+    )
     try:
         tp.extend_tokenizer_vocabulary(tok)
         assert False, "Expected ValueError for missing required tokens"
     except ValueError as e:
         assert "Missing required tokens" in str(e)
-

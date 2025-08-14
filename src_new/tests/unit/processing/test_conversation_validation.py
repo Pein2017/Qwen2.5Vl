@@ -24,8 +24,12 @@ def _make_cp():
         def __call__(self, *args, **kwargs):
             raise RuntimeError("should not be called in validation tests")
 
-    cp = ConversationProcessor(processor=DummyProc(), max_coord_value=1024)
-    cp.coordinate_converter = CoordinateTokenConverter(max_coord_value=1024)
+    cp = ConversationProcessor(
+        processor=DummyProc(), max_coord_value=1024, coordinate_tokens_enabled=True
+    )
+    cp.coordinate_converter = CoordinateTokenConverter(
+        max_coord_value=1024, coordinate_tokens_enabled=True
+    )
     return cp
 
 

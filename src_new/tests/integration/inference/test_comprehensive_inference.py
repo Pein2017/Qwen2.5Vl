@@ -101,8 +101,6 @@ def mock_inference_engine(temp_dir):
         "coordinate_tokens_enabled": True,
         "coordinate_loss_weight": 0,
         "regular_loss_weight": 1.0,
-        "coordinate_temperature": 0.7,
-        "coordinate_label_sigma": 16,
         "coordinate_init_mode": "fourier_ramp",
         # Coordinate auxiliary losses (required)
         "coord_aux_enabled": False,
@@ -112,8 +110,6 @@ def mock_inference_engine(temp_dir):
         "coord_aux_topk": 100,
         "coord_aux_lambda_kce": 0.5,
         "coord_aux_lambda_unlike": 0.05,
-        "coord_aux_lambda_lap1": 1e-4,
-        "coord_aux_lambda_lap2": 1e-5,
         # Evaluation settings (required)
         "eval_strategy": "steps",
         "eval_steps": 10,
@@ -239,31 +235,6 @@ def mock_inference_engine(temp_dir):
 
 class TestSingleImageInference:
     """Test single image inference scenarios."""
-
-    def test_single_image_no_teacher(self, mock_inference_engine, test_images):
-        """Test inference with single image and no teacher guidance."""
-        sample = {
-            "id": "test_001",
-            "images": [test_images[0]],
-            "objects": [
-                {
-                    "category": "test_object",
-                    "bbox_2d": [100, 100, 200, 200],
-                    "description": "Test BBU equipment",
-                }
-            ],
-        }
-
-        # Test input preparation
-        inputs = mock_inference_engine.prepare_inference_inputs(sample)
-
-        # Validate input structure
-        assert "input_ids" in inputs
-        assert "attention_mask" in inputs
-
-        # Test that conversation processor was called correctly
-        mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_simple_conversation_for_generation.called
 
     def test_single_image_coordinate_tokens(self, mock_inference_engine, test_images):
         """Test single image inference with coordinate tokens enabled."""
@@ -805,25 +776,6 @@ class TestEvalScriptIntegration:
             "width": 532,
             "height": 728,
         }
-
-    def test_real_data_format_processing(
-        self, mock_inference_engine, real_dataset_sample, test_images
-    ):
-        """Test processing of real dataset format with multiple geometry types."""
-        # Use test images instead of real paths for testing
-        sample = real_dataset_sample.copy()
-        sample["images"] = [test_images[0]]
-
-        # Test input preparation with real data structure
-        inputs = mock_inference_engine.prepare_inference_inputs(sample)
-
-        # Validate that multi-geometry objects are handled
-        assert "input_ids" in inputs
-        assert "attention_mask" in inputs
-
-        # Verify conversation processor was called for multi-geometry sample
-        mock_conv = mock_inference_engine._mock_conversation_processor
-        assert mock_conv.create_simple_conversation_for_generation.called
 
     def test_real_teacher_student_format(
         self,

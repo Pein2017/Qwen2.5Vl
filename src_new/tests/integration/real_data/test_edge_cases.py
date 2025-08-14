@@ -165,7 +165,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test empty objects
         empty_sample = edge_case_data["empty_objects"]
@@ -199,7 +202,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test extreme coordinates
         extreme_sample = edge_case_data["extreme_coordinates"]
@@ -256,7 +262,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test each malformed data pattern
         malformed_samples = edge_case_data["malformed_data"]
@@ -311,7 +320,9 @@ class TestEdgeCasesAndBoundaryConditions:
 
         # Initialize conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
         )
 
         # Create mock images
@@ -376,7 +387,9 @@ class TestEdgeCasesAndBoundaryConditions:
 
         # Initialize conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
         )
 
         # Create mock images
@@ -443,6 +456,7 @@ class TestEdgeCasesAndBoundaryConditions:
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
             new_geometry_tokens=[],
+            coordinate_init_mode="fourier_ramp",
         )
         token_processor = TokenProcessor(token_config)
 
@@ -496,7 +510,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test error recovery scenarios
         error_scenarios = [
@@ -562,7 +579,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test concurrent processing simulation
         import threading
@@ -641,7 +661,10 @@ class TestEdgeCasesAndBoundaryConditions:
         config, tokenizer, processor = test_setup
 
         # Initialize coordinate converter
-        converter = CoordinateTokenConverter(max_coord_value=config.max_coord_value)
+        converter = CoordinateTokenConverter(
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
+        )
 
         # Test resource cleanup scenarios
         cleanup_scenarios = [

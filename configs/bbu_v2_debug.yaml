@@ -14,7 +14,7 @@ model_num_layers: 36
 model_num_attention_heads: 16
 model_vocab_size: 151665  
 # TRAINING SETTINGS
-num_train_epochs: 4
+num_train_epochs: 6
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
 gradient_accumulation_steps: 1
@@ -70,10 +70,9 @@ verbose: false
 coordinate_tokens_enabled: true
 max_coord_value: 1024
 coordinate_loss_weight: 1.0
-coordinate_temperature: 0.7
+
 regular_loss_weight: 1.0
 coordinate_init_mode: "fourier_ramp"  # deterministic coord embedding init
-coordinate_label_sigma: 16
 
 # COORDINATE AUXILIARY LOSSES (enable to use new feature)
 coord_aux_enabled: true
@@ -93,8 +92,8 @@ pin_memory: true
 prefetch_factor: 2
 
 # OUTPUT SETTINGS
-output_dir: "output-7-30-debug"
-run_name: "7-30-use_coord-debug"
+output_dir: "output-814-base-ep50-debug"
+run_name: "8-14-debug"
 tb_dir: "tb"
 
 # TEACHER-STUDENT LOSS WEIGHTS
@@ -113,3 +112,16 @@ use_consistent_prompts: true
 
 # MODEL LOADING CONTROL FLAGS
 skip_vocab_extension: false
+
+# PROGRESSIVE UNFREEZE (staged training)
+prog_unfreeze_enabled: true
+prog_unfreeze_epoch_stage0_end: 1
+prog_unfreeze_epoch_stage1_end: 2
+prog_unfreeze_top_k_layers: 3
+prog_unfreeze_coord_slice_only: true
+
+# Optional LR overrides for groups
+lr_merger: 1.0e-5
+lr_coord_slice: 3.0e-5
+lr_top_layers: 6.0e-6
+lr_full_model: 5.0e-6

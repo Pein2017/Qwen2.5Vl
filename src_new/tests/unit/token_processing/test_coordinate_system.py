@@ -30,13 +30,18 @@ class TestCoordinateTokenSystem:
     @pytest.fixture
     def coordinate_converter(self):
         """Create coordinate token converter."""
-        return CoordinateTokenConverter(max_coord_value=1024)
+        return CoordinateTokenConverter(
+            max_coord_value=1024, coordinate_tokens_enabled=True
+        )
 
     @pytest.fixture
     def token_config(self):
         """Create token processor configuration."""
         return TokenConfig(
-            coordinate_tokens_enabled=True, max_coord_value=1024, new_geometry_tokens=[]
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            new_geometry_tokens=[],
+            coordinate_init_mode="fourier_ramp",
         )
 
     @pytest.fixture
@@ -297,6 +302,7 @@ class TestCoordinateTokenSystem:
             coordinate_tokens_enabled=False,
             max_coord_value=1024,
             new_geometry_tokens=[],
+            coordinate_init_mode="fourier_ramp",
         )
 
         disabled_processor = TokenProcessor(disabled_config)

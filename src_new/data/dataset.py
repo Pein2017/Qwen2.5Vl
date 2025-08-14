@@ -158,8 +158,19 @@ class Dataset(TorchDataset):
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
 
+        if not hasattr(self.config, "coordinate_tokens_enabled"):
+            raise ValueError(
+                "coordinate_tokens_enabled must be explicitly set in configuration (True/False)"
+            )
+        if not isinstance(self.config.coordinate_tokens_enabled, bool):
+            raise ValueError(
+                f"coordinate_tokens_enabled must be a bool, got {type(self.config.coordinate_tokens_enabled)}: {self.config.coordinate_tokens_enabled!r}"
+            )
+
         self.conversation_processor = ConversationProcessor(
-            processor=hf_processor, max_coord_value=max_coord_value
+            processor=hf_processor,
+            max_coord_value=max_coord_value,
+            coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")

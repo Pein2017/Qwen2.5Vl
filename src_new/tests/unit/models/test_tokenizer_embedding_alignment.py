@@ -70,7 +70,11 @@ def test_strict_tokenizer_embedding_alignment(dtype, base_len):
     # Base tokenizer vocab and processor
     tok = SimpleTok(base_len)
     tp = TokenProcessor(
-        TokenConfig(coordinate_tokens_enabled=True, max_coord_value=1024)
+        TokenConfig(
+            coordinate_tokens_enabled=True,
+            max_coord_value=1024,
+            coordinate_init_mode="fourier_ramp",
+        )
     )
 
     # Extend tokenizer

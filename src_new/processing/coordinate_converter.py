@@ -24,12 +24,13 @@ class CoordinateTokenConverter:
     and is the ONLY custom logic we need to preserve.
     """
 
-    def __init__(self, max_coord_value: int):
+    def __init__(self, max_coord_value: int, coordinate_tokens_enabled: bool):
         """
         Initialize coordinate token converter.
 
         Args:
             max_coord_value: Maximum coordinate value for clamping (required)
+            coordinate_tokens_enabled: If False, emit raw numeric coordinates instead of <|coord_*|> tokens
 
         Raises:
             ValueError: If max_coord_value is missing or invalid
@@ -42,8 +43,13 @@ class CoordinateTokenConverter:
             raise ValueError(
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
+        if not isinstance(coordinate_tokens_enabled, bool):
+            raise ValueError(
+                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}: {coordinate_tokens_enabled!r}"
+            )
 
         self.max_coord_value = max_coord_value
+        self.coordinate_tokens_enabled = coordinate_tokens_enabled
 
         # Geometry type mappings (from current _format_objects_for_response)
         self.geometry_tokens = {
@@ -78,7 +84,7 @@ class CoordinateTokenConverter:
             objects: List of object dictionaries with geometry and description
 
         Returns:
-            Formatted string with coordinate tokens
+            Formatted string with coordinate tokens or numeric coordinates
 
         Raises:
             ValueError: If objects list is empty or contains invalid objects
@@ -167,17 +173,20 @@ class CoordinateTokenConverter:
         # Get tokens for this geometry type
         ref_start, ref_end, geom_start, geom_end = self.geometry_tokens[geometry_type]
 
-        # Convert coordinates to coordinate tokens
-        coord_tokens = []
+        # Convert coordinates either to tokens or to raw integers
+        coord_texts: List[str] = []
         for coord in coordinates:
-            clamped_coord = max(0, min(int(coord), self.max_coord_value))
-            coord_tokens.append(f"<|coord_{clamped_coord}|>")
+            clamped = max(0, min(int(coord), self.max_coord_value))
+            if self.coordinate_tokens_enabled:
+                coord_texts.append(f"<|coord_{clamped}|>")
+            else:
+                coord_texts.append(str(clamped))
 
-        coord_string = ", ".join(coord_tokens)
+        coord_string = ", ".join(coord_texts)
         # Use empty string if description is missing (graceful handling)
         description = obj.get("desc", "")
 
-        # Format complete token string (exact same format as current system)
+        # Format complete token/numeric string (same structure)
         return (
             f"{ref_start}{description}{ref_end}{geom_start}[{coord_string}]{geom_end}"
         )

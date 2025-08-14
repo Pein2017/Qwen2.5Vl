@@ -79,7 +79,7 @@ The training pipeline follows a comprehensive 8-step process from data loading t
 
 #### **Step 7: Compute Losses** (`src_new/models/loss_manager.py`)
 - Calculate teacher/student LLM losses using span masking
-- Compute coordinate L1 losses using soft expectation
+- Compute coordinate losses using auxiliary losses (Kernelized-KL + Unlikelihood)
 - Aggregate loss components with configurable weights
 
 #### **Step 8: Log Results** (`src_new/training/training_state_manager.py`)
@@ -468,25 +468,21 @@ The system computes separate losses for different learning objectives:
 |----------------|---------|-------------|
 | `teacher_llm_loss` | Teacher example learning | Cross-entropy on teacher spans |
 | `student_llm_loss` | Student response learning | Cross-entropy on student spans |
-| `teacher_l1_loss` | Teacher coordinate regression | Soft expectation + L1 loss |
-| `student_l1_loss` | Student coordinate regression | Soft expectation + L1 loss |
+| `teacher_kce_loss` | Teacher coordinate regression | Kernelized-KL loss |
+| `teacher_unlike_loss` | Teacher coordinate regression | Unlikelihood loss |
+| `student_kce_loss` | Student coordinate regression | Kernelized-KL loss |
+| `student_unlike_loss` | Student coordinate regression | Unlikelihood loss |
 
 Note (2025-08): We use joint training with span-aligned masks and next-token shifting.
 - CE covers all assistant tokens (text + coordinate tokens) within teacher/student spans for comprehensive language learning.
-- L1 covers only coordinate-token targets within assistant spans for precise coordinate regression.
-- Soft-expectation temperature is configurable via `coordinate_temperature` (preferred; legacy: `coordinate_loss_temperature`).
+- Auxiliary losses cover only coordinate-token targets within assistant spans for precise coordinate regression.
 
-### Soft Expectation Coordinate Loss
+### Auxiliary Coordinate Losses
 
-Instead of cross-entropy, coordinate tokens use soft expectation for better regression:
+Instead of cross-entropy, coordinate tokens use auxiliary losses for better regression:
 
-```python
-# Soft expectation formula
-expected_coord = Σ(v * softmax(logits_v / temperature))
-
-# L1 loss between expected and target coordinates
-l1_loss = |expected_coord - target_coord|
-```
+- **Kernelized-KL**: Sparse window around ground truth coordinate bin
+- **Unlikelihood**: Penalizes non-coordinate tokens at coordinate positions
 
 ---
 
@@ -500,19 +496,17 @@ The system implements a sophisticated dual-loss architecture combining language 
 |-----------|---------|-------------------|---------|
 | `teacher_llm_loss` | Teacher example learning | Cross-entropy on teacher spans | `teacher_loss_weight` |
 | `student_llm_loss` | Student response learning | Cross-entropy on student spans | `student_loss_weight` |
-| `teacher_l1_loss` | Teacher coordinate regression | See below (soft-expectation baseline or auxiliary aggregate) | `coordinate_loss_weight` |
-| `student_l1_loss` | Student coordinate regression | See below (soft-expectation baseline or auxiliary aggregate) | `coordinate_loss_weight` |
+| `teacher_kce_loss` | Teacher coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
+| `teacher_unlike_loss` | Teacher coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
+| `student_kce_loss` | Student coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
+| `student_unlike_loss` | Student coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
 
-### Soft Expectation Coordinate Loss (Baseline)
+### Auxiliary Coordinate Losses (Always Enabled)
 
-By default (when auxiliary features are disabled), coordinate tokens use the soft expectation + L1 path:
+Coordinate tokens use auxiliary losses for better regression performance:
 
-```python
-# Soft expectation formula (src_new/models/coordinate_loss.py)
-P(coord_value = v) = softmax(logits_v / temperature)
-expected_coord = Σ(v * P(coord_value = v))  # v ∈ [0, MAX_COORD]
-coordinate_loss = L1(expected_coord, ground_truth_coord)
-```
+- **Kernelized-KL**: Sparse Gaussian kernel around ground truth coordinate bin
+- **Unlikelihood**: Top-k penalty on non-coordinate tokens at coordinate positions
 
 This path remains the baseline and is fully compatible with existing training runs.
 
@@ -993,36 +987,24 @@ if student_coord_mask.any():
     student_l1_loss = self._compute_coordinate_loss(logits, labels, student_coord_mask)
 ```
 
-### 4) Coordinate loss specifics (soft expectation + L1)
+### 4) Coordinate loss specifics (auxiliary losses)
 
-- Extract logits for coordinate token vocab range and positions from `coord_mask`:
-```188:205:/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py
-coord_logits_full = logits[:, :, self.coord_start_id : self.coord_end_id]
-coord_positions = torch.where(coord_mask)
-coord_logits = coord_logits_full[coord_positions]
+- Extract coordinate logits and build sparse kernel windows around ground truth:
+```python
+coord_logits_full = shifted_logits[..., coord_start:coord_end_exclusive]
+# Build Gaussian kernel around ground truth coordinate bin
+idxs, q_vals = build_kernel_indices_and_q(y=y, K=K, sigma=sigma_bins, window=window_bins)
 ```
 
-- Use labels to filter valid positions (ignore -100), then convert token IDs to coordinate values:
-```220:246:/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py
-target_coord_ids = labels[coord_positions]
-valid_mask = target_coord_ids != -100
-valid_coord_logits = coord_logits[valid_mask]
-valid_target_coord_ids = target_coord_ids[valid_mask]
-target_coords = valid_target_coord_ids - self.coord_start_id
-# clamp out-of-range and continue
+- Compute Kernelized-KL loss with temperature scaling:
+```python
+kce = kernelized_kl_sparse(coord_logits=coord_logits, idxs=idxs, q_vals=q_vals, tau=tau)
 ```
 
-- Numerical stability, temperature scaling, soft expectation, and L1:
-```130:152:/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py
-scaled_logits = torch.clamp(scaled_logits, min=-50.0, max=50.0)
-coord_probs = F.softmax(scaled_logits, dim=-1)
-coord_probs = coord_probs + 1e-8
-coord_probs = coord_probs / coord_probs.sum(dim=-1, keepdim=True)
-expected_coords = torch.sum(coord_probs * coord_values, dim=-1)
-```
-```260:271:/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py
-expected_coords = self.compute_soft_expectation(valid_coord_logits, temperature)
-coordinate_loss = F.l1_loss(expected_coords, target_coords.float())
+- Compute Unlikelihood loss on non-coordinate tokens:
+```python
+unlike = unlikelihood_topk_text(logits_all=shifted_logits, coord_mask=group_mask,
+                               noncoord_vocab_mask=noncoord_mask, topk=topk)
 ```
 
 ### 5) Shapes, masks, and conventions

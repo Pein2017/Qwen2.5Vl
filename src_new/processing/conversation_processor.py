@@ -22,7 +22,6 @@ import torch
 from PIL import Image
 
 from src_new.utils.logger_factory import get_processing_logger
-from src_new.utils.error_formatting import ErrorMessageBuilder
 
 from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS
@@ -301,13 +300,16 @@ class ConversationProcessor:
     Replaces the complex custom logic in chat_processor.py and templates.py.
     """
 
-    def __init__(self, processor, max_coord_value: int):
+    def __init__(
+        self, processor, max_coord_value: int, coordinate_tokens_enabled: bool
+    ):
         """
         Initialize conversation processor.
 
         Args:
             processor: Official HuggingFace Qwen2VLProcessor
             max_coord_value: Maximum coordinate value for coordinate tokens (required)
+            coordinate_tokens_enabled: Whether to emit <|coord_*|> tokens or raw numbers
 
         Raises:
             ValueError: If processor is None or invalid
@@ -322,10 +324,16 @@ class ConversationProcessor:
             raise ValueError(
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
+        if not isinstance(coordinate_tokens_enabled, bool):
+            raise ValueError(
+                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}: {coordinate_tokens_enabled!r}"
+            )
 
         self.processor = processor
+        self.coordinate_tokens_enabled = coordinate_tokens_enabled
         self.coordinate_converter = CoordinateTokenConverter(
-            max_coord_value=max_coord_value
+            max_coord_value=max_coord_value,
+            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
         )
 
     def _process_text_and_images(
@@ -643,7 +651,11 @@ class ConversationProcessor:
                 teacher_images_list = teacher_images_list[:max_teachers]
 
             # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -1340,7 +1352,11 @@ class ConversationProcessor:
             )
 
             # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             # Build conversation using official HuggingFace format
@@ -1459,7 +1475,11 @@ class ConversationProcessor:
                 raise ConversationStructureError("images must be a non-empty list")
 
             # Import system prompt from CONSTANTS
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
 
             # Build conversation for inference
             messages = [
@@ -1548,7 +1568,11 @@ class ConversationProcessor:
             )
 
             # Prompts
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -1711,7 +1735,11 @@ class ConversationProcessor:
             if not isinstance(images, list) or not images:
                 raise ConversationStructureError("images must be a non-empty list")
 
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             messages: List[Dict[str, Any]] = [

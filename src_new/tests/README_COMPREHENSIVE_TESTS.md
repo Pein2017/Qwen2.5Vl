@@ -148,7 +148,7 @@ The test suite provides comprehensive fixtures in `conftest.py`:
 
 2. **Loss Computation**
    - Dual-loss system (LLM + coordinate)
-   - Soft expectation coordinate loss
+   - Auxiliary coordinate losses (Kernelized-KL + Unlikelihood)
    - Teacher-student loss splitting
    - Loss aggregation and weighting
 
