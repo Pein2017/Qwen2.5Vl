@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, cast
+from typing import Any, Dict, List, Mapping, Optional, cast
 
 import torch
 from torch.utils.data import Dataset as TorchDataset
@@ -12,6 +12,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
 _COORD_TOKEN_RE = re.compile(r"^<\|coord_(\d+)\|>$")
+_RAW_NUMBER_RE = re.compile(r"^(\d+)$")
 
 
 def _is_absolute(path: str) -> bool:
@@ -46,6 +47,7 @@ class DatasetConfig:
     data_path: str
     max_coord_value: int
     use_apply_chat_template: bool
+    max_samples: Optional[int] = None  # For debug: limit dataset size
 
     def validate(self) -> None:
         if not _is_absolute(self.data_path):
@@ -97,19 +99,43 @@ class CoordBootstrapDataset(TorchDataset):
         messages = rec["messages"]
         if self.config.use_apply_chat_template:
             try:
-                encoded_any: Any = self.tokenizer.apply_chat_template(
+                text_any: Any = self.tokenizer.apply_chat_template(
                     messages,
                     add_generation_prompt=False,
-                    tokenize=True,
-                    return_tensors="pt",
+                    tokenize=False,
                 )
-                encoded = cast(Mapping[str, torch.Tensor], encoded_any)
             except Exception as e:
                 raise ValueError(
                     f"apply_chat_template failed. Ensure the tokenizer supports ChatML. Error: {type(e).__name__}: {e}"
                 )
-            input_ids = cast(torch.Tensor, encoded["input_ids"])[0]
-            attention_mask = cast(torch.Tensor, encoded["attention_mask"])[0]
+            text = cast(str, text_any)
+            tok_any: Any = self.tokenizer(
+                text,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            tok = cast(Mapping[str, torch.Tensor], tok_any)
+            input_ids_t = cast(torch.Tensor, tok["input_ids"])
+            attention_mask_t = cast(torch.Tensor, tok["attention_mask"])
+            # Normalize shapes to 1D (squeeze batch if present)
+            if input_ids_t.dim() == 2:
+                if input_ids_t.size(0) != 1:
+                    raise ValueError(
+                        f"tokenizer() returned batch>1 unexpectedly: shape={tuple(input_ids_t.shape)}"
+                    )
+                input_ids = input_ids_t.squeeze(0)
+                attention_mask = attention_mask_t.squeeze(0)
+            elif input_ids_t.dim() == 1:
+                input_ids = input_ids_t
+                attention_mask = (
+                    attention_mask_t
+                    if attention_mask_t.dim() == 1
+                    else attention_mask_t.squeeze(0)
+                )
+            else:
+                raise ValueError(
+                    f"Unexpected input_ids dim from tokenizer(): {input_ids_t.dim()}"
+                )
         else:
             # Manual ChatML serialization (explicit opt-in)
             parts: List[str] = []
@@ -128,8 +154,10 @@ class CoordBootstrapDataset(TorchDataset):
                 return_tensors="pt",
             )
             tok = cast(Mapping[str, torch.Tensor], tok_any)
-            input_ids = cast(torch.Tensor, tok["input_ids"])[0]
-            attention_mask = cast(torch.Tensor, tok["attention_mask"])[0]
+            ids_t = cast(torch.Tensor, tok["input_ids"])
+            mask_t = cast(torch.Tensor, tok["attention_mask"])
+            input_ids = ids_t.squeeze(0) if ids_t.dim() == 2 else ids_t
+            attention_mask = mask_t.squeeze(0) if mask_t.dim() == 2 else mask_t
 
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
@@ -143,7 +171,7 @@ class CoordBootstrapDataset(TorchDataset):
             except Exception as e:
                 raise ValueError(
                     f"Invalid record at index {i}: {type(e).__name__}: {e}"
-                )
+                ) from e
             kept.append(rec)
         return kept
 
@@ -161,13 +189,29 @@ class CoordBootstrapDataset(TorchDataset):
         assistant_content = messages[1].get("content")
         if not isinstance(assistant_content, str):
             raise ValueError("Assistant content must be a string")
-        m = _COORD_TOKEN_RE.match(assistant_content)
-        if not m:
-            raise ValueError(
-                "Assistant content must be exactly one coord token like '<|coord_123|>'"
-            )
-        val = int(m.group(1))
-        if not (0 <= val <= int(self.config.max_coord_value)):
-            raise ValueError(
-                f"Coordinate value out of range: {val}; expected 0..{self.config.max_coord_value}"
-            )
+
+        # Check if it's a coordinate token (forward mapping: "N" -> <|coord_N|>)
+        coord_match = _COORD_TOKEN_RE.match(assistant_content)
+        if coord_match:
+            val = int(coord_match.group(1))
+            if not (0 <= val <= int(self.config.max_coord_value)):
+                raise ValueError(
+                    f"Coordinate value out of range: {val}; expected 0..{self.config.max_coord_value}"
+                )
+            return  # Valid coordinate token
+
+        # Check if it's a raw number (reverse mapping: <|coord_N|> -> "N")
+        number_match = _RAW_NUMBER_RE.match(assistant_content)
+        if number_match:
+            val = int(number_match.group(1))
+            if not (0 <= val <= int(self.config.max_coord_value)):
+                raise ValueError(
+                    f"Raw number value out of range: {val}; expected 0..{self.config.max_coord_value}"
+                )
+            return  # Valid raw number
+
+        # Neither coordinate token nor raw number
+        raise ValueError(
+            f"Assistant content must be either a coordinate token like '<|coord_123|>' "
+            f"or a raw number like '123', got: '{assistant_content}'"
+        )

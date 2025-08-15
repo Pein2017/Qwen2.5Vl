@@ -147,15 +147,31 @@ class DataCollatorCoordBootstrap:
         # Unmask assistant span
         labels[start_tok:final_end] = ids_1d[start_tok:final_end]
 
-        # Optional strictness: ensure exactly one coord token textual marker in assistant content
+        # Optional strictness: ensure valid coordinate content in assistant
         if self.config.strict_single_coord_token:
             assistant_text = m.group(1).strip()
-            if assistant_text.count("<|coord_") != 1:
+
+            # Check for coordinate token (forward mapping: "N" -> <|coord_N|>)
+            coord_token_count = assistant_text.count("<|coord_")
+
+            # Check for raw number (reverse mapping: <|coord_N|> -> "N")
+            import re
+
+            raw_number_pattern = re.compile(r"^\d+$")
+            is_raw_number = bool(raw_number_pattern.match(assistant_text))
+
+            # Validate: should have exactly one coordinate token OR be a raw number
+            if coord_token_count == 1:
+                # Forward mapping case - coordinate token response
+                pass  # Valid
+            elif coord_token_count == 0 and is_raw_number:
+                # Reverse mapping case - raw number response
+                pass  # Valid
+            else:
                 raise ValueError(
-                    "Assistant content must contain exactly one '<|coord_*|>' token"
+                    f"Assistant content must contain exactly one '<|coord_*|>' token "
+                    f"or be a raw number, got: '{assistant_text}' "
+                    f"(coord_tokens: {coord_token_count}, is_raw_number: {is_raw_number})"
                 )
-            if assistant_text != assistant_text.strip():
-                # basic whitespace sanity (should be exact token)
-                pass
 
         return labels

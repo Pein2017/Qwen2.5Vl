@@ -1,5 +1,5 @@
 model_path: "model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
-output_dir: "src_coord_pretrain/output/coord_bootstrap_ckpt"
+output_dir: "src_coord_pretrain/output"
 
 data_path: "src_coord_pretrain/data/coord_bootstrap.jsonl"
 
@@ -8,15 +8,39 @@ coordinate_tokens_enabled: true
 max_coord_value: 1024
 coordinate_init_mode: "fourier_ramp"
 
+# PHASE A TRAINING (Identity-Only Warm-Start)
+phase_a_enabled: true
+phase_a_steps: 400  # Duration of Phase A in steps
+phase_a_freeze_vision: true  # Freeze vision tower during Phase A
+phase_a_freeze_backbone: true  # Freeze LLM backbone layers during Phase A
+phase_a_eos_off: true  # Disable EOS in labels during Phase A
+identity_only_ratio: 0.8  # Portion of identity samples during Phase A
+
+# UNLIKELIHOOD TRAINING (Bootstrap Stage)
+unlikelihood_enabled: true
+unlikelihood_lambda_digits: 1.0  # Weight for digit token suppression
+unlikelihood_lambda_coords: 1.0  # Weight for coordinate window suppression
+unlikelihood_coord_window: 8  # Suppress neighboring coord tokens within ±window
+
+# TOP-K UNLIKELIHOOD (Advanced Features)
+ul_topk_noncoord: 100  # Top-K non-coordinate tokens for coordinate targets
+ul_topk_coord: 100     # Top-K coordinate tokens for text targets
+ul_neighbor_window: 8  # Coordinate neighbor suppression window (±W around gold)
+
+# REVERSE MAPPING
+reverse_mapping_ratio: 0.2  # Portion of reverse mapping samples in Phase B
+
 # TRAINING (YAML-driven like src_new)
 per_device_train_batch_size: 8
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 learning_rate: 1.0e-5
 llm_lr: 5.0e-6
 mlp_lr: 2.0e-5
-max_epochs: 2
-logging_steps: 50
-save_steps: 500
+warmup_ratio: 0.1  # Linear warmup over 10% of total training steps
+lr_scheduler_type: "cosine"  # Cosine annealing scheduler
+max_epochs: 10
+logging_steps: 100
+save_steps: 1000
 eval_steps: 200
 val_ratio: 0.05
 seed: 17
