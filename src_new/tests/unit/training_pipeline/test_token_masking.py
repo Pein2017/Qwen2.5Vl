@@ -63,7 +63,24 @@ class TestTokenMaskingWithRealData:
         if not config_path.exists():
             pytest.skip("Real config file not found")
 
+        # Pre-parse YAML to check model availability before strict validation
+        try:
+            import yaml
+
+            with open(config_path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+            mp = raw.get("model_path") if isinstance(raw, dict) else None
+            if not mp or not Path(mp).exists():
+                pytest.skip(f"Model path not found or missing in YAML: {mp}")
+        except Exception:
+            pytest.skip("Could not parse YAML to pre-check model path; skipping")
+
         config = load_config(str(config_path))
+
+        # Guard: require local model cache exists for this test
+        model_path = Path(config.model_path)
+        if not model_path.exists():
+            pytest.skip(f"Model path not found: {model_path}")
 
         # Load tokenizer and processor
         tokenizer = AutoTokenizer.from_pretrained(
@@ -76,6 +93,12 @@ class TestTokenMaskingWithRealData:
 
         # Load real data
         data_root = Path("/data3/Qwen2.5-VL-main/data/ds_v2_full")
+
+        if (
+            not (data_root / "teacher_pool.jsonl").exists()
+            or not (data_root / "train.jsonl").exists()
+        ):
+            pytest.skip(f"Required data files not found under {data_root}")
 
         with open(data_root / "teacher_pool.jsonl", "r", encoding="utf-8") as f:
             teacher_data = [json.loads(line.strip()) for line in f if line.strip()]
@@ -103,7 +126,9 @@ class TestTokenMaskingWithRealData:
 
         # Initialize conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=bool(config.coordinate_tokens_enabled),
         )
 
         # Use real student sample
@@ -213,7 +238,9 @@ class TestTokenMaskingWithRealData:
 
         # Initialize conversation processor
         conversation_processor = ConversationProcessor(
-            processor=processor, max_coord_value=config.max_coord_value
+            processor=processor,
+            max_coord_value=config.max_coord_value,
+            coordinate_tokens_enabled=bool(config.coordinate_tokens_enabled),
         )
 
         # Use real student sample

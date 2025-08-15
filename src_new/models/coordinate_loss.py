@@ -26,14 +26,14 @@ def build_kernel_indices_and_q(
     Build per-sample sparse kernel window around ground-truth bin indices.
 
     Args:
-        y: Tensor of shape [N] with integer ground-truth in [0, K]
-        K: Maximum bin value (inclusive). Total bins = K+1
-        sigma: Kernel width in bins (Gaussian). Must be > 0
-        window: Half-window size (radius). Output width = 2*window + 1
+            y: Tensor of shape [N] with integer ground-truth in [0, K]
+            K: Maximum bin value (inclusive). Total bins = K+1
+            sigma: Kernel width in bins (Gaussian). Must be > 0
+            window: Half-window size (radius). Output width = 2*window + 1
 
     Returns:
-        idxs: Long tensor [N, W] with clamped indices in [0, K]
-        q_vals: Float tensor [N, W] with unnormalized kernel values per index
+            idxs: Long tensor [N, W] with clamped indices in [0, K]
+            q_vals: Float tensor [N, W] with unnormalized kernel values per index
     """
     if y is None or y.numel() == 0:
         width = 2 * int(window) + 1
@@ -99,14 +99,26 @@ def kernelized_kl_sparse(
         idxs = idxs.to(dtype=torch.long)
     p_w = p_full.gather(dim=-1, index=idxs)
 
-    # Normalize q over the window
-    q_w = q_vals.to(dtype=torch.float32)
-    q_w = q_w / (q_w.sum(dim=-1, keepdim=True) + eps)
+    # Normalize q over the window EXACTLY (avoid epsilon-in-denominator shrinkage)
+    q_raw = q_vals.to(dtype=torch.float32)
+    q_sum = q_raw.sum(dim=-1, keepdim=True)
+    # If any q_sum is zero (should not happen with Gaussian), safely return 0
+    if torch.any(q_sum <= 0):
+        return logits.new_tensor(0.0)
+    q_w = q_raw / q_sum
 
-    # KL(q||p) over window: sum q * (log q - log p)
-    kl_vec = (q_w * (torch.log(q_w + eps) - torch.log(p_w + eps))).sum(dim=-1)
+    # Clamp probabilities before log to avoid log(0) while preserving KL structure
+    p_w = torch.clamp(p_w, min=1e-12)
+    q_w = torch.clamp(q_w, min=1e-12)
+
+    # KL(q||p_window-unnormalized) = KL(q||p_window_normalized) - log S, S=sum p_w
+    # Computing it directly as sum q * (log q - log p) is non-negative in exact math.
+    kl_vec = (q_w * (torch.log(q_w) - torch.log(p_w))).sum(dim=-1)
 
     out = torch.nan_to_num(kl_vec.mean(), nan=0.0, posinf=1e6, neginf=1e6)
+    # Small negative values can occur from floating error; clip to zero floor
+    if out < 0:
+        out = out.clamp_min(0.0)
     return out
 
 
@@ -160,6 +172,3 @@ def unlikelihood_topk_text(
     denom = coord_mask.sum() * k + eps
     out = (loss * coord_mask.unsqueeze(-1).float()).sum() / denom
     return torch.nan_to_num(out, nan=0.0, posinf=1e6, neginf=1e6)
-
-
-# Laplacian regularizer removed

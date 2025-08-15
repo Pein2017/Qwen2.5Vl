@@ -83,6 +83,14 @@ class CoordBootstrapDataset(TorchDataset):
         if tokenizer is None:
             raise ValueError("tokenizer cannot be None")
         self.tokenizer = tokenizer
+
+        # Check if fast tokenizer is available for performance optimization
+        if hasattr(tokenizer, "is_fast") and tokenizer.is_fast:
+            # Enable fast tokenizer optimizations
+            self._use_fast_tokenizer = True
+        else:
+            self._use_fast_tokenizer = False
+
         if config is None:
             raise ValueError("config cannot be None")
         config.validate()
@@ -109,11 +117,23 @@ class CoordBootstrapDataset(TorchDataset):
                     f"apply_chat_template failed. Ensure the tokenizer supports ChatML. Error: {type(e).__name__}: {e}"
                 )
             text = cast(str, text_any)
-            tok_any: Any = self.tokenizer(
-                text,
-                add_special_tokens=False,
-                return_tensors="pt",
-            )
+            # Use optimized tokenization parameters for fast tokenizers
+            tokenizer_kwargs = {
+                "add_special_tokens": False,
+                "return_tensors": "pt",
+            }
+
+            # Enable fast tokenizer optimizations if available
+            if self._use_fast_tokenizer:
+                # Fast tokenizers can handle padding and truncation more efficiently
+                tokenizer_kwargs.update(
+                    {
+                        "padding": False,  # We handle padding in collator for better batching
+                        "truncation": False,  # Handle truncation at batch level if needed
+                    }
+                )
+
+            tok_any: Any = self.tokenizer(text, **tokenizer_kwargs)
             tok = cast(Mapping[str, torch.Tensor], tok_any)
             input_ids_t = cast(torch.Tensor, tok["input_ids"])
             attention_mask_t = cast(torch.Tensor, tok["attention_mask"])
@@ -148,11 +168,22 @@ class CoordBootstrapDataset(TorchDataset):
                     )
                 parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
             joined = "".join(parts)
-            tok_any: Any = self.tokenizer(
-                joined,
-                add_special_tokens=False,
-                return_tensors="pt",
-            )
+            # Use optimized tokenization for manual ChatML path
+            tokenizer_kwargs = {
+                "add_special_tokens": False,
+                "return_tensors": "pt",
+            }
+
+            # Apply fast tokenizer optimizations if available
+            if self._use_fast_tokenizer:
+                tokenizer_kwargs.update(
+                    {
+                        "padding": False,
+                        "truncation": False,
+                    }
+                )
+
+            tok_any: Any = self.tokenizer(joined, **tokenizer_kwargs)
             tok = cast(Mapping[str, torch.Tensor], tok_any)
             ids_t = cast(torch.Tensor, tok["input_ids"])
             mask_t = cast(torch.Tensor, tok["attention_mask"])

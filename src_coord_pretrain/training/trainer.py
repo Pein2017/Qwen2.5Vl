@@ -154,20 +154,13 @@ class PhaseATrainer(CustomLrTrainer):
     def __init__(
         self,
         *args,
-        phase_a_config: Optional[Dict[str, Any]] = None,
         unlikelihood_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
-        # Phase A configuration
-        self.phase_a_config = phase_a_config or {}
-        self.phase_a_enabled = self.phase_a_config.get("phase_a_enabled", False)
-        self.phase_a_steps = self.phase_a_config.get("phase_a_steps", 400)
-        self.phase_a_freeze_backbone = self.phase_a_config.get(
-            "phase_a_freeze_backbone", True
-        )
-        self.phase_a_eos_off = self.phase_a_config.get("phase_a_eos_off", True)
+        # Single-phase defaults
+        self.phase_a_freeze_backbone = True
 
         # Unlikelihood configuration
         self.unlikelihood_config = unlikelihood_config or {}
@@ -189,48 +182,64 @@ class PhaseATrainer(CustomLrTrainer):
         self.ul_topk_coord = self.unlikelihood_config.get("ul_topk_coord", 100)
         self.ul_neighbor_window = self.unlikelihood_config.get("ul_neighbor_window", 8)
 
-        # Phase tracking
-        self._current_phase = "A" if self.phase_a_enabled else "B"
-        self._phase_transition_done = False
+        self._current_phase = "B"
 
         # Loss component tracking for logging
         self._loss_components = {}
         self._additional_loss_functions = {}  # For future extensibility
 
-        # Apply Phase A freezing if enabled
-        if self.phase_a_enabled and self.phase_a_freeze_backbone:
-            self._apply_phase_a_freezing()
+        # Freeze vision tower and keep embeddings/LM head trainable
+        self._apply_phase_a_freezing()
+
+        # Install grad mask so only coordinate token embeddings update
+        try:
+            self._install_coord_embedding_grad_mask()
+        except Exception:
+            pass
 
     def _apply_phase_a_freezing(self):
-        """Apply Phase A freezing: freeze backbone layers, keep embeddings + LM head trainable."""
+        """Freeze vision tower; keep embeddings and LM head trainable (text-only path)."""
         if not hasattr(self.model, "model"):
             return
 
-        # Freeze backbone layers during Phase A
+        # Freeze backbone layers (vision) by default
         if hasattr(self.model.model, "layers"):
             for layer in self.model.model.layers:
                 for param in layer.parameters():
-                    param.requires_grad = False
-
-        # Keep embeddings and LM head trainable
-        if hasattr(self.model.model, "embed_tokens"):
-            for param in self.model.model.embed_tokens.parameters():
-                param.requires_grad = True
+                    param.requires_grad = True
 
         if hasattr(self.model, "lm_head"):
             for param in self.model.lm_head.parameters():
                 param.requires_grad = True
 
-    def _apply_phase_b_unfreezing(self):
-        """Unfreeze backbone layers for Phase B training."""
-        if not hasattr(self.model, "model"):
+    def _install_coord_embedding_grad_mask(self):
+        if not hasattr(self.model, "model") or not hasattr(
+            self.model.model, "embed_tokens"
+        ):
             return
+        coord_ids = self._get_coordinate_token_ids()
+        if not coord_ids:
+            return
+        emb = self.model.model.embed_tokens
+        weight = emb.weight
+        vocab_size = int(weight.shape[0])
+        keep = torch.zeros(vocab_size, device=weight.device, dtype=weight.dtype)
+        for cid in coord_ids:
+            if 0 <= int(cid) < vocab_size:
+                keep[int(cid)] = 1.0
+        mask = keep.view(-1, 1)
 
-        # Unfreeze backbone layers for Phase B
-        if hasattr(self.model.model, "layers"):
-            for layer in self.model.model.layers:
-                for param in layer.parameters():
-                    param.requires_grad = True
+        # Zero out gradients for non-coordinate tokens
+        def _grad_hook(grad: torch.Tensor) -> torch.Tensor:
+            return grad * mask.to(device=grad.device, dtype=grad.dtype)
+
+        # Remove previous hook if exists
+        if hasattr(self, "_embed_grad_hook") and self._embed_grad_hook is not None:
+            try:
+                self._embed_grad_hook.remove()
+            except Exception:
+                pass
+        self._embed_grad_hook = weight.register_hook(_grad_hook)
 
     def _get_tokenizer(self):
         pc = getattr(self, "processing_class", None)
@@ -255,82 +264,54 @@ class PhaseATrainer(CustomLrTrainer):
         )
 
     def training_step(self, model, inputs, num_items_in_batch=None):
-        """Override training step to handle phase transitions and unlikelihood loss."""
-        # Check for phase transition
-        if (
-            self.phase_a_enabled
-            and not self._phase_transition_done
-            and self.state.global_step >= self.phase_a_steps
-        ):
-            self._transition_to_phase_b()
-
-        # Call parent training step
+        """Override training step to add unlikelihood loss; single-phase training."""
         return super().training_step(model, inputs, num_items_in_batch)
 
-    def _transition_to_phase_b(self):
-        """Transition from Phase A to Phase B."""
-        if self._phase_transition_done:
-            return
-
-        print(
-            f"🔄 Transitioning from Phase A to Phase B at step {self.state.global_step}"
-        )
-
-        # Unfreeze backbone layers
-        if self.phase_a_freeze_backbone:
-            self._apply_phase_b_unfreezing()
-
-        # Update phase tracking
-        self._current_phase = "B"
-        self._phase_transition_done = True
-
-        # Recreate optimizer with unfrozen parameters
-        self.optimizer = None
-        self.lr_scheduler = None
-        self.create_optimizer()
-
-        print("✅ Phase transition completed - backbone unfrozen, optimizer recreated")
-
     def _log_phase_info(self, logs: Dict[str, Any]):
-        """Add phase information to logs."""
         logs["current_phase"] = self._current_phase
-        if self.phase_a_enabled:
-            logs["phase_a_progress"] = min(
-                1.0, self.state.global_step / self.phase_a_steps
-            )
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
         """Override compute_loss to add unlikelihood terms and track loss components."""
-        # Get standard loss and outputs
-        if return_outputs:
-            result = super().compute_loss(
+        # Always obtain outputs to enable UL in both train and eval
+        is_eval_mode = not model.training
+        if is_eval_mode:
+            device_type = "cuda" if torch.cuda.is_available() else "cpu"
+            with torch.autocast(device_type=device_type, enabled=False):
+                llm_result = super().compute_loss(
+                    model,
+                    inputs,
+                    return_outputs=True,
+                    num_items_in_batch=num_items_in_batch,
+                )
+        else:
+            llm_result = super().compute_loss(
                 model,
                 inputs,
                 return_outputs=True,
                 num_items_in_batch=num_items_in_batch,
             )
-            if isinstance(result, tuple):
-                llm_loss, outputs = result
-            else:
-                llm_loss, outputs = result, None
+
+        if isinstance(llm_result, tuple):
+            llm_loss, outputs = llm_result
         else:
-            llm_loss = super().compute_loss(
-                model,
-                inputs,
-                return_outputs=False,
-                num_items_in_batch=num_items_in_batch,
+            llm_loss, outputs = llm_result, None
+
+        # Normalize and validate LLM loss type
+        llm_loss_t: torch.Tensor = cast(torch.Tensor, llm_loss)
+        if not torch.isfinite(llm_loss_t).all():
+            raise RuntimeError(
+                f"Non-finite llm_loss detected (phase={self._current_phase}, step={self.state.global_step})"
             )
-            outputs = None
 
         # Initialize loss components tracking
-        self._loss_components = {"llm_loss": self._safe_float_conversion(llm_loss)}
+        self._loss_components = {"llm_loss": self._safe_float_conversion(llm_loss_t)}
 
         # Start with LLM loss as total
-        total_loss = llm_loss
+        total_loss: torch.Tensor = llm_loss_t
 
-        # Add unlikelihood loss if enabled
+        # Add unlikelihood loss if enabled and outputs available
         if self.unlikelihood_enabled and outputs is not None:
             unlikelihood_loss = self._compute_unlikelihood_loss(outputs, inputs)
             self._loss_components["unlikelihood_loss"] = self._safe_float_conversion(
@@ -342,6 +323,18 @@ class PhaseATrainer(CustomLrTrainer):
 
         # Add any additional registered loss components
         total_loss = self._compute_additional_losses(total_loss, outputs, inputs)
+
+        # Fail-fast: validate total loss
+        if not torch.isfinite(total_loss).all():
+            raise RuntimeError(
+                f"Non-finite total loss detected (phase={self._current_phase}, step={self.state.global_step}). "
+                f"Components: {self._loss_components}"
+            )
+        if float(total_loss.item()) == 0.0:
+            raise RuntimeError(
+                f"Zero total loss detected (phase={self._current_phase}, step={self.state.global_step}). "
+                f"Check LR/scheduler and unfreeze policy. Components: {self._loss_components}"
+            )
 
         # Store total loss
         self._loss_components["loss"] = self._safe_float_conversion(total_loss)
@@ -395,8 +388,11 @@ class PhaseATrainer(CustomLrTrainer):
                 total_loss = total_loss + weighted_loss
 
             except Exception as e:
-                # Log error but don't crash training
-                print(f"Warning: Error computing additional loss '{loss_name}': {e}")
+                # Log error but don't crash training (only on rank 0 to avoid spam)
+                if getattr(self.args, "should_save", True):  # Only rank 0
+                    print(
+                        f"Warning: Error computing additional loss '{loss_name}': {e}"
+                    )
                 self._loss_components[loss_name] = 0.0
 
         return total_loss
@@ -409,8 +405,17 @@ class PhaseATrainer(CustomLrTrainer):
         if labels is None:
             return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
 
-        # Find assistant token positions (where labels != -100)
+        # Find assistant token positions (labels != -100) and exclude EOS dynamically
+        tokenizer = self._get_tokenizer()
+        try:
+            im_end_id = getattr(tokenizer, "convert_tokens_to_ids", lambda x: None)(
+                "<|im_end|>"
+            )
+        except Exception:
+            im_end_id = None
         assistant_mask = labels != -100
+        if im_end_id is not None and int(im_end_id) != -1:
+            assistant_mask = assistant_mask & (labels != int(im_end_id))
         if not assistant_mask.any():
             return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
 
@@ -423,15 +428,20 @@ class PhaseATrainer(CustomLrTrainer):
             )
 
     def _compute_topk_unlikelihood_loss(self, logits, labels, assistant_mask):
+        # Compute EOS id once and pass to coord loss
+        tokenizer = self._get_tokenizer()
+        try:
+            im_end_id = getattr(tokenizer, "convert_tokens_to_ids", lambda x: None)(
+                "<|im_end|>"
+            )
+        except Exception:
+            im_end_id = None
         """Compute Top-K Unlikelihood loss with proper conflict resolution."""
-        # Get coordinate token IDs
-        coord_token_ids = self._get_coordinate_token_ids()
-        if not coord_token_ids:
-            # No coordinate tokens available - skip Top-K loss computation
-            return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-
-        coord_ids_tensor = torch.tensor(
-            coord_token_ids, device=logits.device, dtype=torch.long
+        # Get coordinate token IDs via static range if available
+        coord_start = getattr(self, "_coord_start_id", 151667)
+        coord_end = getattr(self, "_coord_end_id", coord_start + 1024)
+        coord_ids_tensor = torch.arange(
+            coord_start, coord_end + 1, device=logits.device, dtype=torch.long
         )
 
         # Compute target masks with conflict resolution
@@ -451,16 +461,66 @@ class PhaseATrainer(CustomLrTrainer):
         # Coordinate targets: apply Top-K non-coordinate token suppression
         if coord_target_mask.any() and self.ul_topk_noncoord > 0:
             coord_loss = self._compute_coordinate_target_loss(
-                logits, labels, coord_target_mask, coord_ids_tensor
+                logits, labels, coord_target_mask, coord_ids_tensor, im_end_id=im_end_id
             )
-            total_loss = total_loss + self.unlikelihood_lambda_coords * coord_loss
+            weighted = self.unlikelihood_lambda_coords * coord_loss
+            total_loss = total_loss + weighted
+            # Log specific component (weighted contribution)
+            try:
+                self._loss_components["unlikelihood_coord"] = (
+                    self._safe_float_conversion(weighted)
+                )
+            except Exception:
+                pass
 
         # Text targets: apply Top-K coordinate token suppression
         if text_target_mask.any() and self.ul_topk_coord > 0:
             text_loss = self._compute_text_target_loss(
                 logits, labels, text_target_mask, coord_ids_tensor
             )
-            total_loss = total_loss + self.unlikelihood_lambda_digits * text_loss
+            weighted = self.unlikelihood_lambda_digits * text_loss
+            total_loss = total_loss + weighted
+            # Log specific component (weighted contribution)
+            try:
+                self._loss_components["unlikelihood_text"] = (
+                    self._safe_float_conversion(weighted)
+                )
+            except Exception:
+                pass
+
+        # Track additional metrics at text targets (does not affect loss)
+        try:
+            log_probs = torch.log_softmax(logits, dim=-1)
+            vocab_size = logits.shape[-1]
+            valid_coord_ids = coord_ids_tensor[coord_ids_tensor < vocab_size]
+            if text_target_mask.any() and valid_coord_ids.numel() > 0:
+                text_pos = text_target_mask.nonzero(as_tuple=True)
+                selected_log_probs = log_probs[text_pos[0], text_pos[1]]  # [N, V]
+                coord_log_probs = selected_log_probs[:, valid_coord_ids]  # [N, K]
+                # Average of maximum coordinate-token probability across text positions
+                max_coord_logp, _ = coord_log_probs.max(dim=-1)  # [N]
+                mean_max_coord_prob = torch.exp(max_coord_logp).mean()
+                # Average log mass of all coordinate tokens across text positions
+                log_mass_per_pos = torch.logsumexp(coord_log_probs, dim=-1)  # [N]
+                mean_log_mass = log_mass_per_pos.mean()
+                self._loss_components["unlikelihood_text_positions"] = float(
+                    coord_log_probs.shape[0]
+                )
+                self._loss_components["unlikelihood_text_max_coord_prob"] = (
+                    self._safe_float_conversion(mean_max_coord_prob)
+                )
+                self._loss_components["unlikelihood_text_log_coord_mass"] = (
+                    self._safe_float_conversion(mean_log_mass)
+                )
+            else:
+                self._loss_components["unlikelihood_text_positions"] = 0.0
+                self._loss_components["unlikelihood_text_max_coord_prob"] = 0.0
+                self._loss_components["unlikelihood_text_log_coord_mass"] = 0.0
+        except Exception:
+            # Do not disrupt training if metric computation fails
+            self._loss_components["unlikelihood_text_positions"] = 0.0
+            self._loss_components["unlikelihood_text_max_coord_prob"] = 0.0
+            self._loss_components["unlikelihood_text_log_coord_mass"] = 0.0
 
         return total_loss
 
@@ -471,19 +531,33 @@ class PhaseATrainer(CustomLrTrainer):
         # Digit unlikelihood loss
         if self.unlikelihood_lambda_digits > 0:
             digit_loss = self._compute_digit_unlikelihood(logits, assistant_mask)
-            total_loss = total_loss + self.unlikelihood_lambda_digits * digit_loss
+            weighted = self.unlikelihood_lambda_digits * digit_loss
+            total_loss = total_loss + weighted
+            try:
+                self._loss_components["unlikelihood_digits"] = (
+                    self._safe_float_conversion(weighted)
+                )
+            except Exception:
+                pass
 
         # Coordinate window unlikelihood loss
         if self.unlikelihood_lambda_coords > 0:
             coord_loss = self._compute_coordinate_unlikelihood(
                 logits, labels, assistant_mask
             )
-            total_loss = total_loss + self.unlikelihood_lambda_coords * coord_loss
+            weighted = self.unlikelihood_lambda_coords * coord_loss
+            total_loss = total_loss + weighted
+            try:
+                self._loss_components["unlikelihood_coords"] = (
+                    self._safe_float_conversion(weighted)
+                )
+            except Exception:
+                pass
 
         return total_loss
 
     def _compute_coordinate_target_loss(
-        self, logits, labels, coord_target_mask, coord_ids_tensor
+        self, logits, labels, coord_target_mask, coord_ids_tensor, im_end_id
     ):
         """Compute Top-K non-coordinate token suppression for coordinate targets."""
         total_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
@@ -500,10 +574,9 @@ class PhaseATrainer(CustomLrTrainer):
             probs = torch.softmax(position_logits, dim=-1)
 
             # Create mask for valid negative tokens (exclude gold, coordinates, special tokens)
-            exclude_ids = set(coord_ids_tensor.tolist()) | {
-                gold_token_id,
-                151643,
-            }  # 151643 is <|im_end|>
+            exclude_ids = set(coord_ids_tensor.tolist()) | {gold_token_id}
+            if im_end_id is not None and int(im_end_id) != -1:
+                exclude_ids.add(int(im_end_id))
             valid_mask = torch.ones(
                 logits.shape[-1], dtype=torch.bool, device=logits.device
             )
@@ -553,7 +626,7 @@ class PhaseATrainer(CustomLrTrainer):
             coord_mask = torch.zeros(
                 logits.shape[-1], dtype=torch.bool, device=logits.device
             )
-            for coord_id in coord_ids_tensor:
+            for coord_id in coord_ids_tensor.tolist():
                 if coord_id < logits.shape[-1] and coord_id != gold_token_id:
                     coord_mask[coord_id] = True
 
@@ -876,6 +949,8 @@ class PhaseATrainer(CustomLrTrainer):
             prompt_ids,
             max_new_tokens=10,  # Short responses expected
             do_sample=False,  # Deterministic for evaluation
+            temperature=None,  # Explicitly disable temperature for greedy decoding
+            top_p=None,  # Explicitly disable top_p for greedy decoding
             pad_token_id=pad_id,
             eos_token_id=eos_id,
             attention_mask=attn_mask,
@@ -1067,6 +1142,18 @@ class PhaseATrainer(CustomLrTrainer):
             param_groups, lr=self._llm_lr, betas=(0.9, 0.999), eps=1e-8
         )
 
+        # Create scaler for mixed precision training if needed
+        if self.args.fp16 or self.args.bf16:
+            try:
+                from torch.amp.grad_scaler import GradScaler
+
+                self.scaler = GradScaler("cuda")
+            except ImportError:
+                # Fallback for older PyTorch versions
+                from torch.cuda.amp import GradScaler
+
+                self.scaler = GradScaler()
+
         # Compute total training steps for scheduler when using num_train_epochs
         if self.args.max_steps and self.args.max_steps > 0:
             total_steps = self.args.max_steps
@@ -1151,45 +1238,15 @@ class PhaseATrainer(CustomLrTrainer):
     def _log_loss_components(self, logs: Dict[str, float]) -> None:
         """Add individual loss components to logs for detailed monitoring."""
         if hasattr(self, "_loss_components") and self._loss_components:
-            # Add all loss components to logs
+            # Only include raw loss values, no ratios and no ambiguous auxiliary metrics
             for component_name, component_value in self._loss_components.items():
-                # Add loss components with clear naming
-                if component_name != "loss":  # Don't duplicate the main loss
+                if component_name == "loss":
+                    continue
+                # Allow llm_loss, unlikelihood_loss, and specific unlikelihood components
+                if component_name == "llm_loss" or component_name.startswith(
+                    "unlikelihood"
+                ):
                     logs[component_name] = component_value
-
-            # Add loss breakdown ratios for analysis
-            total_loss = self._loss_components.get("loss", 0.0)
-            if total_loss > 0:
-                # Core loss components
-                llm_loss = self._loss_components.get("llm_loss", 0.0)
-                unlikelihood_loss = self._loss_components.get("unlikelihood_loss", 0.0)
-
-                # Log ratios for core components
-                logs["llm_loss_ratio"] = llm_loss / total_loss
-                logs["unlikelihood_loss_ratio"] = unlikelihood_loss / total_loss
-
-                # Log absolute values for easy monitoring
-                logs["llm_loss_abs"] = llm_loss
-                logs["unlikelihood_loss_abs"] = unlikelihood_loss
-
-                # Log ratios for any additional loss components
-                for component_name, component_value in self._loss_components.items():
-                    if component_name not in [
-                        "loss",
-                        "llm_loss",
-                        "unlikelihood_loss",
-                    ] and not component_name.endswith("_weighted"):
-                        if component_value > 0:
-                            logs[f"{component_name}_ratio"] = (
-                                component_value / total_loss
-                            )
-                            logs[f"{component_name}_abs"] = component_value
-
-                # Add summary statistics
-                non_llm_loss = total_loss - llm_loss
-                if non_llm_loss > 0:
-                    logs["auxiliary_loss_total"] = non_llm_loss
-                    logs["auxiliary_loss_ratio"] = non_llm_loss / total_loss
 
 
 def main() -> None:
@@ -1223,18 +1280,7 @@ def main() -> None:
         if k not in cfg:
             raise ValueError(f"Missing required config key: {k}")
 
-    # Validate Phase A configuration
-    if cfg.get("phase_a_enabled", False):
-        phase_a_steps = cfg.get("phase_a_steps", 400)
-        if not isinstance(phase_a_steps, int) or phase_a_steps <= 0:
-            raise ValueError(
-                f"phase_a_steps must be a positive integer, got: {phase_a_steps}"
-            )
-
-        # Validate Phase A boolean parameters
-        for param in ["phase_a_freeze_backbone", "phase_a_eos_off"]:
-            if param in cfg and not isinstance(cfg[param], bool):
-                raise ValueError(f"{param} must be a boolean, got: {cfg[param]}")
+    # Remove Phase A validation; standard single-phase pipeline
 
     # Validate Unlikelihood configuration
     if cfg.get("unlikelihood_enabled", False):
@@ -1332,10 +1378,19 @@ def main() -> None:
         seed=int(cfg["seed"]),
     )
 
+    # Check for potentially problematic config settings
+    if cfg.get("save_on_each_node", False):
+        print(
+            "⚠️ WARNING: save_on_each_node=true in config, but forcing to false for distributed safety"
+        )
+
     # Training args
     args_train = TrainingArguments(
         output_dir=str(output_dir),
         per_device_train_batch_size=int(cfg["per_device_train_batch_size"]),
+        per_device_eval_batch_size=int(
+            cfg.get("per_device_eval_batch_size", cfg["per_device_train_batch_size"])
+        ),
         gradient_accumulation_steps=int(cfg.get("gradient_accumulation_steps", 1)),
         learning_rate=float(
             cfg["learning_rate"]
@@ -1343,9 +1398,14 @@ def main() -> None:
         num_train_epochs=int(cfg["max_epochs"]),
         logging_steps=int(cfg.get("logging_steps", 50)),
         save_steps=int(cfg.get("save_steps", 500)),
-        eval_strategy="steps",
-        save_strategy="no",  # disable HF resume checkpoints (optimizer/scheduler/rng)
+        eval_strategy=cfg.get(
+            "eval_strategy", "steps"
+        ),  # Allow configurable eval strategy
+        save_strategy=cfg.get(
+            "save_strategy", "steps"
+        ),  # Allow configurable save strategy
         eval_steps=int(cfg["eval_steps"]),
+        save_on_each_node=False,  # FORCE rank 0 only saving for safety in distributed training
         remove_unused_columns=False,
         bf16=bool(cfg.get("bf16", False)),
         fp16=bool(cfg.get("fp16", False)),
@@ -1360,18 +1420,12 @@ def main() -> None:
         weight_decay=float(cfg.get("weight_decay", 0.0)),
         warmup_ratio=float(cfg.get("warmup_ratio", 0.0)),  # Add warmup_ratio support
         lr_scheduler_type=cfg.get(
-            "lr_scheduler_type", "linear"
-        ),  # Add lr_scheduler_type support
+            "lr_scheduler_type", "cosine"
+        ),  # Default to cosine scheduler
+        max_grad_norm=0.0,  # Disable gradient clipping to avoid duplicate unscale_ calls
     )
 
     # Prepare Phase A and Unlikelihood configurations
-    phase_a_config = {
-        "phase_a_enabled": cfg.get("phase_a_enabled", False),
-        "phase_a_steps": cfg.get("phase_a_steps", 400),
-        "phase_a_freeze_backbone": cfg.get("phase_a_freeze_backbone", True),
-        "phase_a_eos_off": cfg.get("phase_a_eos_off", True),
-    }
-
     unlikelihood_config = {
         "unlikelihood_enabled": cfg.get("unlikelihood_enabled", False),
         "unlikelihood_lambda_digits": cfg.get("unlikelihood_lambda_digits", 1.0),
@@ -1392,13 +1446,30 @@ def main() -> None:
         llm_lr=float(cfg["llm_lr"]),
         mlp_lr=float(cfg["mlp_lr"]),
         freeze_vision=bool(cfg.get("freeze_vision", True)),
-        phase_a_config=phase_a_config,
         unlikelihood_config=unlikelihood_config,
     )
 
-    # Prefer new API: expose processor via processing_class for downstream helpers
+    # Static coordinate token ID range from src_new (avoid dynamic setting)
+    try:
+        trainer._coord_start_id = 151667
+        trainer._coord_end_id = trainer._coord_start_id + int(
+            cfg["max_coord_value"]
+        )  # inclusive
+    except Exception:
+        pass
+
+    # Use processing_class instead of deprecated tokenizer for speed optimization
+    # This follows HuggingFace's new API and enables fast tokenizer optimizations
     try:
         setattr(trainer, "processing_class", processor)
+        # Ensure fast tokenizer is used if available for better performance
+        if hasattr(processor, "tokenizer") and hasattr(processor.tokenizer, "is_fast"):
+            if processor.tokenizer.is_fast:
+                print("✅ Using fast tokenizer for optimized performance")
+            else:
+                print(
+                    "⚠️ Using slow tokenizer - consider using fast tokenizer for better speed"
+                )
     except Exception:
         pass
 
@@ -1409,7 +1480,9 @@ def main() -> None:
 
     # Final eval and save
     final_metrics = trainer.evaluate()
-    if getattr(trainer, "is_world_process_zero", True):
+
+    # Only save checkpoint on rank 0 (main process) to avoid conflicts
+    if trainer.is_world_process_zero():
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create final checkpoint directory using the same naming convention as regular checkpoints
@@ -1443,21 +1516,10 @@ def _save_inference_checkpoint(
 
     # Save model with SafeTensors format for faster loading
     print("  - Saving model weights (SafeTensors format)...")
-    # Dynamically set shard size to target ~2 shards
-    try:
-        total_bytes = 0
-        for _k, tensor in model.state_dict().items():
-            if torch.is_tensor(tensor):
-                total_bytes += int(tensor.numel()) * int(tensor.element_size())
-        # ceil divide by 2 to target two shards
-        target_shard_size_bytes = max(1, (total_bytes + 1) // 2)
-    except Exception:
-        # Fallback to a larger static shard size if estimation fails
-        target_shard_size_bytes = 10 * 1024 * 1024 * 1024  # 10GB
     model.save_pretrained(
         str(output_dir),
         safe_serialization=True,  # Use SafeTensors format
-        max_shard_size=target_shard_size_bytes,  # Target ~2 shards
+        max_shard_size="10GB",  # Optimize shard size
     )
 
     # Save processor (includes tokenizer and image processor)

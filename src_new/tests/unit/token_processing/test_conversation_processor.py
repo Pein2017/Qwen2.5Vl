@@ -44,12 +44,16 @@ class TestConversationProcessor(unittest.TestCase):
         self.mock_processor.return_value = mock_inputs
 
         self.conversation_processor = ConversationProcessor(
-            processor=self.mock_processor, max_coord_value=1024
+            processor=self.mock_processor,
+            max_coord_value=1024,
+            coordinate_tokens_enabled=True,
         )
 
     def test_initialization_valid(self):
         """Test valid initialization."""
-        processor = ConversationProcessor(self.mock_processor, max_coord_value=1024)
+        processor = ConversationProcessor(
+            self.mock_processor, max_coord_value=1024, coordinate_tokens_enabled=True
+        )
         self.assertEqual(processor.processor, self.mock_processor)
         self.assertEqual(processor.coordinate_converter.max_coord_value, 1024)
 

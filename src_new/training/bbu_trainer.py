@@ -13,6 +13,7 @@ Key Features:
 - Compatible with existing DetectionModel and training pipeline
 """
 
+import logging
 import os
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
@@ -336,6 +337,23 @@ class BBUTrainer(HFTrainer):
             # Format logs for better readability before logging
             formatted_logs = self._format_logs_for_display(final_logs)
 
+            # INFO: concise diagnostics summary (only known diagnostic metrics)
+            from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
+
+            if logger.isEnabledFor(logging.INFO):
+                diag_items = []
+                for k, v in formatted_logs.items():
+                    if not isinstance(v, (int, float)):
+                        continue
+                    if k.startswith("teacher_"):
+                        base = k[len("teacher_") :]
+                    elif k.startswith("student_"):
+                        base = k[len("student_") :]
+                    else:
+                        continue
+                    if base in DIAGNOSTIC_METRIC_NAMES:
+                        diag_items.append(f"{k}={v:.4f}")
+
             # Use standard HuggingFace logging only (no custom distributed operations)
             super(BBUTrainer, self).log(formatted_logs)
 
@@ -374,6 +392,11 @@ class BBUTrainer(HFTrainer):
         This method processes logs through TrainingStateManager and then uses
         standard HuggingFace logging mechanisms only.
         """
+        # Flatten nested diagnostics dict if present
+        if isinstance(logs, dict) and isinstance(logs.get("diagnostics"), dict):
+            diag = logs.pop("diagnostics")
+            for dkey, dval in diag.items():
+                logs[dkey] = dval
         # Process logs through training state manager (using correct LR mapping)
         final_logs = self.training_state_manager.log_metrics_batch(
             logs=logs,
@@ -388,6 +411,23 @@ class BBUTrainer(HFTrainer):
 
         # Format logs for better readability before logging
         formatted_logs = self._format_logs_for_display(final_logs)
+
+        # INFO: concise diagnostics summary (only known diagnostic metrics)
+        from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
+
+        if logger.isEnabledFor(logging.INFO):
+            diag_items = []
+            for k, v in formatted_logs.items():
+                if not isinstance(v, (int, float)):
+                    continue
+                if k.startswith("teacher_"):
+                    base = k[len("teacher_") :]
+                elif k.startswith("student_"):
+                    base = k[len("student_") :]
+                else:
+                    continue
+                if base in DIAGNOSTIC_METRIC_NAMES:
+                    diag_items.append(f"{k}={v:.4f}")
 
         # Use standard HuggingFace logging only
         super(BBUTrainer, self).log(formatted_logs, start_time)

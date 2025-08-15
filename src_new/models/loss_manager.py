@@ -17,7 +17,7 @@ better coordinate regression performance in the BBU detection pipeline.
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -78,6 +78,35 @@ class LossComponents:
     teacher_unlike_loss: Optional[torch.Tensor] = None
     student_kce_loss: Optional[torch.Tensor] = None
     student_unlike_loss: Optional[torch.Tensor] = None
+
+    # New: coordinate learning diagnostics (metrics; not used in loss sum)
+    teacher_window_mass: Optional[torch.Tensor] = None
+    student_window_mass: Optional[torch.Tensor] = None
+    teacher_coord_slice_mass: Optional[torch.Tensor] = None
+    student_coord_slice_mass: Optional[torch.Tensor] = None
+    teacher_gt_prob: Optional[torch.Tensor] = None
+    student_gt_prob: Optional[torch.Tensor] = None
+    teacher_expected_mae_bins: Optional[torch.Tensor] = None
+    student_expected_mae_bins: Optional[torch.Tensor] = None
+    teacher_top1_acc: Optional[torch.Tensor] = None
+    student_top1_acc: Optional[torch.Tensor] = None
+    teacher_top5_acc: Optional[torch.Tensor] = None
+    student_top5_acc: Optional[torch.Tensor] = None
+    # Additional diagnostics
+    teacher_outside_window_mass: Optional[torch.Tensor] = None
+    student_outside_window_mass: Optional[torch.Tensor] = None
+    teacher_noncoord_topk_mass: Optional[torch.Tensor] = None
+    student_noncoord_topk_mass: Optional[torch.Tensor] = None
+    teacher_window_entropy: Optional[torch.Tensor] = None
+    student_window_entropy: Optional[torch.Tensor] = None
+    teacher_margin_top1_top2: Optional[torch.Tensor] = None
+    student_margin_top1_top2: Optional[torch.Tensor] = None
+    teacher_mean_bin_offset: Optional[torch.Tensor] = None
+    student_mean_bin_offset: Optional[torch.Tensor] = None
+    teacher_coord_pos_count: Optional[torch.Tensor] = None
+    student_coord_pos_count: Optional[torch.Tensor] = None
+    # Generic diagnostics bag (preferred for logging/aggregation; keys are flattened like 'teacher_window_mass')
+    diagnostics: Optional[Dict[str, torch.Tensor]] = None
 
 
 class ModelOutput:
@@ -337,7 +366,20 @@ class LossManager:
 
             # Laplacian regularizer removed
 
-            # Create loss components with final weighted values
+            # Create diagnostics dict by flattening teacher/student metrics (if present)
+            diagnostics: Dict[str, torch.Tensor] = {}
+            from .coord_metrics import DIAGNOSTIC_METRIC_NAMES
+
+            for name in DIAGNOSTIC_METRIC_NAMES:
+                # Compose from local variables if they exist; skip if None
+                val_t = locals().get(f"teacher_{name}")
+                val_s = locals().get(f"student_{name}")
+                if val_t is not None:
+                    diagnostics[f"teacher_{name}"] = val_t
+                if val_s is not None:
+                    diagnostics[f"student_{name}"] = val_s
+
+            # Create loss components with final weighted values (diagnostics dictionary preferred)
             loss_components = LossComponents(
                 loss=total_loss,
                 teacher_llm_loss=teacher_llm_weighted,
@@ -348,6 +390,7 @@ class LossManager:
                 teacher_unlike_loss=teacher_unlike_weighted,
                 student_kce_loss=student_kce_weighted,
                 student_unlike_loss=student_unlike_weighted,
+                diagnostics=diagnostics if diagnostics else None,
             )
 
         else:
@@ -553,6 +596,33 @@ class LossManager:
         student_kce = None
         student_unlike = None
 
+        # Diagnostics (metrics)
+        teacher_window_mass = None
+        student_window_mass = None
+        teacher_coord_slice_mass = None
+        student_coord_slice_mass = None
+        teacher_gt_prob = None
+        student_gt_prob = None
+        teacher_expected_mae_bins = None
+        student_expected_mae_bins = None
+        teacher_top1_acc = None
+        student_top1_acc = None
+        teacher_top5_acc = None
+        student_top5_acc = None
+        # Additional diagnostics
+        teacher_outside_window_mass = None
+        student_outside_window_mass = None
+        teacher_noncoord_topk_mass = None
+        student_noncoord_topk_mass = None
+        teacher_window_entropy = None
+        student_window_entropy = None
+        teacher_margin_top1_top2 = None
+        student_margin_top1_top2 = None
+        teacher_mean_bin_offset = None
+        student_mean_bin_offset = None
+        teacher_coord_pos_count = None
+        student_coord_pos_count = None
+
         # Only compute auxiliary losses if enabled and coordinate tokens are present
         should_compute_aux = (
             self._coord_aux_enabled
@@ -561,6 +631,7 @@ class LossManager:
         )
 
         if should_compute_aux:
+            from .coord_metrics import compute_coord_diagnostics
             from .coordinate_loss import (
                 build_kernel_indices_and_q,
                 kernelized_kl_sparse,
@@ -578,6 +649,18 @@ class LossManager:
                 zero = shifted_logits.new_tensor(0.0)
                 teacher_l1_loss = student_l1_loss = zero
                 teacher_kce = teacher_unlike = student_kce = student_unlike = zero
+                teacher_window_mass = student_window_mass = zero
+                teacher_coord_slice_mass = student_coord_slice_mass = zero
+                teacher_gt_prob = student_gt_prob = zero
+                teacher_expected_mae_bins = student_expected_mae_bins = zero
+                teacher_top1_acc = student_top1_acc = zero
+                teacher_top5_acc = student_top5_acc = zero
+                teacher_outside_window_mass = student_outside_window_mass = zero
+                teacher_noncoord_topk_mass = student_noncoord_topk_mass = zero
+                teacher_window_entropy = student_window_entropy = zero
+                teacher_margin_top1_top2 = student_margin_top1_top2 = zero
+                teacher_mean_bin_offset = student_mean_bin_offset = zero
+                teacher_coord_pos_count = student_coord_pos_count = zero
             else:
                 V = shifted_logits.size(-1)
                 coord_vocab = coord_end_exclusive - coord_start
@@ -589,7 +672,25 @@ class LossManager:
                 def _compute_group_aux(group_mask: torch.Tensor):
                     if group_mask is None or not group_mask.any():
                         zero = shifted_logits.new_tensor(0.0)
-                        return zero, zero
+                        # kce, unlike, metrics
+                        return (
+                            zero,
+                            zero,
+                            {
+                                "window_mass": zero,
+                                "coord_slice_mass": zero,
+                                "gt_prob": zero,
+                                "expected_mae_bins": zero,
+                                "top1_acc": zero,
+                                "top5_acc": zero,
+                                "outside_window_mass": zero,
+                                "noncoord_topk_mass": zero,
+                                "window_entropy": zero,
+                                "margin_top1_top2": zero,
+                                "mean_bin_offset": zero,
+                                "coord_pos_count": zero,
+                            },
+                        )
                     pos = group_mask.nonzero(as_tuple=False)
                     coord_logits = coord_logits_full[pos[:, 0], pos[:, 1], :]
                     y_ids = shifted_labels[pos[:, 0], pos[:, 1]]
@@ -621,18 +722,54 @@ class LossManager:
                         topk=self._coord_aux_topk,
                         eps=1e-6,  # Explicit epsilon value
                     )
-                    return kce, unlike
+
+                    # Build exact full-logits rows for metrics that need them
+                    full_logits_rows = shifted_logits[pos[:, 0], pos[:, 1], :]
+                    metrics = compute_coord_diagnostics(
+                        shifted_logits=full_logits_rows,
+                        coord_logits=coord_logits,
+                        y_bins=y,
+                        idxs=idxs,
+                        noncoord_mask=noncoord_mask,
+                        tau=self._coord_aux_tau,
+                        topk_noncoord=self._coord_aux_topk,
+                    )
+                    return kce, unlike, metrics
 
                 if teacher_coord_mask_shifted.any():
-                    kce_t, ul_t = _compute_group_aux(teacher_coord_mask_shifted)
+                    kce_t, ul_t, m_t = _compute_group_aux(teacher_coord_mask_shifted)
                     teacher_kce = self._lambda_kce * kce_t
                     teacher_unlike = self._lambda_unlike * ul_t
                     teacher_l1_loss = teacher_kce + teacher_unlike
+                    teacher_window_mass = m_t["window_mass"]
+                    teacher_coord_slice_mass = m_t["coord_slice_mass"]
+                    teacher_gt_prob = m_t["gt_prob"]
+                    teacher_expected_mae_bins = m_t["expected_mae_bins"]
+                    teacher_top1_acc = m_t["top1_acc"]
+                    teacher_top5_acc = m_t["top5_acc"]
+                    teacher_outside_window_mass = m_t["outside_window_mass"]
+                    teacher_noncoord_topk_mass = m_t["noncoord_topk_mass"]
+                    teacher_window_entropy = m_t["window_entropy"]
+                    teacher_margin_top1_top2 = m_t["margin_top1_top2"]
+                    teacher_mean_bin_offset = m_t["mean_bin_offset"]
+                    teacher_coord_pos_count = m_t["coord_pos_count"]
                 if student_coord_mask_shifted.any():
-                    kce_s, ul_s = _compute_group_aux(student_coord_mask_shifted)
+                    kce_s, ul_s, m_s = _compute_group_aux(student_coord_mask_shifted)
                     student_kce = self._lambda_kce * kce_s
                     student_unlike = self._lambda_unlike * ul_s
                     student_l1_loss = student_kce + student_unlike
+                    student_window_mass = m_s["window_mass"]
+                    student_coord_slice_mass = m_s["coord_slice_mass"]
+                    student_gt_prob = m_s["gt_prob"]
+                    student_expected_mae_bins = m_s["expected_mae_bins"]
+                    student_top1_acc = m_s["top1_acc"]
+                    student_top5_acc = m_s["top5_acc"]
+                    student_outside_window_mass = m_s["outside_window_mass"]
+                    student_noncoord_topk_mass = m_s["noncoord_topk_mass"]
+                    student_window_entropy = m_s["window_entropy"]
+                    student_margin_top1_top2 = m_s["margin_top1_top2"]
+                    student_mean_bin_offset = m_s["mean_bin_offset"]
+                    student_coord_pos_count = m_s["coord_pos_count"]
         else:
             # When auxiliary losses are not enabled, set all coordinate loss components to zero
             has_coord_tokens = (
@@ -646,6 +783,30 @@ class LossManager:
                 teacher_unlike = zero_tensor
                 student_kce = zero_tensor
                 student_unlike = zero_tensor
+                teacher_window_mass = zero_tensor
+                student_window_mass = zero_tensor
+                teacher_coord_slice_mass = zero_tensor
+                student_coord_slice_mass = zero_tensor
+                teacher_gt_prob = zero_tensor
+                student_gt_prob = zero_tensor
+                teacher_expected_mae_bins = zero_tensor
+                student_expected_mae_bins = zero_tensor
+                teacher_top1_acc = zero_tensor
+                student_top1_acc = zero_tensor
+                teacher_top5_acc = zero_tensor
+                student_top5_acc = zero_tensor
+                teacher_outside_window_mass = zero_tensor
+                student_outside_window_mass = zero_tensor
+                teacher_noncoord_topk_mass = zero_tensor
+                student_noncoord_topk_mass = zero_tensor
+                teacher_window_entropy = zero_tensor
+                student_window_entropy = zero_tensor
+                teacher_margin_top1_top2 = zero_tensor
+                student_margin_top1_top2 = zero_tensor
+                teacher_mean_bin_offset = zero_tensor
+                student_mean_bin_offset = zero_tensor
+                teacher_coord_pos_count = zero_tensor
+                student_coord_pos_count = zero_tensor
 
         return {
             "teacher_llm_loss": teacher_llm_loss,
@@ -657,6 +818,31 @@ class LossManager:
             "teacher_unlike_loss": teacher_unlike,
             "student_kce_loss": student_kce,
             "student_unlike_loss": student_unlike,
+            # Diagnostics (unweighted metrics)
+            "teacher_window_mass": teacher_window_mass,
+            "student_window_mass": student_window_mass,
+            "teacher_coord_slice_mass": teacher_coord_slice_mass,
+            "student_coord_slice_mass": student_coord_slice_mass,
+            "teacher_gt_prob": teacher_gt_prob,
+            "student_gt_prob": student_gt_prob,
+            "teacher_expected_mae_bins": teacher_expected_mae_bins,
+            "student_expected_mae_bins": student_expected_mae_bins,
+            "teacher_top1_acc": teacher_top1_acc,
+            "student_top1_acc": student_top1_acc,
+            "teacher_top5_acc": teacher_top5_acc,
+            "student_top5_acc": student_top5_acc,
+            "teacher_outside_window_mass": teacher_outside_window_mass,
+            "student_outside_window_mass": student_outside_window_mass,
+            "teacher_noncoord_topk_mass": teacher_noncoord_topk_mass,
+            "student_noncoord_topk_mass": student_noncoord_topk_mass,
+            "teacher_window_entropy": teacher_window_entropy,
+            "student_window_entropy": student_window_entropy,
+            "teacher_margin_top1_top2": teacher_margin_top1_top2,
+            "student_margin_top1_top2": student_margin_top1_top2,
+            "teacher_mean_bin_offset": teacher_mean_bin_offset,
+            "student_mean_bin_offset": student_mean_bin_offset,
+            "teacher_coord_pos_count": teacher_coord_pos_count,
+            "student_coord_pos_count": student_coord_pos_count,
         }
 
     def _compute_per_token_cross_entropy(

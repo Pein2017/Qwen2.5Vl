@@ -559,6 +559,83 @@ The system uses precise span detection for loss separation:
 
 ---
 
+## 🧠 Loss Computation System
+
+### Dual-Loss Architecture (`src_new/models/loss_manager.py`)
+
+The system implements a sophisticated dual-loss architecture combining language modeling and coordinate regression:
+
+| Component | Purpose | Computation Method | Weight |
+|-----------|---------|-------------------|---------|
+| `teacher_llm_loss` | Teacher example learning | Cross-entropy on teacher spans | `teacher_loss_weight` |
+| `student_llm_loss` | Student response learning | Cross-entropy on student spans | `student_loss_weight` |
+| `teacher_kce_loss` | Teacher coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
+| `teacher_unlike_loss` | Teacher coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
+| `student_kce_loss` | Student coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
+| `student_unlike_loss` | Student coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
+
+### Auxiliary Coordinate Losses (Always Enabled)
+
+Coordinate tokens use auxiliary losses for better regression performance:
+
+- **Kernelized-KL**: Sparse Gaussian kernel around ground truth coordinate bin
+- **Unlikelihood**: Top-k penalty on non-coordinate tokens at coordinate positions
+
+This path remains the baseline and is fully compatible with existing training runs.
+
+### Optional Auxiliary Coordinate Losses (Kernelized‑KL + Unlikelihood)
+
+When enabled via YAML, `LossManager` switches the coordinate path at shifted positions whose labels are coordinate tokens and computes separate components:
+
+- Kernelized‑KL (sparse window) around the correct bin (temperature-scaled)
+- Unlikelihood on non‑coordinate tokens at coordinate positions (top‑K)
+
+Behavior and wiring:
+- CE path is unchanged and continues to train language tokens (including coordinate targets) under span masks.
+- Separate components are exposed for logging and total loss summation:
+  - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
+- The legacy `teacher_l1_loss`/`student_l1_loss` remain used only when aux is disabled.
+- Laplacian regularizer on the coordinate embedding slice has been removed.
+
+YAML configuration:
+```yaml
+coord_aux_enabled: true
+coord_aux_tau: 1.2
+coord_aux_sigma_bins: 8
+coord_aux_window_bins: 32
+coord_aux_topk: 100
+coord_aux_lambda_kce: 1
+coord_aux_lambda_unlike: 1
+```
+
+Implementation highlights:
+- `src_new/models/coordinate_loss.py` provides:
+  - `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`
+- `src_new/models/loss_manager.py` computes auxiliary losses at shifted coordinate positions (teacher/student separately) and returns separate components for logging and weighting.
+- Laplacian code and metrics were removed entirely to simplify the system.
+
+### Coordinate Diagnostics (New)
+
+To monitor and guide coordinate learning, we log the following diagnostics per group (teacher/student) during auxiliary loss computation:
+
+- `teacher_window_mass`, `student_window_mass`: Sum of probability mass inside the Gaussian window around the GT bin, averaged across positions. Target: should increase over time.
+- `teacher_coord_slice_mass`, `student_coord_slice_mass`: Fraction of full-vocabulary mass assigned to the coordinate slice (softmax over coord bins vs full vocab). Helps detect leakage into non-coordinate tokens.
+- `teacher_gt_prob`, `student_gt_prob`: Probability on the exact GT bin within the coordinate slice. Target: should increase.
+- `teacher_expected_mae_bins`, `student_expected_mae_bins`: Expected absolute error in bin units using the coordinate-slice distribution (distance-aware quality). Target: should decrease.
+- `teacher_top1_acc`, `student_top1_acc`: Argmax bin equals GT (within coordinate slice). Target: should increase.
+- `teacher_top5_acc`, `student_top5_acc`: GT within top-5 bins (within coordinate slice). Target: should increase.
+- `teacher_outside_window_mass`, `student_outside_window_mass`: 1 - window_mass; should decrease as learning concentrates mass.
+- `teacher_noncoord_topk_mass`, `student_noncoord_topk_mass`: Sum of top‑K non‑coordinate probabilities at coord positions; should decrease. Correlates with unlikelihood.
+- `teacher_window_entropy`, `student_window_entropy`: Entropy within the window (normalized); should decrease as the model sharpens near GT.
+- `teacher_margin_top1_top2`, `student_margin_top1_top2`: Mean margin between top‑1 and top‑2 probs on coord slice; should increase.
+- `teacher_mean_bin_offset`, `student_mean_bin_offset`: Signed offset of expected bin relative to GT (bias indicator); aim near 0.
+- `teacher_coord_pos_count`, `student_coord_pos_count`: Number of coord positions encountered (sanity check for masking/spans).
+
+These metrics are aggregated locally (no distributed ops) by `TrainingStateManager` and appear in the regular logs alongside loss components and learning rates. Use them to adjust:
+- Window/σ (locality), τ (sharpness), and λ weights (relative strength) without widening the window excessively.
+
+---
+
 ## 🌐 Distributed Training & Checkpoints
 
 ### NCCL Timeout Resolution (`src_new/training/bbu_trainer.py`)

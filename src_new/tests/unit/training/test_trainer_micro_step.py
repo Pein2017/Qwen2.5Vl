@@ -5,10 +5,12 @@ Micro training-step and checkpoint smoke test for BBUTrainer without external de
 """
 
 import os
+from unittest.mock import Mock
 
 import torch
 from transformers import TrainingArguments
 
+from src_new.models.loss_manager import LossManager
 from src_new.models.wrapper import DetectionModel
 from src_new.processing.token_processor import TokenConfig, TokenProcessor
 from src_new.training.bbu_trainer import BBUTrainer
@@ -177,3 +179,90 @@ def test_trainer_micro_step_and_checkpoint(tmp_path):
 
     # Ensure embedding shapes remain padded and valid
     assert wrapped.base_model.get_input_embeddings().weight.shape[0] % 128 == 0
+
+
+class DummyModel(torch.nn.Module):
+    def __init__(self, vocab_size=151665, hidden_size=32):
+        super().__init__()
+        self.embed = torch.nn.Embedding(vocab_size, hidden_size)
+        self.lm_head = torch.nn.Linear(hidden_size, vocab_size, bias=False)
+        self.config = type(
+            "C", (), {"vocab_size": vocab_size, "hidden_size": hidden_size}
+        )()
+
+    def forward(self, input_ids=None, labels=None):
+        x = self.embed(input_ids)
+        logits = self.lm_head(x)
+        return type("O", (), {"loss": None, "logits": logits})()
+
+
+class DummyTrainer:
+    def __init__(self, loss_manager: LossManager):
+        self.loss_manager = loss_manager
+
+    def training_step(self, model: torch.nn.Module, batch):
+        out = model(**batch)
+        # Minimal call to compute components to exercise path
+        _ = self.loss_manager.compute_loss_components(
+            logits=out.logits, labels=batch["labels"]
+        )
+        return out
+
+
+def test_micro_step_trainer_flow(mock_config):
+    # Basic sanity check for micro-step flow with small dummy model
+    tokenizer = Mock()
+    tokenizer.get_vocab.return_value = {
+        "<|line_start|>": 151665,
+        "<|line_end|>": 151666,
+    }
+    loss_manager = LossManager(
+        mock_config,
+        TokenProcessor(
+            TokenConfig(
+                coordinate_tokens_enabled=False,
+                max_coord_value=32,
+                coordinate_init_mode="fourier_ramp",
+            )
+        ),
+        tokenizer,
+    )
+    model = DummyModel(vocab_size=152704, hidden_size=32)
+    trainer = DummyTrainer(loss_manager)
+    batch = {
+        "input_ids": torch.randint(0, 152704, (1, 16)),
+        "labels": torch.randint(0, 152704, (1, 16)),
+    }
+    outputs = trainer.training_step(model, batch)
+    assert outputs is not None
+
+
+def test_training_state_manager_merges_diagnostics(mock_config):
+    # Verify that diagnostics dicts are merged into logs automatically
+    from unittest.mock import Mock
+
+    from src_new.models.loss_manager import LossComponents
+    from src_new.training.training_state_manager import TrainingStateManager
+
+    # Minimal model and config
+    model = Mock()
+    manager = TrainingStateManager(config=mock_config, model=model)
+
+    # Simulate accumulated components with diagnostics
+    diagnostics = {
+        "student_window_mass": 0.9,
+        "student_gt_prob": 0.8,
+    }
+    comp = LossComponents(
+        loss=torch.tensor(1.0),
+        diagnostics={k: torch.tensor(v) for k, v in diagnostics.items()},
+    )
+    manager.accumulate_loss_components(comp)
+    logs = manager.log_training_metrics(
+        tr_loss=torch.tensor(1.0), grad_norm=None, model=model, start_time=0.0
+    )
+
+    assert "student_window_mass" in logs
+    assert "student_gt_prob" in logs
+    assert abs(logs["student_window_mass"] - diagnostics["student_window_mass"]) < 1e-6
+    assert abs(logs["student_gt_prob"] - diagnostics["student_gt_prob"]) < 1e-6

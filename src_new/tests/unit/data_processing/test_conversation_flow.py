@@ -183,6 +183,7 @@ def test_conversation_flow_structure():
             conversation_processor = ConversationProcessor(
                 processor=unified_processor,
                 max_coord_value=1024,
+                coordinate_tokens_enabled=True,
             )
 
             print("✅ ConversationProcessor created successfully")

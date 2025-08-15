@@ -10,7 +10,7 @@ CONFIG_PATH="src_coord_pretrain/config/coord_bootstrap.yaml"
 LOG_PATH="$MODULE_ROOT/run_coord.log"
 
 # Devices (edit this to control number of GPUs)
-GPU_DEVICES="0,1,2,3,4,5,6,7"  # e.g., "0" or "0,1,2,3"
+GPU_DEVICES="2,3,4,5,6,7"  # e.g., "0" or "0,1,2,3"
 
 setup_environment() {
     echo "🌍 Setting up environment for coord bootstrap..."
@@ -20,6 +20,11 @@ setup_environment() {
     export HF_HOME="$PROJECT_ROOT/model_cache"
     export TOKENIZERS_PARALLELISM=false
     export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
+
+    # Disable tqdm/progress bars (align with src_new style)
+    export DISABLE_TQDM=1
+    export TQDM_DISABLE=1
+    export HF_DATASETS_DISABLE_PROGRESS_BARS=1
 
     eval "$(conda shell.bash hook)"
     conda activate ms
