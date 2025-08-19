@@ -15,6 +15,8 @@ Key Features:
 
 from typing import Any, Dict, List
 
+from src_new.processing.special_tokens import GEOMETRY_TOKENS
+
 
 class CoordinateTokenConverter:
     """
@@ -50,28 +52,8 @@ class CoordinateTokenConverter:
 
         self.max_coord_value = max_coord_value
         self.coordinate_tokens_enabled = coordinate_tokens_enabled
-
-        # Geometry type mappings (from current _format_objects_for_response)
-        self.geometry_tokens = {
-            "bbox_2d": (
-                "<|object_ref_start|>",
-                "<|object_ref_end|>",
-                "<|box_start|>",
-                "<|box_end|>",
-            ),
-            "quad": (
-                "<|object_ref_start|>",
-                "<|object_ref_end|>",
-                "<|quad_start|>",
-                "<|quad_end|>",
-            ),
-            "line": (
-                "<|object_ref_start|>",
-                "<|object_ref_end|>",
-                "<|line_start|>",
-                "<|line_end|>",
-            ),
-        }
+        # Use centralized canonical geometry tokens
+        self.geometry_tokens = GEOMETRY_TOKENS
 
     def convert_objects_to_tokens(self, objects: List[Dict[str, Any]]) -> str:
         """
@@ -149,7 +131,7 @@ class CoordinateTokenConverter:
             available_keys = [k for k in obj.keys() if k not in ["desc", "category"]]
             raise ValueError(
                 f"Object {obj_index} contains unsupported geometry type. "
-                f"Expected one of: bbox_2d, quad, line. "
+                f"Expected one of: {list(self.geometry_tokens.keys())}. "
                 f"Found geometry keys: {available_keys}. "
                 f"Full object: {obj}"
             )

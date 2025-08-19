@@ -19,10 +19,10 @@ from typing import List, Optional, Tuple
 import torch
 
 # Configure logger using centralized logger factory
-from .logger_factory import get_module_logger
+from .rank_aware_logging import get_rank_aware_logger
 
 
-logger = get_module_logger("debug_logging")
+logger = get_rank_aware_logger("debug_logging")
 
 
 class DebugLogger:

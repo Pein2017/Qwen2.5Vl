@@ -26,7 +26,7 @@ def compute_coord_diagnostics(
     coord_logits: torch.Tensor,  # [N, K+1]
     y_bins: torch.Tensor,  # [N]
     idxs: torch.Tensor,  # [N, W]
-    noncoord_mask: torch.BoolTensor,  # [V]
+    noncoord_mask: torch.Tensor,  # [V]
     tau: float,
     topk_noncoord: int,
 ) -> Dict[str, torch.Tensor]:
@@ -64,29 +64,53 @@ def compute_coord_diagnostics(
     )
     p_coord = torch.softmax(logits_coord_scaled, dim=-1)
 
-    # Window mass in coordinate slice
-    p_w = p_coord.gather(dim=-1, index=idxs)
-    window_mass_vec = p_w.sum(dim=-1)
+    # Window mass in coordinate slice (deduplicated; no edge double-counting)
+    K = p_coord.size(-1) - 1
+    width = idxs.size(1)
+    radius = int(max((width - 1) // 2, 0))
+    low = torch.clamp(y_bins - radius, min=0)
+    high = torch.clamp(y_bins + radius, max=K)
+
+    # Use cumulative sum for fast inclusive range sums
+    cdf = torch.cumsum(p_coord, dim=-1)
+    mass_high = cdf.gather(dim=-1, index=high.view(-1, 1)).squeeze(1)
+    # Avoid negative indices in gather: clamp (low - 1) then zero out where low==0
+    safe_lowm1 = torch.clamp(low - 1, min=0)
+    mass_lowm1 = cdf.gather(dim=-1, index=safe_lowm1.view(-1, 1)).squeeze(1)
+    mass_lowm1 = mass_lowm1.masked_fill(low <= 0, 0.0)
+    window_mass_vec = (mass_high - mass_lowm1).clamp(0.0, 1.0)
     window_mass = window_mass_vec.mean()
     outside_window_mass = (1.0 - window_mass_vec).mean()
 
-    # Window entropy (normalized within window)
-    p_w_norm = p_w / (p_w.sum(dim=-1, keepdim=True) + 1e-12)
-    window_entropy = -(p_w_norm * (torch.log(p_w_norm + 1e-12))).sum(dim=-1).mean()
+    # Window entropy within [low, high] using a boolean slice mask (no duplicates)
+    cols = torch.arange(K + 1, device=p_coord.device).view(1, -1)
+    mask = (cols >= low.view(-1, 1)) & (cols <= high.view(-1, 1))
+    p_w = p_coord * mask.to(dtype=p_coord.dtype)
+    p_w_sum = p_w.sum(dim=-1, keepdim=True)
+    p_w_sum = torch.clamp(p_w_sum, min=torch.finfo(p_w_sum.dtype).eps)
+    p_w_norm = p_w / p_w_sum
+    # Use float32 for stable entropy when in bf16
+    p_w_norm_f32 = p_w_norm.to(dtype=torch.float32)
+    window_entropy = (
+        -(p_w_norm_f32 * torch.log(p_w_norm_f32 + 1e-12)).sum(dim=-1).mean()
+    )
 
     # GT probability within coordinate slice
+    # Gather with safe dtype and indices
+    y_bins = y_bins.to(dtype=torch.long)
     gt_prob = p_coord.gather(dim=-1, index=y_bins.view(-1, 1)).squeeze(1).mean()
 
     # Expected bin MAE (in bins) and signed offset
     K = p_coord.size(-1) - 1
     bin_idx = torch.arange(0, K + 1, device=p_coord.device, dtype=torch.float32)
-    expected_bin = (p_coord * bin_idx.unsqueeze(0)).sum(dim=-1)
+    # Accumulate in float32 for numerical stability when running bf16
+    expected_bin = (p_coord.to(dtype=torch.float32) * bin_idx.unsqueeze(0)).sum(dim=-1)
     diff = expected_bin - y_bins.to(dtype=torch.float32)
     expected_mae = diff.abs().mean()
     mean_bin_offset = diff.mean()
 
     # Top-1 / Top-5 accuracy within coordinate slice, and margin
-    topk2_vals, topk2_idx = torch.topk(p_coord, k=2, dim=-1)
+    topk2_vals, topk2_idx = torch.topk(p_coord.to(dtype=torch.float32), k=2, dim=-1)
     top1_acc = (topk2_idx[:, 0] == y_bins).float().mean()
     k5 = int(min(5, p_coord.size(-1)))
     if k5 > 1:
@@ -106,33 +130,42 @@ def compute_coord_diagnostics(
     # so we compute from shifted_logits and mask at the same positions; to keep this helper generic,
     # compute using the provided noncoord_mask and topk with a dummy selection of rows if available.
 
-    # Caller must pass the exact rows of shifted_logits that match coord_logits; otherwise skip.
-    try:
-        # Attempt to gather matching rows from shifted_logits via a side channel
-        # If shapes mismatch, fall back to zero for these two metrics
-        # Expected shape: shifted_logits_selected: [N, V]
-        # Using a heuristic: if shifted_logits.dim()==2 and shifted_logits.size(0)==coord_logits.size(0)
-        if shifted_logits.dim() == 2 and shifted_logits.size(0) == coord_logits.size(0):
-            full_logits_pos = shifted_logits
-            lse_coord = torch.logsumexp(coord_logits, dim=-1)
-            lse_full = torch.logsumexp(full_logits_pos, dim=-1)
-            coord_slice_mass = torch.exp(lse_coord - lse_full).mean()
+    # Caller must pass the exact rows of shifted_logits that match coord_logits; validate strictly.
+    if shifted_logits.dim() != 2:
+        raise ValueError(
+            f"shifted_logits must be 2D [N,V] rows matching coord positions; got shape={tuple(shifted_logits.shape)}"
+        )
+    if shifted_logits.size(0) != coord_logits.size(0):
+        raise ValueError(
+            f"Row count mismatch for diagnostics: shifted_logits N={shifted_logits.size(0)} vs coord_logits N={coord_logits.size(0)}"
+        )
+    V = int(shifted_logits.size(1))
+    # Validate noncoord mask
+    if noncoord_mask is None or int(noncoord_mask.numel()) != V:
+        raise ValueError(
+            f"noncoord_mask must have length V={V}, got {None if noncoord_mask is None else noncoord_mask.numel()}"
+        )
+    if noncoord_mask.dtype != torch.bool:
+        raise TypeError(
+            f"noncoord_mask must be boolean; got dtype={noncoord_mask.dtype}"
+        )
+    full_logits_pos = shifted_logits.to(dtype=torch.float32)
+    lse_coord = torch.logsumexp(coord_logits.to(dtype=torch.float32), dim=-1)
+    lse_full = torch.logsumexp(full_logits_pos, dim=-1)
+    coord_slice_mass = torch.exp(lse_coord - lse_full).mean()
 
-            logits_text = full_logits_pos[..., noncoord_mask].float().clamp(-50.0, 50.0)
-            probs_text = torch.softmax(logits_text, dim=-1)
-            k = int(min(int(topk_noncoord), probs_text.size(-1)))
-            if k > 0:
-                noncoord_topk_mass = (
-                    torch.topk(probs_text, k=k, dim=-1)[0].sum(dim=-1).mean()
-                )
-            else:
-                noncoord_topk_mass = shifted_logits.new_tensor(0.0)
-        else:
-            coord_slice_mass = shifted_logits.new_tensor(0.0)
-            noncoord_topk_mass = shifted_logits.new_tensor(0.0)
-    except Exception:
-        coord_slice_mass = shifted_logits.new_tensor(0.0)
-        noncoord_topk_mass = shifted_logits.new_tensor(0.0)
+    # Ensure boolean mask is on the same device as logits
+    noncoord_mask = noncoord_mask.to(device=full_logits_pos.device)
+    logits_text = full_logits_pos[..., noncoord_mask].clamp(-50.0, 50.0)
+    probs_text = torch.softmax(logits_text, dim=-1)
+    k = int(min(int(topk_noncoord), probs_text.size(-1)))
+    if k > 0:
+        noncoord_topk_mass = torch.topk(probs_text, k=k, dim=-1)[0].sum(dim=-1).mean()
+    else:
+        # Fail-fast contract: topk must be > 0 to produce a meaningful value
+        raise ValueError(
+            f"topk_noncoord must be > 0 for diagnostics; got {topk_noncoord}"
+        )
 
     return {
         "window_mass": window_mass,

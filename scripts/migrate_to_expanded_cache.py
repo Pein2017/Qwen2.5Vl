@@ -15,11 +15,11 @@ Usage:
 
 # Configuration - Define all parameters here
 BASE_MODEL_PATH = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
-OUTPUT_DIR = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024_msmean"
+OUTPUT_DIR = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024_fourier"
 MAX_COORD_VALUE = 1024
 DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
 FORCE_OVERWRITE = True  # Set to True to overwrite existing output directory
-COORDINATE_INIT_MODE = "ms_mean"  # Required: "ms_mean" or "fourier_ramp"
+COORDINATE_INIT_MODE = "fourier_ramp"  # Required: "ms_mean" or "fourier_ramp"
 
 import json
 import shutil

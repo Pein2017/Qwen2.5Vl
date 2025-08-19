@@ -20,13 +20,19 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 if TYPE_CHECKING:
     from src_new.config.config import Config
 
-from ..utils.logger_factory import get_module_logger
+from src_new.processing.special_tokens import IMAGE_PAD
+from src_new.types.shapes import (
+    IMAGE_GRID_THW_SHAPE_DESC,
+    PIXEL_VALUES_PACKED_SHAPE_DESC,
+)
+
+from ..utils.rank_aware_logging import get_rank_aware_logger
 from ..utils.tensor_validation import validate_multimodal_tensors
 from .loss_manager import LossComponents, LossManager, ModelOutput
 from .patches import apply_comprehensive_qwen25_fixes
 
 
-logger = get_module_logger(__name__)
+logger = get_rank_aware_logger(__name__)
 
 
 class CoordinateProcessor:
@@ -36,6 +42,14 @@ class CoordinateProcessor:
     Handles coordinate token masking, vocabulary extension, and coordinate-specific
     operations for the detection model.
     """
+
+    # Non-trivial state annotations
+    config: "Config"
+    coordinate_tokens_enabled: bool
+    max_coord_value: int
+    original_vocab_size: Optional[int]
+    coordinate_token_range: Optional[tuple[int, int]]
+    _tokenizer: Optional[PreTrainedTokenizerBase]
 
     def __init__(self, config: "Config") -> None:
         """
@@ -60,83 +74,25 @@ class CoordinateProcessor:
         Args:
             tokenizer: Tokenizer to use for coordinate token detection
         """
-        self._tokenizer = tokenizer
-        if tokenizer is not None:
-            vocab = tokenizer.get_vocab()
+        if tokenizer is None:
+            raise ValueError("Tokenizer must not be None in set_tokenizer")
 
-            # Determine original vocab size
-            if self.coordinate_tokens_enabled:
-                # Look for coordinate value tokens (not geometry tokens)
-                # Coordinate tokens are <|coord_0|> through <|coord_2048|>
-                coord_value_tokens = [
-                    token for token in vocab.keys() if token.startswith("<|coord_")
-                ]
+        from src_new.processing.special_tokens import get_coord_token_range
 
-                if coord_value_tokens:
-                    # Original vocab size is the minimum coordinate token ID
-                    coord_ids = [vocab[token] for token in coord_value_tokens]
-                    self.original_vocab_size = min(coord_ids)
-                    self.coordinate_token_range = (min(coord_ids), max(coord_ids) + 1)
-                    logger.info(
-                        f"🎯 Found {len(coord_value_tokens)} coordinate value tokens"
-                    )
-                    logger.info(f"🎯 Original vocab size: {self.original_vocab_size}")
-                    logger.info(
-                        f"🎯 Coordinate token range: {self.coordinate_token_range}"
-                    )
-                    logger.info(
-                        f"🎯 Sample tokens: {sorted(coord_value_tokens)[:3]} ... {sorted(coord_value_tokens)[-3:]}"
-                    )
+        rng = get_coord_token_range(tokenizer)
+        vocab = tokenizer.get_vocab()
 
-                    # Strict validation: enforce Qwen2.5-VL fixed coordinate token range
-                    HARD_START = 151667
-                    start_id, end_exclusive = self.coordinate_token_range
-                    end_inclusive = end_exclusive - 1
-                    expected_end_inclusive = HARD_START + int(self.max_coord_value)
-                    if not (
-                        start_id == HARD_START
-                        and end_inclusive == expected_end_inclusive
-                    ):
-                        raise ValueError(
-                            "❌ Tokenizer coordinate token range mismatch. "
-                            f"Expected inclusive range [{{HARD_START}}, {{expected_end_inclusive}}] for Qwen2.5-VL, "
-                            f"but found [{{start_id}}, {{end_inclusive}}]. "
-                            "This codebase only supports Qwen2.5-VL tokenizers with the fixed coordinate range. "
-                            "If you intentionally use a different tokenizer, update the hardcoded range accordingly."
-                        )
-                else:
-                    # No coordinate tokens found - this could be before extension or intentionally disabled
-                    if self.coordinate_tokens_enabled:
-                        # Check if this is a base tokenizer that needs extension
-                        vocab_size = len(vocab)
-                        if vocab_size <= 151665:  # Standard Qwen2.5-VL base vocab size
-                            logger.info(
-                                f"ℹ️ Base tokenizer detected (vocab_size={vocab_size}). "
-                                f"Coordinate tokens will be added during vocabulary extension."
-                            )
-                            # Set temporary values - will be updated after extension
-                            self.original_vocab_size = vocab_size
-                            self.coordinate_token_range = (0, 0)  # Temporary
-                        else:
-                            # Extended tokenizer but no coordinate tokens found - this is an error
-                            raise ValueError(
-                                "❌ CRITICAL: Coordinate tokens are enabled in configuration but no coordinate tokens "
-                                f"(e.g., '<|coord_0|>', '<|coord_1|>', etc.) were found in the tokenizer vocabulary. "
-                                f"Tokenizer has {vocab_size} tokens (extended) but coordinate tokens are missing. "
-                                f"This indicates a vocabulary extension failure."
-                            )
-                    else:
-                        # Coordinate tokens not expected - use full vocab size as original
-                        self.original_vocab_size = len(vocab)
-                        logger.info(
-                            "ℹ️ No coordinate tokens found in vocabulary (coordinate processing disabled in config)"
-                        )
-                        self.coordinate_token_range = (0, 0)
-            else:
-                # Coordinate tokens disabled - use full vocab size as original
-                self.original_vocab_size = len(vocab)
-                self.coordinate_token_range = (0, 0)
+        if self.coordinate_tokens_enabled:
+            if rng.end_exclusive <= rng.start_id:
+                raise ValueError(
+                    "Coordinate tokens enabled but no valid coordinate token range detected"
+                )
+            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
+            self.original_vocab_size = int(rng.start_id)
+            logger.info(f"🎯 Coordinate token range: {self.coordinate_token_range}")
         else:
+            # Coordinates disabled: record vocab size and zero range
+            self.original_vocab_size = len(vocab)
             self.coordinate_token_range = (0, 0)
 
     def update_after_extension(self, tokenizer) -> None:
@@ -149,47 +105,31 @@ class CoordinateProcessor:
         Args:
             tokenizer: Extended tokenizer with coordinate tokens
         """
-        if self.coordinate_tokens_enabled and tokenizer is not None:
+        if tokenizer is None:
+            raise ValueError("Tokenizer must not be None in update_after_extension")
+
+        from src_new.processing.special_tokens import get_coord_token_range
+
+        rng = get_coord_token_range(tokenizer)
+        if self.coordinate_tokens_enabled:
+            if rng.end_exclusive <= rng.start_id:
+                raise ValueError(
+                    "Coordinate tokens enabled but no valid coordinate token range after extension"
+                )
+            self.original_vocab_size = int(rng.start_id)
+            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
+            logger.info(
+                f"🎯 Updated after extension: final coordinate token range: {self.coordinate_token_range}"
+            )
+        else:
             vocab = tokenizer.get_vocab()
-            coord_value_tokens = [
-                token for token in vocab.keys() if token.startswith("<|coord_")
-            ]
-
-            if coord_value_tokens:
-                # Update coordinate token range after extension
-                coord_ids = [vocab[token] for token in coord_value_tokens]
-                self.original_vocab_size = min(coord_ids)
-                self.coordinate_token_range = (min(coord_ids), max(coord_ids) + 1)
-                logger.info(
-                    f"🎯 Updated after extension: {len(coord_value_tokens)} coordinate tokens"
-                )
-                logger.info(
-                    f"🎯 Final coordinate token range: {self.coordinate_token_range}"
-                )
-
-                # Strict validation again post-extension
-                HARD_START = 151667
-                start_id, end_exclusive = self.coordinate_token_range
-                end_inclusive = end_exclusive - 1
-                expected_end_inclusive = HARD_START + int(self.max_coord_value)
-                if not (
-                    start_id == HARD_START and end_inclusive == expected_end_inclusive
-                ):
-                    raise ValueError(
-                        "❌ Tokenizer coordinate token range mismatch after extension. "
-                        f"Expected inclusive range [{{HARD_START}}, {{expected_end_inclusive}}], "
-                        f"but found [{{start_id}}, {{end_inclusive}}]."
-                    )
-            else:
-                logger.warning(
-                    "⚠️ Warning: Tokenizer extension completed but no coordinate tokens found"
-                )
+            self.original_vocab_size = len(vocab)
+            self.coordinate_token_range = (0, 0)
 
     def mask_coordinate_logits(
         self,
         logits: torch.Tensor,
         input_ids: torch.Tensor,
-        coordinate_token_range: tuple[int, int],
     ) -> torch.Tensor:
         """
         Mask coordinate-specific logits for non-coordinate positions.
@@ -197,7 +137,6 @@ class CoordinateProcessor:
         Args:
             logits: Model logits [batch_size, seq_len, vocab_size]
             input_ids: Input token IDs [batch_size, seq_len]
-            coordinate_token_range: Tuple of (start_idx, end_idx) for coordinate tokens
 
         Returns:
             Masked logits tensor
@@ -205,7 +144,7 @@ class CoordinateProcessor:
         if not self.coordinate_tokens_enabled or self.coordinate_token_range is None:
             return logits
 
-        # Use the actual coordinate token range from tokenizer
+        # Use the actual coordinate token range from tokenizer (end-exclusive)
         start_idx, end_idx = self.coordinate_token_range
 
         # Check if the range is valid
@@ -269,6 +208,18 @@ class DetectionModel(nn.Module):
     # Declare tied weights to handle shared memory during checkpoint saving
     _tied_weights_keys = ["base_model.lm_head.weight"]
 
+    # Non-trivial state annotations
+    base_model: Qwen2_5_VLForConditionalGeneration
+    training_config: "Config"
+    _config: Any
+    tokenizer: Optional[PreTrainedTokenizerBase]
+    _coordinate_mode: bool
+    coordinate_processor: CoordinateProcessor
+    token_processor: Any
+    _tokenizer: Optional[PreTrainedTokenizerBase]
+    _extended_tokenizer: Optional[PreTrainedTokenizerBase]
+    loss_manager: Optional[Any]
+
     def __init__(
         self,
         base_model: Qwen2_5_VLForConditionalGeneration,
@@ -302,10 +253,16 @@ class DetectionModel(nn.Module):
         # Initialize token processor for vocabulary extension
         from src_new.processing.token_processor import TokenConfig, TokenProcessor
 
+        # Validate required config attributes
+        if not hasattr(config, "new_geometry_tokens"):
+            raise ValueError(
+                "Config missing required attribute 'new_geometry_tokens'. Ensure config validation was run."
+            )
+
         token_config = TokenConfig(
             coordinate_tokens_enabled=config.coordinate_tokens_enabled,
             max_coord_value=config.max_coord_value,
-            new_geometry_tokens=getattr(config, "new_geometry_tokens", []),
+            new_geometry_tokens=config.new_geometry_tokens or [],
             coordinate_init_mode=config.coordinate_init_mode,
         )
         self.token_processor = TokenProcessor(token_config)
@@ -341,11 +298,30 @@ class DetectionModel(nn.Module):
             else tokenizer
         )
         if final_tokenizer is not None:
-            self.coordinate_processor.set_tokenizer(final_tokenizer)
+            from src_new.processing.special_tokens import get_coord_token_range
 
-            # If expansion was skipped, update coordinate processor with the pre-expanded tokenizer
+            # Set tokenizer reference first
+            self.coordinate_processor._tokenizer = final_tokenizer
+
+            # Get coordinate token range - fail fast if tokenizer is invalid
+            rng = get_coord_token_range(final_tokenizer)
+            self.coordinate_processor.coordinate_token_range = (
+                rng.start_id,
+                rng.end_exclusive,
+            )
+
             if skip_expansion and self._coordinate_mode:
-                self.coordinate_processor.update_after_extension(final_tokenizer)
+                # Re-validate coordinate range for skip_expansion mode
+                rng2 = get_coord_token_range(final_tokenizer)
+                if rng2.start_id == rng2.end_exclusive and self._coordinate_mode:
+                    raise ValueError(
+                        "Coordinate mode enabled but no coordinate tokens found in tokenizer. "
+                        "Ensure tokenizer was properly extended with coordinate tokens."
+                    )
+                self.coordinate_processor.coordinate_token_range = (
+                    rng2.start_id,
+                    rng2.end_exclusive,
+                )
 
         # Initialize loss manager lazily to avoid requiring full loss config at construction time
         self.loss_manager = None
@@ -400,22 +376,34 @@ class DetectionModel(nn.Module):
     @staticmethod
     def detect_extended_checkpoint(model_path: str) -> bool:
         """
-        Detect if a checkpoint already has extended vocabulary.
+        Detect if a checkpoint already has extended vocabulary by inspecting tokenizer tokens.
 
         Args:
             model_path: Path to model checkpoint
 
         Returns:
-            True if checkpoint has extended vocabulary
+            True if checkpoint contains any <|coord_*> tokens
         """
-        try:
-            from transformers import AutoConfig
+        # Validate model path exists
+        from pathlib import Path
 
-            config = AutoConfig.from_pretrained(model_path, trust_remote_code=False)
-            vocab_size = config.vocab_size
-            return vocab_size > 151665
-        except Exception:
-            return False
+        from transformers import AutoTokenizer
+
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"Model path does not exist: {model_path}")
+
+        # Load tokenizer - fail fast on any issues
+        tok = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=False, use_fast=True
+        )
+        vocab = tok.get_vocab()
+
+        if not isinstance(vocab, dict):
+            raise ValueError(f"Invalid tokenizer vocabulary type: {type(vocab)}")
+
+        return any(
+            isinstance(t, str) and t.startswith("<|coord_") for t in vocab.keys()
+        )
 
     @classmethod
     def from_pretrained(
@@ -446,8 +434,7 @@ class DetectionModel(nn.Module):
             logger.info(
                 f"🚀 Fast loading - detected extended checkpoint at {model_path}"
             )
-            # Set skip flag to avoid redundant token expansion
-            config.skip_vocab_extension = True
+            # Extended checkpoint detected; vocabulary extension will be skipped by callers
         elif not config.coordinate_tokens_enabled:
             logger.info(f"📋 Loading base model - coordinate tokens disabled")
         else:
@@ -485,16 +472,17 @@ class DetectionModel(nn.Module):
             **kwargs,
         }
 
-        # OPTIMIZATION 4: Try SafeTensors format first for 4-6x faster loading
-        try:
-            import os
+        # OPTIMIZATION 4: Check for SafeTensors format for 4-6x faster loading
+        from pathlib import Path
 
-            safetensors_path = os.path.join(model_path, "model.safetensors")
-            if os.path.exists(safetensors_path):
-                logger.info("🚀 Using SafeTensors format for 4-6x faster loading")
-                loading_kwargs["use_safetensors"] = True
-        except Exception:
-            pass  # Fall back to regular loading
+        model_path_obj = Path(model_path)
+        if not model_path_obj.exists():
+            raise FileNotFoundError(f"Model path does not exist: {model_path}")
+
+        safetensors_path = model_path_obj / "model.safetensors"
+        if safetensors_path.exists():
+            logger.info("🚀 Using SafeTensors format for 4-6x faster loading")
+            loading_kwargs["use_safetensors"] = True
 
         base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_path, **loading_kwargs
@@ -522,17 +510,9 @@ class DetectionModel(nn.Module):
         Args:
             skip_vocab_extension: If True, assumes tokenizer already has coordinate tokens
         """
-        # Set the skip flag in config temporarily
-        original_skip = config.skip_vocab_extension
-        config.skip_vocab_extension = skip_vocab_extension
-
-        try:
-            # Use regular from_pretrained but with skip flag
-            model = cls.from_pretrained(model_path, config, tokenizer, **kwargs)
-            return model
-        finally:
-            # Restore original setting
-            config.skip_vocab_extension = original_skip
+        # Call regular from_pretrained while indicating skip behavior via kwargs only
+        model = cls.from_pretrained(model_path, config, tokenizer, **kwargs)
+        return model
 
     def forward(self, **kwargs) -> Union["ModelOutput", Any]:
         """
@@ -557,38 +537,15 @@ class DetectionModel(nn.Module):
                     f"🔍 BEFORE FIX: image_grid_thw shape: {image_grid_thw.shape}, values: {image_grid_thw}"
                 )
 
-                # Fix tensor shape if needed: [batch_size, 1, 3] -> [batch_size, 3]
-                if image_grid_thw.dim() == 3 and image_grid_thw.shape[1] == 1:
-                    image_grid_thw = image_grid_thw.squeeze(
-                        1
-                    )  # [batch_size, 1, 3] -> [batch_size, 3]
-                    kwargs["image_grid_thw"] = image_grid_thw
-                    logger.debug(
-                        f"✅ FIXED image_grid_thw shape: {image_grid_thw.shape}"
-                    )
-
-                # Also handle case where it's [batch_size, 2] instead of [batch_size, 3]
-                if image_grid_thw.dim() == 2 and image_grid_thw.shape[1] == 2:
-                    logger.error(
-                        f"❌ CRITICAL: image_grid_thw has only 2 values per batch item: {image_grid_thw.shape}"
-                    )
-                    logger.error(f"   Values: {image_grid_thw}")
+                # Enforce strict contract: [num_images, 3] with no mutation
+                if not (image_grid_thw.dim() == 2 and image_grid_thw.shape[1] == 3):
                     raise ValueError(
-                        f"image_grid_thw has shape {image_grid_thw.shape} with only 2 values per item, but model expects 3 (t, h, w). "
-                        f"This indicates a fundamental issue in the data pipeline where grid_thw is missing one dimension."
+                        f"Invalid image_grid_thw shape: expected {IMAGE_GRID_THW_SHAPE_DESC}, got {image_grid_thw.shape}. "
+                        f"Collator must emit flattened per-image THW grid; no automatic reshaping is performed here."
                     )
-
-                # Validate final shape
-                if image_grid_thw.dim() == 2 and image_grid_thw.shape[1] == 3:
-                    logger.debug(
-                        f"✅ image_grid_thw shape validated: {image_grid_thw.shape}"
-                    )
-                else:
-                    # Fail-fast with explicit context
-                    raise ValueError(
-                        f"Invalid image_grid_thw shape: expected [batch_size, 3], got {image_grid_thw.shape}. "
-                        f"This indicates a tensor shape issue in the data pipeline."
-                    )
+                logger.debug(
+                    f"✅ image_grid_thw shape validated: {image_grid_thw.shape}"
+                )
 
         # PRE-FORWARD SAFETY: Validate multimodal tensor consistency to prevent CUDA OOB
         pixel_values = kwargs["pixel_values"] if "pixel_values" in kwargs else None
@@ -608,6 +565,42 @@ class DetectionModel(nn.Module):
                 raise
 
             # Validate counts: number of image tokens should match expected tokens per image grids
+            # Determine spatial merge size used by processor/model
+            spatial_merge_size = None
+
+            # First try vision config
+            if hasattr(self.base_model.config, "vision_config"):
+                vision_cfg = self.base_model.config.vision_config
+                if vision_cfg is not None and hasattr(vision_cfg, "spatial_merge_size"):
+                    if not isinstance(vision_cfg.spatial_merge_size, (int, float)):
+                        raise ValueError(
+                            f"Invalid spatial_merge_size type in vision config: {type(vision_cfg.spatial_merge_size)}"
+                        )
+                    spatial_merge_size = int(vision_cfg.spatial_merge_size)
+
+            # If not found in vision config, try training config
+            if spatial_merge_size is None:
+                if not hasattr(self.training_config, "merge_size"):
+                    raise ValueError(
+                        "No spatial_merge_size found in vision config and no merge_size in training config. "
+                        "Cannot determine merge size for image token validation."
+                    )
+                if not isinstance(self.training_config.merge_size, (int, float)):
+                    raise ValueError(
+                        f"Invalid merge_size type in training config: {type(self.training_config.merge_size)}"
+                    )
+                spatial_merge_size = int(self.training_config.merge_size)
+
+            merge_length = spatial_merge_size * spatial_merge_size
+            # Expected image token count matches how HF processor expands <|image_pad|>
+            # See transformers Qwen2_5_VLProcessor: tokens per image = (t*h*w) // (merge_size**2)
+            grid_long = image_grid_thw.to(dtype=torch.long)
+            expected_image_tokens = int(
+                (torch.prod(grid_long, dim=1) // merge_length).sum().item()
+            )
+
+            # Compute actual number of image pad tokens present in input_ids
+            n_image_tokens = 0
             if input_ids is not None:
                 # Determine image token id robustly (from model config or tokenizer)
                 image_token_id_val = None
@@ -617,61 +610,55 @@ class DetectionModel(nn.Module):
                         image_token_id_val = image_token_id_attr
                 if image_token_id_val is None and self.tokenizer is not None:
                     vocab = self.tokenizer.get_vocab()
-                    if "<|image_pad|>" in vocab:
-                        image_token_id_val = int(vocab["<|image_pad|>"])
-                    else:
-                        # Fallback for mocked tokenizers in tests: use known default id
-                        image_token_id_val = int(151655)
+                    if IMAGE_PAD in vocab:
+                        image_token_id_val = int(vocab[IMAGE_PAD])
+                if image_token_id_val is not None:
+                    mask_tensor = input_ids == image_token_id_val
+                    n_image_tokens = int(mask_tensor.sum().item())
 
-                mask_tensor = (
-                    (input_ids == image_token_id_val)
-                    if isinstance(input_ids, torch.Tensor)
-                    else torch.zeros(1, dtype=torch.bool)
-                )
-                n_image_tokens = int(mask_tensor.sum().item())
-
-                # Determine spatial merge size used by processor/model (default to 2)
-                spatial_merge_size = None
-                vision_cfg = None
-                if hasattr(self.base_model.config, "vision_config"):
-                    vision_cfg = self.base_model.config.vision_config
-                if vision_cfg is not None and hasattr(vision_cfg, "spatial_merge_size"):
-                    try:
-                        spatial_merge_size = int(vision_cfg.spatial_merge_size)
-                    except Exception:
-                        spatial_merge_size = None
-                if spatial_merge_size is None:
-                    # Fallback to training config (explicit)
-                    try:
-                        spatial_merge_size = int(self.training_config.merge_size)
-                    except Exception:
-                        spatial_merge_size = 2
-
-                merge_length = spatial_merge_size * spatial_merge_size
-                # Expected image token count matches how HF processor expands <|image_pad|>
-                # See transformers Qwen2_5_VLProcessor: tokens per image = (t*h*w) // (merge_size**2)
-                grid_long = image_grid_thw.to(dtype=torch.long)
-                expected_image_tokens = int(
-                    (torch.prod(grid_long, dim=1) // merge_length).sum().item()
+            if n_image_tokens != expected_image_tokens:
+                raise ValueError(
+                    f"Image token count mismatch: tokens={n_image_tokens}, expected={expected_image_tokens}. "
+                    f"Check chat template expansion vs image_grid_thw and merge_size={spatial_merge_size}."
                 )
 
-                if n_image_tokens != expected_image_tokens:
-                    raise ValueError(
-                        f"Image token count mismatch: tokens={n_image_tokens}, expected={expected_image_tokens}. "
-                        f"Check chat template expansion vs image_grid_thw and merge_size={spatial_merge_size}."
-                    )
-
-                # Validate total patches count matches flattened rows
-                grid = image_grid_thw.to(dtype=torch.long)
-                expected_patches = int(
-                    (grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item()
+            # Validate total patches count matches flattened rows
+            grid = image_grid_thw.to(dtype=torch.long)
+            expected_patches = int((grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item())
+            actual_patches = int(pixel_values.shape[0])
+            if actual_patches != expected_patches:
+                raise ValueError(
+                    f"Mismatch between image token count and pixel_values rows: expected {expected_patches} rows (sum(t*h*w)), got {actual_patches}. "
+                    f"pixel_values shape={tuple(pixel_values.shape)} (expected leading shape {PIXEL_VALUES_PACKED_SHAPE_DESC})"
                 )
-                actual_patches = int(pixel_values.shape[0])
-                if actual_patches != expected_patches:
-                    raise ValueError(
-                        f"pixel_values rows ({actual_patches}) != sum(t*h*w) from image_grid_thw ({expected_patches}). "
-                        f"This inconsistency will cause CUDA index errors in Qwen2.5-VL vision module."
-                    )
+
+        # NEW: Strict validation for text tensors before base model call (fail-fast)
+        if input_ids is not None:
+            if not (input_ids.dim() == 2):
+                raise ValueError(
+                    f"input_ids must be 2D [batch, seq], got shape={tuple(input_ids.shape)}"
+                )
+        attention_mask = (
+            kwargs["attention_mask"] if "attention_mask" in kwargs else None
+        )
+        if attention_mask is not None:
+            if not (attention_mask.dim() == 2):
+                raise ValueError(
+                    f"attention_mask must be 2D [batch, seq], got shape=={tuple(attention_mask.shape)}"
+                )
+        if labels is not None:
+            if not (labels.dim() == 2):
+                raise ValueError(
+                    f"labels must be 2D [batch, seq], got shape={tuple(labels.shape)}"
+                )
+
+        logger.debug(
+            f"Forward input shapes: input_ids={None if input_ids is None else tuple(input_ids.shape)}, "
+            f"attention_mask={None if attention_mask is None else tuple(attention_mask.shape)}, "
+            f"labels={None if labels is None else tuple(labels.shape)}, "
+            f"pixel_values={None if pixel_values is None else tuple(pixel_values.shape)}, "
+            f"image_grid_thw={None if image_grid_thw is None else tuple(image_grid_thw.shape)}"
+        )
 
         # SOLUTION 1 OPTIMIZATION: Check if we should bypass official loss computation
         # This optimization reduces loss computation time by 60-70% when teacher-student
@@ -1112,7 +1099,10 @@ class DetectionModel(nn.Module):
             )
         else:
             # Fallback implementation
-            if getattr(self.base_model.config, "torchscript", False):
+            if (
+                hasattr(self.base_model.config, "torchscript")
+                and self.base_model.config.torchscript
+            ):
                 output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
             else:
                 output_embeddings.weight = input_embeddings.weight
@@ -1148,28 +1138,8 @@ class DetectionModel(nn.Module):
             else:
                 raise e
 
-        # Save additional configuration
-        if self.tokenizer is not None:
-            tokenizer_path = os.path.join(save_directory, "tokenizer")
-            os.makedirs(tokenizer_path, exist_ok=True)
-            self.tokenizer.save_pretrained(tokenizer_path)
-
-        # Log save location
+        # NOTE: Tokenizer and coordinate config are now saved centrally by CheckpointSaver
         logger.info(f"Model saved to {save_directory}")
-
-        # Save coordinate configuration
-        if self._coordinate_mode:
-            coordinate_config = {
-                "coordinate_tokens_enabled": True,
-                "max_coord_value": self.coordinate_processor.max_coord_value,
-                "original_vocab_size": self.coordinate_processor.original_vocab_size,
-            }
-
-            # Save as JSON
-            import json
-
-            with open(os.path.join(save_directory, "coordinate_config.json"), "w") as f:
-                json.dump(coordinate_config, f, indent=2)
 
     def _detect_checkpoint_type(self, tokenizer, base_model, config):
         """
@@ -1190,7 +1160,14 @@ class DetectionModel(nn.Module):
         # Analyze tokenizer vocabulary
         vocab = tokenizer.get_vocab()
         current_vocab_size = len(vocab)
-        original_vocab_size = 151665  # Standard Qwen2.5-VL vocab size
+        # Get original vocab size from model config - fail fast if not available
+        if not hasattr(self.base_model.config, "vocab_size"):
+            raise ValueError("Model config missing required 'vocab_size' attribute")
+        original_vocab_size = self.base_model.config.vocab_size
+        if not isinstance(original_vocab_size, int) or original_vocab_size <= 0:
+            raise ValueError(
+                f"Invalid vocab_size in model config: {original_vocab_size}"
+            )
 
         # Analyze model embeddings
         model_embeddings = base_model.get_input_embeddings().num_embeddings

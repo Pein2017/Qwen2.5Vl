@@ -29,8 +29,8 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "infer_results/output-814-base-ep50/val/inference/predictions.jsonl"  # JSONL format: one JSON object per line
-OUTPUT_DIR = "vis_generation/814-base-ep50-val"
+INPUT_FILE = "/data3/Qwen2.5-VL-main/infer_results/output-818-base-ep50/val/inference/predictions.jsonl"  # JSONL format: one JSON object per line
+OUTPUT_DIR = "vis_generation/818-ep50-base-val"
 BASE_PATH = "."
 # Data root directory for image files
 DATA_ROOT_DIR = "data/ds_v2_bbu_bbu_shield/images"
@@ -546,11 +546,7 @@ def create_legend(
         counts = bbox_counts.get(label, [0, 0])
         gt_count, pred_count = counts[0], counts[1]
 
-        if len(label) > 15:
-            short_label = label[:12] + "..."
-            legend_label = f"{short_label} ({gt_count}/{pred_count})"
-        else:
-            legend_label = f"{label} ({gt_count}/{pred_count})"
+        legend_label = f"{label} ({gt_count}/{pred_count})"
 
         linestyle = "-"
         if style_map is not None:

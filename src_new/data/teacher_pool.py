@@ -17,10 +17,10 @@ if TYPE_CHECKING:
     from src_new.config.config import Config
 
 
-from ..utils.logger_factory import get_module_logger
+from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
-logger = get_module_logger("teacher_pool")
+logger = get_rank_aware_logger(__name__)
 
 
 class TeacherPoolManager:
@@ -56,6 +56,12 @@ class TeacherPoolManager:
         >>> teachers = manager.get_random_teachers(num_samples=2)
         >>> print(f"Loaded {len(manager.teacher_pool)} teachers")
     """
+
+    # Non-trivial state annotations
+    teacher_pool_file: str
+    config: Optional["Config"]
+    teacher_pool: List[Dict[str, Any]]
+    image_to_teachers: Dict[str, List[int]]
 
     def __init__(
         self,

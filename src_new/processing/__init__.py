@@ -9,14 +9,12 @@ This module provides clean processing components for:
 - Centralized prompt constants
 """
 
-from .conversation_processor import ConversationProcessor
 from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS
 from .token_processor import TokenProcessor
 
 
 __all__ = [
-    "ConversationProcessor",
     "CoordinateTokenConverter",
     "TokenProcessor",
     "CONSTANTS",

@@ -12,13 +12,19 @@ Key Features:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, get_args, get_origin
 
 import yaml
 
 from src_new.utils.data_resolver import DataResolver
+from src_new.utils.validation import (
+    PathValidationError,
+    PathValidator,
+    normalize_path_input,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -76,43 +82,157 @@ def set_global_log_level(level: str) -> None:
             _GLOBAL_LOG_LEVEL = int(level)
 
 
-from ..utils.logger_factory import get_module_logger
+from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
-logger = get_module_logger("config")
+logger = get_rank_aware_logger("config")
 
 
 def _convert_scientific_notation(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Convert scientific notation strings to floats in configuration data.
+    Convert numeric-like strings to numbers based on Config type annotations.
 
-    Args:
-        data: Raw configuration dictionary from YAML
-
-    Returns:
-        Configuration dictionary with converted numeric values
+    Only keys whose annotation is float are converted; other strings are left intact.
     """
-    converted_data = {}
+    converted_data: Dict[str, Any] = dict(data)
+    annotations = getattr(Config, "__annotations__", {})
 
-    for key, value in data.items():
-        if isinstance(value, str):
-            # Try to convert scientific notation strings to float
-            try:
-                # Try to convert any numeric string to float
-                float_value = float(value)
-                converted_data[key] = float_value
-                logger.debug(f"Converted {key}: {value} (str) -> {float_value} (float)")
-            except ValueError:
-                # If conversion fails, keep as string
-                converted_data[key] = value
-        else:
-            # Keep non-string values as-is
-            converted_data[key] = value
-
+    for key, value in list(data.items()):
+        if isinstance(value, str) and key in annotations:
+            ann = annotations[key]
+            origin = get_origin(ann)
+            # Only convert for float annotations (allow Optional[float])
+            is_float_ann = ann is float or (
+                origin is __import__("typing").Union and float in get_args(ann)
+            )
+            if is_float_ann:
+                try:
+                    converted_data[key] = float(value)
+                except ValueError:
+                    # Keep original string if not convertible
+                    converted_data[key] = value
+        # Leave other keys as-is
     return converted_data
 
 
-@dataclass
+def _is_value_of_type(value: Any, annotation: Any) -> bool:
+    """Lightweight runtime type check for common typing annotations.
+
+    Supports Optional[T], List[T], and basic primitives (int, float, bool, str).
+    """
+    if annotation is Any:
+        return True
+
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    # Optional[T] is represented as Union[T, NoneType]
+    if origin is Optional or (origin is None and annotation is Optional):
+        # Fallback guard; but typing.Optional always yields Union
+        return value is None or True
+
+    if origin is None:
+        # Bare types like int, float, bool, str
+        expected = annotation
+        try:
+            if expected is bool:
+                return isinstance(value, bool)
+            if expected is int:
+                return isinstance(value, int) and not isinstance(value, bool)
+            if expected is float:
+                # Accept int for float
+                return (
+                    isinstance(value, float) or isinstance(value, int)
+                ) and not isinstance(value, bool)
+            if expected is str:
+                return isinstance(value, str)
+            # Unknown annotations: accept
+            return True
+        except Exception:
+            return True
+
+    # Handle Union[..., NoneType] as Optional
+    if origin is list:
+        # List[T]
+        if not isinstance(value, list):
+            return False
+        if not args:
+            return True
+        elem_ann = args[0]
+        return all(_is_value_of_type(elem, elem_ann) for elem in value)
+
+    if origin is dict:
+        # Not used heavily; accept
+        return isinstance(value, dict)
+
+    if origin is tuple:
+        return isinstance(value, tuple)
+
+    if origin is type(Optional[int]):  # pragma: no cover (defensive)
+        return value is None or _is_value_of_type(value, args[0])
+
+    # Union: any arg matches
+    if origin is __import__("typing").Union:
+        return any(_is_value_of_type(value, a) for a in args)
+
+    # Default: do not block
+    return True
+
+
+def _collect_schema_issues(data: Dict[str, Any]) -> List[str]:
+    """Collect unknown fields, missing required fields, and type mismatches.
+
+    Returns list of human-readable issue strings.
+    """
+    issues: List[str] = []
+
+    cfg_fields = {f.name: f for f in dataclass_fields(Config)}
+    known_names = set(cfg_fields.keys())
+    data_names = set(data.keys())
+
+    unknown = sorted(list(data_names - known_names))
+    if unknown:
+        issues.append("Unknown fields: " + ", ".join(unknown))
+
+    # Missing required fields (those without defaults)
+    missing = [
+        f.name
+        for f in cfg_fields.values()
+        if f.default is MISSING
+        and f.default_factory is MISSING
+        and f.name not in data_names
+    ]
+    if missing:
+        issues.append("Missing required fields: " + ", ".join(sorted(missing)))
+
+    # Type mismatches for present known fields
+    type_mismatches: List[str] = []
+    annotations = Config.__annotations__
+    for name in sorted(known_names & data_names):
+        ann = annotations.get(name)
+        if ann is None:
+            continue
+        val = data.get(name)
+        # Allow None for optional types handled in downstream validation
+        try:
+            origin = get_origin(ann)
+            args = get_args(ann)
+            is_optional = origin is __import__("typing").Union and type(None) in args
+        except Exception:
+            is_optional = False
+
+        if val is None and is_optional:
+            continue
+        if not _is_value_of_type(val, ann):
+            type_mismatches.append(f"{name} (expected {ann}, got {type(val).__name__})")
+
+    if type_mismatches:
+        issues.append("Type mismatches: " + ", ".join(type_mismatches))
+
+    return issues
+
+
+@dataclass(frozen=True)
 class Config:
     """
     Unified configuration class with direct mapping to bbu_v2.yaml.
@@ -127,10 +247,9 @@ class Config:
     # === REQUIRED FIELDS (no defaults) ===
     # Model settings
     model_path: str
-    model_size: str
-    model_max_length: int
     attn_implementation: str
     torch_dtype: str
+    use_cache: bool
 
     # Training settings
     num_train_epochs: int
@@ -141,7 +260,6 @@ class Config:
     vision_lr: float
     merger_lr: float
     llm_lr: float
-    adapter_lr: float
     warmup_ratio: float
     weight_decay: float
     max_grad_norm: float
@@ -149,8 +267,6 @@ class Config:
     gradient_checkpointing: bool
     bf16: bool
     fp16: bool
-    use_flash_attention: bool
-    mixed_precision: str
 
     # Data settings
     train_data_path: str
@@ -159,111 +275,82 @@ class Config:
     teacher_pool_file: str
     max_total_length: int
     num_teacher_samples: int
-    collator_type: str
-    teacher_ratio: float
-    language: str
+    max_dataset_size: int
+
+    # Teacher-student loss (aggregated)
+    teacher_loss_weight: float
+    student_loss_weight: float
+
+    # Features
+    coordinate_tokens_enabled: bool
+    coordinate_init_mode: Optional[str]
+
+    # Vision processing parameters
+    merge_size: int
+    max_pixels: int  # Qwen2VL image processor's max_pixels
 
     # Output settings
     output_dir: str
-    run_name: str
-    max_coord_value: int
-    model_hidden_size: int
+    run_name: str  # tensorboard event name
+    tb_dir: str
 
-    # Coordinate token configuration (required)
-    coordinate_tokens_enabled: bool
+    # Coordinate/token limits
+    max_coord_value: int
+
+    # Loss settings
     coordinate_loss_weight: float
     regular_loss_weight: float
-    coordinate_init_mode: str
+    teacher_ratio: float
 
-    # Coordinate auxiliary losses (required)
-    coord_aux_enabled: bool
-    coord_aux_tau: float
-    coord_aux_sigma_bins: float
-    coord_aux_window_bins: int
-    coord_aux_topk: int
-    coord_aux_lambda_kce: float
-    coord_aux_lambda_unlike: float
+    # Collator
+    collator_type: str
 
-    # Evaluation settings (required)
+    # HF Trainer: evaluation/checkpoint settings
     eval_strategy: str
     eval_steps: int
     save_strategy: str
     save_steps: int
     save_total_limit: int
+    load_best_model_at_end: bool
+    metric_for_best_model: str
+    greater_is_better: bool
 
-    # Logging settings (required)
+    # Logging settings
     logging_steps: int
-    logging_dir: str
     report_to: str
     disable_tqdm: bool
-    verbose: bool
 
-    # Essential settings (required)
-    remove_unused_columns: bool
-
-    # Dataloader performance settings (required)
+    # Dataloader performance
     dataloader_num_workers: int
     pin_memory: bool
     prefetch_factor: int
+    remove_unused_columns: bool
 
-    # Output settings (required)
-    tb_dir: str
+    # Coordinate auxiliary losses (enabled via YAML)
+    coord_aux_enabled: bool
 
-    # Teacher-student loss weights (required)
-    teacher_loss_weight: float
-    student_loss_weight: float
+    # Progressive unfreeze (enabled via YAML)
+    prog_unfreeze_enabled: bool
 
-    # Vision processing parameters (required)
-    patch_size: int
-    merge_size: int
-    temporal_patch_size: int
-    max_pixels: int
-
-    # Training control flags (required)
-    training_prompt_style: bool
-    use_consistent_prompts: bool
-
-    # Model loading control flags (required)
-    skip_vocab_extension: bool
-
-    # === OPTIONAL FIELDS (with defaults) ===
-    # Model settings with defaults
-    use_cache: bool = False
-    use_cache_inference: bool = True
-    model_num_layers: int = 36
-    model_num_attention_heads: int = 16
-    model_vocab_size: int = 151665
-
-    # Training settings with defaults (keeping only truly optional ones)
-
-    # Data settings with defaults (keeping only truly optional ones)
-
-    # Dataset size limiting moved to optional section below
-
-    # Best checkpoint tracking settings with defaults
-    load_best_model_at_end: bool = True  # Enable automatic best checkpoint saving
-    metric_for_best_model: str = "eval_loss"  # Track evaluation loss for best model
-    greater_is_better: bool = False  # Lower eval_loss is better
-    save_on_each_node: bool = False  # EFFICIENCY: Only rank 0 saves checkpoints
-
-    # Unified checkpoint management settings
-    best_checkpoint_metric: str = "eval_loss"  # Metric to track for best checkpoints
-    best_checkpoint_greater_is_better: bool = (
-        False  # Whether higher metric values are better
-    )
-
-    # Optional parameters that can have defaults
+    # === OPTIONAL FIELDS WITH DEFAULTS (truly optional) ===
+    seed: int = 17
     new_geometry_tokens: Optional[List[str]] = None
-    max_dataset_size: Optional[int] = None
 
-    # Progressive unfreeze (optional; enabled via YAML)
-    prog_unfreeze_enabled: bool = False
+    # Coordinate aux knobs (only when coord_aux_enabled)
+    coord_aux_tau: Optional[float] = None
+    coord_aux_sigma_bins: Optional[int] = None
+    coord_aux_window_bins: Optional[int] = None
+    coord_aux_topk: Optional[int] = None
+    coord_aux_lambda_kce: Optional[float] = None
+    coord_aux_lambda_unlike: Optional[float] = None
+
+    # Progressive unfreeze knobs
     prog_unfreeze_epoch_stage0_end: Optional[int] = None
     prog_unfreeze_epoch_stage1_end: Optional[int] = None
     prog_unfreeze_top_k_layers: Optional[int] = None
     prog_unfreeze_coord_slice_only: bool = True
 
-    # Learning rate overrides for progressive unfreeze groups (optional)
+    # Optional learning rates for specific parameter groups (progressive unfreeze / fine-grained control)
     lr_merger: Optional[float] = None
     lr_coord_slice: Optional[float] = None
     lr_top_layers: Optional[float] = None
@@ -293,8 +380,8 @@ class Config:
         with detailed error messages to help debugging.
 
         Raises:
-            ValueError: If any configuration values are invalid
-            FileNotFoundError: If required paths don't exist
+        ValueError: If any configuration values are invalid
+        FileNotFoundError: If required paths don't exist
         """
         self._validate_model_settings()
         self._validate_training_settings()
@@ -313,15 +400,10 @@ class Config:
         if not model_path.exists():
             raise FileNotFoundError(f"Model path does not exist: {self.model_path}")
 
-        if self.model_max_length <= 0:
-            raise ValueError(
-                f"model_max_length must be positive, got {self.model_max_length}"
-            )
-
         if self.attn_implementation not in ["flash_attention_2", "eager", "sdpa"]:
             raise ValueError(f"Invalid attn_implementation: {self.attn_implementation}")
 
-        if self.torch_dtype not in ["float16", "bfloat16", "float32"]:
+        if self.torch_dtype not in ["float16", "bfloat16", "float32", "bf16", "fp16"]:
             raise ValueError(f"Invalid torch_dtype: {self.torch_dtype}")
 
         if self.max_pixels <= 0:
@@ -352,6 +434,10 @@ class Config:
                 f"warmup_ratio must be between 0 and 1, got {self.warmup_ratio}"
             )
 
+        # Seed must be non-negative
+        if getattr(self, "seed", 17) < 0:
+            raise ValueError(f"seed must be non-negative, got {self.seed}")
+
     def _validate_data_settings(self) -> None:
         """Validate data-related settings."""
         if not self.train_data_path:
@@ -363,6 +449,15 @@ class Config:
         if not self.teacher_pool_file:
             raise ValueError("teacher_pool_file cannot be empty")
 
+        # Validate existence using centralized validator (accept relative or aliases)
+        try:
+            PathValidator.validate_file_exists(self.train_data_path)
+            PathValidator.validate_file_exists(self.val_data_path)
+            PathValidator.validate_file_exists(self.teacher_pool_file)
+            PathValidator.validate_directory_exists(self.data_root)
+        except (ValueError, PathValidationError) as e:
+            raise ValueError(f"Invalid data paths: {e}")
+
         if self.teacher_ratio < 0 or self.teacher_ratio > 1:
             raise ValueError(
                 f"teacher_ratio must be between 0 and 1, got {self.teacher_ratio}"
@@ -371,8 +466,31 @@ class Config:
         if self.collator_type not in ["packed", "standard"]:
             raise ValueError(f"Invalid collator_type: {self.collator_type}")
 
-        if self.language not in ["chinese", "english"]:
-            raise ValueError(f"Unsupported language: {self.language}")
+        # Required: validate coordinate init mode
+        if self.coordinate_tokens_enabled:
+            if self.coordinate_init_mode is None:
+                raise ValueError(
+                    "coordinate_init_mode is required when coordinate_tokens_enabled=True"
+                )
+            allowed = {"ms_mean", "fourier_ramp"}
+            if self.coordinate_init_mode not in allowed:
+                raise ValueError(
+                    f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
+                )
+
+        # Output/log paths: accept relative; no existence check required here
+
+        # Initialize new_geometry_tokens if not provided
+        if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
+            # Only add line tokens - quad tokens already exist in Qwen2.5-VL
+            object.__setattr__(
+                self,
+                "new_geometry_tokens",
+                [
+                    "<|line_start|>",
+                    "<|line_end|>",
+                ],
+            )
 
     def _validate_coordinate_settings(self) -> None:
         """Validate coordinate token settings."""
@@ -393,21 +511,46 @@ class Config:
 
         # Coordinate auxiliary losses validation
         if self.coord_aux_enabled:
-            if self.coord_aux_tau <= 0:
+            missing: list[str] = []
+            if self.coord_aux_tau is None:
+                missing.append("coord_aux_tau")
+            if self.coord_aux_sigma_bins is None:
+                missing.append("coord_aux_sigma_bins")
+            if self.coord_aux_window_bins is None:
+                missing.append("coord_aux_window_bins")
+            if self.coord_aux_topk is None:
+                missing.append("coord_aux_topk")
+            if self.coord_aux_lambda_kce is None:
+                missing.append("coord_aux_lambda_kce")
+            if self.coord_aux_lambda_unlike is None:
+                missing.append("coord_aux_lambda_unlike")
+            if missing:
+                raise ValueError(
+                    "coord_aux_enabled=True but missing required fields: "
+                    + ", ".join(missing)
+                )
+            if self.coord_aux_tau is not None and self.coord_aux_tau <= 0:
                 raise ValueError(f"coord_aux_tau must be > 0, got {self.coord_aux_tau}")
-            if self.coord_aux_sigma_bins <= 0:
+            if self.coord_aux_sigma_bins is not None and self.coord_aux_sigma_bins <= 0:
                 raise ValueError(
                     f"coord_aux_sigma_bins must be > 0, got {self.coord_aux_sigma_bins}"
                 )
-            if self.coord_aux_window_bins < 1:
+            if (
+                self.coord_aux_window_bins is not None
+                and self.coord_aux_window_bins < 1
+            ):
                 raise ValueError(
                     f"coord_aux_window_bins must be >= 1, got {self.coord_aux_window_bins}"
                 )
-            if self.coord_aux_topk < 1:
+            if self.coord_aux_topk is not None and self.coord_aux_topk < 1:
                 raise ValueError(
                     f"coord_aux_topk must be >= 1, got {self.coord_aux_topk}"
                 )
-            if self.coord_aux_lambda_kce < 0 or self.coord_aux_lambda_unlike < 0:
+            if (
+                self.coord_aux_lambda_kce is not None
+                and self.coord_aux_lambda_unlike is not None
+                and (self.coord_aux_lambda_kce < 0 or self.coord_aux_lambda_unlike < 0)
+            ):
                 raise ValueError("coord_aux_lambda_kce/unlike must be non-negative")
         # Required: validate coordinate init mode
         if self.coordinate_tokens_enabled:
@@ -421,13 +564,19 @@ class Config:
                     f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
                 )
 
+        # Output/log paths: accept relative; no existence check required here
+
         # Initialize new_geometry_tokens if not provided
         if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
             # Only add line tokens - quad tokens already exist in Qwen2.5-VL
-            self.new_geometry_tokens = [
-                "<|line_start|>",
-                "<|line_end|>",
-            ]
+            object.__setattr__(
+                self,
+                "new_geometry_tokens",
+                [
+                    "<|line_start|>",
+                    "<|line_end|>",
+                ],
+            )
 
     def _validate_progressive_unfreeze_settings(self) -> None:
         """Validate progressive unfreeze related settings when enabled."""
@@ -435,29 +584,30 @@ class Config:
             return
 
         # Epoch boundaries
+        if self.prog_unfreeze_epoch_stage0_end is not None:
+            if self.prog_unfreeze_epoch_stage0_end < 1:
+                raise ValueError(
+                    f"prog_unfreeze_epoch_stage0_end must be >= 1 when provided, got {self.prog_unfreeze_epoch_stage0_end}"
+                )
         if (
-            self.prog_unfreeze_epoch_stage0_end is None
-            or self.prog_unfreeze_epoch_stage0_end < 1
+            self.prog_unfreeze_epoch_stage1_end is not None
+            and self.prog_unfreeze_epoch_stage0_end is not None
         ):
-            raise ValueError(
-                f"prog_unfreeze_epoch_stage0_end must be >= 1 when prog_unfreeze_enabled, got {self.prog_unfreeze_epoch_stage0_end}"
-            )
-        if (
-            self.prog_unfreeze_epoch_stage1_end is None
-            or self.prog_unfreeze_epoch_stage1_end
-            <= self.prog_unfreeze_epoch_stage0_end
-        ):
-            raise ValueError(
-                "prog_unfreeze_epoch_stage1_end must be > prog_unfreeze_epoch_stage0_end when prog_unfreeze_enabled"
-            )
+            if (
+                self.prog_unfreeze_epoch_stage1_end
+                <= self.prog_unfreeze_epoch_stage0_end
+            ):
+                raise ValueError(
+                    "prog_unfreeze_epoch_stage1_end must be > prog_unfreeze_epoch_stage0_end"
+                )
 
         # Top-K layers
         if (
-            self.prog_unfreeze_top_k_layers is None
-            or self.prog_unfreeze_top_k_layers < 1
+            self.prog_unfreeze_top_k_layers is not None
+            and self.prog_unfreeze_top_k_layers < 1
         ):
             raise ValueError(
-                f"prog_unfreeze_top_k_layers must be >= 1 when prog_unfreeze_enabled, got {self.prog_unfreeze_top_k_layers}"
+                f"prog_unfreeze_top_k_layers must be >= 1 when provided, got {self.prog_unfreeze_top_k_layers}"
             )
 
         # Learning rates (if provided) must be positive
@@ -518,7 +668,7 @@ def load_config(config_path: str) -> Config:
     if not isinstance(data, dict):
         raise ValueError(f"Configuration must be a dictionary, got {type(data)}")
 
-    # Convert scientific notation strings to floats
+    # Convert numeric-like strings to floats based on annotations
     data = _convert_scientific_notation(data)
 
     # === Unified dataset path defaults ===
@@ -572,6 +722,56 @@ def load_config(config_path: str) -> Config:
         logger.debug(f"Data path derivation failed: {e}")
         pass
 
+    # Normalize path-like fields; preserve relativity (no forced absolute)
+    # Normalize data_root first
+    if "data_root" in data and data["data_root"]:
+        try:
+            data["data_root"] = str(normalize_path_input(data["data_root"]))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to normalize path for 'data_root': {data.get('data_root')}; {e}"
+            )
+
+    # Determine base for dataset files: prefer current working directory (PWD)
+    # Relative paths will be interpreted from the process working directory
+
+    # Normalize model_path relative to config_dir
+    if "model_path" in data and data["model_path"]:
+        try:
+            data["model_path"] = str(normalize_path_input(data["model_path"]))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to normalize path for 'model_path': {data.get('model_path')}; {e}"
+            )
+
+    # Normalize dataset file paths relative to dataset_base
+    for key in ("train_data_path", "val_data_path", "teacher_pool_file"):
+        if key in data and data[key]:
+            try:
+                data[key] = str(normalize_path_input(data[key]))
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+                )
+
+    # Normalize output/log directories relative to config_dir
+    for key in ("output_dir", "tb_dir", "logging_dir"):
+        if key in data and data[key]:
+            try:
+                data[key] = str(normalize_path_input(data[key]))
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+                )
+
+    # Aggregate schema issues before constructing the dataclass
+    schema_issues = _collect_schema_issues(data)
+    if schema_issues:
+        details = "\n - " + "\n - ".join(schema_issues)
+        raise ValueError(
+            f"Configuration schema validation failed with {len(schema_issues)} issue(s):{details}"
+        )
+
     # All parameters must be explicitly provided in YAML configuration
     # No defaults are provided here to ensure fail-fast behavior
 
@@ -584,7 +784,7 @@ def load_config(config_path: str) -> Config:
         raise ValueError(f"Failed to create configuration from {config_path}: {e}")
 
     logger.info(f"✅ Configuration loaded successfully from {config_path}")
-    logger.info(f"📋 Model: {config.model_size} at {config.model_path}")
+    logger.info(f"📋 Model path: {config.model_path}")
     logger.info(f"📋 Data: train={config.train_data_path}, val={config.val_data_path}")
     logger.info(
         f"📋 Coordinate tokens: {'enabled' if config.coordinate_tokens_enabled else 'disabled'}"

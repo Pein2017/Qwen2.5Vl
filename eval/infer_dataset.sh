@@ -7,9 +7,9 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-MODEL_PATH="output-814-base-ep50/8-14-base/checkpoint-200"  
-EXP_NAME="output-814-base-ep50"           
-CONFIG_PATH="configs/bbu_v2_base.yaml"
+MODEL_PATH="outputs/output-818-coord_pretrain-ep50-coord_aux-Prog_longer/818-coord_pretrain-ep50-coord_aux-Prog_longer/checkpoint-550"  
+EXP_NAME="output-818-ep50-Prog_longer"           
+CONFIG_PATH="configs/bbu_v2_use_coord.yaml"
 
 # Dataset to process (single dataset per run)
 DATASET="val"                  # "train" or "val"

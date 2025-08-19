@@ -9,12 +9,12 @@ image paths.
 from pathlib import Path
 from typing import List, Optional, Union
 
-from .logger_factory import get_module_logger
+from .rank_aware_logging import get_rank_aware_logger
 from .validation import PathValidationError, PathValidator
 
 
 # Path management logger
-logger = get_module_logger(__name__)
+logger = get_rank_aware_logger("path_manager")
 
 
 class PathManager:
@@ -43,7 +43,7 @@ class PathManager:
             path: Path to resolve (absolute, relative, or already resolved)
 
         Returns:
-            Resolved absolute Path object
+            Resolved Path object (preserving relativity when applicable)
 
         Raises:
             FileNotFoundError: If resolved path doesn't exist
@@ -55,7 +55,7 @@ class PathManager:
 
         raw_path = Path(path)
 
-        # Absolute path: validate and return as-is. In safe resolution mode, callers catch exceptions.
+        # Absolute path: validate and return as-is.
         if raw_path.is_absolute():
             validated = PathValidator.validate_path_exists(raw_path, "path")
             logger.debug(f"Using absolute path: {validated}")
@@ -63,22 +63,21 @@ class PathManager:
 
         # Relative path: prefer data_root if provided
         if self.data_root is not None:
-            # If caller accidentally included data_root inside the relative path, avoid double prefix
-            # Example: data_root=/abs/root and path='images/..' (OK) or 'data/ds/.../images/..' (avoid /abs/root/data/ds/...)
-            candidate = (self.data_root / raw_path).resolve()
+            # Avoid double prefixing
+            candidate = self.data_root / raw_path
             if candidate.exists():
                 logger.debug(
                     f"Resolved relative path against data_root: {raw_path} -> {candidate}"
                 )
                 return candidate
 
-            # As a fallback, if the raw string already starts with the data_root name, try trimming it once
+            # Fallback: try trimming an embedded data_root name once
             try:
                 data_root_name = self.data_root.name
                 parts = list(raw_path.parts)
                 if parts and parts[0] == data_root_name:
                     trimmed = Path(*parts[1:])
-                    candidate2 = (self.data_root / trimmed).resolve()
+                    candidate2 = self.data_root / trimmed
                     if candidate2.exists():
                         logger.debug(
                             f"Resolved by trimming embedded data_root name: {raw_path} -> {candidate2}"
@@ -89,11 +88,11 @@ class PathManager:
 
             # If still not found, raise with actionable message
             raise FileNotFoundError(
-                f"Resolved path does not exist: {(self.data_root / raw_path).resolve()}"
+                f"Resolved path does not exist: {self.data_root / raw_path}"
             )
 
-        # No data_root: resolve relative to CWD
-        candidate = (Path.cwd() / raw_path).resolve()
+        # No data_root: check relative to CWD without resolving
+        candidate = Path.cwd() / raw_path
         if not candidate.exists():
             raise FileNotFoundError(
                 f"No data_root provided and relative path not found: {candidate}"

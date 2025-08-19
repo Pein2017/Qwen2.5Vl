@@ -16,10 +16,10 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration,
 )
 
-from ..utils.logger_factory import get_processing_logger
+from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
-logger = get_processing_logger("token_processor")
+logger = get_rank_aware_logger("token_processor")
 
 
 @dataclass
@@ -168,13 +168,8 @@ class TokenProcessor:
 
             logger.info(f"New vocabulary size: {len(tokenizer.get_vocab())}")
 
-        # Strict post-conditions
+        # Post-conditions: verify presence (not absolute IDs)
         final_vocab = tokenizer.get_vocab()
-        base_len_known = 151665
-        # Expect base + 2 line tokens + (max_coord_value + 1) coordinate tokens
-        expected_len = base_len_known + 2 + (self.config.max_coord_value + 1)
-
-        # Verify presence of all required tokens
         missing = []
         for t in ("<|line_start|>", "<|line_end|>"):
             if t not in final_vocab:
@@ -187,25 +182,6 @@ class TokenProcessor:
             raise ValueError(
                 f"Missing required tokens after extension: {missing[:5]} ... total={len(missing)}"
             )
-
-        # If we started from official base length, assert exact IDs and final size
-        if len(vocab) == base_len_known and self.config.coordinate_tokens_enabled:
-            line_start_id = final_vocab["<|line_start|>"]
-            line_end_id = final_vocab["<|line_end|>"]
-            coord_ids = [
-                final_vocab[f"<|coord_{i}|>"]
-                for i in range(self.config.max_coord_value + 1)
-            ]
-            assert line_start_id == 151665 and line_end_id == 151666
-            expected_coord_start = 151667
-            expected_coord_end_inclusive = (
-                expected_coord_start + self.config.max_coord_value
-            )
-            assert (
-                min(coord_ids) == expected_coord_start
-                and max(coord_ids) == expected_coord_end_inclusive
-            )
-            assert len(final_vocab) == expected_len
 
         return tokenizer
 
@@ -442,13 +418,11 @@ class TokenProcessor:
         """Strict validation of tokenizer and embedding alignment, with rich logging.
 
         Validates:
-        - Token counts (base 151665; +1027 = 152692)
-        - Embedding matrix rows padded to multiple of 128 (152704)
+        - Embedding matrix rows padded to multiple of 128
         - Geometry token IDs and initialization linkage (if reference quad tokens exist)
-        - Coordinate token range and non-zero initialization
-        - Original pretrained rows unchanged (0..151664)
+        - Coordinate token non-zero initialization (range derived from tokenizer)
+        - Original pretrained rows unchanged in the true base region
         """
-        import math
 
         vocab = tokenizer.get_vocab()
         vocab_size = len(vocab)
@@ -456,32 +430,18 @@ class TokenProcessor:
         in_rows = in_w.shape[0]
         hidden = in_w.shape[1]
 
-        base_len_known = 151665
-        expected_added = 1027  # 1025 coords + 2 geometry
-        expected_vocab = base_len_known + expected_added  # 152692
-        expected_rows = math.ceil(expected_vocab / 128) * 128  # 152704
-
-        logger.debug(
-            f"[VALIDATION] base={base_len_known}, added={expected_added}, final_vocab={expected_vocab}"
-        )
         logger.debug(
             f"[VALIDATION] tokenizer_vocab_size={vocab_size}, input_rows={in_rows}, hidden={hidden}"
         )
 
-        # Token count validation
-        if vocab_size != expected_vocab:
+        # Ensure embeddings can cover vocab and are padded to 128
+        if in_rows < vocab_size:
             raise ValueError(
-                f"Tokenizer vocab size mismatch: expected {expected_vocab}, got {vocab_size}"
+                f"Embedding rows insufficient: expected >= {vocab_size}, got {in_rows}"
             )
-
-        # Embedding matrix alignment
-        if in_rows < expected_vocab:
-            raise ValueError(
-                f"Embedding rows insufficient: expected >= {expected_vocab}, got {in_rows}"
-            )
-        if in_rows != expected_rows:
+        if in_rows % 128 != 0:
             raise AssertionError(
-                f"Embedding rows must equal strict pad multiple: expected {expected_rows}, got {in_rows}"
+                f"Embedding rows should be padded to multiple of 128, got {in_rows}"
             )
 
         # Geometry tokens: IDs and initialization copy if quad tokens present
@@ -503,10 +463,15 @@ class TokenProcessor:
                 )
 
         # Coordinate tokens range and non-zero init
-        coord_ids = [vocab[f"<|coord_{i}|>"] for i in range(0, 1025)]
-        if min(coord_ids) != 151667 or max(coord_ids) != 151667 + 1024:
+        # Derive coordinate range from tokenizer rather than fixed IDs
+        coord_ids = [
+            vocab[t]
+            for t in vocab.keys()
+            if isinstance(t, str) and t.startswith("<|coord_") and t.endswith("|>")
+        ]
+        if not coord_ids:
             raise AssertionError(
-                "Coordinate token ID range mismatch (expected 151667..152691)"
+                "Coordinate tokens not found in tokenizer after extension"
             )
 
         with torch.no_grad():
@@ -519,12 +484,10 @@ class TokenProcessor:
                     )
 
         # Original rows unchanged (strictly for base pretrained region only).
-        # Note: Some official checkpoints ship embedding matrices larger than the known
-        # base vocabulary (151665) due to internal padding or reserved slots. We only
-        # enforce immutability for the true base region [0, 151665), allowing
-        # initialization of new geometry/coordinate tokens that may fall below
-        # model.config.vocab_size but are not part of the original base.
-        freeze_rows = min(original_vocab_size, base_len_known)
+        # Note: Some official checkpoints ship embedding matrices larger than the
+        # true base vocabulary due to internal padding or reserved slots. We only
+        # enforce immutability for the true base region [0, original_vocab_size).
+        freeze_rows = int(original_vocab_size)
         with torch.no_grad():
             cur_snapshot = in_w[:freeze_rows].detach().clone()
             if not torch.allclose(cur_snapshot, original_snapshot[:freeze_rows]):
@@ -533,9 +496,7 @@ class TokenProcessor:
                 )
 
         logger.info(
-            "✅ Tokenizer/Embedding alignment validated: vocab=152692, rows=%d, hidden=%d",
-            in_rows,
-            hidden,
+            f"✅ Tokenizer/Embedding alignment validated: vocab={vocab_size}, rows={in_rows}, hidden={hidden}"
         )
 
     def _initialize_new_embeddings(
@@ -959,9 +920,11 @@ class TokenProcessor:
         else:
             # Raise error for unsupported geometry types
             available_keys = [k for k in obj.keys() if k not in ["desc"]]
+            from src_new.processing.special_tokens import GEOMETRY_TOKENS
+
             raise ValueError(
                 f"Object contains unsupported geometry type. "
-                f"Expected one of: bbox_2d, quad, line. "
+                f"Expected one of: {list(GEOMETRY_TOKENS.keys())}. "
                 f"Found geometry keys: {available_keys}. "
                 f"Full object: {obj}"
             )
@@ -1124,25 +1087,16 @@ class TokenProcessor:
         """
         Get the token ID range for coordinate tokens.
 
-        Args:
-            tokenizer: Extended tokenizer
-
-        Returns:
-            (min_coord_token_id, max_coord_token_id) tuple
+        Delegates to centralized special token helper, returning
+        (start_id, end_exclusive) strictly. Returns (0, 0) if none.
         """
         if not self.config.coordinate_tokens_enabled:
             return (0, 0)
+        try:
+            from src_new.processing.special_tokens import get_coord_token_range
 
-        # OPTIMIZATION: Generate coordinate token IDs on-demand
-        coord_token_ids = []
-        vocab = tokenizer.get_vocab()
-        for coord in range(self.config.max_coord_value + 1):
-            coord_token = f"<|coord_{coord}|>"
-            if coord_token in vocab:
-                coord_token_ids.append(vocab[coord_token])
-
-        if not coord_token_ids:
-            logger.warning("No coordinate tokens found in tokenizer vocabulary")
+            rng = get_coord_token_range(tokenizer)
+            return (int(rng.start_id), int(rng.end_exclusive))
+        except Exception:
+            # Fallback: do not guess; return (0, 0) to force callers to handle absence
             return (0, 0)
-
-        return (min(coord_token_ids), max(coord_token_ids))

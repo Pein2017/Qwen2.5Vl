@@ -58,11 +58,11 @@ The training pipeline follows a comprehensive 8-step process from data loading t
 - Wrap objects with appropriate geometry tokens (bbox, quad, line)
 
 #### **Step 3: Expand Tokenizer** (`src_new/processing/token_processor.py`)
-- Extend vocabulary with coordinate tokens (151667-153715)
+- Extend vocabulary with geometry + coordinate tokens (derived at runtime; no hard-coded ID ranges)
 - Add geometry tokens (`<|line_start|>`, `<|line_end|>`)
 - Initialize new token embeddings using positional encoding
 
-#### **Step 4: Apply Templates** (`src_new/processing/conversation_processor.py`)
+#### **Step 4: Apply Templates** (`src_new/processing/conversation/builder.py`)
 - Create teacher-student conversations using HuggingFace chat templates
 - Apply Chinese prompts from centralized constants
 - Format multi-turn conversations with image tokens
@@ -91,19 +91,19 @@ The training pipeline follows a comprehensive 8-step process from data loading t
 
 #### **Data Flow Architecture**
 ```
-JSONL Input → Dataset → ConversationProcessor → Collator → DetectionModel → LossManager → BBUTrainer
+JSONL Input → Dataset → ConversationBuilder → Collator → DetectionModel → LossManager → BBUTrainer
      ↓            ↓            ↓                    ↓            ↓              ↓            ↓
 Raw Objects → Structured → Conversations → Batched → Model → Loss → Training
               Samples      + Images        Tensors   Outputs  Components  Loop
 ```
 
 #### **Module Dependencies**
-- **`Dataset`** → **`ConversationProcessor`**: Creates teacher-student conversations
-- **`ConversationProcessor`** → **`CoordinateTokenConverter`**: Converts coordinates to tokens
+- **`Dataset`** → **`ConversationBuilder`**: Creates teacher-student conversations
+- **`ConversationBuilder`** → **`CoordinateTokenConverter`**: Converts coordinates to tokens
 - **`TokenProcessor`** → **`DetectionModel`**: Extends tokenizer and model embeddings
 - **`DetectionModel`** → **`LossManager`**: Computes multi-component losses
 - **`BBUTrainer`** → **`TrainingStateManager`**: Aggregates metrics locally
-- **`BBUTrainer`** → **`UnifiedCheckpointManager`**: Direct folder copy for best checkpoints
+- **`BBUTrainer`** → **`CheckpointSaver`** + **`BestCheckpointManager`**: Inference-ready SafeTensors checkpoints; best checkpoint via direct folder copy and rotation
 
 #### **Data Transformations**
 
@@ -210,17 +210,22 @@ The system supports 6 main object categories:
 The system extends the Qwen2.5-VL vocabulary with coordinate tokens for precise spatial understanding:
 
 #### **Vocabulary Extension**
-- **Original Vocabulary**: 151,665 tokens (standard Qwen2.5-VL)
-- **Extended Vocabulary**: 151,665 + (max_coord + 3) tokens
-- **Total Extension**: 2,051 new tokens (2 geometry + 2,049 coordinate tokens)
+- Tokens are added dynamically at runtime:
+  - 2 geometry tokens: `<|line_start|>`, `<|line_end|>`
+  - `(max_coord_value + 1)` coordinate tokens: `<|coord_0|>` … `<|coord_{max_coord_value}|>`
+- Final vocabulary size = base_vocab_size + 2 + (max_coord_value + 1). IDs are derived from the tokenizer.
 
 #### **Token ID Ranges**
 
-| Token Type | ID Range | Count | Purpose |
-|------------|----------|-------|---------|
-| Original Tokens | 0 - 151,664 | 151,665 | Standard Qwen2.5-VL vocabulary |
-| Line Tokens | 151,665 - 151,666 | 2 | `<|line_start|>`, `<|line_end|>` |
-| Coordinate Tokens | 151,667 - 153,715 | 2,049 | `<|coord_0|>` to `<|coord_2048|>` |
+Token IDs are not hard-coded. Coordinate and geometry token IDs are derived from the tokenizer at runtime:
+
+```python
+from src_new.processing.special_tokens import get_coord_token_range, validate_geometry_tokens
+validate_geometry_tokens(tokenizer)
+rng = get_coord_token_range(tokenizer)  # rng.start_id, rng.end_exclusive (0,0 if none present)
+```
+- Geometry tokens (`<|line_start|>`, `<|line_end|>`) are ensured by vocabulary extension when needed.
+- Coordinate tokens are added for bins `0..max_coord_value` during pre-distributed extension; range is re-derived from the tokenizer (no hard-coded IDs).
 
 #### **Token Initialization Strategy**
 
@@ -231,21 +236,11 @@ line_start_embedding = quad_start_embedding.clone()
 line_end_embedding = quad_end_embedding.clone()
 ```
 
-**Coordinate Tokens**: Deterministic sinusoidal initialization
-```python
-# Sinusoidal (positional-encoding-like) initialization for coordinate tokens
-# Generates sin/cos features over scaled coordinate values and matches base std
-coord_ids = [tokenizer.get_vocab()[f"<|coord_{i}|>"] for i in range(max_coord_value + 1)]
-pos = torch.arange(0, max_coord_value + 1, dtype=torch.float32).unsqueeze(1)
-half = embedding_dim // 2
-inv_freq = torch.exp(torch.arange(0, half) * (-(math.log(10000.0) / max(1, half))))
-angles = (pos / max_coord_value * 10000.0) * inv_freq
-sin = torch.sin(angles); cos = torch.cos(angles)
-pe = torch.zeros(len(coord_ids), embedding_dim)
-pe[:, :half] = sin; pe[:, half:half*2] = cos
-pe = pe * base_std  # base_std from pretrained embedding slice
-input_embeddings.weight[coord_ids] = pe.to(input_embeddings.weight.dtype)
-```
+**Coordinate Tokens**: Configurable deterministic initialization
+- `ms_mean`: Neutral mean-resizing with smart init only for new rows; preserves pretrained rows and pads to multiples of 128. Matches `TokenProcessor._smart_initialize_new_embeddings(...)` when `coordinate_init_mode: ms_mean`.
+- `fourier_ramp`: Deterministic Fourier ramp over coordinate bins; produces smooth sin/cos features. Use `coordinate_init_mode: fourier_ramp`.
+
+Configuration key: `coordinate_init_mode` in YAML; implementation lives in `src_new/processing/token_processor.py`.
 
 #### **Coordinate Token Processing**
 
@@ -258,18 +253,16 @@ coord_token = f"<|coord_{clamped_coord}|>"
 
 **Coordinate Mask Creation**:
 ```python
-# Create boolean mask for coordinate token positions
-def create_coordinate_mask(input_ids, tokenizer):
-    mask = torch.zeros_like(input_ids, dtype=torch.bool)
-    # Mark positions where coordinate tokens appear
-    coord_positions = (input_ids >= 151667) & (input_ids <= 152691)
-    mask[coord_positions] = True
-    return mask
+# Derive coordinate ID range from tokenizer; avoid hard-coded ranges
+from src_new.processing.special_tokens import get_coord_token_range
+
+rng = get_coord_token_range(tokenizer)  # start_id, end_exclusive
+coord_positions = (input_ids >= rng.start_id) & (input_ids < rng.end_exclusive)
 ```
 
 - **Strict Inference Parsing (src_new/inference.py)**:
-  - Requires training-format blocks with `<|object_ref_start|>...<|object_ref_end|>` (synonyms `<|obj_ref_*|>` accepted), geometry tokens, and `<|coord_N|>`; otherwise raises.
-  - Geometry lengths must be exact: bbox 4, quad 8, line even ≥ 4; overlapping spans are rejected.
+  - In coordinate-token mode, requires training-format blocks with `<|object_ref_start|>...<|object_ref_end|>` (synonyms `<|obj_ref_*|>` accepted), geometry tokens, and `<|coord_N|>`; otherwise falls back to best-effort parsing or returns empty.
+  - Geometry lengths must be exact: bbox 4, quad 8, line even ≥ 4; parsing filters out invalid objects rather than raising globally.
 
 ### Geometry Token Mapping
 
@@ -299,7 +292,7 @@ GEOMETRY_TOKENS = {
 
 ### Coordinate Clamping
 
-All coordinates are clamped to the valid range: `[0, max_coord_value]` (default: 2048)
+All coordinates are clamped to the valid range: `[0, max_coord_value]` (as configured in YAML)
 
 ```python
 clamped_coord = max(0, min(int(coord), max_coord_value))
@@ -317,7 +310,7 @@ coord_token = f"<|coord_{clamped_coord}|>"
 The system uses a teacher pool for providing reference examples during training:
 
 **Teacher Assignment Strategy**:
-- **Teacher Ratio**: Configurable percentage of samples that receive teachers (default: 50%)
+- **Teacher Ratio**: Configurable percentage of samples that receive teachers (set explicitly via YAML; no in-code defaults)
 - **Random Selection**: Teachers randomly selected from pool for diversity
 - **Image-Specific**: Optional image-specific teacher assignment for targeted learning
 - **Fallback Handling**: Graceful degradation when teacher pool is insufficient
@@ -331,7 +324,7 @@ The system uses a teacher pool for providing reference examples during training:
 }
 ```
 
-#### **Conversation Creation** (`src_new/processing/conversation_processor.py`)
+#### **Conversation Creation** (`src_new/processing/conversation/builder.py`)
 
 **Teacher-Student Conversation Format**:
 
@@ -479,7 +472,7 @@ Note (2025-08): We use joint training with span-aligned masks and next-token shi
 
 ### Auxiliary Coordinate Losses
 
-Instead of cross-entropy, coordinate tokens use auxiliary losses for better regression:
+When enabled, coordinate tokens add auxiliary losses (in addition to CE training) for better regression:
 
 - **Kernelized-KL**: Sparse window around ground truth coordinate bin
 - **Unlikelihood**: Penalizes non-coordinate tokens at coordinate positions
@@ -501,14 +494,14 @@ The system implements a sophisticated dual-loss architecture combining language 
 | `student_kce_loss` | Student coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
 | `student_unlike_loss` | Student coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
 
-### Auxiliary Coordinate Losses (Always Enabled)
+### Auxiliary Coordinate Losses (Optional)
 
-Coordinate tokens use auxiliary losses for better regression performance:
+When `coord_aux_enabled: true` in YAML, auxiliary losses are computed on coordinate-token targets:
 
-- **Kernelized-KL**: Sparse Gaussian kernel around ground truth coordinate bin
+- **Kernelized-KL**: Sparse Gaussian kernel around the correct coordinate bin
 - **Unlikelihood**: Top-k penalty on non-coordinate tokens at coordinate positions
 
-This path remains the baseline and is fully compatible with existing training runs.
+If disabled, these components are zero while the CE path remains unchanged.
 
 ### Optional Auxiliary Coordinate Losses (Kernelized‑KL + Unlikelihood)
 
@@ -521,7 +514,7 @@ Behavior and wiring:
 - CE path is unchanged and continues to train language tokens (including coordinate targets) under span masks.
 - Separate components are exposed for logging and total loss summation:
   - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
-- The legacy `teacher_l1_loss`/`student_l1_loss` remain used only when aux is disabled.
+- Legacy L1 has been retired in the standard path; coordinate regression now flows through auxiliary losses.
 - Laplacian regularizer on the coordinate embedding slice has been removed.
 
 YAML configuration:
@@ -536,7 +529,7 @@ coord_aux_lambda_unlike: 1
 ```
 
 Implementation highlights:
-- `src_new/models/coordinate_loss.py` provides:
+- `src_new/losses/coord_aux.py` provides:
   - `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`
 - `src_new/models/loss_manager.py` computes auxiliary losses at shifted coordinate positions (teacher/student separately) and returns separate components for logging and weighting.
 - Laplacian code and metrics were removed entirely to simplify the system.
@@ -561,58 +554,6 @@ The system uses precise span detection for loss separation:
 
 ## 🧠 Loss Computation System
 
-### Dual-Loss Architecture (`src_new/models/loss_manager.py`)
-
-The system implements a sophisticated dual-loss architecture combining language modeling and coordinate regression:
-
-| Component | Purpose | Computation Method | Weight |
-|-----------|---------|-------------------|---------|
-| `teacher_llm_loss` | Teacher example learning | Cross-entropy on teacher spans | `teacher_loss_weight` |
-| `student_llm_loss` | Student response learning | Cross-entropy on student spans | `student_loss_weight` |
-| `teacher_kce_loss` | Teacher coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
-| `teacher_unlike_loss` | Teacher coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
-| `student_kce_loss` | Student coordinate regression | Kernelized-KL loss | `coord_aux_lambda_kce` |
-| `student_unlike_loss` | Student coordinate regression | Unlikelihood loss | `coord_aux_lambda_unlike` |
-
-### Auxiliary Coordinate Losses (Always Enabled)
-
-Coordinate tokens use auxiliary losses for better regression performance:
-
-- **Kernelized-KL**: Sparse Gaussian kernel around ground truth coordinate bin
-- **Unlikelihood**: Top-k penalty on non-coordinate tokens at coordinate positions
-
-This path remains the baseline and is fully compatible with existing training runs.
-
-### Optional Auxiliary Coordinate Losses (Kernelized‑KL + Unlikelihood)
-
-When enabled via YAML, `LossManager` switches the coordinate path at shifted positions whose labels are coordinate tokens and computes separate components:
-
-- Kernelized‑KL (sparse window) around the correct bin (temperature-scaled)
-- Unlikelihood on non‑coordinate tokens at coordinate positions (top‑K)
-
-Behavior and wiring:
-- CE path is unchanged and continues to train language tokens (including coordinate targets) under span masks.
-- Separate components are exposed for logging and total loss summation:
-  - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
-- The legacy `teacher_l1_loss`/`student_l1_loss` remain used only when aux is disabled.
-- Laplacian regularizer on the coordinate embedding slice has been removed.
-
-YAML configuration:
-```yaml
-coord_aux_enabled: true
-coord_aux_tau: 1.2
-coord_aux_sigma_bins: 8
-coord_aux_window_bins: 32
-coord_aux_topk: 100
-coord_aux_lambda_kce: 1
-coord_aux_lambda_unlike: 1
-```
-
-Implementation highlights:
-- `src_new/models/coordinate_loss.py` provides:
-  - `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`
-- `src_new/models/loss_manager.py` computes auxiliary losses at shifted coordinate positions (teacher/student separately) and returns separate components for logging and weighting.
-- Laplacian code and metrics were removed entirely to simplify the system.
 
 ### Coordinate Diagnostics (New)
 
@@ -652,19 +593,12 @@ These metrics are aggregated locally (no distributed ops) by `TrainingStateManag
 
 #### **SafeTensors Format** (4-6x faster loading)
 ```python
-# Automatic SafeTensors usage in checkpoint saving
-model.save_pretrained(
-    checkpoint_dir,
-    safe_serialization=True,  # Use SafeTensors format
-    max_shard_size="5GB",     # Optimize shard size
-)
+# Centralized SafeTensors usage via CheckpointSaver
+from src_new.training.checkpoint_saver import CheckpointSaver, BestCheckpointManager
+saver = CheckpointSaver(args=training_args, checkpoint_manager=BestCheckpointManager(metric_name=metric, greater_is_better=flag))
+saver.save_checkpoint(model=model, processing_class=tokenizer, processor=processor, step=global_step,
+                      current_metrics=current_eval_metrics, is_deepspeed_enabled=is_deepspeed, training_start_time=start_time)
 ```
-
-#### **BestCheckpointCallback** (`src_new/training/callbacks.py`)
-- **Rotation-Safe**: Creates independent copies that survive checkpoint rotation
-- **Descriptive Naming**: `best-{step}-{eval_loss}` format
-- **Automatic Updates**: Creates new copy when better model is found
-- **Cleanup**: Removes old best copies when updating
 
 #### **Distributed Coordination**
 - **Rank 0 Only**: Checkpoint saving only on rank 0 to avoid redundancy
@@ -709,8 +643,6 @@ coord_aux_window_bins: 32      # Half-window radius in BIN units (total width = 
 coord_aux_topk: 100            # Top‑K non‑coordinate tokens for Unlikelihood
 coord_aux_lambda_kce: 0.5      # Weight for Kernelized‑KL
 coord_aux_lambda_unlike: 0.05  # Weight for Unlikelihood
-coord_aux_lambda_lap1: 1e-4    # Weight for 1st‑order Laplacian (embedding smoothness)
-coord_aux_lambda_lap2: 1e-5    # Weight for 2nd‑order Laplacian (curvature penalty)
 ```
 
 - Debug config (example): `configs/bbu_v2_debug.yaml` sets `coord_aux_enabled: true` with the knobs above so you can smoke‑test the new features.
@@ -718,7 +650,6 @@ coord_aux_lambda_lap2: 1e-5    # Weight for 2nd‑order Laplacian (curvature pen
 
 Runtime wiring:
 - The wrapper configures `LossManager` with these knobs at initialization when `coord_aux_enabled` is true.
-- Laplacian regularization activates only when `coord_aux_lambda_lap1` and/or `coord_aux_lambda_lap2` are positive.
 
 #### **Training Entry Point** (`scripts/train_new.py`)
 
@@ -805,7 +736,7 @@ model = DetectionModel(
 
 ### Inference Alignment & Generation Notes (src_new)
 
-- **Use generation builders**: Build inputs with `ConversationProcessor.create_teacher_student_conversation_for_generation(...)` or `create_simple_conversation_for_generation(...)`. Avoid tokenizer-only re-tokenization after any truncation.
+- **Use generation builders**: Build inputs with `ConversationBuilder.create_teacher_student_conversation_for_generation(...)` or `create_simple_conversation_for_generation(...)`. Avoid tokenizer-only re-tokenization after any truncation.
 - **Template placeholder check**: Before passing through the HF processor, ensure the number of `<|image_pad|>` placeholders in template text equals the number of images via `validate_image_token_consistency(...)`.
 - **Decode without skipping specials**: Use `skip_special_tokens=False` to preserve extended geometry tokens (e.g., `<|coord_xxx|>`).
 - **Strict parsing**: Inference strictly parses `<|object_ref_start|>...<|object_ref_end|>` (or `<|obj_ref_*|>`) with geometry tokens and `<|coord_N|>`. Any deviation raises immediately; no fallbacks.
@@ -834,7 +765,7 @@ model = DetectionModel(
 #### **Checkpoint Optimization**
 - **Format**: Always use SafeTensors (`save_safetensors: true`) for 4-6x faster loading
 - **Sharding**: `max_shard_size: "5GB"` for optimal loading performance
-- **Rotation**: Use BestCheckpointCallback for rotation-safe best model preservation
+// Rotation is handled by the unified checkpoint saver integrated in the training loop.
 
 ### Validation Checks
 
@@ -842,7 +773,7 @@ model = DetectionModel(
 - **Unmasked Token Ratio**: Should be 30-60% for healthy training
 - **Loss Components**: All components (teacher_llm, student_llm, teacher_l1, student_l1) should have finite values
 - **Span Coverage**: Both teacher and student spans should be detected in teacher-student mode
-- **Coordinate Tokens**: Should be within expected ID range (151667-153715)
+- **Coordinate Tokens**: Verify presence via runtime‑derived range from `get_coord_token_range(tokenizer)` (no hard‑coded ranges)
 
 #### **Performance Monitoring**
 - **Training Speed**: ~2-3 samples/second on A100 for 7B model
@@ -1107,3 +1038,66 @@ This ensures model input uses a single deterministic coordinate ordering, elimin
 ---
 
 *This documentation reflects the production-ready state of the Qwen2.5-VL training pipeline with all critical issues resolved and performance optimizations applied.*
+
+## 📦 Module-by-Module Overview (Refactored `src_new`)
+
+- **`config/`**: Unified, frozen dataclass config with strict validation and path normalization (relative paths and `@src_new/` alias supported).
+  - `config/config.py`: `Config` schema, `load_config` (auto-resolve dataset paths via `DataResolver`), fail-fast checks, progressive unfreeze knobs.
+- **`data/`**: Data loading and HuggingFace-first conversation assembly.
+  - `data/dataset.py`: Reads JSONL, validates samples, loads images via `utils.path_manager`, builds conversations via `processing/conversation/builder.py`, creates masked labels and teacher/student spans using offset mapping, masks `<|image_pad|>`.
+  - `data/teacher_pool.py`: Loads teacher pool JSONL, builds image index, random sampling APIs.
+  - `data/collator_{packed,standard}.py`: Batching strategies; choose via `config.collator_type`.
+- **`processing/`**: Prompting, token/embedding extension, and coordinate conversion.
+  - `processing/conversation_processor.py`: HuggingFace-first builder; validates structure, interleaves images, applies chat templates, enforces image token consistency, offers robust/multi-teacher/truncation/inference builders.
+  - `processing/conversation/builder.py`: Thin wrapper providing the public ConversationBuilder API used by `data/dataset.py` and `inference.py`.
+  - `processing/coordinate_converter.py`: Converts objects to geometry + `<|coord_N|>` strings with clamping; only custom logic preserved from legacy.
+  - `processing/token_processor.py`: Extends tokenizer and model embeddings; adds geometry tokens if missing; adds coord tokens `0..max_coord_value`; initialization mode: `ms_mean` (neutral mean-resize + smart init) or `fourier_ramp` (deterministic Fourier features); pads embeddings to multiples of 128; validates alignment.
+  - `processing/special_tokens.py`: Canonical tokens, assistant span pattern, and `get_coord_token_range(tokenizer)`; no hard-coded ID ranges.
+  - `processing/templates.py`: Centralized Chinese prompts and constants.
+- **`models/`**: Model wrapper and loss system.
+  - `models/wrapper.py`: `DetectionModel` composition around Qwen2.5‑VL; validates image tensors and image token counts vs grids; SOLUTION‑1 single‑pass CE path; coordinates via `LossManager`; exposes `model.config` for HF integrations; saves tokenizer/coordinate config.
+  - `models/loss_manager.py`: Teacher/student CE masks from spans; optional auxiliary coordinate losses (Kernelized‑KL + Unlikelihood) with diagnostics; strict decomposition and weighting.
+  - `models/coord_metrics.py`: Metrics like window mass, gt prob, expected MAE (bins), top‑k acc, non‑coord top‑k mass, etc.
+  - `models/patches.py`: Qwen2.5‑VL safety/compatibility patches.
+- **`losses/`**: Auxiliary loss implementations.
+  - `losses/coord_aux.py`: `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`, `build_noncoord_vocab_mask`.
+- **`training/`**: Trainer and checkpointing.
+  - `training/bbu_trainer.py`: Local aggregation (no custom distributed ops); overrides HF logging cycle; integrates `TrainingStateManager` and `CheckpointSaver`/`BestCheckpointManager`; supports proper LR logging and eval/save cadence.
+  - `training/training_state_manager.py`: Accumulates loss components locally, computes logging dictionary, verifies loss decomposition, estimates remaining time.
+  - `training/callbacks.py`: Loss tracking helpers and rotation‑safe best checkpoint naming (if used).
+  - `training/checkpoint_saver.py`: Centralized inference‑ready checkpoint saving (SafeTensors + sharding) and best‑checkpoint management via `BestCheckpointManager` with rotation.
+- **`inference.py`**: Inference engine using the same builders (strict parsing, teacher‑guided options, data path resolution, dynamic coord range).
+- **`utils/`**: Rank‑aware logging, path/data resolution, validation, error formatting, debug logging.
+- **`types/`**: Shapes and typed helpers (e.g., `IMAGE_GRID_THW_SHAPE_DESC`).
+- **`reference/`**: Official collator reference and notes.
+
+## 🧭 Refactored Roadmap & Training Procedure
+
+1) **Configuration**
+   - Write a YAML with paths (`data_root`, `train_data_path`, `val_data_path`, `teacher_pool_file`, `output_dir`, `tb_dir`). Relative paths and `@src_new/` alias are accepted; they will be normalized relative to the config file.
+   - Load with `/root/miniconda3/envs/ms/bin/python -m src_new.config.config` utilities (`load_config`), which validates strictly.
+2) **Model & Tokenizer (pre‑distributed expansion)**
+   - Load base model/tokenizer; extend vocabulary and embeddings with `processing.token_processor.TokenProcessor`.
+   - Geometry tokens are ensured; coord tokens added for `0..max_coord_value` with `coordinate_init_mode: {ms_mean|fourier_ramp}`; embeddings padded to 128‑multiple, original rows preserved.
+3) **Dataset & Conversations**
+   - Initialize `data.Dataset` with tokenizer and config; set HF `Qwen2VLProcessor` via `dataset.set_processor(processor)`.
+   - Build conversations with `processing.conversation.ConversationBuilder` (robust HF templates, strict image token checks).
+   - Create labels with offset‑mapping spans; include `<|im_end|>` in assistant spans; mask `<|image_pad|>`.
+4) **Collation**
+   - Choose `collator_packed` or `collator_standard` via `config.collator_type`; ensure shapes/types match Qwen2.5‑VL.
+5) **Forward & Losses**
+   - `models/wrapper.DetectionModel` validates multimodal tensors and image token counts; bypasses HF loss when spans provided.
+   - `models/loss_manager.LossManager` computes single‑pass CE for teacher/student; optionally adds coordinate aux losses with diagnostics.
+6) **Training Loop**
+   - Use `training/BBUTrainer` with local loss aggregation (`TrainingStateManager`); clean logging only; no custom distributed ops.
+- Checkpoints saved with SafeTensors via `CheckpointSaver`; best checkpoints managed by `BestCheckpointManager` with rotation.
+7) **Inference**
+   - Use `inference.InferenceEngine` or builders `ConversationBuilder.*for_generation`; strict parsing; teacher‑guided mode supported; dynamic coord range.
+
+## 🔁 Key Differences vs `src_new_bak/`
+- **HuggingFace‑first conversations** replace custom chat builders; image and token tensors come from the official processor.
+- **Strict config & fail‑fast** validation; normalized paths accepted; progressive unfreeze as explicit knobs.
+- **Dynamic coordinate IDs** via `get_coord_token_range(tokenizer)`; no hard‑coded ranges.
+- **Loss system**: single‑pass CE; optional auxiliary coordinate losses with diagnostics; legacy L1 path retired; Laplacian regularizers removed.
+- **Trainer**: no custom distributed ops; local aggregation only; unified best‑checkpoint handling.
+- **Embedding extension**: padded to 128; original pretrained rows preserved; deterministic coordinate init (`ms_mean`/`fourier_ramp`).

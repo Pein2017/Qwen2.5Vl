@@ -27,13 +27,13 @@ export PYTHONDONTWRITEBYTECODE=1
 PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
-CONFIG_NAME="bbu_v2_base"                      # Config to use: bbu_v2 
-GPU_DEVICES="0,1"                             # GPU devices (comma-separated) - start with single GPU for testing
+CONFIG_NAME="bbu_v2_debug"                      # Config to use: bbu_v2 
+GPU_DEVICES="0,1"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
 LOG_LEVEL="DEBUG"                          # Logging level: INFO (production) | DEBUG (development)
-to_console=false                             # true: console output, false: log to run_new.log
+to_console=true                             # true: console output, false: log to run_new.log
 
 
 setup_environment() {
@@ -129,7 +129,6 @@ from src_new.config.config import load_config
 try:
     config = load_config('configs/${CONFIG_NAME}.yaml')
     print('✅ Config loading successful with new architecture')
-    print(f'   Model: {config.model_size}')
     print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
 except Exception as e:
@@ -162,7 +161,7 @@ launch_single_gpu() {
     python scripts/train_new.py \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
-        --enable-coord-aux "${ENABLE_COORD_AUX:-}"
+        --max_steps 10
 }
 
 launch_deepspeed() {
@@ -183,7 +182,8 @@ launch_deepspeed() {
         --nproc_per_node="$NUM_GPUS" \
         scripts/train_new.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL"
+        --log_level "$LOG_LEVEL" \
+        --max_steps 10
 }
 
 # =============================================================================

@@ -30,8 +30,10 @@
 !todo/
 !todo/**
 !.augment-guidelines
-!src_coord_pretrain/
-!src_coord_pretrain/**
+!src_coord_pretrain/**/*.py
+!src_coord_pretrain/**/*.sh
+!src_coord_pretrain/**/*.yaml
+!src_coord_pretrain/**/*.md
 
 # Allow essential root files
 !.gitignore
