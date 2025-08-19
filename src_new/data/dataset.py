@@ -21,8 +21,21 @@ from typing import Any, Dict, List, Optional
 import torch
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
+from transformers import Qwen2VLImageProcessor, Qwen2VLProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from src_new.config.config import Config
+from src_new.data.teacher_pool import TeacherPoolManager
+from src_new.processing.conversation import ConversationBuilder
+from src_new.processing.special_tokens import (
+    ASSISTANT_SPAN_PATTERN,
+    GEOMETRY_TOKENS,
+    IM_END,
+    IMAGE_PAD,
+)
+from src_new.types.arrays import (
+    jaxtyped_beartype,
+)
 from src_new.utils.path_manager import create_path_manager
 
 
@@ -66,13 +79,33 @@ def read_jsonl(path: str) -> List[Dict[str, Any]]:
 class Dataset(TorchDataset):
     """HuggingFace-first dataset with clean conversation processing."""
 
+    # Class attribute type annotations (non-trivial state)
+    data_path: str
+    tokenizer: PreTrainedTokenizerBase
+    image_processor: Optional[Qwen2VLImageProcessor]
+    teacher_pool_manager: Optional[TeacherPoolManager]
+    config: Config
+
+    data_root: str
+    teacher_ratio: float
+    num_teacher_samples: int
+
+    hf_processor: Optional[Qwen2VLProcessor]
+    conversation_processor: Optional[ConversationBuilder]
+
+    raw_data: List[Dict[str, Any]]
+    samples: List[Dict[str, Any]]
+
+    teacher_assignments: Dict[str, Any]
+    teacher_assignment_counts: Dict[str, int]
+
     def __init__(
         self,
         data_path: str,
         tokenizer: PreTrainedTokenizerBase,
-        image_processor: Optional[Any],
-        teacher_pool_manager: Optional[Any],
-        config: Any,
+        image_processor: Optional[Qwen2VLImageProcessor],
+        teacher_pool_manager: Optional[TeacherPoolManager],
+        config: Config,
     ):
         """
         Initialize HuggingFace-first dataset.
@@ -128,7 +161,7 @@ class Dataset(TorchDataset):
 
         logger.info("🎯 HuggingFace-first processing components initialized")
 
-    def set_processor(self, hf_processor):
+    def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
         """
         Set the HuggingFace processor and initialize conversation processor.
 
@@ -145,7 +178,7 @@ class Dataset(TorchDataset):
 
         self.hf_processor = hf_processor
 
-        from src_new.processing.conversation_processor import ConversationProcessor
+        from src_new.processing.conversation import ConversationBuilder
 
         # Fail-fast: max_coord_value must come from YAML (no defaults allowed)
         if not hasattr(self.config, "max_coord_value"):
@@ -158,8 +191,19 @@ class Dataset(TorchDataset):
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
 
-        self.conversation_processor = ConversationProcessor(
-            processor=hf_processor, max_coord_value=max_coord_value
+        if not hasattr(self.config, "coordinate_tokens_enabled"):
+            raise ValueError(
+                "coordinate_tokens_enabled must be explicitly set in configuration (True/False)"
+            )
+        if not isinstance(self.config.coordinate_tokens_enabled, bool):
+            raise ValueError(
+                f"coordinate_tokens_enabled must be a bool, got {type(self.config.coordinate_tokens_enabled)}: {self.config.coordinate_tokens_enabled!r}"
+            )
+
+        self.conversation_processor = ConversationBuilder(
+            processor=hf_processor,
+            max_coord_value=max_coord_value,
+            coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")
@@ -222,7 +266,7 @@ class Dataset(TorchDataset):
                 return False
 
             # Must have at least one geometry type
-            geometry_types = ["bbox_2d", "quad", "line"]
+            geometry_types = list(GEOMETRY_TOKENS.keys())
             if not any(geom_type in obj for geom_type in geometry_types):
                 return False
 
@@ -232,6 +276,7 @@ class Dataset(TorchDataset):
         """Get number of samples in dataset."""
         return len(self.samples)
 
+    @jaxtyped_beartype
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
         Get processed sample by index.
@@ -286,6 +331,7 @@ class Dataset(TorchDataset):
 
         return structured_sample
 
+    @jaxtyped_beartype
     def _process_sample_unified(
         self, structured_sample: Dict[str, Any], idx: int
     ) -> Dict[str, torch.Tensor]:
@@ -432,7 +478,7 @@ class Dataset(TorchDataset):
                 if 0 <= start_token < end_token <= len(labels):
                     # Try to include the immediate <|im_end|> token (if present) in the span
                     try:
-                        im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+                        im_end_id = tokenizer.convert_tokens_to_ids(IM_END)
                     except Exception:
                         im_end_id = None
 
@@ -465,7 +511,7 @@ class Dataset(TorchDataset):
                     )
 
             # STEP 6: Mask image pad tokens
-            image_pad_id = tokenizer.convert_tokens_to_ids("<|image_pad|>")
+            image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
             if image_pad_id is not None:
                 image_pad_mask = input_ids_1d == image_pad_id
                 labels[image_pad_mask] = -100
@@ -506,10 +552,8 @@ class Dataset(TorchDataset):
         assistant_spans = []
         assistant_count = 0
 
-        # Find all assistant segments using regex
-        pattern = r"<\|im_start\|>assistant\n(.*?)<\|im_end\|>"
-
-        for match in re.finditer(pattern, full_text, re.DOTALL):
+        # Find all assistant segments using centralized regex
+        for match in re.finditer(ASSISTANT_SPAN_PATTERN, full_text, re.DOTALL):
             # Get character positions
             content_start_char = match.start(1)  # Start of assistant content (group 1)
             content_end_char = match.end(1)  # End of assistant content (group 1)

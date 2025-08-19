@@ -3,17 +3,17 @@
 This package contains utility classes and functions for:
 - Path management and resolution
 - Debug logging and monitoring
-- Performance monitoring
-- Checkpoint validation
 - Rank-aware logging for distributed training
 - Centralized validation utilities
 - Error message formatting
 - Tensor validation
 - Common imports and utilities
+
+Note: Development-only utilities (performance monitoring, checkpoint validation)
+have been moved to src_new.tools and are no longer exported from this module.
 """
 
 # Legacy imports (maintained for backward compatibility)
-from .checkpoint_validator import CheckpointValidator, validate_checkpoint
 from .common_imports import (
     TYPE_CHECKING,
     Any,
@@ -87,7 +87,6 @@ from .path_manager import (
     resolve_image_paths,
     safe_resolve_image_paths,
 )
-from .performance_monitor import PerformanceMonitor, get_performance_monitor
 from .rank_aware_logging import (
     all_ranks,
     configure_rank_aware_logging,
@@ -156,12 +155,7 @@ __all__ = [
     "validate_tensor_shape",
     "validate_batch_size",
     "validate_multimodal_tensors",
-    # Performance monitoring
-    "get_performance_monitor",
-    "PerformanceMonitor",
-    # Checkpoint validation
-    "validate_checkpoint",
-    "CheckpointValidator",
+    # Checkpoint validation (deprecated - removed from public exports)
     # Common imports (selected frequently used ones)
     "Path",
     "PathLike",

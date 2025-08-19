@@ -7,7 +7,24 @@ This file defines non‑negotiable rules for all code and docs in this repositor
 - For specifics and deeper explanations, consult:
   - module-specific docs: `module_dir/*.md`
   - shared documentation: `./docs/`
-- **Paths**: Always use absolute paths in scripts, commands, tooling arguments, and CLI inputs.
+
+## Project Outline
+- **src_new**: Training/models/processing for the detection‑focused VL pipeline. HF‑first integration (official processors), strict config (`src_new/config/config.py`), conversation and span alignment, coordinate token system, deterministic training, and inference utilities. See `src_new/README.md` and `src_new/UNIFIED_DOCUMENTATION.md`.
+- **data_conversion**: Unified processor to convert V2 annotations + images into training JSONL with strict object‑type filtering, geometry constraints, and hierarchical descriptions. See `data_conversion/README.md`.
+
+## Workflow (E2E, concise)
+1) **Data conversion** → `data_conversion/convert_dataset.sh` (or `UnifiedProcessor`) produces `data/{dataset_name}/train.jsonl`, `val.jsonl`, `teacher.jsonl` (+ processed images).
+2) **Training** → `scripts/run_new_train.sh` launches the `src_new` pipeline using a YAML config. No in‑code hyperparameter defaults; pass everything explicitly.
+3) **Inference** → `python -m src_new.inference --config ... --checkpoint ... --image ...` for single‑image runs.
+
+Use the Entry Points section below for exact commands and environment activation.
+
+## Coding Rules (At a Glance)
+- No in-code defaults for hyperparameters; pass via YAML/entry scripts and validate early with actionable errors.
+- Type hints on all arguments, return types, class attributes, module-level constants, and local variables; clean, full-word naming; small single-responsibility functions with early returns.
+- No wildcard imports, hidden globals, or top-level I/O on import; explicit control flow and interfaces only.
+- Immutable configs: single frozen dataclass schema; explicit Optional handling; no implicit defaults inside libraries.
+- Prefer deterministic seeds at entry points (best-effort); do not swallow errors; prefer linear-time passes in hot paths.
 
 ## Execution Environment
 - **Required Environment**: Use the `ms` conda virtual environment for all development and execution.
@@ -19,31 +36,27 @@ This file defines non‑negotiable rules for all code and docs in this repositor
   - **Direct Python**: `/root/miniconda3/envs/ms/bin/python`
   - **Note**: Manual terminals auto-source `~/.bashrc`; AI-assisted terminals may need explicit sourcing
 
-## Development Mode: Fail‑Fast + Test‑Driven Development
-- **Fail‑Fast**: detect issues immediately, stop execution, fix at source.
-  - Never catch and hide errors. Do not continue on error.
-  - If input is invalid, raise immediately with an actionable message.
-  - Validate all inputs upfront; raise on first violation with specific details.
-  - No safe/defaulting accessors: `dict.get`, `getattr`, `setdefault`, `defaultdict`, implicit defaults, or silent fallbacks.
-  - No implicit default values for function/method parameters that control hyperparameters or external configuration.
-- **TDD First**: write or update tests before implementing or changing logic.
-  - Place tests under `module_dir/tests/` with `test_*.py` naming.
-  - Keep tests fast and deterministic. Use minimal synthetic fixtures.
-  - Include negative-path tests (invalid inputs, boundary cases).
-  - Suggested run flags: `pytest -q -x` (stop at first failure) and maintain meaningful coverage.
+  
+## Development Mode: Fail-Fast (AI-friendly)
+
+* **Fail-Fast (严控失败，快速暴露/定位)**
+  * Never swallow errors; **stop on first failure** and fix at the source.
+  * Validate inputs at boundaries; raise with **actionable** messages (`what`, `where`, `how to fix`).
+  * Avoid “silent defaults” for hyperparameters/config; require explicit values or validated config objects.
+  * Prefer explicit constructor args + dataclass/pydantic validation over permissive `dict.get`/implicit defaults.
+
+
 
 ## Hyperparameters and Configuration
-- Do not set in-code defaults for hyperparameters or training/runtime settings.
-- All hyperparameters must be provided by the entry script and/or a config YAML.
-- In code, define parameters as required or optional, but never assign a default value for hyperparameters.
-  - Required: must be present; validate and raise immediately if missing/invalid.
-  - Optional: use explicit `Optional[...]` types and explicit `None` handling in the caller; absence means the feature is disabled or the caller must decide. Do not inject defaults inside libraries.
-- Provide a single schema per config (prefer `@dataclass(frozen=True)` with explicit types, no defaults). Implement a dedicated validation function that raises on the first violation.
+- No silent defaults for core hyperparameters. Require explicit values via YAML/entry scripts and validate early with actionable errors.
+- Derived values allowed for non-core path fields when `data_root` is provided (e.g., auto-resolving `train_data_path`, `val_data_path`, `teacher_pool_file` via `DataResolver`); log the derivation.
+- Optional feature toggles may have explicit safe defaults that do not change core training semantics (e.g., `prog_unfreeze_coord_slice_only=True`, or deriving `new_geometry_tokens` when `coordinate_tokens_enabled=True`); validate consistency and document behavior.
+- Use a single schema (`@dataclass(frozen=True)`) with required fields first; optional fields typed as `Optional[...]` and handled explicitly. Provide a dedicated validation function that fails fast.
 
 ## Permitted Mechanics (Strict)
 - `try/finally` and non-suppressing context managers are allowed strictly for deterministic cleanup and must re-raise exceptions. Do not mask or downgrade errors.
 - Use explicit conditionals with `raise` for validation. Reserve `assert` for internal invariants and tests only (not user input or runtime contracts).
-- **Prohibited**: wildcard imports, implicit re-exports, magic numbers, hidden global state, `print` in libraries (CLI may print; libraries must use structured logging), silent `pass`, mutation of shared state across module boundaries, dynamic monkey patching in production paths, top-level I/O/network calls/GPU initialization at import time.
+- Avoid wildcard imports in library code. Permitted only in vendor reference modules under `src_new/reference/offical_huggingface_qwen2_5_vl` (TYPE_CHECKING only) and in ad‑hoc scripts/notebooks via `src_new.utils.common_imports` (not in production modules). Also prohibited: implicit re-exports, magic numbers, hidden global state, `print` in libraries (CLI may print; libraries must use structured logging), silent `pass`, mutation of shared state across module boundaries, dynamic monkey patching in production paths, top-level I/O/network/GPU initialization at import time.
 
 ## Module Alignment and Contracts
 
@@ -60,9 +73,7 @@ This file defines non‑negotiable rules for all code and docs in this repositor
 - **Training (BBUTrainer and shells)**
   - Fail immediately on non‑finite losses or invalid gradients.
   - Checkpoint saving must preserve `processing_class` and any metadata required for clean reloads.
-  - **Determinism**: set seeds at entry points; configure CUDA/CuDNN deterministic flags where relevant; document trade-offs.
-- **Inference**
-  - CLI takes absolute paths for `--config`, `--checkpoint`, and `--image`. No downloads at runtime; respect offline caches.
+  - **Determinism**: set seeds at entry points where feasible; CUDA/CuDNN deterministic flags recommended; document trade-offs; exact determinism is best-effort, not mandatory.
 
 ### data_conversion (Unified Processor)
 - **UnifiedProcessor pipeline**
@@ -87,26 +98,19 @@ This file defines non‑negotiable rules for all code and docs in this repositor
   - Presentation/CLI layer
 - Error messages: include variable names and key values (sanitized), expected vs. actual, and a remediation hint.
 - Immutability by default: prefer `@dataclass(frozen=True)` and do not mutate inputs; return new objects.
-- Import hygiene: use absolute imports; avoid circular dependencies; define `__all__` for public APIs only.
+- Import hygiene: prefer absolute imports; allow relative imports within `src_new` and `data_conversion` to improve locality and avoid long paths; never cross package boundaries via relative imports; define `__all__` for public APIs only.
 - Explicit interfaces: no hidden magic, no implicit conversions; explicit returns and control flow.
 - Performance: prefer linear-time passes and minimal allocations in hot paths; measure before optimizing.
 
-## Testing Conventions
-- Layout: `module_dir/tests/` (co-located with the code under test).
-- Naming: `test_*.py` files; test functions `test_*`.
-- Fixtures: keep small; use synthetic inputs; avoid network/filesystem unless explicitly required.
-- GPU/accelerator tests: mark explicitly (e.g., `@pytest.mark.gpu`) and provide CPU fallbacks where reasonable.
-- Golden tests: snapshot minimal, stable artifacts; update only with clear justification.
-- Negative paths: assert failures with `pytest.raises(...)`.
-- Assertions: check shapes, dtypes, ranges, and invariants, not just equality.
-- Speed: individual tests should complete quickly to encourage frequent runs.
 
-Suggested tests aligned to modules:
-- `src_new/tests/test_vision_token_validation.py`: mismatch raises with the exact message and counts.
-- `src_new/tests/test_conversation_eos_labels.py`: `<|im_end|>` is included and aligned in spans.
-- `src_new/tests/test_detectionmodel_config_proxy.py`: HF config is proxied; `training_config` is separate.
-- `data_conversion/tests/test_geometry_and_types.py`: geometry constraints and object type set enforced.
-- `data_conversion/tests/test_hierarchy_format.py`: comma/slash rules; invalid inputs raise with specifics.
+
+## Strict Typing Conventions
+- Centralize shared domain types in `src_new/types/` and import from there. Public surface is exported via `src_new/types/__init__.py`.
+- Prefer `@dataclass(frozen=True)` for value objects (e.g., `Box`, `Quad`, `Line` in `src_new/types/geometry.py`).
+- Use `TypedDict`/`NamedTuple` where appropriate for structured mappings and read-only tuples (e.g., `MultimodalBatch`, `CoordTokenRange`).
+- For tensors, use shape-annotated aliases with `jaxtyping` + `beartype` at boundaries (see `src_new/types/arrays.py`: `InputIds`, `AttentionMask`, `Labels`, `PixelValuesPacked`, `ImageGridTHW` and `jaxtyped_beartype`).
+- Annotate locals in non-trivial logic blocks to improve debuggability and IDE navigation; avoid implicit `Any` and disable it in type checkers.
+- Explicit `Optional[...]` and `None` checks; do not rely on truthiness for control flow decisions.
 
 ## Documentation Rules
 - Keep this file concise; defer details to `module_dir/*.md` and `./docs/`.
@@ -131,7 +135,7 @@ Suggested tests aligned to modules:
 ## CI and Local Gates (Recommended)
 - Run linters and type checks locally before committing.
   - Style/quality: ruff or flake8; formatting: black
-  - Types: mypy (prefer strict); error on implicit/unused `Any`
+  - Types: pyright (preferred) or mypy; prefer strict; error on implicit/unused `Any`
 - Treat warnings as errors during tests for early surfacing.
 - Pre-commit hooks for format, lint, and type checks are encouraged.
 - Commit messages should describe intent and impact; reference modules and user-visible effects.

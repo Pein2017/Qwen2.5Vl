@@ -18,11 +18,11 @@ Follows the project's fail-fast development approach with strict validation.
 from dataclasses import dataclass
 from pathlib import Path
 
-from .logger_factory import get_module_logger
+from .rank_aware_logging import get_rank_aware_logger
 from .validation import DirectoryValidationError, PathValidator
-from .error_formatting import ErrorMessageBuilder
 
-logger = get_module_logger(__name__)
+
+logger = get_rank_aware_logger("data_resolver")
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ class DataResolver:
             data_root: Root directory containing dataset files
 
         Returns:
-            DatasetPaths object with all resolved absolute paths
+            DatasetPaths object with resolved paths (relative preserved if input is relative)
 
         Raises:
             ValueError: If data_root is invalid or empty

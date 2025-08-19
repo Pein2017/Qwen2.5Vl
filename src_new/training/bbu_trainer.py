@@ -13,12 +13,11 @@ Key Features:
 - Compatible with existing DetectionModel and training pipeline
 """
 
-import os
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from transformers import PreTrainedTokenizer, TrainingArguments
 from transformers import Trainer as HFTrainer
@@ -32,8 +31,8 @@ from ..utils.rank_aware_logging import (
     log_distributed_info,
     rank0_only,
 )
+from .checkpoint_saver import BestCheckpointManager, CheckpointSaver
 from .training_state_manager import TrainingStateManager
-from .unified_checkpoint_manager import UnifiedCheckpointManager
 
 
 # Import debug logging utilities
@@ -120,15 +119,19 @@ class BBUTrainer(HFTrainer):
         )
 
         # Initialize unified checkpoint manager
-        # Extract checkpoint settings from training_config or use defaults
-        best_checkpoint_metric = training_config.best_checkpoint_metric
-        best_checkpoint_greater_is_better = (
-            training_config.best_checkpoint_greater_is_better
-        )
+        # Extract checkpoint settings from training_config
+        best_checkpoint_metric = training_config.metric_for_best_model
+        best_checkpoint_greater_is_better = training_config.greater_is_better
 
-        self.checkpoint_manager = UnifiedCheckpointManager(
+        self.checkpoint_manager = BestCheckpointManager(
             metric_name=best_checkpoint_metric,
             greater_is_better=best_checkpoint_greater_is_better,
+        )
+
+        # Centralized checkpoint saver (replaces method-based saving)
+        self.checkpoint_saver = CheckpointSaver(
+            args=self.args,
+            checkpoint_manager=self.checkpoint_manager,
         )
 
         # Training state
@@ -336,6 +339,23 @@ class BBUTrainer(HFTrainer):
             # Format logs for better readability before logging
             formatted_logs = self._format_logs_for_display(final_logs)
 
+            # INFO: concise diagnostics summary (only known diagnostic metrics)
+            from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
+
+            if logger.isEnabledFor(logging.INFO):
+                diag_items = []
+                for k, v in formatted_logs.items():
+                    if not isinstance(v, (int, float)):
+                        continue
+                    if k.startswith("teacher_"):
+                        base = k[len("teacher_") :]
+                    elif k.startswith("student_"):
+                        base = k[len("student_") :]
+                    else:
+                        continue
+                    if base in DIAGNOSTIC_METRIC_NAMES:
+                        diag_items.append(f"{k}={v:.4f}")
+
             # Use standard HuggingFace logging only (no custom distributed operations)
             super(BBUTrainer, self).log(formatted_logs)
 
@@ -351,17 +371,7 @@ class BBUTrainer(HFTrainer):
 
         # Handle checkpoint saving if needed
         if self.control.should_save:
-            # Generate metrics for checkpoint logging if not already generated
-            if logged_metrics is None:
-                logged_metrics = self.training_state_manager.log_training_metrics(
-                    tr_loss=tr_loss,
-                    grad_norm=grad_norm,
-                    model=model,
-                    start_time=self._training_start_time,
-                    learning_rate=learning_rate,
-                )
-
-            # Extract current evaluation metrics for unified checkpoint management
+            # Do not recompute training metrics here; reuse eval metrics if available
             current_metrics = self._extract_current_metrics()
 
             # Pass metrics to unified checkpoint saving
@@ -374,6 +384,11 @@ class BBUTrainer(HFTrainer):
         This method processes logs through TrainingStateManager and then uses
         standard HuggingFace logging mechanisms only.
         """
+        # Flatten nested diagnostics dict if present
+        if isinstance(logs, dict) and isinstance(logs.get("diagnostics"), dict):
+            diag = logs.pop("diagnostics")
+            for dkey, dval in diag.items():
+                logs[dkey] = dval
         # Process logs through training state manager (using correct LR mapping)
         final_logs = self.training_state_manager.log_metrics_batch(
             logs=logs,
@@ -388,6 +403,23 @@ class BBUTrainer(HFTrainer):
 
         # Format logs for better readability before logging
         formatted_logs = self._format_logs_for_display(final_logs)
+
+        # INFO: concise diagnostics summary (only known diagnostic metrics)
+        from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
+
+        if logger.isEnabledFor(logging.INFO):
+            diag_items = []
+            for k, v in formatted_logs.items():
+                if not isinstance(v, (int, float)):
+                    continue
+                if k.startswith("teacher_"):
+                    base = k[len("teacher_") :]
+                elif k.startswith("student_"):
+                    base = k[len("student_") :]
+                else:
+                    continue
+                if base in DIAGNOSTIC_METRIC_NAMES:
+                    diag_items.append(f"{k}={v:.4f}")
 
         # Use standard HuggingFace logging only
         super(BBUTrainer, self).log(formatted_logs, start_time)
@@ -562,376 +594,24 @@ class BBUTrainer(HFTrainer):
         self, model, trial, current_metrics: Optional[Dict[str, float]] = None
     ):
         """
-        Unified checkpoint saving with best checkpoint management.
-
-        This method creates both regular and best checkpoints in a single pass,
-        eliminating redundant I/O operations and ensuring consistency.
-
-        Key Features:
-        - Single-pass checkpoint creation (no copying)
-        - Fast inference-ready checkpoints (30s vs 200-400s)
-        - SafeTensors format for 4-6x faster loading
-        - Extended tokenizer with coordinate tokens
-        - Unified best checkpoint management
-        - Proper DeepSpeed coordination when needed
-
-        Args:
-            model: Model to save
-            trial: Training trial (for hyperparameter tuning)
-            current_metrics: Current evaluation metrics for best checkpoint determination
+        Unified checkpoint saving with best checkpoint management via CheckpointSaver.
         """
-        # Prevent duplicate checkpoint saving
-        if self._checkpoint_in_progress:
-            logger.debug("🔄 Checkpoint already in progress, skipping duplicate call")
-            return
+        # Determine step directory and delegate to centralized saver
+        step = int(self.state.global_step)
+        self.checkpoint_saver.save_checkpoint(
+            model=model,
+            processing_class=getattr(self, "processing_class", None),
+            processor=getattr(self, "processor", None),
+            step=step,
+            current_metrics=current_metrics,
+            is_deepspeed_enabled=bool(self.is_deepspeed_enabled),
+            training_start_time=self._training_start_time,
+        )
 
-        self._checkpoint_in_progress = True
-
-        try:
-            import time
-            from datetime import datetime
-
-            # Get checkpoint directory
-            checkpoint_dir = (
-                f"{self.args.output_dir}/checkpoint-{self.state.global_step}"
-            )
-
-            # CRITICAL FIX: Only rank 0 should log checkpoint save messages
-            should_log = self.args.should_save  # True only on rank 0
-
-            if should_log:
-                # Log pre-save information (only on rank 0)
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                logger.info(
-                    f"\n🚀 [FAST CHECKPOINT] Starting inference-ready checkpoint save at {current_time}"
-                )
-                logger.info(f"📁 Checkpoint location: {checkpoint_dir}")
-                logger.info(f"📊 Training step: {self.state.global_step}")
-                logger.info(f"📈 Epoch: {self.state.epoch:.3f}")
-
-            # Record start time for save duration
-            save_start_time = time.time()
-            # Check if we should use fast inference checkpoint mode
-            use_fast_checkpoint = getattr(self.args, "fast_checkpoint_mode", True)
-
-            if use_fast_checkpoint:
-                # Use optimized inference-ready checkpoint saving
-                self._save_inference_checkpoint(model, trial, checkpoint_dir)
-            else:
-                # Fall back to full HuggingFace checkpoint (for training resumption)
-                logger.info("🐌 Using full checkpoint mode (includes optimizer states)")
-                super()._save_checkpoint(model, trial)
-
-            # === UNIFIED CHECKPOINT MANAGEMENT ===
-            # Check if this should also be a best checkpoint
-            if current_metrics is None:
-                current_metrics = self._extract_current_metrics()
-
-            # CRITICAL: Only rank 0 handles best checkpoint creation (simple folder copy)
-            if (
-                should_log  # Only rank 0
-                and current_metrics
-                and self.checkpoint_manager.is_new_best(current_metrics)
-            ):
-                logger.info("🏆 Creating best checkpoint by direct folder copy")
-
-                # Generate best checkpoint name
-                best_checkpoint_name = (
-                    self.checkpoint_manager.create_best_checkpoint_name(
-                        current_metrics, self.state.global_step
-                    )
-                )
-                best_checkpoint_path = f"{self.args.output_dir}/{best_checkpoint_name}"
-
-                logger.info(
-                    f"📁 Direct copy: {os.path.basename(checkpoint_dir)} → {best_checkpoint_name}"
-                )
-
-                import shutil
-
-                copy_start_time = time.time()
-
-                # SIMPLE FOLDER COPY/PASTE - No checkpoint creation, just copy existing folder
-                try:
-                    # Remove existing best checkpoint if it exists
-                    if os.path.exists(best_checkpoint_path):
-                        logger.debug(f"🗑️ Removing existing: {best_checkpoint_name}")
-                        shutil.rmtree(best_checkpoint_path)
-
-                    # Simple folder copy operation (like copy/paste in file manager)
-                    shutil.copytree(checkpoint_dir, best_checkpoint_path)
-
-                except Exception as e:
-                    logger.error(f"❌ Failed to copy checkpoint folder: {e}")
-                    raise
-
-                copy_duration = time.time() - copy_start_time
-                logger.info(f"✅ Best checkpoint folder copied in {copy_duration:.2f}s")
-
-                # Clean up old best checkpoint before updating tracking
-                old_best_path = self.checkpoint_manager.current_best_dir
-                if (
-                    old_best_path
-                    and old_best_path != best_checkpoint_path
-                    and os.path.exists(old_best_path)
-                ):
-                    try:
-                        shutil.rmtree(old_best_path)
-                        logger.info(
-                            f"🗑️ Removed old best: {os.path.basename(old_best_path)}"
-                        )
-                    except (OSError, PermissionError) as e:
-                        logger.warning(f"⚠️ Could not remove old best checkpoint: {e}")
-
-                # Update tracking
-                self.checkpoint_manager.update_best_checkpoint(
-                    current_metrics, best_checkpoint_path
-                )
-
-                metric_name = self.checkpoint_manager.metric_name
-                metric_value = current_metrics[metric_name]
-                logger.info(f"✅ Best checkpoint ready: {best_checkpoint_name}")
-                logger.info(f"📊 Best {metric_name}: {metric_value:.4f}")
-
-                # Rotate checkpoints AFTER creating best checkpoint to avoid deleting the source
-                self._rotate_inference_checkpoints()
-
-            # Calculate save duration
-            save_duration = time.time() - save_start_time
-
-            if should_log:
-                # Log successful save (only on rank 0)
-                checkpoint_type = (
-                    "FAST INFERENCE" if use_fast_checkpoint else "FULL TRAINING"
-                )
-                logger.info(
-                    f"✅ [{checkpoint_type} CHECKPOINT] Completed successfully in {save_duration:.2f}s"
-                )
-                logger.info(f"💾 Checkpoint saved to: {checkpoint_dir}")
-
-                # Log training statistics
-                training_stats = self.get_training_stats()
-                if training_stats:
-                    logger.info("📊 Training statistics:")
-                    for key, value in training_stats.items():
-                        logger.info(f"   {key}: {value}")
-
-                logger.info("─" * 60)
-
-        except Exception as e:
-            save_duration = time.time() - save_start_time
-            if should_log:
-                # Log error (only on rank 0)
-                logger.error(
-                    f"❌ [CHECKPOINT SAVE] Failed after {save_duration:.2f}s: {e}"
-                )
-                logger.error(f"🚨 Error details: {type(e).__name__}: {str(e)}")
-                logger.error("─" * 60)
-            raise  # Re-raise the exception to maintain error handling
-        finally:
-            # Always reset the checkpoint flag
-            self._checkpoint_in_progress = False
-
-    def _save_inference_checkpoint(self, model, trial, checkpoint_dir):
-        """
-        Save optimized inference-ready checkpoint with only essential components.
-
-        This method creates lightweight checkpoints suitable for inference by excluding:
-        - Optimizer states (often 2-3x model size)
-        - Scheduler states
-        - Random number generator states
-        - Training-specific arguments
-
-        Includes only:
-        - Model weights (SafeTensors format)
-        - Extended tokenizer with coordinate tokens
-        - Model configuration
-        - Image processor configuration
-        - Generation configuration
-
-        Args:
-            model: Model to save
-            trial: Training trial (for hyperparameter tuning)
-            checkpoint_dir: Directory to save checkpoint
-        """
-        import json
-        import os
-        import time
-
-        # Create checkpoint directory
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        # Handle DeepSpeed distributed saving coordination
-        if self.is_deepspeed_enabled:
-            self._save_deepspeed_inference_checkpoint(model, checkpoint_dir)
-        elif self.args.should_save:
-            logger.info(
-                f"🚀 [RANK 0] Creating inference-ready checkpoint at {checkpoint_dir}"
-            )
-
-            # 1. Save model weights in SafeTensors format (fastest loading)
-            model_start = time.time()
-            logger.info(f"💾 [RANK 0] Saving model weights (SafeTensors format)...")
-
-            # Get the unwrapped model for saving
-            unwrapped_model = self._get_unwrapped_model(model)
-
-            # Save with SafeTensors format and optimized sharding
-            unwrapped_model.save_pretrained(
-                checkpoint_dir,
-                safe_serialization=True,  # Use SafeTensors format
-                max_shard_size="5GB",  # Optimize shard size for faster loading
-                push_to_hub=False,  # Don't push to hub
-            )
-
-            model_time = time.time() - model_start
-            logger.info(f"✅ [RANK 0] Model weights saved in {model_time:.2f}s")
-
-            # 2. Save extended tokenizer with coordinate tokens
-            tokenizer_start = time.time()
-            if hasattr(self, "processing_class") and self.processing_class is not None:
-                logger.info(f"🔤 [RANK 0] Saving extended tokenizer...")
-                self.processing_class.save_pretrained(checkpoint_dir)
-                tokenizer_time = time.time() - tokenizer_start
-                logger.info(
-                    f"✅ [RANK 0] Extended tokenizer saved in {tokenizer_time:.2f}s"
-                )
-
-            # 3. Save processor configuration (includes both tokenizer and image processor)
-            processor_saved = False
-            if hasattr(self, "processor") and self.processor is not None:
-                try:
-                    processor_start = time.time()
-                    logger.info(f"💾 [RANK 0] Saving processor configuration...")
-                    self.processor.save_pretrained(checkpoint_dir)
-                    processor_time = time.time() - processor_start
-                    logger.info(
-                        f"✅ [RANK 0] Processor configuration saved in {processor_time:.2f}s"
-                    )
-                    processor_saved = True
-                except Exception as e:
-                    logger.error(f"❌ Failed to save processor configuration: {e}")
-                    logger.info("🔄 [RANK 0] Attempting fallback processor saving...")
-
-            # 3b. Fallback: Create processor configuration manually if main save failed
-            if not processor_saved:
-                try:
-                    processor_start = time.time()
-                    logger.info(
-                        f"🔧 [RANK 0] Creating processor configuration manually..."
-                    )
-
-                    # Save image processor separately
-                    image_processor = None
-                    if hasattr(self, "data_collator") and hasattr(
-                        self.data_collator, "image_processor"
-                    ):
-                        image_processor = self.data_collator.image_processor
-                    elif hasattr(self, "processor") and hasattr(
-                        self.processor, "image_processor"
-                    ):
-                        image_processor = self.processor.image_processor
-
-                    if image_processor is not None:
-                        image_processor.save_pretrained(checkpoint_dir)
-                        logger.info(f"✅ [RANK 0] Image processor saved separately")
-
-                    # Create preprocessor_config.json manually
-                    import json
-
-                    preprocessor_config = {
-                        "image_processor_type": "Qwen2VLImageProcessor",
-                        "processor_class": "Qwen2VLProcessor",
-                    }
-
-                    preprocessor_config_path = os.path.join(
-                        checkpoint_dir, "preprocessor_config.json"
-                    )
-                    with open(preprocessor_config_path, "w") as f:
-                        json.dump(preprocessor_config, f, indent=2)
-
-                    processor_time = time.time() - processor_start
-                    logger.info(
-                        f"✅ [RANK 0] Manual processor config created in {processor_time:.2f}s"
-                    )
-
-                except Exception as e:
-                    logger.error(f"❌ Fallback processor saving also failed: {e}")
-                    logger.warning(
-                        "⚠️ [RANK 0] Checkpoint may be missing processor configuration"
-                    )
-
-            # 4. Save generation configuration for inference
-            gen_config_start = time.time()
-            if (
-                hasattr(unwrapped_model, "generation_config")
-                and unwrapped_model.generation_config is not None
-            ):
-                logger.info(f"⚙️ [RANK 0] Saving generation configuration...")
-                unwrapped_model.generation_config.save_pretrained(checkpoint_dir)
-                gen_config_time = time.time() - gen_config_start
-                logger.info(
-                    f"✅ [RANK 0] Generation config saved in {gen_config_time:.2f}s"
-                )
-            else:
-                logger.debug("⚠️ [RANK 0] No generation config found to save")
-
-            # 5. Save coordinate token configuration for inference compatibility
-            coord_config_start = time.time()
-            if (
-                hasattr(unwrapped_model, "training_config")
-                and unwrapped_model.training_config.coordinate_tokens_enabled
-            ):
-                logger.info(f"🎯 [RANK 0] Saving coordinate token configuration...")
-                coord_config = {
-                    "coordinate_tokens_enabled": True,
-                    "max_coord_value": unwrapped_model.training_config.max_coord_value,
-                    "vocab_size_extended": len(self.processing_class.get_vocab())
-                    if self.processing_class
-                    else None,
-                    "coordinate_token_range": (
-                        lambda _tok: (
-                            [
-                                min(
-                                    _tok.get_vocab()[t]
-                                    for t in _tok.get_vocab()
-                                    if t.startswith("<|coord_")
-                                ),
-                                max(
-                                    _tok.get_vocab()[t]
-                                    for t in _tok.get_vocab()
-                                    if t.startswith("<|coord_")
-                                )
-                                + 1,
-                            ]
-                            if _tok is not None
-                            and any(
-                                t.startswith("<|coord_")
-                                for t in _tok.get_vocab().keys()
-                            )
-                            else [None, None]
-                        )
-                    )(self.processing_class),
-                }
-
-                coord_config_path = os.path.join(
-                    checkpoint_dir, "coordinate_config.json"
-                )
-                with open(coord_config_path, "w") as f:
-                    json.dump(coord_config, f, indent=2)
-
-                coord_config_time = time.time() - coord_config_start
-                logger.info(
-                    f"✅ [RANK 0] Coordinate config saved in {coord_config_time:.2f}s"
-                )
-
-            logger.info(f"🚀 [RANK 0] Inference checkpoint optimization complete!")
-            logger.info(
-                f"📦 [RANK 0] Checkpoint ready for: DetectionModel.from_pretrained('{checkpoint_dir}')"
-            )
-
-        # NOTE: Checkpoint rotation is now handled in _save_checkpoint AFTER best-copy
-        # to ensure the just-saved checkpoint exists when copying to best.
+    def _rotate_inference_checkpoints(self):
+        # Delegated to CheckpointSaver
+        if hasattr(self, "checkpoint_saver"):
+            self.checkpoint_saver._rotate_inference_checkpoints()
 
     def _get_unwrapped_model(self, model):
         """Get the unwrapped model for saving, handling various wrapper types."""
@@ -952,300 +632,18 @@ class BBUTrainer(HFTrainer):
 
         return unwrapped
 
-    def _rotate_inference_checkpoints(self):
-        """Rotate inference checkpoints based on save_total_limit."""
-        if not self.args.should_save or not hasattr(self.args, "save_total_limit"):
-            return
-
-        import glob
-        import os
-
-        # Get all checkpoint directories
-        if not self.args.output_dir:
-            return  # No output directory specified
-        checkpoint_pattern = os.path.join(self.args.output_dir, "checkpoint-*")
-        checkpoints = glob.glob(checkpoint_pattern)
-
-        # Sort by step number (extract from checkpoint-{step})
-        def get_step_number(checkpoint_path):
-            try:
-                return int(os.path.basename(checkpoint_path).split("-")[1])
-            except (IndexError, ValueError):
-                return 0
-
-        checkpoints.sort(key=get_step_number)
-
-        # Remove old checkpoints if we exceed the limit
-        if self.args.save_total_limit and len(checkpoints) > self.args.save_total_limit:
-            checkpoints_to_remove = checkpoints[: -self.args.save_total_limit]
-            for checkpoint_path in checkpoints_to_remove:
-                try:
-                    import shutil
-
-                    shutil.rmtree(checkpoint_path)
-                    logger.info(f"🗑️ [RANK 0] Removed old checkpoint: {checkpoint_path}")
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ [RANK 0] Failed to remove checkpoint {checkpoint_path}: {e}"
-                    )
-
     def _save_deepspeed_inference_checkpoint(self, model, checkpoint_dir):
-        """
-        Optimized DeepSpeed checkpoint saving for inference-ready checkpoints.
-
-        This method handles DeepSpeed model saving while creating lightweight
-        inference checkpoints by coordinating across ranks efficiently.
-
-        Args:
-            model: DeepSpeed wrapped model
-            checkpoint_dir: Directory to save checkpoint
-        """
-        import time
-
-        if self.args.should_save:
-            logger.info(f"🚀 Creating inference-ready checkpoint at {checkpoint_dir}")
-
-        # 1. Save INFERENCE-ONLY model weights (SafeTensors format)
-        model_start = time.time()
-
-        # CRITICAL FIX: Extract model weights for inference-only saving
-        # DeepSpeed's save_checkpoint() saves full training state (49GB)
-        # We need to extract just the model weights and save as SafeTensors (~7GB)
-        try:
-            if self.args.should_save:
-                logger.info(
-                    "💾 Extracting model weights for inference-only checkpoint..."
-                )
-
-            # Get the unwrapped model from DeepSpeed wrapper
-            unwrapped_model = self._get_unwrapped_model(model)
-
-            # Save ONLY model weights in SafeTensors format (no optimizer states)
-            unwrapped_model.save_pretrained(
+        # Delegated to CheckpointSaver
+        if hasattr(self, "checkpoint_saver"):
+            self.checkpoint_saver._save_deepspeed_inference_checkpoint(
+                model,
                 checkpoint_dir,
-                safe_serialization=True,  # CRITICAL: Use SafeTensors format
-                max_shard_size="5GB",  # Optimize shard size for faster loading
-                push_to_hub=False,  # Don't push to hub
+                getattr(self, "processing_class", None),
+                getattr(self, "processor", None),
             )
-
-            if self.args.should_save:
-                model_time = time.time() - model_start
-                logger.info(
-                    f"✅ Inference-ready model weights saved in {model_time:.2f}s"
-                )
-
-        except Exception as e:
-            if self.args.should_save:
-                logger.error(f"❌ DeepSpeed inference checkpoint save failed: {e}")
-            raise
-
-        # 2. Save auxiliary files only on rank 0 (tokenizer, configs, etc.)
-        if self.args.should_save:
-            aux_start = time.time()
-
-            # Save extended tokenizer with coordinate tokens
-            if hasattr(self, "processing_class") and self.processing_class is not None:
-                logger.info("🔤 Saving extended tokenizer...")
-                self.processing_class.save_pretrained(checkpoint_dir)
-
-            # Save processor configuration (includes both tokenizer and image processor)
-            processor_saved = False
-            if hasattr(self, "processor") and self.processor is not None:
-                try:
-                    logger.info("💾 Saving processor configuration...")
-                    self.processor.save_pretrained(checkpoint_dir)
-                    processor_saved = True
-                except Exception as e:
-                    logger.error(f"❌ Failed to save processor configuration: {e}")
-                    logger.info("🔄 Attempting fallback processor saving...")
-
-            # Fallback: Create processor configuration manually if main save failed
-            if not processor_saved:
-                try:
-                    logger.info("🔧 Creating processor configuration manually...")
-
-                    # Save image processor separately
-                    image_processor = None
-                    if hasattr(self, "data_collator") and hasattr(
-                        self.data_collator, "image_processor"
-                    ):
-                        image_processor = self.data_collator.image_processor
-                    elif hasattr(self, "processor") and hasattr(
-                        self.processor, "image_processor"
-                    ):
-                        image_processor = self.processor.image_processor
-
-                    if image_processor is not None:
-                        image_processor.save_pretrained(checkpoint_dir)
-                        logger.info("✅ Image processor saved separately")
-
-                    # Create preprocessor_config.json manually
-                    import json
-
-                    preprocessor_config = {
-                        "image_processor_type": "Qwen2VLImageProcessor",
-                        "processor_class": "Qwen2VLProcessor",
-                    }
-
-                    preprocessor_config_path = os.path.join(
-                        checkpoint_dir, "preprocessor_config.json"
-                    )
-                    with open(preprocessor_config_path, "w") as f:
-                        json.dump(preprocessor_config, f, indent=2)
-
-                    logger.info("✅ Manual processor config created")
-
-                except Exception as e:
-                    logger.error(f"❌ Fallback processor saving also failed: {e}")
-                    logger.warning(
-                        "⚠️ Checkpoint may be missing processor configuration"
-                    )
-
-            # Save coordinate token configuration
-            unwrapped_model = self._get_unwrapped_model(model)
-            if (
-                hasattr(unwrapped_model, "training_config")
-                and unwrapped_model.training_config.coordinate_tokens_enabled
-            ):
-                import json
-
-                logger.info("🎯 Saving coordinate token configuration...")
-                coord_config = {
-                    "coordinate_tokens_enabled": True,
-                    "max_coord_value": unwrapped_model.training_config.max_coord_value,
-                    "vocab_size_extended": len(self.processing_class.get_vocab())
-                    if self.processing_class
-                    else None,
-                    "coordinate_token_range": (
-                        lambda _tok: (
-                            [
-                                min(
-                                    _tok.get_vocab()[t]
-                                    for t in _tok.get_vocab()
-                                    if t.startswith("<|coord_")
-                                ),
-                                max(
-                                    _tok.get_vocab()[t]
-                                    for t in _tok.get_vocab()
-                                    if t.startswith("<|coord_")
-                                )
-                                + 1,
-                            ]
-                            if _tok is not None
-                            and any(
-                                t.startswith("<|coord_")
-                                for t in _tok.get_vocab().keys()
-                            )
-                            else [None, None]
-                        )
-                    )(self.processing_class),
-                }
-
-                coord_config_path = os.path.join(
-                    checkpoint_dir, "coordinate_config.json"
-                )
-                with open(coord_config_path, "w") as f:
-                    json.dump(coord_config, f, indent=2)
-
-            aux_time = time.time() - aux_start
-            logger.info(f"✅ Auxiliary files saved in {aux_time:.2f}s")
-            logger.info(
-                f"🚀 Inference checkpoint ready for: DetectionModel.from_pretrained('{checkpoint_dir}')"
-            )
-
-        # 3. Synchronize all ranks after checkpoint save
-        if dist.is_initialized():
-            dist.barrier()
 
     def _save_checkpoint_with_processor(self, model, trial, checkpoint_dir):
-        """
-        Consolidated checkpoint saving with all optimizations and processor support.
-
-        This method combines all checkpoint saving functionality:
-        1. Optimized model saving (SafeTensors format)
-        2. Tokenizer saving with coordinate token support
-        3. Processor configuration saving
-        4. Training arguments saving
-        5. Performance optimizations (skips slow files)
-
-        Args:
-            model: Model to save
-            trial: Training trial (for hyperparameter tuning)
-            checkpoint_dir: Directory to save checkpoint
-        """
-        import os
-        import time
-
-        import torch
-
-        # Create checkpoint directory
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        checkpoint_start = time.time()
-
-        if self.args.should_save:
-            logger.info(
-                f"⚡ [RANK 0] Starting optimized checkpoint save to {checkpoint_dir}"
-            )
-
-            # 1. Save model weights (SafeTensors format) - Fast and inference-optimized
-            model_start = time.time()
-            logger.info(f"💾 [RANK 0] Saving model weights (SafeTensors format)...")
-
-            if hasattr(model, "save_pretrained"):
-                model.save_pretrained(
-                    checkpoint_dir,
-                    safe_serialization=True,
-                    max_shard_size="10GB",  # Force single file for models < 10GB
-                )
-            else:
-                # Fallback for wrapped models
-                unwrapped_model = self._wrap_model(model, training=False)
-                unwrapped_model.save_pretrained(
-                    checkpoint_dir,
-                    safe_serialization=True,
-                    max_shard_size="10GB",
-                )
-
-            model_time = time.time() - model_start
-            logger.info(f"✅ [RANK 0] Model weights saved in {model_time:.2f}s")
-
-            # 2. Save tokenizer with coordinate token support - Fast
-            tokenizer_start = time.time()
-            if hasattr(self, "processing_class") and self.processing_class is not None:
-                self.processing_class.save_pretrained(checkpoint_dir)
-                tokenizer_time = time.time() - tokenizer_start
-                logger.info(f"✅ [RANK 0] Tokenizer saved in {tokenizer_time:.2f}s")
-
-            # 3. Save processor configuration if available
-            if self.processor is not None:
-                try:
-                    processor_start = time.time()
-                    logger.info(f"💾 [RANK 0] Saving processor configuration...")
-                    self.processor.save_pretrained(checkpoint_dir)
-                    processor_time = time.time() - processor_start
-                    logger.info(
-                        f"✅ [RANK 0] Processor configuration saved in {processor_time:.2f}s"
-                    )
-                except Exception as e:
-                    logger.error(f"❌ Failed to save processor configuration: {e}")
-                    # Don't raise here to avoid breaking the checkpoint save
-
-            # 4. Save training arguments - Fast
-            args_start = time.time()
-            torch.save(self.args, os.path.join(checkpoint_dir, "training_args.bin"))
-            args_time = time.time() - args_start
-            logger.info(f"✅ [RANK 0] Training args saved in {args_time:.2f}s")
-
-            # Performance optimization: Skip slow files that cause 200+ second delays
-            logger.info(
-                "⚡ [RANK 0] SKIPPED slow files: rng_state, scheduler, trainer_state"
-            )
-
-            checkpoint_time = time.time() - checkpoint_start
-            logger.info(
-                f"⚡ [RANK 0] Complete checkpoint save finished in {checkpoint_time:.2f}s"
-            )
+        pass
 
     def save_final_model(self, output_dir: str = None) -> str:
         """
@@ -1374,6 +772,28 @@ class BBUTrainer(HFTrainer):
             merger_params = []
             # LLM parameters (medium LR)
             llm_params = []
+            # Optional groups
+            top_layers_params = []
+            coord_slice_params = []
+
+            # Resolve optional staged settings
+            top_k_layers = (
+                int(getattr(config, "prog_unfreeze_top_k_layers", 0))
+                if getattr(config, "prog_unfreeze_enabled", False)
+                else 0
+            )
+            num_layers = int(getattr(config, "model_num_layers", 0) or 0)
+
+            def _extract_layer_index(param_name: str):
+                marker = "model.layers."
+                if marker not in param_name:
+                    return None
+                try:
+                    after = param_name.split(marker, 1)[1]
+                    idx_str = after.split(".", 1)[0]
+                    return int(idx_str)
+                except Exception:
+                    return None
 
             for name, param in self.model.named_parameters():
                 if not param.requires_grad:
@@ -1386,6 +806,20 @@ class BBUTrainer(HFTrainer):
                 elif "visual" in name:
                     # Vision encoder gets vision_lr (lowest)
                     vision_params.append(param)
+                elif top_k_layers > 0 and _extract_layer_index(name) is not None:
+                    idx = _extract_layer_index(name)
+                    if (
+                        idx is not None
+                        and num_layers > 0
+                        and idx >= max(0, num_layers - top_k_layers)
+                    ):
+                        top_layers_params.append(param)
+                    else:
+                        llm_params.append(param)
+                elif any(
+                    key in name for key in ("embed_tokens.weight", "lm_head.weight")
+                ):
+                    coord_slice_params.append(param)
                 else:
                     # Default to LLM parameters (includes model.layers, embed_tokens, lm_head, etc.)
                     llm_params.append(param)
@@ -1420,12 +854,42 @@ class BBUTrainer(HFTrainer):
                 )
                 self._param_group_mapping.append("merger")
 
+            # Top layers group (optional)
+            if top_layers_params:
+                tlr = getattr(config, "lr_top_layers", None)
+                param_groups.append(
+                    {
+                        "params": top_layers_params,
+                        "lr": tlr
+                        if (tlr is not None)
+                        else getattr(config, "llm_lr", self.args.learning_rate),
+                        "name": "top_layers",
+                    }
+                )
+                self._param_group_mapping.append("top_layers")
+
+            # Coord slice group (optional; embeddings/head rows masked by callback)
+            if coord_slice_params:
+                clr = getattr(config, "lr_coord_slice", None)
+                param_groups.append(
+                    {
+                        "params": coord_slice_params,
+                        "lr": clr
+                        if (clr is not None)
+                        else getattr(config, "llm_lr", self.args.learning_rate),
+                        "name": "coord_slice",
+                    }
+                )
+                self._param_group_mapping.append("coord_slice")
+
             # LLM group
             if llm_params:
                 param_groups.append(
                     {
                         "params": llm_params,
-                        "lr": config.llm_lr
+                        "lr": getattr(config, "lr_full_model", None)
+                        if getattr(config, "lr_full_model", None) is not None
+                        else config.llm_lr
                         if hasattr(config, "llm_lr")
                         else self.args.learning_rate,
                         "name": "llm",
@@ -1511,16 +975,35 @@ class BBUTrainer(HFTrainer):
         # Decode the conversation text
         if hasattr(self, "processing_class") and self.processing_class is not None:
             # Decode the full conversation
+            # Robustly convert to a plain 1D list of ints for the fast tokenizer
+            try:
+                if torch.is_tensor(sample_input_ids):
+                    ids_list = sample_input_ids.detach().cpu().tolist()
+                else:
+                    ids_list = sample_input_ids
+                # If nested, take the first inner list (should not happen after indexing, but safe)
+                if (
+                    isinstance(ids_list, list)
+                    and ids_list
+                    and isinstance(ids_list[0], list)
+                ):
+                    ids_list = ids_list[0]
+            except Exception:
+                # Fallback: best-effort conversion
+                ids_list = (
+                    sample_input_ids.tolist()
+                    if hasattr(sample_input_ids, "tolist")
+                    else list(sample_input_ids)
+                )
+
             chat_text = self.processing_class.decode(
-                sample_input_ids, skip_special_tokens=False
+                ids_list, skip_special_tokens=False
             )
 
             # Generate sample ID from input hash
             import hashlib
 
-            sample_id = hashlib.md5(
-                str(sample_input_ids.tolist()).encode()
-            ).hexdigest()[:8]
+            sample_id = hashlib.md5(str(ids_list).encode()).hexdigest()[:8]
 
             # Check if this looks like a teacher-student conversation
             has_teachers = chat_text.count("<|im_start|>assistant") > 1

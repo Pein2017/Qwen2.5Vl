@@ -32,7 +32,7 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 
 # Training configuration
-CONFIG_NAME="bbu_v2_use_coord"                      # Config to use: bbu_v2 
+CONFIG_NAME="bbu_v2_base"                      # Config to use: bbu_v2 
 GPU_DEVICES="0,1,2,3,4,5,6,7"                             # GPU devices (comma-separated) - start with single GPU for testing
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
@@ -149,7 +149,7 @@ from src_new.config.config import load_config
 try:
     config = load_config('configs/${CONFIG_NAME}.yaml')
     print('✅ Config loading successful with new architecture')
-    print(f'   Model: {config.model_size}')
+    print(f'   Model path: {config.model_path}')
     print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
 except Exception as e:
@@ -179,10 +179,9 @@ except Exception as e:
 launch_single_gpu() {
     echo "🖥️  Single GPU Training with New Architecture (GPU: ${GPU_DEVICES%%,*})"
     
-    python scripts/train_new.py \
+    python /data3/Qwen2.5-VL-main/scripts/train_new.py \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL" \
-        --enable-coord-aux "${ENABLE_COORD_AUX:-}"
+        --log_level "$LOG_LEVEL"
 }
 
 launch_deepspeed() {
@@ -201,7 +200,7 @@ launch_deepspeed() {
     torchrun \
         --master_port="$MASTER_PORT" \
         --nproc_per_node="$NUM_GPUS" \
-        scripts/train_new.py \
+        /data3/Qwen2.5-VL-main/scripts/train_new.py \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL"
 }

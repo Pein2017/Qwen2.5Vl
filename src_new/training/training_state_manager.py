@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
 from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
@@ -91,35 +92,48 @@ class TrainingStateManager:
                 if value is not None:
                     loss_dict[attr_name] = value
 
-        # Filter to only include meaningful loss components
-        meaningful_keys = {
+        # First, capture core loss components explicitly (contracted interface)
+        core_keys = {
             "loss",
             "teacher_llm_loss",
             "student_llm_loss",
             "teacher_l1_loss",
             "student_l1_loss",
-            # New separate coord losses
             "teacher_kce_loss",
             "teacher_unlike_loss",
             "student_kce_loss",
             "student_unlike_loss",
         }
 
-        # Accumulate only the meaningful loss components
+        # Pull diagnostics bag if present and merge into dict (DRY)
+        diagnostics = None
+        if "diagnostics" in loss_dict and loss_dict["diagnostics"] is not None:
+            diagnostics = loss_dict["diagnostics"]
+            if hasattr(diagnostics, "items"):
+                for dkey, dval in diagnostics.items():
+                    loss_dict[dkey] = dval
+
+        # Backward-compatible: accumulate core + any diagnostics keys (teacher_*/student_* prefixes)
         for key, value in loss_dict.items():
-            if key in meaningful_keys and value is not None:
+            if (
+                key in core_keys
+                or key.startswith("teacher_")
+                or key.startswith("student_")
+            ):
+                if value is None:
+                    continue
                 if torch.is_tensor(value):
-                    # Convert to float for accumulation
                     value_float = (
                         value.item() if value.numel() == 1 else value.mean().item()
                     )
                 else:
-                    value_float = float(value)
-
-                if key not in self._loss_components_accumulator:
-                    self._loss_components_accumulator[key] = 0.0
-
-                self._loss_components_accumulator[key] += value_float
+                    try:
+                        value_float = float(value)
+                    except Exception:
+                        continue
+                self._loss_components_accumulator[key] = (
+                    self._loss_components_accumulator.get(key, 0.0) + value_float
+                )
 
         self._loss_components_count += 1
 
@@ -183,6 +197,27 @@ class TrainingStateManager:
 
         # Add loss components (only meaningful ones)
         logs.update(component_logs)
+
+        # Ensure diagnostic metrics handling respects strict mode
+        if self.config.coord_aux_enabled and self.config.coordinate_tokens_enabled:
+            missing = []
+            for group in ("teacher", "student"):
+                for name in DIAGNOSTIC_METRIC_NAMES:
+                    key = f"{group}_{name}"
+                    if key not in logs:
+                        missing.append(key)
+            if missing:
+                raise ValueError(
+                    "Missing coordinate diagnostics while coord_aux is enabled. "
+                    f"Absent keys: {missing}. This indicates an upstream computation issue (spans, labels, or tokenizer ranges)."
+                )
+        else:
+            # Backward-compatible: fill with zeros only when coord aux is disabled
+            for group in ("teacher", "student"):
+                for name in DIAGNOSTIC_METRIC_NAMES:
+                    key = f"{group}_{name}"
+                    if key not in logs:
+                        logs[key] = 0.0
 
         # Verify loss decomposition if we have component losses
         self._verify_loss_decomposition(logs)

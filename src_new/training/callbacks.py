@@ -6,12 +6,9 @@ best checkpoint creation with descriptive naming.
 
 Key Components:
 - LossTracker: Tracks loss components with moving averages
-- BestCheckpointCallback: Creates best-{step}-{eval_loss} checkpoints
 """
 
 import logging
-import os
-import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -241,144 +238,6 @@ class LossTracker:
         self.student_l1_loss_history = []
 
 
-class BestCheckpointCallback(TrainerCallback):
-    """
-    DEPRECATED: This callback has been replaced by unified checkpoint management in BBUTrainer.
-
-    The functionality of this callback is now integrated directly into BBUTrainer's
-    _save_checkpoint() method, eliminating redundant I/O operations and ensuring
-    consistency between regular and best checkpoints.
-
-    Migration: Remove this callback from your training setup. BBUTrainer now handles
-    best checkpoint creation automatically using UnifiedCheckpointManager.
-    """
-
-    def __init__(self):
-        import warnings
-
-        warnings.warn(
-            "BestCheckpointCallback is deprecated and will be removed in a future version. "
-            "Best checkpoint functionality is now integrated into BBUTrainer. "
-            "Remove this callback from your training setup.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.current_best_dir = None
-        self.current_best_metric = None
-        self.logger = get_callback_logger()
-
-    def on_save(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ):
-        """Called after checkpoint save to check if we have a new best model."""
-        # Only process on main process to avoid race conditions
-        if not args.should_save:
-            return
-
-        # Get current eval_loss from the most recent log entry
-        current_eval_loss = self._get_latest_eval_loss(state)
-        if current_eval_loss is None:
-            return
-
-        # Check if this is a new best (lower eval_loss is better)
-        if (
-            self.current_best_metric is None
-            or current_eval_loss < self.current_best_metric
-        ):
-            # Get current step
-            current_step = state.global_step
-
-            # Find the checkpoint directory that was just saved
-            if not args.output_dir:
-                return  # No output directory specified
-            checkpoint_dir = os.path.join(args.output_dir, f"checkpoint-{current_step}")
-
-            if os.path.exists(checkpoint_dir):
-                self._create_best_checkpoint_copy(
-                    args.output_dir, checkpoint_dir, current_step, current_eval_loss
-                )
-                self.current_best_metric = current_eval_loss
-
-    def _get_latest_eval_loss(self, state: TrainerState) -> Optional[float]:
-        """Extract the most recent eval_loss from trainer state."""
-        if not hasattr(state, "log_history") or not state.log_history:
-            return None
-
-        # Search backwards through log history for the most recent eval_loss
-        for log_entry in reversed(state.log_history):
-            if isinstance(log_entry, dict) and "eval_loss" in log_entry:
-                return log_entry["eval_loss"]
-
-        return None
-
-    def _create_best_checkpoint_copy(
-        self, output_dir: str, source_checkpoint: str, step: int, eval_loss: float
-    ):
-        """Create or update the copy of the best checkpoint."""
-        # Format eval_loss to 4 decimal places for filename
-        loss_str = f"{eval_loss:.4f}"
-        new_best_name = f"best-{step}-loss{loss_str}"
-        new_best_path = os.path.join(output_dir, new_best_name)
-
-        # Skip if this is already the current best directory
-        if self.current_best_dir == new_best_path:
-            return
-
-        # Remove old best directory if it exists
-        if self.current_best_dir and os.path.exists(self.current_best_dir):
-            try:
-                shutil.rmtree(self.current_best_dir)
-                self.logger.info(
-                    f"🗑️ Removed old best checkpoint: {os.path.basename(self.current_best_dir)}"
-                )
-            except OSError as e:
-                self.logger.warning(f"Failed to remove old best checkpoint: {e}")
-
-        # Create new best checkpoint copy
-        try:
-            shutil.copytree(source_checkpoint, new_best_path)
-            self.current_best_dir = new_best_path
-            self.logger.info(f"📁 Created best checkpoint copy: {new_best_name}")
-            self.logger.info(
-                f"📊 Best model at step {step} with eval_loss: {eval_loss:.4f}"
-            )
-
-        except OSError as e:
-            self.logger.error(f"Failed to create best checkpoint copy: {e}")
-
-    def on_train_end(
-        self,
-        args: TrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ):
-        """Called at the end of training to report best checkpoint status."""
-        if args.should_save and self.current_best_dir:
-            self.logger.info(
-                f"✅ Training completed. Best checkpoint available at: {os.path.basename(self.current_best_dir)}"
-            )
-
-
-def create_best_checkpoint_callback() -> BestCheckpointCallback:
-    """
-    DEPRECATED: Factory function for BestCheckpointCallback.
-
-    This function is deprecated because BestCheckpointCallback has been replaced
-    by unified checkpoint management in BBUTrainer.
-
-    Raises:
-        NotImplementedError: Always raised with migration instructions
-    """
-    raise NotImplementedError(
-        "BestCheckpointCallback has been deprecated and replaced by unified checkpoint management. "
-    )
-
-
 # === New: Progressive Unfreeze with Coordinate-Slice Masking ===
 class ProgressiveUnfreezeCallback(TrainerCallback):
     """
@@ -392,15 +251,41 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
     """
 
     def __init__(
-        self, freeze_vision_llm_epochs: int = 1, coord_slice_only: bool = True
+        self,
+        freeze_vision_llm_epochs: int = 1,
+        coord_slice_only: bool = True,
+        stage0_end_epoch: Optional[int] = None,
+        stage1_end_epoch: Optional[int] = None,
+        top_k_layers: Optional[int] = None,
     ):
         super().__init__()
         self.freeze_vision_llm_epochs = int(freeze_vision_llm_epochs)
         self.coord_slice_only = bool(coord_slice_only)
+        # New staged unfreeze parameters (optional; take precedence when provided)
+        self.stage0_end_epoch = (
+            int(stage0_end_epoch) if stage0_end_epoch is not None else None
+        )
+        self.stage1_end_epoch = (
+            int(stage1_end_epoch) if stage1_end_epoch is not None else None
+        )
+        self.top_k_layers = int(top_k_layers) if top_k_layers is not None else None
         self._logger = get_callback_logger()
         self._mask_handles: List[Any] = []
-        self._stage: int = 0  # 0=unset, 1=coord+merger only, 2=unfrozen
+        # 0=unset, 1=Stage0 (merger + coord-slice), 2=Stage1 (top-K layers added), 3=Stage2 (full)
+        self._stage: int = 0
         self._trainer_ref = None  # Store trainer reference for HF compatibility
+
+        # Log initialization parameters for visibility
+        try:
+            self._logger.info(
+                "[ProgressiveUnfreeze] Callback initialized: stage0_end=%s, stage1_end=%s, top_k_layers=%s, coord_slice_only=%s",
+                str(self.stage0_end_epoch),
+                str(self.stage1_end_epoch),
+                str(self.top_k_layers),
+                str(self.coord_slice_only),
+            )
+        except Exception:
+            pass
 
     # ---- Helpers ----
     def _get_base_model(self, trainer) -> Any:
@@ -453,6 +338,55 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
             raise RuntimeError("Base model does not expose lm_head.weight")
         lm_head_param = base.lm_head.weight
         return embed_param, lm_head_param
+
+    def _unfreeze_top_k_layers(self, trainer) -> None:
+        """Unfreeze the last K decoder layers based on config/model size."""
+        if self.top_k_layers is None or self.top_k_layers < 1:
+            return
+        # Determine number of layers from training config first, fallback to HF config
+        num_layers = None
+        try:
+            num_layers = int(getattr(trainer.model.training_config, "model_num_layers"))
+        except Exception:
+            base = self._get_base_model(trainer)
+            hf_layers = getattr(getattr(base, "model", base), "config", None)
+            num_layers = getattr(hf_layers, "num_hidden_layers", None)
+        if not num_layers or num_layers < self.top_k_layers:
+            self._logger.warning(
+                f"[ProgressiveUnfreeze] Could not resolve num_layers correctly (got {num_layers}); proceeding with best-effort match"
+            )
+
+        # Helper to parse a layer index from parameter name
+        def _extract_layer_index(param_name: str) -> Optional[int]:
+            marker = "model.layers."
+            if marker not in param_name:
+                return None
+            try:
+                after = param_name.split(marker, 1)[1]
+                idx_str = after.split(".", 1)[0]
+                return int(idx_str)
+            except Exception:
+                return None
+
+        # Compute threshold index
+        threshold = None
+        if num_layers is not None:
+            threshold = max(0, num_layers - (self.top_k_layers or 0))
+        # Unfreeze params that belong to the last K layers
+        for name, p in trainer.model.named_parameters():
+            idx = _extract_layer_index(name)
+            if idx is None:
+                continue
+            if threshold is None or idx >= threshold:
+                p.requires_grad = True
+        try:
+            self._logger.info(
+                "[ProgressiveUnfreeze] Unfroze top %s decoder layers (threshold index: %s)",
+                str(self.top_k_layers),
+                str(threshold),
+            )
+        except Exception:
+            pass
 
     def _apply_coord_slice_grad_masks(
         self,
@@ -536,9 +470,23 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
                 )
 
         self._stage = 1
-        self._logger.info(
-            "[ProgressiveUnfreeze] Stage 1 active: training visual.merger and coord slices of embeddings/LM head"
-        )
+        try:
+            # Summarize trainable parameter count after Stage 1 setup
+            trainable_params = 0
+            for _, p in model.named_parameters():
+                if p.requires_grad:
+                    try:
+                        trainable_params += p.numel()
+                    except Exception:
+                        pass
+            self._logger.info(
+                "[ProgressiveUnfreeze] Stage 1 active: training visual.merger and coord slices of embeddings/LM head (trainable params ~ %s)",
+                str(trainable_params),
+            )
+        except Exception:
+            self._logger.info(
+                "[ProgressiveUnfreeze] Stage 1 active: training visual.merger and coord slices of embeddings/LM head"
+            )
 
     def _rebuild_optimizer_and_scheduler(self, trainer) -> None:
         # Recreate optimizer and scheduler to reflect newly trainable params
@@ -570,7 +518,7 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
             )
 
     def _stage2_unfreeze_all(self, trainer) -> None:
-        if self._stage != 1:
+        if self._stage not in (1, 2):
             return
         # Remove grad masks
         self._clear_masks()
@@ -579,7 +527,7 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
             p.requires_grad = True
         # Rebuild optimizer/scheduler
         self._rebuild_optimizer_and_scheduler(trainer)
-        self._stage = 2
+        self._stage = 3
         self._logger.info(
             "[ProgressiveUnfreeze] Stage 2 active: all modules unfrozen for joint training"
         )
@@ -603,6 +551,18 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
         if self._trainer_ref is None:
             self._trainer_ref = tr
 
+        # Log that the callback hook is active at the start of training
+        try:
+            self._logger.info(
+                "[ProgressiveUnfreeze] Hook enabled at training start (stage0_end=%s, stage1_end=%s, top_k_layers=%s, coord_slice_only=%s)",
+                str(self.stage0_end_epoch),
+                str(self.stage1_end_epoch),
+                str(self.top_k_layers),
+                str(self.coord_slice_only),
+            )
+        except Exception:
+            pass
+
         self._stage1_freeze_and_mask(tr)
 
     def on_epoch_begin(
@@ -618,7 +578,7 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
             raise ValueError(
                 "trainer not available - callback was not properly initialized with trainer reference"
             )
-        # Unfreeze at the beginning of epoch == freeze_vision_llm_epochs
+        # Staged unfreeze logic
         if not hasattr(state, "epoch"):
             raise AttributeError(
                 "TrainerState does not have epoch attribute - check trainer setup"
@@ -631,12 +591,32 @@ class ProgressiveUnfreezeCallback(TrainerCallback):
             )
 
         current_epoch = int(epoch_value)
-        if (
-            self.freeze_vision_llm_epochs > 0
-            and current_epoch >= self.freeze_vision_llm_epochs
-            and self._stage == 1
-        ):
-            self._stage2_unfreeze_all(tr)
+        # Prefer staged boundaries when provided
+        if self.stage0_end_epoch is not None and self.stage1_end_epoch is not None:
+            if self._stage == 1 and current_epoch >= self.stage0_end_epoch:
+                # Transition to Stage 2: unfreeze top-K layers
+                self._unfreeze_top_k_layers(tr)
+                self._rebuild_optimizer_and_scheduler(tr)
+                self._stage = 2
+                try:
+                    self._logger.info(
+                        "[ProgressiveUnfreeze] Stage 2 active: top-%s layers unfrozen at epoch %s",
+                        str(self.top_k_layers),
+                        str(current_epoch),
+                    )
+                except Exception:
+                    pass
+            if self._stage == 2 and current_epoch >= self.stage1_end_epoch:
+                # Transition to Stage 3: full unfreeze
+                self._stage2_unfreeze_all(tr)
+        else:
+            # Backward-compatible single-boundary behavior
+            if (
+                self.freeze_vision_llm_epochs > 0
+                and current_epoch >= self.freeze_vision_llm_epochs
+                and self._stage == 1
+            ):
+                self._stage2_unfreeze_all(tr)
 
     def on_train_end(
         self,

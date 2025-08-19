@@ -20,15 +20,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
+from transformers import Qwen2VLProcessor
 
-from src_new.utils.logger_factory import get_processing_logger
-from src_new.utils.error_formatting import ErrorMessageBuilder
+from src_new.types.arrays import (
+    jaxtyped_beartype,
+)
+from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS
 
 
-logger = get_processing_logger(__name__)
+logger = get_rank_aware_logger(__name__)
 
 
 # Custom Exception Classes for Enhanced Error Handling
@@ -301,13 +304,24 @@ class ConversationProcessor:
     Replaces the complex custom logic in chat_processor.py and templates.py.
     """
 
-    def __init__(self, processor, max_coord_value: int):
+    # Non-trivial state annotations
+    processor: Qwen2VLProcessor
+    coordinate_tokens_enabled: bool
+    coordinate_converter: CoordinateTokenConverter
+
+    def __init__(
+        self,
+        processor: Qwen2VLProcessor,
+        max_coord_value: int,
+        coordinate_tokens_enabled: bool,
+    ):
         """
         Initialize conversation processor.
 
         Args:
             processor: Official HuggingFace Qwen2VLProcessor
             max_coord_value: Maximum coordinate value for coordinate tokens (required)
+            coordinate_tokens_enabled: Whether to emit <|coord_*|> tokens or raw numbers
 
         Raises:
             ValueError: If processor is None or invalid
@@ -322,12 +336,19 @@ class ConversationProcessor:
             raise ValueError(
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
+        if not isinstance(coordinate_tokens_enabled, bool):
+            raise ValueError(
+                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}: {coordinate_tokens_enabled!r}"
+            )
 
         self.processor = processor
+        self.coordinate_tokens_enabled = coordinate_tokens_enabled
         self.coordinate_converter = CoordinateTokenConverter(
-            max_coord_value=max_coord_value
+            max_coord_value=max_coord_value,
+            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
         )
 
+    @jaxtyped_beartype
     def _process_text_and_images(
         self, text: str, images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
@@ -337,7 +358,7 @@ class ConversationProcessor:
         """
         outputs: Dict[str, torch.Tensor] = {}
         try:
-            outputs = self.processor(
+            raw_outputs = self.processor(
                 text=[text], images=images, return_tensors="pt", padding=True
             )
         except Exception as e:
@@ -345,19 +366,18 @@ class ConversationProcessor:
             raise RuntimeError(f"Processor call failed: {type(e).__name__}: {e}")
 
         # If processor returned a BatchFeature or Mapping, coerce to plain dict
-        if not isinstance(outputs, dict):
+        if isinstance(raw_outputs, dict):
+            outputs = raw_outputs
+        else:
             try:
-                # transformers BatchFeature exposes `.data`
-                data_attr = getattr(outputs, "data", None)
+                data_attr = getattr(raw_outputs, "data", None)
                 if isinstance(data_attr, dict):
                     outputs = data_attr
+                elif hasattr(raw_outputs, "to_dict"):
+                    maybe = raw_outputs.to_dict()  # type: ignore[attr-defined]
+                    outputs = maybe if isinstance(maybe, dict) else {}
                 else:
-                    from collections.abc import Mapping
-
-                    if isinstance(outputs, Mapping):
-                        outputs = dict(outputs)
-                    else:
-                        outputs = {}
+                    outputs = {}
             except Exception as e:
                 logger.debug(f"Coercion to dict failed: {e}")
                 outputs = {}
@@ -643,7 +663,11 @@ class ConversationProcessor:
                 teacher_images_list = teacher_images_list[:max_teachers]
 
             # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -773,14 +797,14 @@ class ConversationProcessor:
 
             # Process with HuggingFace processor
             try:
-                text = self.processor.apply_chat_template(
+                proc_any: Any = self.processor
+                text = proc_any.apply_chat_template(
                     validated_messages,
                     tokenize=False,
                     add_generation_prompt=False,
                     images=ordered_images,
                 )
             except TypeError:
-                # Some processor implementations may not accept 'images'
                 text = self.processor.apply_chat_template(
                     validated_messages, tokenize=False, add_generation_prompt=False
                 )
@@ -1296,6 +1320,7 @@ class ConversationProcessor:
 
         return is_within_limits, memory_info
 
+    @jaxtyped_beartype
     def create_simple_conversation(
         self, sample: Dict[str, Any], images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
@@ -1340,7 +1365,11 @@ class ConversationProcessor:
             )
 
             # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             # Build conversation using official HuggingFace format
@@ -1366,7 +1395,8 @@ class ConversationProcessor:
 
             # Use official processor for all processing
             try:
-                text = self.processor.apply_chat_template(
+                proc_any: Any = self.processor
+                text = proc_any.apply_chat_template(
                     validated_messages,
                     tokenize=False,
                     add_generation_prompt=False,
@@ -1398,6 +1428,7 @@ class ConversationProcessor:
                 f"Simple conversation creation failed: {str(e)}"
             )
 
+    @jaxtyped_beartype
     def create_teacher_student_conversation(
         self,
         student_sample: Dict[str, Any],
@@ -1431,6 +1462,7 @@ class ConversationProcessor:
             enable_recovery=True,  # Enable recovery by default
         )
 
+    @jaxtyped_beartype
     def create_inference_conversation(
         self, user_prompt: str, images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
@@ -1459,7 +1491,11 @@ class ConversationProcessor:
                 raise ConversationStructureError("images must be a non-empty list")
 
             # Import system prompt from CONSTANTS
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
 
             # Build conversation for inference
             messages = [
@@ -1490,7 +1526,8 @@ class ConversationProcessor:
 
             # Use official processor
             try:
-                text = self.processor.apply_chat_template(
+                proc_any: Any = self.processor
+                text = proc_any.apply_chat_template(
                     validated_messages,
                     tokenize=False,
                     add_generation_prompt=True,
@@ -1523,6 +1560,7 @@ class ConversationProcessor:
                 f"Inference conversation creation failed: {str(e)}"
             )
 
+    @jaxtyped_beartype
     def create_teacher_student_conversation_for_generation(
         self,
         student_sample: Dict[str, Any],
@@ -1548,7 +1586,11 @@ class ConversationProcessor:
             )
 
             # Prompts
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -1667,7 +1709,8 @@ class ConversationProcessor:
 
             # Build text and process with generation prompt
             try:
-                text = self.processor.apply_chat_template(
+                proc_any: Any = self.processor
+                text = proc_any.apply_chat_template(
                     validated_messages,
                     tokenize=False,
                     add_generation_prompt=True,
@@ -1694,6 +1737,7 @@ class ConversationProcessor:
                 f"Unexpected error in generation conversation building: {str(e)}"
             )
 
+    @jaxtyped_beartype
     def create_simple_conversation_for_generation(
         self, sample: Dict[str, Any], images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
@@ -1711,7 +1755,11 @@ class ConversationProcessor:
             if not isinstance(images, list) or not images:
                 raise ConversationStructureError("images must be a non-empty list")
 
-            system_prompt = CONSTANTS["SYSTEM_PROMPT"]
+            system_prompt = (
+                CONSTANTS["SYSTEM_PROMPT"]
+                if self.coordinate_tokens_enabled
+                else CONSTANTS["SYSTEM_PROMPT_BASE"]
+            )
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             messages: List[Dict[str, Any]] = [
@@ -1740,7 +1788,8 @@ class ConversationProcessor:
 
             # Build text with generation prompt and process
             try:
-                text = self.processor.apply_chat_template(
+                proc_any: Any = self.processor
+                text = proc_any.apply_chat_template(
                     validated_messages,
                     tokenize=False,
                     add_generation_prompt=True,

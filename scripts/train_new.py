@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from src_new.utils.seeding import seed_everything
+
 
 # Initialize rank-aware logging from environment BEFORE importing patches
 # so any import-time logs (e.g., compatibility patches) respect configured level.
@@ -165,12 +167,14 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         # NCCL timeout optimization - reduce evaluation frequency during distributed training
         eval_delay=0,  # No delay before first evaluation
         eval_accumulation_steps=1,  # Reduce evaluation accumulation to minimize memory
-        # Device settings - force single GPU to avoid DataParallel issues
-        local_rank=-1,  # Disable distributed training
+        # Device settings - rely on torchrun/DeepSpeed env for ranks
         # Use default distributed training timeout (1800 seconds) for stability
         # Removed ddp_timeout=10 override that caused NCCL timeout issues
         # DeepSpeed configuration
         deepspeed=deepspeed_config if deepspeed_enabled else None,
+        # Reproducibility
+        seed=int(getattr(config, "seed", 17)),
+        data_seed=int(getattr(config, "seed", 17)),
     )
 
     # Add fast checkpoint mode configuration (default: True for inference-ready checkpoints)
@@ -288,9 +292,12 @@ def create_trainer_with_new_architecture(
         config.model_path, trust_remote_code=True
     )
 
-    # Override max_pixels with configured value
-    if hasattr(config, "max_pixels"):
-        image_processor.size = getattr(image_processor, "size", image_processor.size)
+    # Override image processor configuration explicitly from config (fail-fast)
+    if hasattr(config, "max_pixels") and int(config.max_pixels) > 0:
+        if not hasattr(image_processor, "max_pixels"):
+            raise ValueError("Qwen2VLImageProcessor missing 'max_pixels' attribute")
+        image_processor.max_pixels = int(config.max_pixels)
+        logger.info(f"🔧 Set image_processor.max_pixels={image_processor.max_pixels}")
 
     # Create teacher pool manager (lazy loading of teachers)
     teacher_pool_manager = TeacherPoolManager(
@@ -388,27 +395,39 @@ def create_trainer_with_new_architecture(
     except Exception as e:
         logger.warning(f"⚠️ Could not pre-create optimizer: {e}")
 
-    # TODO: Register progressive unfreeze callback (freeze vision+LLM for first X epochs)
-    # Temporarily disabled - needs further testing for HF Transformers compatibility
-    # try:
-    #     from src_new.training.callbacks import ProgressiveUnfreezeCallback
-    #
-    #     freeze_epochs = getattr(config, "freeze_vision_llm_epochs", 1)
-    #     callback = ProgressiveUnfreezeCallback(
-    #         freeze_vision_llm_epochs=int(freeze_epochs), coord_slice_only=True
-    #     )
-    #     # Store trainer reference for HF compatibility
-    #     callback._trainer_ref = trainer
-    #     trainer.add_callback(callback)
-    #     logger.info(
-    #         f"✅ Registered ProgressiveUnfreezeCallback (freeze_vision_llm_epochs={freeze_epochs})"
-    #     )
-    # except Exception as e:
-    #     logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
+    # Register progressive unfreeze callback when enabled via YAML
+    try:
+        if getattr(config, "prog_unfreeze_enabled", False):
+            from src_new.training.callbacks import ProgressiveUnfreezeCallback
 
-    logger.info(
-        "🔧 ProgressiveUnfreezeCallback temporarily disabled - training with standard setup"
-    )
+            callback = ProgressiveUnfreezeCallback(
+                freeze_vision_llm_epochs=int(
+                    getattr(config, "prog_unfreeze_epoch_stage1_end", 1)
+                    or getattr(config, "num_train_epochs", 1)
+                ),
+                coord_slice_only=bool(
+                    getattr(config, "prog_unfreeze_coord_slice_only", True)
+                ),
+                stage0_end_epoch=getattr(
+                    config, "prog_unfreeze_epoch_stage0_end", None
+                ),
+                stage1_end_epoch=getattr(
+                    config, "prog_unfreeze_epoch_stage1_end", None
+                ),
+                top_k_layers=getattr(config, "prog_unfreeze_top_k_layers", None),
+            )
+            # Store trainer reference for HF compatibility
+            callback._trainer_ref = trainer
+            trainer.add_callback(callback)
+            logger.info(
+                "✅ Registered ProgressiveUnfreezeCallback (staged unfreeze enabled)"
+            )
+        else:
+            logger.info(
+                "🔧 Progressive unfreeze disabled by config - training with standard setup"
+            )
+    except Exception as e:
+        logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
     from transformers import Qwen2VLProcessor
@@ -418,12 +437,27 @@ def create_trainer_with_new_architecture(
         config.model_path, trust_remote_code=True
     )
 
+    # STRICT VALIDATION: Ensure chat template is present (no fallbacks)
+    processor_chat_template = getattr(processor, "chat_template", None)
+    tokenizer_chat_template = getattr(tokenizer, "chat_template", None)
+
+    # Prefer tokenizer's chat template (authoritative), else use processor's
+    authoritative_chat_template = tokenizer_chat_template or processor_chat_template
+
+    if not authoritative_chat_template:
+        raise ValueError(
+            "chat_template is missing. Ensure your checkpoint contains a valid chat_template.json "
+            f"or tokenizer_config.json with 'chat_template'. Checked path: {config.model_path}"
+        )
+
     # Update processor with our tokenizer and image processor
     processor = Qwen2VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
-        chat_template=processor.chat_template,  # Preserve the original chat template
+        chat_template=authoritative_chat_template,
     )
+
+    logger.info("✅ Chat template validated and set from checkpoint/tokenizer")
 
     # CRITICAL: Set tokenizer as trainer's processing_class for automatic saving
     # HuggingFace Trainer expects processing_class to have get_vocab() method (tokenizer has it, processor doesn't)
@@ -446,6 +480,15 @@ def main():
 
     # Load configuration
     config = load_config(f"configs/{args.config}.yaml")
+
+    # Seed data-related RNGs without forcing deterministic backends (keeps efficiency)
+    try:
+        seed_everything(
+            getattr(config, "seed", 17), deterministic=False, set_hf_seed=True
+        )
+        logger.info(f"🔧 Seeded RNGs with seed={getattr(config, 'seed', 17)}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not seed RNGs: {e}")
 
     if args.print_config:
         from pprint import pformat

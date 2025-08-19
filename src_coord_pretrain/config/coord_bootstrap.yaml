@@ -1,0 +1,54 @@
+model_path: "model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
+output_dir: "src_coord_pretrain/output"
+
+data_path: "src_coord_pretrain/data/coord_bootstrap.jsonl"
+
+# COORD SETTINGS
+coordinate_tokens_enabled: true
+max_coord_value: 1024
+coordinate_init_mode: "fourier_ramp"
+
+# UNLIKELIHOOD TRAINING
+unlikelihood_enabled: true
+unlikelihood_lambda_digits: 1.0
+unlikelihood_lambda_coords: 1.05
+unlikelihood_coord_window: 8
+
+# TOP-K UNLIKELIHOOD (Advanced Features)
+ul_topk_noncoord: 200
+ul_topk_coord: 200
+ul_neighbor_window: 8
+
+# TRAINING (YAML-driven like src_new)
+per_device_train_batch_size: 32
+per_device_eval_batch_size: 32
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-5
+llm_lr: 5.0e-6
+mlp_lr: 2.0e-5
+warmup_ratio: 0.1
+lr_scheduler_type: "cosine"
+
+max_epochs: 50
+logging_steps: 50
+
+# EVALUATION AND CHECKPOINT SAVING SETTINGS
+eval_strategy: "steps"    # Enable regular evaluation during training
+eval_steps: 100          # Evaluate every 10 steps
+save_strategy: "steps"    # Enable regular checkpoint saving during training
+save_steps: 200           # Save checkpoint every 10 steps
+save_total_limit: 3       # Keep only 3 most recent checkpoints
+save_on_each_node: false  # Only rank 0 saves checkpoints (distributed training)
+
+val_ratio: 0.1
+seed: 17
+bf16: true
+fp16: false
+weight_decay: 0.0
+freeze_vision: true
+
+# DeepSpeed Zero-2 JSON (optional)
+deep_speed_enabled: true
+deipspeed_note: "If file not found, trainer will ignore"
+deep_speed_placeholder: true
+

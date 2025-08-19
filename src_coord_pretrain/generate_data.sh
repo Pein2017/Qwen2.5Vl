@@ -1,0 +1,1 @@
+python /data3/Qwen2.5-VL-main/src_coord_pretrain/scripts/generate_coord_bootstrap.py --output /data3/Qwen2.5-VL-main/src_coord_pretrain/data/coord_bootstrap.jsonl --num_samples 50000 --ratio_identity 0.5 --ratio_arithmetic 0.2 --ratio_reverse 0.3 --max_coord 1024 --seed 42 --dedup

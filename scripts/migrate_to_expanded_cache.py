@@ -8,17 +8,20 @@ Export an expanded Qwen2.5-VL checkpoint with coordinate tokens and resized embe
 - Saves to an output directory like:
   /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024
 
-Usage (example):
+Usage:
   source ~/.bashrc && conda activate ms
-  python /data3/Qwen2.5-VL-main/scripts/migrate_to_expanded_cache.py \
-    --base_model_path /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct \
-    --output_dir /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024 \
-    --max_coord_value 1024
+  python /data3/Qwen2.5-VL-main/scripts/migrate_to_expanded_cache.py
 """
 
-import argparse
+# Configuration - Define all parameters here
+BASE_MODEL_PATH = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
+OUTPUT_DIR = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024_fourier"
+MAX_COORD_VALUE = 1024
+DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
+FORCE_OVERWRITE = True  # Set to True to overwrite existing output directory
+COORDINATE_INIT_MODE = "fourier_ramp"  # Required: "ms_mean" or "fourier_ramp"
+
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -47,46 +50,6 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
 )
 
 from src_new.processing.token_processor import TokenConfig, TokenProcessor
-
-
-BASE_MODEL_DEFAULT = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Migrate Qwen2.5-VL base checkpoint to expanded coordinate-token checkpoint"
-    )
-    parser.add_argument(
-        "--base_model_path",
-        type=str,
-        default=BASE_MODEL_DEFAULT,
-        help="Absolute path to base Qwen2.5-VL checkpoint (no coord tokens)",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        required=True,
-        help="Absolute path to save the expanded checkpoint",
-    )
-    parser.add_argument(
-        "--max_coord_value",
-        type=int,
-        required=True,
-        help="Maximum coordinate value; adds <|coord_0|>.. <|coord_MAX|>",
-    )
-    parser.add_argument(
-        "--dtype",
-        type=str,
-        default="bfloat16",
-        choices=["float16", "bfloat16", "float32"],
-        help="Model dtype for loading during migration",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite existing output_dir if present",
-    )
-    return parser.parse_args()
 
 
 def resolve_dtype(dtype: str) -> torch.dtype:
@@ -146,10 +109,7 @@ def extend_and_save(
     token_config = TokenConfig(
         coordinate_tokens_enabled=True,
         max_coord_value=int(max_coord_value),
-        # Optional: allow override via env COORD_INIT_MODE without changing script CLI
-        coordinate_init_mode=(
-            (os.environ.get("COORD_INIT_MODE") or None) if "os" in globals() else None
-        ),
+        coordinate_init_mode=COORDINATE_INIT_MODE,
     )
     processor = TokenProcessor(token_config)
 
@@ -202,19 +162,18 @@ def extend_and_save(
 
 
 def main() -> None:
-    args = parse_args()
-    base_model_path = ensure_abs(args.base_model_path, "base_model_path")
-    output_dir = ensure_abs(args.output_dir, "output_dir")
-    dtype = resolve_dtype(args.dtype)
+    base_model_path = ensure_abs(BASE_MODEL_PATH, "base_model_path")
+    output_dir = ensure_abs(OUTPUT_DIR, "output_dir")
+    dtype = resolve_dtype(DTYPE)
 
     if base_model_path == output_dir:
         raise ValueError("output_dir must differ from base_model_path")
 
     validate_base_checkpoint(base_model_path)
-    maybe_prepare_output_dir(output_dir, args.force)
+    maybe_prepare_output_dir(output_dir, FORCE_OVERWRITE)
 
     out_path, vocab_after = extend_and_save(
-        base_model_path, output_dir, args.max_coord_value, dtype
+        base_model_path, output_dir, MAX_COORD_VALUE, dtype
     )
 
     print(
