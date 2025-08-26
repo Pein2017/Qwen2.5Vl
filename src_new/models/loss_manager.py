@@ -717,8 +717,8 @@ class LossManager:
 
             if teacher_coord_mask_shifted.any():
                 kce_t, ul_t, m_t = _compute_group_aux(teacher_coord_mask_shifted)
-                teacher_kce = self._lambda_kce * kce_t
-                teacher_unlike = self._lambda_unlike * ul_t
+                teacher_kce = (self._lambda_kce or 0.0) * kce_t
+                teacher_unlike = (self._lambda_unlike or 0.0) * ul_t
                 teacher_l1_loss = teacher_kce + teacher_unlike
                 teacher_window_mass = m_t["window_mass"]
                 teacher_coord_slice_mass = m_t["coord_slice_mass"]
@@ -734,8 +734,8 @@ class LossManager:
                 teacher_coord_pos_count = m_t["coord_pos_count"]
             if student_coord_mask_shifted.any():
                 kce_s, ul_s, m_s = _compute_group_aux(student_coord_mask_shifted)
-                student_kce = self._lambda_kce * kce_s
-                student_unlike = self._lambda_unlike * ul_s
+                student_kce = (self._lambda_kce or 0.0) * kce_s
+                student_unlike = (self._lambda_unlike or 0.0) * ul_s
                 student_l1_loss = student_kce + student_unlike
                 student_window_mass = m_s["window_mass"]
                 student_coord_slice_mass = m_s["coord_slice_mass"]

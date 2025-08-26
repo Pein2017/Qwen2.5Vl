@@ -430,7 +430,7 @@ def create_trainer_with_new_architecture(
         logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
-    from transformers import Qwen2VLProcessor
+    from transformers import Qwen2VLProcessor, Qwen2VLVideoProcessor
 
     # Load processor from pretrained to get the chat template, then update components
     processor = Qwen2VLProcessor.from_pretrained(
@@ -450,10 +450,15 @@ def create_trainer_with_new_architecture(
             f"or tokenizer_config.json with 'chat_template'. Checked path: {config.model_path}"
         )
 
-    # Update processor with our tokenizer and image processor
+    # Update processor with our tokenizer, image processor, and required video processor
+    # Prefer the video processor loaded from the checkpoint; fallback to a fresh instance
+    loaded_video_processor = getattr(processor, "video_processor", None)
+    video_processor = loaded_video_processor or Qwen2VLVideoProcessor()
+
     processor = Qwen2VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
+        video_processor=video_processor,
         chat_template=authoritative_chat_template,
     )
 

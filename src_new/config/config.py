@@ -19,6 +19,24 @@ from typing import Any, Dict, List, Optional, get_args, get_origin
 
 import yaml
 
+from src_new.config.augmentation_config import (
+    AngleRotateConfig as AngleRotateConfigType,
+)
+from src_new.config.augmentation_config import (
+    AugmentationConfig as AugmentationConfigType,
+)
+from src_new.config.augmentation_config import (
+    ColorJitterConfig as ColorJitterConfigType,
+)
+from src_new.config.augmentation_config import (
+    validate_angle_rotate_config as validate_angle_rotate_config_fn,
+)
+from src_new.config.augmentation_config import (
+    validate_augmentation_config as validate_augmentation_config_fn,
+)
+from src_new.config.augmentation_config import (
+    validate_color_jitter_config as validate_color_jitter_config_fn,
+)
 from src_new.utils.data_resolver import DataResolver
 from src_new.utils.validation import (
     PathValidationError,
@@ -335,6 +353,7 @@ class Config:
     # === OPTIONAL FIELDS WITH DEFAULTS (truly optional) ===
     seed: int = 17
     new_geometry_tokens: Optional[List[str]] = None
+    augmentation: Optional[AugmentationConfigType] = None
 
     # Coordinate aux knobs (only when coord_aux_enabled)
     coord_aux_tau: Optional[float] = None
@@ -388,6 +407,7 @@ class Config:
         self._validate_data_settings()
         self._validate_coordinate_settings()
         self._validate_progressive_unfreeze_settings()
+        self._validate_augmentation_settings()
 
         logger.info("✅ Configuration validation passed")
 
@@ -624,6 +644,17 @@ class Config:
                         f"{lr_name} must be positive when provided, got {lr_value}"
                     )
 
+    def _validate_augmentation_settings(self) -> None:
+        """Validate augmentation settings when provided."""
+        aug = getattr(self, "augmentation", None)
+        if aug is None:
+            return
+        try:
+            validate_augmentation_config_fn(aug)
+            validate_angle_rotate_config_fn(aug.op)
+        except Exception as e:
+            raise ValueError(f"Invalid augmentation configuration: {e}")
+
 
 def load_config(config_path: str) -> Config:
     """
@@ -763,6 +794,236 @@ def load_config(config_path: str) -> Config:
                 raise ValueError(
                     f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
                 )
+
+    # Build augmentation dataclasses from nested dicts (if provided)
+    try:
+        if "augmentation" in data and data["augmentation"] is not None:
+            aug_dict = data["augmentation"]
+            if not isinstance(aug_dict, dict):
+                raise ValueError(
+                    f"augmentation must be a mapping when provided, got {type(aug_dict)}"
+                )
+            op_dict = aug_dict.get("op")
+            if not isinstance(op_dict, dict):
+                raise ValueError("augmentation.op must be a mapping when provided")
+            # Coerce fill_color to tuple if present
+            fill_color_val = op_dict.get("fill_color")
+            if fill_color_val is not None and isinstance(fill_color_val, list):
+                op_dict = dict(op_dict)
+                op_dict["fill_color"] = tuple(fill_color_val)
+            angle_op_cfg = AngleRotateConfigType(**op_dict)
+            # Optional color_jitter
+            cj_cfg = None
+            if "color_jitter" in aug_dict and aug_dict["color_jitter"] is not None:
+                cj_dict = aug_dict["color_jitter"]
+                if not isinstance(cj_dict, dict):
+                    raise ValueError(
+                        "augmentation.color_jitter must be a mapping when provided"
+                    )
+
+                def _to_tuple(name):
+                    v = cj_dict.get(name)
+                    return tuple(v) if isinstance(v, list) else v
+
+                # Enforce explicit values; no implicit defaults here
+                if "enabled" not in cj_dict or "apply_prob" not in cj_dict:
+                    raise ValueError(
+                        "color_jitter requires explicit 'enabled' and 'apply_prob' in config"
+                    )
+                cj_cfg = ColorJitterConfigType(
+                    enabled=bool(cj_dict["enabled"]),
+                    apply_prob=float(cj_dict["apply_prob"]),
+                    brightness=_to_tuple("brightness"),
+                    contrast=_to_tuple("contrast"),
+                    saturation=_to_tuple("saturation"),
+                    sharpness=_to_tuple("sharpness"),
+                    order=cj_dict.get("order"),
+                )
+                validate_color_jitter_config_fn(cj_cfg)
+
+            # Optional albumentations random aug
+            alb_rand_cfg = None
+            if (
+                "albumentations_rand" in aug_dict
+                and aug_dict["albumentations_rand"] is not None
+            ):
+                ar_dict = aug_dict["albumentations_rand"]
+                if not isinstance(ar_dict, dict):
+                    raise ValueError(
+                        "augmentation.albumentations_rand must be a mapping when provided"
+                    )
+                from src_new.config.augmentation_config import (
+                    AlbumentationsRandAugConfig as _AlbRand,
+                )
+                from src_new.config.augmentation_config import (
+                    validate_albumentations_rand_config as _validate_alb,
+                )
+
+                # Enforce explicit values; no implicit defaults here
+                required_ar = [
+                    "enabled",
+                    "apply_prob",
+                    "num_ops",
+                    "magnitude",
+                    "safe_ops_only",
+                ]
+                missing_ar = [k for k in required_ar if k not in ar_dict]
+                if missing_ar:
+                    raise ValueError(
+                        "albumentations_rand requires explicit fields: "
+                        + ", ".join(missing_ar)
+                    )
+                alb_rand_cfg = _AlbRand(
+                    enabled=bool(ar_dict["enabled"]),
+                    apply_prob=float(ar_dict["apply_prob"]),
+                    num_ops=int(ar_dict["num_ops"]),
+                    magnitude=float(ar_dict["magnitude"]),
+                    safe_ops_only=bool(ar_dict["safe_ops_only"]),
+                )
+                _validate_alb(alb_rand_cfg)
+
+            # Optional object copy-paste
+            ocp_cfg = None
+            if (
+                "object_copy_paste" in aug_dict
+                and aug_dict["object_copy_paste"] is not None
+            ):
+                ocp_dict = aug_dict["object_copy_paste"]
+                if not isinstance(ocp_dict, dict):
+                    raise ValueError(
+                        "augmentation.object_copy_paste must be a mapping when provided"
+                    )
+                from src_new.config.augmentation_config import (
+                    ObjectCopyPasteConfig as _OCP,
+                )
+                from src_new.config.augmentation_config import (
+                    validate_object_copy_paste_config as _validate_ocp,
+                )
+
+                ocp_cfg = _OCP(
+                    enabled=bool(ocp_dict["enabled"]),
+                    per_object_prob=float(ocp_dict["per_object_prob"]),
+                    num_copies_per_object=int(ocp_dict["num_copies_per_object"]),
+                    translate_px=int(ocp_dict["translate_px"]),
+                    rotation_jitter_deg=float(ocp_dict["rotation_jitter_deg"]),
+                    scale_jitter_min=float(ocp_dict["scale_jitter_min"]),
+                    scale_jitter_max=float(ocp_dict["scale_jitter_max"]),
+                    occ_grid_downscale=int(ocp_dict["occ_grid_downscale"]),
+                    occ_margin_px=int(ocp_dict["occ_margin_px"]),
+                    max_occ_fraction=float(ocp_dict["max_occ_fraction"]),
+                    max_iou_with_existing=float(ocp_dict["max_iou_with_existing"]),
+                    attempts=int(ocp_dict["attempts"]),
+                    allowed_types=ocp_dict.get("allowed_types"),
+                )
+                _validate_ocp(ocp_cfg)
+
+            # Optional object blur
+            obj_blur_cfg = None
+            if "object_blur" in aug_dict and aug_dict["object_blur"] is not None:
+                ob_dict = aug_dict["object_blur"]
+                if not isinstance(ob_dict, dict):
+                    raise ValueError(
+                        "augmentation.object_blur must be a mapping when provided"
+                    )
+                from src_new.config.augmentation_config import (
+                    ObjectBlurConfig as _OB,
+                )
+                from src_new.config.augmentation_config import (
+                    validate_object_blur_config as _validate_ob,
+                )
+
+                obj_blur_cfg = _OB(
+                    enabled=bool(ob_dict["enabled"]),
+                    per_object_prob=float(ob_dict["per_object_prob"]),
+                    blur_type=str(ob_dict["blur_type"]),
+                    radius_min=float(ob_dict["radius_min"]),
+                    radius_max=float(ob_dict["radius_max"]),
+                )
+                _validate_ob(obj_blur_cfg)
+
+            # Optional rand pool
+            rand_pool_cfg = None
+            if "rand_pool" in aug_dict and aug_dict["rand_pool"] is not None:
+                rp_dict = aug_dict["rand_pool"]
+                if not isinstance(rp_dict, dict):
+                    raise ValueError(
+                        "augmentation.rand_pool must be a mapping when provided"
+                    )
+                from src_new.config.augmentation_config import (
+                    RandAugPoolConfig as _RP,
+                )
+
+                rand_pool_cfg = _RP(
+                    enabled=bool(rp_dict["enabled"]),
+                    apply_prob=float(rp_dict["apply_prob"]),
+                    num_ops=int(rp_dict["num_ops"]),
+                    include_object_affine=bool(
+                        rp_dict.get("include_object_affine", False)
+                    ),
+                    include_object_copy_paste=bool(
+                        rp_dict.get("include_object_copy_paste", False)
+                    ),
+                    include_object_blur=bool(rp_dict.get("include_object_blur", False)),
+                )
+
+            # Optional criteria
+            criteria_cfg = None
+            if "criteria" in aug_dict and aug_dict["criteria"] is not None:
+                cr_dict = aug_dict["criteria"]
+                if not isinstance(cr_dict, dict):
+                    raise ValueError(
+                        "augmentation.criteria must be a mapping when provided"
+                    )
+                from src_new.config.augmentation_config import CriteriaConfig as _CR
+                from src_new.config.augmentation_config import (
+                    OcclusionCriterionConfig as _OC,
+                )
+
+                occ_cfg = None
+                occ_dict = cr_dict.get("occlusion")
+                if occ_dict is not None:
+                    if not isinstance(occ_dict, dict):
+                        raise ValueError(
+                            "augmentation.criteria.occlusion must be a mapping"
+                        )
+                    occ_cfg = _OC(
+                        enabled=bool(occ_dict["enabled"]),
+                        min_overlap_fraction_bbox=float(
+                            occ_dict["min_overlap_fraction_bbox"]
+                        ),
+                        min_overlap_fraction_line=float(
+                            occ_dict["min_overlap_fraction_line"]
+                        ),
+                        mask_downscale=int(occ_dict["mask_downscale"]),
+                        line_width_px=int(occ_dict["line_width_px"]),
+                    )
+                criteria_cfg = _CR(occlusion=occ_cfg)
+
+            aug_cfg = AugmentationConfigType(
+                enabled=aug_dict["enabled"],
+                rng_seed=aug_dict["rng_seed"],
+                apply_to_teachers=aug_dict["apply_to_teachers"],
+                lines_policy=aug_dict["lines_policy"],
+                debug_visualization=aug_dict["debug_visualization"],
+                debug_output_dir=aug_dict.get("debug_output_dir"),
+                op=angle_op_cfg,
+                color_jitter=cj_cfg,
+                albumentations_rand=alb_rand_cfg,
+                object_copy_paste=ocp_cfg,
+                object_blur=obj_blur_cfg,
+                rand_pool=rand_pool_cfg,
+                criteria=criteria_cfg,
+            )
+            # Validate early (fail-fast)
+            validate_angle_rotate_config_fn(angle_op_cfg)
+            validate_augmentation_config_fn(aug_cfg)
+            data["augmentation"] = aug_cfg
+    except KeyError as e:
+        raise ValueError(f"Missing required augmentation field: {e}")
+    except TypeError as e:
+        raise TypeError(f"Invalid augmentation field types: {e}")
+    except Exception as e:
+        raise ValueError(f"Failed to parse augmentation configuration: {e}")
 
     # Aggregate schema issues before constructing the dataclass
     schema_issues = _collect_schema_issues(data)

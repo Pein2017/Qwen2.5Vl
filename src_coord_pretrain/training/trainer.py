@@ -222,7 +222,7 @@ class PhaseATrainer(CustomLrTrainer):
             return
         emb = self.model.model.embed_tokens
         weight = emb.weight
-        vocab_size = int(weight.shape[0])
+        vocab_size = int(weight.shape[0])  # type: ignore
         keep = torch.zeros(vocab_size, device=weight.device, dtype=weight.dtype)
         for cid in coord_ids:
             if 0 <= int(cid) < vocab_size:

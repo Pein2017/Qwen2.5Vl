@@ -159,6 +159,21 @@ class Dataset(TorchDataset):
         self.hf_processor = None
         self.conversation_processor = None
 
+        # Optional augmentation pipeline (AngleRotate)
+        self.augmentation_pipeline = None
+        try:
+            aug_cfg = getattr(self.config, "augmentation", None)
+            if aug_cfg is not None and getattr(aug_cfg, "enabled", False):
+                from src_new.augmentation.base import AugmentationPipeline
+
+                self.augmentation_pipeline = AugmentationPipeline.from_config(aug_cfg)
+                logger.info("✅ Augmentation pipeline (AngleRotate) initialized")
+            else:
+                logger.info("🔧 Augmentation disabled or not configured")
+        except Exception as e:
+            logger.error(f"Failed to initialize augmentation pipeline: {e}")
+            raise
+
         logger.info("🎯 HuggingFace-first processing components initialized")
 
     def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
@@ -260,14 +275,28 @@ class Dataset(TorchDataset):
         if "images" not in sample or not sample["images"]:
             return False
 
-        # Each object must have valid geometry and description
+        from src_new.types.geometry import (
+            is_valid_box_coords,
+            is_valid_line_coords,
+            is_valid_quad_coords,
+        )
+
+        geometry_types = list(GEOMETRY_TOKENS.keys())
         for obj in sample["objects"]:
             if "desc" not in obj:
                 return False
 
-            # Must have at least one geometry type
-            geometry_types = list(GEOMETRY_TOKENS.keys())
-            if not any(geom_type in obj for geom_type in geometry_types):
+            present = [gt for gt in geometry_types if gt in obj]
+            if len(present) != 1:
+                return False
+
+            g = present[0]
+            coords = obj[g]
+            if g == "bbox_2d" and not is_valid_box_coords(coords):
+                return False
+            if g == "quad" and not is_valid_quad_coords(coords):
+                return False
+            if g == "line" and not is_valid_line_coords(coords):
                 return False
 
         return True
@@ -376,6 +405,45 @@ class Dataset(TorchDataset):
                 student_image_paths = structured_sample["images"]
                 student_images = self._load_images_from_paths(student_image_paths)
 
+                # Optional augmentation (student first, then teachers if enabled)
+                if self.augmentation_pipeline is not None:
+                    try:
+                        from torch.utils.data import (
+                            get_worker_info,  # local import to avoid top-level deps
+                        )
+
+                        wi = get_worker_info()
+                        worker_id = wi.id if wi is not None else 0
+                    except Exception:
+                        worker_id = 0
+                    student_seed_index = idx ^ (worker_id << 16)
+                    student_images, structured_sample = (
+                        self.augmentation_pipeline.apply(
+                            sample=structured_sample,
+                            images=student_images,
+                            sample_index=student_seed_index,
+                        )
+                    )
+                    aug_cfg = getattr(self.config, "augmentation", None)
+                    if aug_cfg is not None and getattr(
+                        aug_cfg, "apply_to_teachers", False
+                    ):
+                        new_teacher_images_list = []
+                        new_teacher_samples = []
+                        for t_i, (t_sample, t_images) in enumerate(
+                            zip(teacher_samples, teacher_images_list)
+                        ):
+                            t_seed_index = (idx * 997 + t_i) ^ (worker_id << 16)
+                            t_images, t_sample = self.augmentation_pipeline.apply(
+                                sample=t_sample,
+                                images=t_images,
+                                sample_index=t_seed_index,
+                            )
+                            new_teacher_images_list.append(t_images)
+                            new_teacher_samples.append(t_sample)
+                        teacher_images_list = new_teacher_images_list
+                        teacher_samples = new_teacher_samples
+
                 # Use HuggingFace-first conversation processor
                 inputs = (
                     self.conversation_processor.create_teacher_student_conversation(
@@ -395,6 +463,24 @@ class Dataset(TorchDataset):
                     raise ValueError("Sample missing required 'images' list")
                 image_paths = structured_sample["images"]
                 images = self._load_images_from_paths(image_paths)
+
+                # Optional augmentation (student-only flow)
+                if self.augmentation_pipeline is not None:
+                    try:
+                        from torch.utils.data import (
+                            get_worker_info,  # local import to avoid top-level deps
+                        )
+
+                        wi = get_worker_info()
+                        worker_id = wi.id if wi is not None else 0
+                    except Exception:
+                        worker_id = 0
+                    student_seed_index = idx ^ (worker_id << 16)
+                    images, structured_sample = self.augmentation_pipeline.apply(
+                        sample=structured_sample,
+                        images=images,
+                        sample_index=student_seed_index,
+                    )
 
                 # Use HuggingFace-first conversation processor
                 inputs = self.conversation_processor.create_simple_conversation(

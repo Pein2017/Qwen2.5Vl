@@ -53,7 +53,7 @@ initialize_logging_from_env()
 logger = get_rank_aware_logger("inference")
 
 # Import new architecture components
-from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2VLProcessor
+from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2VLProcessor, Qwen2VLVideoProcessor
 
 from src_new.config.config import load_config
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
@@ -501,10 +501,20 @@ class InferenceEngine:
             )
 
         # Create conversation processor using new architecture
-        # Create unified processor from tokenizer and image processor
+        # Create unified processor from tokenizer, image processor, and video processor
+        try:
+            # Try to load from checkpoint for consistency
+            proc_from_ckpt = Qwen2VLProcessor.from_pretrained(
+                self.config.model_path, trust_remote_code=True
+            )
+            video_processor = getattr(proc_from_ckpt, "video_processor", None) or Qwen2VLVideoProcessor()
+        except Exception:
+            video_processor = Qwen2VLVideoProcessor()
+
         unified_processor = Qwen2VLProcessor(
             image_processor=self.image_processor,
             tokenizer=self.tokenizer,
+            video_processor=video_processor,
         )
 
         # CRITICAL FIX: Ensure chat template is properly inherited from tokenizer

@@ -32,7 +32,7 @@ PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 
 # Training configuration
-CONFIG_NAME="bbu_v2_base"                      # Config to use: bbu_v2 
+CONFIG_NAME="bbu_v2"                      # Config to use: bbu_v2 
 GPU_DEVICES="0,1,2,3,4,5,6,7"                             # GPU devices (comma-separated) - start with single GPU for testing
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 

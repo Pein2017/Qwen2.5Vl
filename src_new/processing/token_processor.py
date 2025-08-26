@@ -205,9 +205,9 @@ class TokenProcessor:
 
         # Snapshot original rows to ensure they remain unchanged after extension
         with torch.no_grad():
+            input_embeddings = model.get_input_embeddings()
             original_snapshot = (
-                model.get_input_embeddings()
-                .weight[:original_vocab_size]
+                input_embeddings.weight[:original_vocab_size]  # type: ignore
                 .detach()
                 .clone()
             )
@@ -218,7 +218,8 @@ class TokenProcessor:
             )
 
             # OPTIMIZATION 1: Check if embeddings are already extended
-            current_embed_size = model.get_input_embeddings().weight.shape[0]
+            input_embeddings = model.get_input_embeddings()
+            current_embed_size = input_embeddings.weight.shape[0]  # type: ignore
             if current_embed_size >= new_vocab_size:
                 logger.info(
                     f"🚀 Embeddings already extended to {current_embed_size}, skipping resize"
@@ -327,7 +328,7 @@ class TokenProcessor:
                     )
                     * init_std
                 )
-                in_w[input_mask] = new_embeddings
+                in_w[input_mask] = new_embeddings  # type: ignore
 
                 # Initialize output embeddings if they exist and need initialization
                 if hasattr(output_embeddings, "weight"):
@@ -426,9 +427,10 @@ class TokenProcessor:
 
         vocab = tokenizer.get_vocab()
         vocab_size = len(vocab)
-        in_w = model.get_input_embeddings().weight
-        in_rows = in_w.shape[0]
-        hidden = in_w.shape[1]
+        input_embeddings = model.get_input_embeddings()
+        in_w = input_embeddings.weight  # type: ignore
+        in_rows = in_w.shape[0]  # type: ignore
+        hidden = in_w.shape[1]  # type: ignore
 
         logger.debug(
             f"[VALIDATION] tokenizer_vocab_size={vocab_size}, input_rows={in_rows}, hidden={hidden}"
@@ -455,8 +457,8 @@ class TokenProcessor:
         )
         if quad_start_id is not None and quad_end_id is not None:
             with torch.no_grad():
-                ls_eq = torch.allclose(in_w[line_start_id], in_w[quad_start_id])
-                le_eq = torch.allclose(in_w[line_end_id], in_w[quad_end_id])
+                ls_eq = torch.allclose(in_w[line_start_id], in_w[quad_start_id])  # type: ignore
+                le_eq = torch.allclose(in_w[line_end_id], in_w[quad_end_id])  # type: ignore
             if not (ls_eq and le_eq):
                 raise AssertionError(
                     "Geometry token initialization failed: line tokens not copied from quad tokens"
@@ -475,9 +477,9 @@ class TokenProcessor:
             )
 
         with torch.no_grad():
-            zeros = torch.zeros_like(in_w[0])
+            zeros = torch.zeros_like(in_w[0])  # type: ignore
             for cid in coord_ids:
-                vec = in_w[cid]
+                vec = in_w[cid]  # type: ignore
                 if torch.allclose(vec, zeros):
                     raise AssertionError(
                         f"Coordinate embedding at id={cid} is all zeros"
@@ -489,7 +491,7 @@ class TokenProcessor:
         # enforce immutability for the true base region [0, original_vocab_size).
         freeze_rows = int(original_vocab_size)
         with torch.no_grad():
-            cur_snapshot = in_w[:freeze_rows].detach().clone()
+            cur_snapshot = in_w[:freeze_rows].detach().clone()  # type: ignore
             if not torch.allclose(cur_snapshot, original_snapshot[:freeze_rows]):
                 raise AssertionError(
                     "Original pretrained base embedding rows changed during extension"

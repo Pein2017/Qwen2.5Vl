@@ -424,7 +424,7 @@ def _read_video_decord(
     Returns:
         torch.Tensor: the video tensor with shape (T, C, H, W).
     """
-    import decord
+    import decord  
 
     video_path = ele["video"]
     st = time.time()
@@ -453,7 +453,7 @@ def is_torchcodec_available() -> bool:
 
         if importlib.util.find_spec("torchcodec") is None:
             return False
-        from torchcodec.decoders import VideoDecoder  # noqa
+        from torchcodec.decoders import VideoDecoder  # type: ignore 
 
         return True
     except (ImportError, AttributeError, Exception):
@@ -474,7 +474,7 @@ def _read_video_torchcodec(
     Returns:
         torch.Tensor: the video tensor with shape (T, C, H, W).
     """
-    from torchcodec.decoders import VideoDecoder
+    from torchcodec.decoders import VideoDecoder  # type: ignore
 
     TORCHCODEC_NUM_THREADS = int(os.environ.get("TORCHCODEC_NUM_THREADS", 8))
     logger.info(f"set TORCHCODEC_NUM_THREADS: {TORCHCODEC_NUM_THREADS}")

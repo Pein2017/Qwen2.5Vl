@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import glob
 import json
 import logging
@@ -5,11 +7,13 @@ import os
 import shutil
 import time
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import torch
 
 
+@dataclass
 class BestCheckpointManager:
     """
     Best-checkpoint management for eliminating redundant checkpoint operations.
@@ -17,59 +21,41 @@ class BestCheckpointManager:
     Tracks the best metric and provides descriptive names for best checkpoints.
     """
 
-    def __init__(self, metric_name: str = "eval_loss", greater_is_better: bool = False):
-        self.metric_name = metric_name
-        self.greater_is_better = greater_is_better
-        self.current_best_metric: Optional[float] = None
-        self.current_best_dir: Optional[str] = None
+    metric_name: str = "eval_loss"
+    greater_is_better: bool = False
+
+    current_best_value: Optional[float] = None
+    current_best_dir: Optional[str] = None
 
     def is_new_best(self, current_metrics: Dict[str, float]) -> bool:
-        if not current_metrics or self.metric_name not in current_metrics:
+        value = current_metrics.get(self.metric_name)
+        if value is None:
             return False
-        value = current_metrics[self.metric_name]
-        try:
-            import math
-
-            if math.isnan(value):
-                return False
-        except Exception:
-            pass
-        if self.current_best_metric is None:
+        if self.current_best_value is None:
             return True
-        return (
-            (value > self.current_best_metric)
-            if self.greater_is_better
-            else (value < self.current_best_metric)
-        )
+        if self.greater_is_better:
+            return value > self.current_best_value
+        return value < self.current_best_value
 
     def create_best_checkpoint_name(self, metrics: Dict[str, float], step: int) -> str:
-        if self.metric_name not in metrics:
-            raise ValueError(
-                f"Metric '{self.metric_name}' not found in metrics: {list(metrics.keys())}"
-            )
-        metric_value = metrics[self.metric_name]
-        metric_str = f"{metric_value:.4f}"
-        metric_type = self.metric_name.replace("eval_", "")
-        return f"best-{step}-{metric_type}{metric_str}"
+        val = metrics.get(self.metric_name)
+        suffix = f"{self.metric_name}{val:.4f}" if isinstance(val, (int, float)) else "best"
+        return f"best-{step}-{suffix}"
 
-    def update_best_checkpoint(
-        self, metrics: Dict[str, float], checkpoint_path: str
-    ) -> None:
-        if self.metric_name not in metrics:
-            raise ValueError(
-                f"Metric '{self.metric_name}' not found in metrics: {list(metrics.keys())}"
-            )
-        self.current_best_metric = metrics[self.metric_name]
-        self.current_best_dir = checkpoint_path
+    def update_best_checkpoint(self, metrics: Dict[str, float], best_dir: str) -> None:
+        self.current_best_value = metrics.get(self.metric_name)
+        self.current_best_dir = best_dir
 
 
 def _get_rank_aware_logger() -> logging.Logger:
     try:
-        from ..utils.rank_aware_logging import get_rank_aware_logger
+        from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
 
-        return get_rank_aware_logger(__name__)
+        return _get("training.checkpoint_saver")
     except Exception:
-        return logging.getLogger(__name__)
+        import logging as _logging
+
+        return _logging.getLogger("training.checkpoint_saver")
 
 
 logger = _get_rank_aware_logger()
@@ -87,6 +73,11 @@ class CheckpointSaver:
     - Performs checkpoint rotation based on save_total_limit
     """
 
+    args: Any
+    checkpoint_manager: BestCheckpointManager
+
+    _checkpoint_in_progress: bool = False
+
     def __init__(
         self,
         *,
@@ -96,8 +87,65 @@ class CheckpointSaver:
         self.args = args
         self.checkpoint_manager = checkpoint_manager
 
-        # Internal flag to avoid duplicate saves per step
-        self._checkpoint_in_progress: bool = False
+    def _copytree_atomic(self, src: str, dst: str) -> None:
+        """Copy a directory tree atomically via a temporary directory.
+
+        Falls back to file-by-file copy if the filesystem rejects copytree (e.g., Unknown error 524 on some mounts).
+        Ensures partial artifacts are cleaned up on failure.
+        """
+        tmp_dst = f"{dst}.tmp"
+        # Cleanup any previous tmp
+        try:
+            if os.path.exists(tmp_dst):
+                shutil.rmtree(tmp_dst)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to remove existing tmp best path '{tmp_dst}': {e}")
+
+        # First attempt: standard copytree into tmp
+        try:
+            shutil.copytree(src, tmp_dst, dirs_exist_ok=False)
+            # Replace destination atomically
+            try:
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to remove existing best path '{dst}' before rename: {e}")
+            os.replace(tmp_dst, dst)
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ copytree failed for best checkpoint (will fallback to per-file copy): {e}")
+
+        # Fallback: file-by-file copy
+        try:
+            os.makedirs(dst, exist_ok=True)
+            for root, dirs, files in os.walk(src):
+                rel = os.path.relpath(root, src)
+                target_dir = dst if rel == "." else os.path.join(dst, rel)
+                os.makedirs(target_dir, exist_ok=True)
+                for d in dirs:
+                    os.makedirs(os.path.join(target_dir, d), exist_ok=True)
+                for f in files:
+                    src_f = os.path.join(root, f)
+                    dst_f = os.path.join(target_dir, f)
+                    try:
+                        shutil.copy2(src_f, dst_f)
+                    except Exception as fe:
+                        logger.warning(f"⚠️ Failed to copy '{src_f}' → '{dst_f}': {fe}")
+            # Cleanup tmp if created
+            try:
+                if os.path.exists(tmp_dst):
+                    shutil.rmtree(tmp_dst)
+            except Exception:
+                pass
+            return
+        except Exception as e2:
+            # Final cleanup and propagate
+            try:
+                if os.path.exists(tmp_dst):
+                    shutil.rmtree(tmp_dst)
+            except Exception:
+                pass
+            raise RuntimeError(f"Best checkpoint copy failed (fallback also failed): {e2}")
 
     def save_checkpoint(
         self,
@@ -117,98 +165,69 @@ class CheckpointSaver:
                 Path to the checkpoint directory.
         """
         if self._checkpoint_in_progress:
-            logger.debug("🔄 Checkpoint already in progress, skipping duplicate call")
-            return os.path.join(self.args.output_dir, f"checkpoint-{step}")
-
+            logger.warning("⚠️ Checkpoint already in progress; skipping concurrent save.")
+            return ""
         self._checkpoint_in_progress = True
-        checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{step}")
-        should_log = bool(
-            getattr(self.args, "should_save", False)
-        )  # True only on rank 0
-
         try:
-            # Skip re-save if folder already contains model files
-            if os.path.isdir(checkpoint_dir):
-                existing_model_shards = glob.glob(
-                    os.path.join(checkpoint_dir, "model-*.safetensors")
-                )
-                has_index = os.path.isfile(
-                    os.path.join(checkpoint_dir, "model.safetensors.index.json")
-                )
-                has_config = os.path.isfile(os.path.join(checkpoint_dir, "config.json"))
-                if existing_model_shards or has_index or has_config:
-                    if should_log:
-                        logger.info(
-                            f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
-                        )
-                    # Ensure auxiliary files exist even if model files are already present
-                    try:
-                        self._ensure_auxiliary_files(
-                            checkpoint_dir=checkpoint_dir,
-                            model=model,
-                            processing_class=processing_class,
-                            processor=processor,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"⚠️ Failed to ensure auxiliary files in existing checkpoint: {e}"
-                        )
-                    # Best checkpoint + rotation still need to run
-                    if current_metrics is not None:
-                        self._maybe_update_best_and_rotate(
-                            checkpoint_dir, current_metrics, step
-                        )
-                    return checkpoint_dir
-
-            # Pre-save logs
-            if should_log:
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                logger.info(
-                    f"\n🚀 [FAST CHECKPOINT] Starting inference-ready checkpoint save at {current_time}"
-                )
-                logger.info(f"📁 Checkpoint location: {checkpoint_dir}")
-                try:
-                    logger.info(f"📊 Training step: {step}")
-                except Exception:
-                    pass
-
             save_start_time = time.time()
-            use_fast_checkpoint = bool(getattr(self.args, "fast_checkpoint_mode", True))
+            should_log = bool(getattr(self.args, "should_save", False))
 
-            # Always create directory (idempotent)
-            os.makedirs(checkpoint_dir, exist_ok=True)
+            # Determine final checkpoint directory (step-scoped)
+            final_checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{step}")
 
-            if use_fast_checkpoint:
-                if is_deepspeed_enabled:
-                    self._save_deepspeed_inference_checkpoint(
-                        model, checkpoint_dir, processing_class, processor
+            # Save core model + processor/tokenizer files
+            if is_deepspeed_enabled:
+                self._save_deepspeed_inference_checkpoint(
+                    model=model,
+                    checkpoint_dir=final_checkpoint_dir,
+                    processing_class=processing_class,
+                    processor=processor,
+                )
+            else:
+                checkpoint_dir = final_checkpoint_dir
+                if os.path.exists(checkpoint_dir):
+                    # Avoid overwriting; keep idempotent behavior across retries
+                    logger.info(
+                        f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
+                    )
+                    self._ensure_auxiliary_files(
+                        checkpoint_dir=checkpoint_dir,
+                        model=model,
+                        processing_class=processing_class,
+                        processor=processor,
                     )
                 else:
-                    self._save_inference_checkpoint(
-                        model, checkpoint_dir, processing_class, processor
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    unwrapped = self._get_unwrapped_model(model)
+                    logger.info("💾 [RANK 0] Saving model weights (SafeTensors format)...")
+                    unwrapped.save_pretrained(
+                        checkpoint_dir,
+                        safe_serialization=True,
+                        max_shard_size="5GB",
+                        push_to_hub=False,
                     )
-            else:
-                # Fall back to HuggingFace full checkpoint mode (optimizer etc.)
-                # We cannot call HF internals from here; expect caller to handle this path.
-                if should_log:
-                    logger.info(
-                        "🐌 Full checkpoint mode requested but not handled by CheckpointSaver. Caller should save training state."
+                    logger.info("✅ [RANK 0] Model weights saved")
+                    self._ensure_auxiliary_files(
+                        checkpoint_dir=checkpoint_dir,
+                        model=model,
+                        processing_class=processing_class,
+                        processor=processor,
                     )
 
-            # After saving, handle best checkpoint and rotation
-            if current_metrics is not None:
-                self._maybe_update_best_and_rotate(
-                    checkpoint_dir, current_metrics, step
-                )
+                # Best checkpoint handling
+                if current_metrics:
+                    self._maybe_update_best_and_rotate(
+                        checkpoint_dir, current_metrics, step
+                    )
 
             if should_log:
                 dur = time.time() - save_start_time
                 logger.info(
                     f"✅ [FAST INFERENCE CHECKPOINT] Completed successfully in {dur:.2f}s"
                 )
-                logger.info(f"💾 Checkpoint saved to: {checkpoint_dir}")
+                logger.info(f"💾 Checkpoint saved to: {final_checkpoint_dir}")
 
-            return checkpoint_dir
+            return final_checkpoint_dir
         finally:
             self._checkpoint_in_progress = False
 
@@ -232,27 +251,40 @@ class CheckpointSaver:
             # Remember previous best before updating
             old_best_path = getattr(self.checkpoint_manager, "current_best_dir", None)
 
-            # Replace existing best directory
-            if os.path.exists(best_checkpoint_path):
-                shutil.rmtree(best_checkpoint_path)
-            shutil.copytree(checkpoint_dir, best_checkpoint_path)
-            self.checkpoint_manager.update_best_checkpoint(
-                current_metrics, best_checkpoint_path
-            )
+            # Replace existing best directory using robust atomic copy
+            try:
+                if os.path.exists(best_checkpoint_path):
+                    shutil.rmtree(best_checkpoint_path)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Could not remove existing best checkpoint dir '{best_checkpoint_path}': {e}"
+                )
+            try:
+                self._copytree_atomic(checkpoint_dir, best_checkpoint_path)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Best checkpoint copy encountered an error but training will continue: {e}"
+                )
+            else:
+                self.checkpoint_manager.update_best_checkpoint(
+                    current_metrics, best_checkpoint_path
+                )
 
-            # Remove old best if different
-            if (
-                old_best_path
-                and old_best_path != best_checkpoint_path
-                and os.path.exists(old_best_path)
-            ):
-                try:
-                    shutil.rmtree(old_best_path)
-                    logger.info(
-                        f"🗑️ Removed old best: {os.path.basename(old_best_path)}"
-                    )
-                except (OSError, PermissionError) as e:
-                    logger.warning(f"⚠️ Could not remove old best checkpoint: {e}")
+                # Remove old best if different
+                if (
+                    old_best_path
+                    and old_best_path != best_checkpoint_path
+                    and os.path.exists(old_best_path)
+                ):
+                    try:
+                        shutil.rmtree(old_best_path)
+                        logger.info(
+                            f"🗑️ Removed old best: {os.path.basename(old_best_path)}"
+                        )
+                    except (OSError, PermissionError) as e:
+                        logger.warning(
+                            f"⚠️ Could not remove old best checkpoint: {e}"
+                        )
 
         # Rotate checkpoints after best handling
         self._rotate_inference_checkpoints()
@@ -341,6 +373,7 @@ class CheckpointSaver:
         if not processor_saved:
             # Fallback: save image processor (if available) and create minimal preprocessor_config.json
             image_processor = None
+            video_processor = None
             try:
                 if processor is not None and hasattr(processor, "image_processor"):
                     image_processor = processor.image_processor
@@ -348,8 +381,16 @@ class CheckpointSaver:
                     processing_class, "image_processor"
                 ):
                     image_processor = processing_class.image_processor
+                # Try to extract video processor too
+                if processor is not None and hasattr(processor, "video_processor"):
+                    video_processor = processor.video_processor
+                elif processing_class is not None and hasattr(
+                    processing_class, "video_processor"
+                ):
+                    video_processor = processing_class.video_processor
             except Exception:
                 image_processor = None
+                video_processor = None
 
             if image_processor is not None:
                 try:
@@ -358,10 +399,18 @@ class CheckpointSaver:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to save image processor separately: {e}")
 
+            if video_processor is not None:
+                try:
+                    video_processor.save_pretrained(checkpoint_dir)
+                    logger.info("✅ [RANK 0] Video processor saved separately")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to save video processor separately: {e}")
+
             # Minimal preprocessor_config.json to keep HF happy
             preprocessor_config = {
                 "processor_class": "Qwen2VLProcessor",
                 "image_processor_type": "Qwen2VLImageProcessor",
+                "video_processor_type": "Qwen2VLVideoProcessor",
             }
             with open(
                 os.path.join(checkpoint_dir, "preprocessor_config.json"), "w"
@@ -525,6 +574,7 @@ class CheckpointSaver:
             preprocessor_config = {
                 "processor_class": "Qwen2VLProcessor",
                 "image_processor_type": "Qwen2VLImageProcessor",
+                "video_processor_type": "Qwen2VLVideoProcessor",
             }
             try:
                 with open(

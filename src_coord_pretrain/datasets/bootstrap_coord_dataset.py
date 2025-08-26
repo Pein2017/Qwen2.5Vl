@@ -133,7 +133,7 @@ class CoordBootstrapDataset(TorchDataset):
                     }
                 )
 
-            tok_any: Any = self.tokenizer(text, **tokenizer_kwargs)
+            tok_any = self.tokenizer(text, **tokenizer_kwargs)
             tok = cast(Mapping[str, torch.Tensor], tok_any)
             input_ids_t = cast(torch.Tensor, tok["input_ids"])
             attention_mask_t = cast(torch.Tensor, tok["attention_mask"])
