@@ -194,7 +194,7 @@ result = chat_processor.process_sample(sample_data)
 from src.config import load_config, get_config
 
 # Load configuration
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 
 # Access global config
 config = get_config()

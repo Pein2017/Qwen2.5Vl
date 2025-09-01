@@ -28,7 +28,7 @@ The BBU training pipeline has been extensively optimized for production use, ach
 
 ### **Configuration Setup**
 ```yaml
-# configs/bbu_v2_use_coord.yaml
+# configs/bbu_v2/coord_aux.yaml
 attn_implementation: "flash_attention_2"  # Enable FlashAttention v2
 model_max_length: 32000                   # Reasonable for memory efficiency
 ```
@@ -259,7 +259,7 @@ metrics_to_track = {
 ```bash
 # Benchmark training speed
 python scripts/benchmark_training.py \
-    --config configs/bbu_v2.yaml \
+    --config configs/bbu_v2/base.yaml \
     --steps 100 \
     --batch_sizes 1,2,4,8 \
     --attention_types eager,sdpa,flash_attention_2

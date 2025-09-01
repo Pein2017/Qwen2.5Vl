@@ -53,7 +53,12 @@ initialize_logging_from_env()
 logger = get_rank_aware_logger("inference")
 
 # Import new architecture components
-from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2VLProcessor, Qwen2VLVideoProcessor
+from transformers import (
+    AutoTokenizer,
+    Qwen2VLImageProcessor,
+    Qwen2VLProcessor,
+    Qwen2VLVideoProcessor,
+)
 
 from src_new.config.config import load_config
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
@@ -146,10 +151,10 @@ class InferenceEngine:
         self._coord_range = (int(rng.start_id), int(rng.end_exclusive))
         logger.info(f"🎯 Cached coordinate token range: {self._coord_range}")
 
-        # CRITICAL FIX: Always load teacher pool if available to match training pipeline
-        # During training, teacher examples are randomly assigned to samples
+        # CRITICAL FIX: Load teacher pool manager for dynamic pairing (matches training pipeline)
+        # During training, teacher examples are dynamically assigned based on student content
         # We need to replicate this behavior during inference
-        self.teacher_samples = []
+        self.teacher_pool_manager = None
         teacher_pool_path: Optional[str] = None
 
         # Resolve teacher pool path using DataResolver first (authoritative to data_root);
@@ -200,46 +205,36 @@ class InferenceEngine:
 
         if teacher_pool_path and os.path.exists(teacher_pool_path):
             try:
-                with open(teacher_pool_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            self.teacher_samples.append(json.loads(line))
-                logger.info(
-                    f"Loaded {len(self.teacher_samples)} teacher examples from {teacher_pool_path}"
+                # Load teacher pool manager for dynamic pairing (same as training)
+                from src_new.data.teacher_pool import TeacherPoolManager
+
+                self.teacher_pool_manager = TeacherPoolManager(
+                    teacher_pool_file=teacher_pool_path, config=self.config
                 )
-                # Strict validation of loaded teacher samples
-                for idx, ts in enumerate(self.teacher_samples):
-                    if not isinstance(ts, dict):
-                        raise ValueError(
-                            f"Teacher sample at index {idx} must be a dict, got {type(ts)}"
-                        )
-                    if "images" not in ts or "objects" not in ts:
-                        raise ValueError(
-                            f"Teacher sample at index {idx} missing required keys 'images' and/or 'objects'"
-                        )
-                    if not isinstance(ts["images"], list) or len(ts["images"]) == 0:
-                        raise ValueError(
-                            f"Teacher sample at index {idx} must include a non-empty 'images' list"
-                        )
-                    if not isinstance(ts["objects"], list):
-                        raise ValueError(
-                            f"Teacher sample at index {idx} 'objects' must be a list"
-                        )
+                logger.info(
+                    f"✅ Teacher pool manager loaded with {len(self.teacher_pool_manager.teacher_pool)} examples for dynamic pairing"
+                )
+                # Keep legacy teacher_samples for backward compatibility
+                self.teacher_samples = self.teacher_pool_manager.teacher_pool
             except Exception as e:
                 logger.warning(
-                    f"Failed to load teacher pool from {teacher_pool_path}: {e}"
+                    f"Failed to load teacher pool manager from {teacher_pool_path}: {e}"
                 )
+                self.teacher_samples = []
         else:
             # Strict: do not proceed silently without teachers when configured
             logger.warning(
                 f"Teacher pool file not found or unreadable: {candidate_path}"
             )
+            self.teacher_samples = []
 
         # Use teacher guidance only when explicitly requested via num_teachers > 0
-        if self.teacher_samples and self.num_teachers > 0:
+        if self.teacher_pool_manager and self.num_teachers > 0:
             logger.info(
-                f"Using {self.num_teachers} teacher(s) per sample to match training"
+                f"🎯 Dynamic teacher pairing enabled: {self.num_teachers} teacher(s) per sample"
+            )
+            logger.info(
+                f"📚 Teacher samples serve as context input only (no teacher loss computation during inference)"
             )
             # Force batch_size=1 for teacher guidance
             if self.batch_size > 1:
@@ -247,9 +242,9 @@ class InferenceEngine:
                     f"Teacher guidance requires batch_size=1. Changing from {self.batch_size} to 1."
                 )
                 self.batch_size = 1
-        elif self.num_teachers > 0 and not self.teacher_samples:
+        elif self.num_teachers > 0 and not self.teacher_pool_manager:
             logger.warning(
-                f"Teacher guidance requested ({self.num_teachers} teachers) but no teacher pool file provided"
+                f"Teacher guidance requested ({self.num_teachers} teachers) but no teacher pool manager available"
             )
 
         logger.info("✅ InferenceEngine initialized successfully")
@@ -507,7 +502,10 @@ class InferenceEngine:
             proc_from_ckpt = Qwen2VLProcessor.from_pretrained(
                 self.config.model_path, trust_remote_code=True
             )
-            video_processor = getattr(proc_from_ckpt, "video_processor", None) or Qwen2VLVideoProcessor()
+            video_processor = (
+                getattr(proc_from_ckpt, "video_processor", None)
+                or Qwen2VLVideoProcessor()
+            )
         except Exception:
             video_processor = Qwen2VLVideoProcessor()
 
@@ -586,10 +584,16 @@ class InferenceEngine:
         return teacher_samples
 
     def _sample_teachers(self, seed: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Sample random teacher examples."""
+        """Sample teachers using dynamic pairing (same as training pipeline)."""
+        if not self.teacher_pool_manager or self.num_teachers <= 0:
+            return []
+
         if seed is not None:
             random.seed(seed)
 
+        # For inference, we need a dummy student sample to trigger dynamic pairing
+        # Since we don't have the actual student sample here, we'll use random selection
+        # as a fallback, but the actual dynamic pairing happens in prepare_inference_inputs
         if self.num_teachers >= len(self.teacher_samples):
             return self.teacher_samples.copy()
 
@@ -642,8 +646,17 @@ class InferenceEngine:
         if seed is not None:
             random.seed(seed)
 
-        # Sample teacher examples (same logic as training Dataset.__getitem__)
-        teachers = self._sample_teachers(seed)
+        # Use dynamic teacher pairing (same as training pipeline)
+        if self.teacher_pool_manager and self.num_teachers > 0:
+            teachers = self.teacher_pool_manager.select_teachers_for_student(
+                student_sample, num_samples=self.num_teachers
+            )
+            logger.debug(
+                f"🎯 Dynamic teacher pairing selected {len(teachers)} teachers for student"
+            )
+        else:
+            # Fallback to random sampling if no teacher pool manager
+            teachers = self._sample_teachers(seed)
 
         logger.debug(f"🎯 TRAINING-MATCHED INFERENCE SETUP:")
         logger.debug(f"   Teachers: {len(teachers)}")

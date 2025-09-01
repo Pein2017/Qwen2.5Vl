@@ -256,7 +256,7 @@ tail -f checkpoints/*/training.log
 
 # 4. Evaluation
 python -m src_new.inference \
-  --config_path configs/bbu_v2.yaml \
+  --config_path configs/bbu_v2/base.yaml \
   --model_path checkpoints/best \
   --input_file data/val.jsonl \
   --output_file results/val.json \
@@ -389,7 +389,7 @@ The inference system provides comprehensive support for production deployment wi
 #### **Basic Inference Usage**
 ```bash
 python -m src_new.inference \
-  --config_path configs/bbu_v2.yaml \
+  --config_path configs/bbu_v2/base.yaml \
   --model_path path/to/checkpoint \
   --input_file data/test_samples.jsonl \
   --output_file results.json \
@@ -402,9 +402,9 @@ from src_new.inference import InferenceEngine
 from src_new.config.config import load_config
 
 # Initialize inference engine
-env = load_config('configs/bbu_v2.yaml')
+env = load_config('configs/bbu_v2/base.yaml')
 engine = InferenceEngine(
-    config_path='configs/bbu_v2.yaml',
+    config_path='configs/bbu_v2/base.yaml',
     model_path='checkpoints/best',
     teacher_pool_file='data/teacher_pool.jsonl',
     num_teachers=1,

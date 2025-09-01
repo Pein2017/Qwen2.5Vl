@@ -55,7 +55,7 @@ cd /data3/Qwen2.5-VL-main
 
 ## 🔧 **Configuration**
 
-### **Key Parameters in `configs/bbu_v2_debug.yaml`**
+### **Key Parameters in `configs/bbu_v2/debug.yaml`**
 ```yaml
 # Teacher-Student Training
 teacher_ratio: 0.5                    # 50% of samples get teachers
@@ -76,7 +76,7 @@ max_steps: 100
 
 ### **Production Configuration**
 ```yaml
-# configs/bbu_v2.yaml (production)
+# configs/bbu_v2/base.yaml (production)
 teacher_ratio: 0.5
 num_teacher_samples: 1
 teacher_loss_weight: 0.5

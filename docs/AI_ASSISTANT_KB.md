@@ -11,7 +11,7 @@ Purpose: Minimal, canonical facts and pointers to operate, debug, and extend `sr
 - Inference (CLI):
   ```bash
 python -m src_new.inference \
-  --config_path configs/bbu_v2.yaml \
+  --config_path configs/bbu_v2/base.yaml \
   --model_path checkpoints/best \
   --input_file data/val.jsonl \
   --output_file results/val.json \

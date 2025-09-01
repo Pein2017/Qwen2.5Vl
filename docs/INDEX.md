@@ -16,7 +16,7 @@ Minimal, AI-assistant–oriented navigation. Canonical facts live in two deep di
 
 ## Commands
 - Train: `python scripts/train_new.py --config bbu_v2`
-- Infer: `python -m src_new.inference --config_path configs/bbu_v2.yaml --model_path checkpoints/best --input_file data/val.jsonl --output_file results/val.json --data_root /abs/path`
+- Infer: `python -m src_new.inference --config_path configs/bbu_v2/base.yaml --model_path checkpoints/best --input_file data/val.jsonl --output_file results/val.json --data_root /abs/path`
 - Tests: `python -m pytest src_new/tests -q`
 
 ## Files to Read First

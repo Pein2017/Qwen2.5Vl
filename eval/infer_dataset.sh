@@ -7,12 +7,12 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-MODEL_PATH="outputs/output-818-coord_pretrain-ep50-coord_aux-Prog_longer/818-coord_pretrain-ep50-coord_aux-Prog_longer/checkpoint-550"  
-EXP_NAME="output-818-ep50-Prog_longer"           
-CONFIG_PATH="configs/bbu_v2_use_coord.yaml"
+MODEL_PATH="outputs/8-30-standard_phase_3/8-30-standard_phase_3-ep50-merger_5e-4-top_lr-5e-6-vison_1e-7/checkpoint-1100"  
+EXP_NAME="8-30-standard_phase_3"           
+CONFIG_PATH="configs/phase_3/standard.yaml"
 
 # Dataset to process (single dataset per run)
-DATASET="val"                  # "train" or "val"
+DATASET="train"                  # "train" or "val"
 DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory - centralized data resolver will auto-discover all files
 OUTPUT_BASE="infer_results" 
 
@@ -30,7 +30,7 @@ ENABLE_TORCH_COMPILE=false
 # Force eager attention to avoid Flash Attention triton issues
 FORCE_EAGER_ATTENTION=true
 
-MAX_SAMPLES=200      
+MAX_SAMPLES=40      
 
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal

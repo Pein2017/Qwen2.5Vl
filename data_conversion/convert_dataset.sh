@@ -122,6 +122,9 @@ if [ "$RESIZE" = "true" ]; then
     ARGS="$ARGS --resize"
 fi
 
+# Enable occlusion stripping by default (can be removed if needed)
+ARGS="$ARGS --strip_occlusion"
+
 echo "🔄 Processing dataset: $DATASET_NAME ($INPUT_DIR)"
 echo "  └─ Executing: $PYTHON_CMD"
 

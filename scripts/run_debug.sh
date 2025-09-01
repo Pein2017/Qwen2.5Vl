@@ -1,18 +1,5 @@
 #!/bin/bash
 
-# =============================================================================
-# New Architecture Training Launch Script - OPTIMIZED
-# Uses src_new implementation with simplified configuration and modular design
-#
-# OPTIMIZATION: Removed 15+ performance-limiting environment variables:
-# - NCCL communication restrictions (NCCL_IB_DISABLE, NCCL_P2P_DISABLE)
-# - Excessive timeout settings (300s timeouts)
-# - CPU thread limitations (OMP_NUM_THREADS=1)
-# - Redundant TQDM settings
-# - Debug-only variables (NCCL_DEBUG)
-#
-# This allows PyTorch to use optimized defaults for better training efficiency.
-# =============================================================================
 
 set -euo pipefail
 
@@ -27,8 +14,8 @@ export PYTHONDONTWRITEBYTECODE=1
 PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 # Training configuration
-CONFIG_NAME="bbu_v2_debug"                      # Config to use: bbu_v2 
-GPU_DEVICES="0,1"                             # Single GPU for robust debugging
+CONFIG_NAME="phase_3/debug"                      # Config to use: bbu_v2
+GPU_DEVICES="4,5"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration

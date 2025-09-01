@@ -169,17 +169,11 @@ class FlexibleTaxonomyProcessor:
                     line_coords.extend([int(round(coord[0])), int(round(coord[1]))])
             return "line", line_coords
 
-        elif geometry_type == "Quad":
-            # Extract quad coordinates (first 4 points)
-            if coordinates and isinstance(coordinates[0], list):
-                points = coordinates[0]
-                quad_coords = []
-                for point in points[:4]:
-                    if isinstance(point, list) and len(point) >= 2:
-                        quad_coords.extend([int(round(point[0])), int(round(point[1]))])
-
-                if len(quad_coords) == 8:  # Valid quad
-                    return "quad", quad_coords
+        elif geometry_type in ["Quad", "Square"]:
+            # Extract quad coordinates using unified helper
+            quad_coords = CoordinateManager._extract_quad_coordinates(geometry)
+            if quad_coords:
+                return "quad", quad_coords
 
         # ExtentPolygon -> bbox_2d
         return "bbox_2d", bbox

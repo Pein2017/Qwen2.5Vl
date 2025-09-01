@@ -1,0 +1,19 @@
+num_train_epochs: 50
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1  
+learning_rate: 5.0e-5
+vision_lr: 1.0e-7
+merger_lr: 5.0e-4
+llm_lr: 5.0e-6
+
+
+run_name: "8-29-standard_phase_1-ep50-merger_5e-4"
+output_dir: /data3/Qwen2.5-VL-main/outputs/8-29-standard_phase_1
+
+phase_name: phase_1
+
+use_aug: false
+augmentation_schedule:
+  - { start_epoch: 0, preset: "off" }
+  - { start_epoch: 3, preset: "off" }

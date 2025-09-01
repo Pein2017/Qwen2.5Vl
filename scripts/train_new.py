@@ -277,6 +277,12 @@ def create_trainer_with_new_architecture(
     from src_new.data.teacher_pool import TeacherPoolManager
     from src_new.models.wrapper import DetectionModel
 
+    # New: Phase-based freezing manager for separate runs
+    try:
+        from src_new.training.phase_freeze_manager import PhaseFreezeManager
+    except Exception:
+        PhaseFreezeManager = None  # type: ignore
+
     # Load tokenizer and processor
     logger.info(f"Loading tokenizer and processor from {config.model_path}")
     tokenizer = AutoTokenizer.from_pretrained(
@@ -322,6 +328,11 @@ def create_trainer_with_new_architecture(
         config=config,
     )
 
+    # Disable augmentation for validation dataset by default (no config change required)
+    if getattr(val_dataset, "augmentation_pipeline", None) is not None:
+        val_dataset.augmentation_pipeline = None
+        logger.info("🔧 Validation: augmentation disabled by default")
+
     # Create data collator
     data_collator = create_data_collator(
         collator_type=config.collator_type, tokenizer=tokenizer, config=config
@@ -363,6 +374,33 @@ def create_trainer_with_new_architecture(
         skip_expansion=True,  # Expansion is externalized via migration script
     )
 
+    # Apply per-phase freezes before creating optimizer (separate-run scheduling)
+    if PhaseFreezeManager is not None:
+        try:
+            pfm = PhaseFreezeManager()
+            # Use explicit config.phase_name; skip when set to off
+            phase = str(getattr(config, "phase_name", "off") or "off").lower()
+            if phase not in ("off", "phase_1", "phase_2", "phase_3"):
+                raise ValueError(
+                    f"Invalid phase_name: {phase}. Expected one of: off, phase_1, phase_2, phase_3"
+                )
+            if phase != "off":
+                # Use internal per-phase defaults; only pass the phase name
+                summary = pfm.apply_phase(
+                    model,
+                    tokenizer,
+                    phase=phase,
+                )
+                logger.info(
+                    f"✅ PhaseFreeze applied: phase={summary.phase}, trainable≈{summary.num_trainable_params}"
+                )
+            else:
+                logger.info("PhaseFreeze is off; proceeding with default trainable set")
+        except Exception as e:
+            logger.warning(
+                f"⚠️ PhaseFreezeManager failed, continuing without staged freezes: {e}"
+            )
+
     # Create necessary directories for logging and TensorBoard
     from pathlib import Path
 
@@ -395,39 +433,18 @@ def create_trainer_with_new_architecture(
     except Exception as e:
         logger.warning(f"⚠️ Could not pre-create optimizer: {e}")
 
-    # Register progressive unfreeze callback when enabled via YAML
-    try:
-        if getattr(config, "prog_unfreeze_enabled", False):
-            from src_new.training.callbacks import ProgressiveUnfreezeCallback
+    # Progressive unfreeze callback is deprecated in favor of phase_name/PhaseFreezeManager
+    logger.info("⏭ ProgressiveUnfreezeCallback deprecated; skipping registration")
 
-            callback = ProgressiveUnfreezeCallback(
-                freeze_vision_llm_epochs=int(
-                    getattr(config, "prog_unfreeze_epoch_stage1_end", 1)
-                    or getattr(config, "num_train_epochs", 1)
-                ),
-                coord_slice_only=bool(
-                    getattr(config, "prog_unfreeze_coord_slice_only", True)
-                ),
-                stage0_end_epoch=getattr(
-                    config, "prog_unfreeze_epoch_stage0_end", None
-                ),
-                stage1_end_epoch=getattr(
-                    config, "prog_unfreeze_epoch_stage1_end", None
-                ),
-                top_k_layers=getattr(config, "prog_unfreeze_top_k_layers", None),
-            )
-            # Store trainer reference for HF compatibility
-            callback._trainer_ref = trainer
-            trainer.add_callback(callback)
-            logger.info(
-                "✅ Registered ProgressiveUnfreezeCallback (staged unfreeze enabled)"
-            )
-        else:
-            logger.info(
-                "🔧 Progressive unfreeze disabled by config - training with standard setup"
-            )
+    # Register augmentation schedule callback when provided via YAML
+    try:
+        if getattr(config, "augmentation_schedule", None):
+            from src_new.training.callbacks import AugmentationScheduleCallback
+
+            trainer.add_callback(AugmentationScheduleCallback())
+            logger.info("✅ Registered AugmentationScheduleCallback")
     except Exception as e:
-        logger.warning(f"⚠️ Could not register ProgressiveUnfreezeCallback: {e}")
+        logger.warning(f"⚠️ Could not register AugmentationScheduleCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
     from transformers import Qwen2VLProcessor, Qwen2VLVideoProcessor

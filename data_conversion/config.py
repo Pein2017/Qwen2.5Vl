@@ -69,6 +69,9 @@ class DataConversionConfig:
         4.0  # Weight for geometry diversity in teacher selection
     )
 
+    # Filtering options - OPTIONAL WITH DEFAULTS
+    remove_occlusion_tokens: bool = False  # Drop tokens containing "遮挡" from desc
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         self._setup_dataset_name()
@@ -161,6 +164,7 @@ class DataConversionConfig:
             "seed": self.seed,
             "hierarchy_path": self.hierarchy_path,
             "log_level": self.log_level,
+            "remove_occlusion_tokens": self.remove_occlusion_tokens,
         }
 
     @classmethod
@@ -181,6 +185,7 @@ class DataConversionConfig:
             "hierarchy_path": "hierarchy_path",
             "log_level": "log_level",
             "geometry_diversity_weight": "geometry_diversity_weight",
+            "strip_occlusion": "remove_occlusion_tokens",
         }
 
         for arg_name, config_field in arg_mapping.items():

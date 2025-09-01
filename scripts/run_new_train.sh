@@ -1,23 +1,5 @@
 #!/bin/bash
 
-# =============================================================================
-# New Architecture Training Launch Script - OPTIMIZED
-# Uses src_new implementation with simplified configuration and modular design
-#
-# OPTIMIZATION: Removed 15+ performance-limiting environment variables and added optimizations:
-# - NCCL communication restrictions (NCCL_IB_DISABLE, NCCL_P2P_DISABLE)
-# - Excessive timeout settings (300s timeouts)
-# - Redundant TQDM settings
-# - Debug-only variables (NCCL_DEBUG)
-#
-# ADDED CPU THREADING OPTIMIZATION:
-# - OMP_NUM_THREADS=8 (vs restrictive 1) - optimized for 56 cores, 6 GPUs
-# - MKL/OpenBLAS/Numba threading for better data loading performance
-# - Memory trimming and I/O optimizations
-#
-# This allows PyTorch to use optimized defaults for better training efficiency.
-# =============================================================================
-
 set -euo pipefail
 
 # =============================================================================
@@ -31,15 +13,45 @@ export PYTHONDONTWRITEBYTECODE=1
 PROJECT_ROOT="/data3/Qwen2.5-VL-main"
 
 
-# Training configuration
-CONFIG_NAME="bbu_v2"                      # Config to use: bbu_v2 
-GPU_DEVICES="0,1,2,3,4,5,6,7"                             # GPU devices (comma-separated) - start with single GPU for testing
-DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
+# Set configuration based on experiment number
+if [[ $# -eq 0 ]]; then
+    # Default configuration when no arguments provided
+    GPU_DEVICES="1,2,3,4"
+    LOG_NAME="run.log"
+    echo "🚀 Default run: GPUs 1,2,3,4 → run.log"
+else
+    EXP_NUM="$1"
+    case "$EXP_NUM" in
+        1)
+            GPU_DEVICES="0,1,2,3"
+            LOG_NAME="run_exp_1.log"
+            echo "🚀 Experiment 1: GPUs 0,1,2,3 → run_exp_1.log"
+            ;;
+        2)
+            GPU_DEVICES="4,5,6,7"
+            LOG_NAME="run_exp_2.log"
+            echo "🚀 Experiment 2: GPUs 4,5,6,7 → run_exp_2.log"
+            ;;
+        *)
+            echo "❌ Invalid experiment number: $EXP_NUM"
+            echo "💡 Usage: $0 [1|2]"
+            echo "  Default: GPUs 1,2,3,4 → run.log"
+            echo "  1: GPUs 0,1,2,3 → run_exp_1.log"
+            echo "  2: GPUs 4,5,6,7 → run_exp_2.log"
+            exit 1
+            ;;
+    esac
+fi
 
-# Logging configuration
-LOG_LEVEL="INFO"                          # Logging level: INFO (production) | DEBUG (development)
-to_console=false                             # true: console output, false: log to run_new.log
+# Fixed configuration
+CONFIG_NAME="phase_3/standard"
+DEEPSPEED_CONFIG="scripts/zero2.json"
+LOG_LEVEL="INFO"
+to_console=false
 
+# =============================================================================
+# ENVIRONMENT SETUP
+# =============================================================================
 
 setup_environment() {
     echo "🌍 Setting up environment for new architecture..."
@@ -210,19 +222,23 @@ launch_deepspeed() {
 # =============================================================================
 
 main() {
-    # Redirect output based on to_console mode
+    # Redirect output to log file
     if [[ "$to_console" == "false" ]]; then
-        exec > run_new.log 2>&1
+        exec > $LOG_NAME 2>&1
     fi
     
     echo "🚀 New Architecture Training Launcher (src_new)"
-    echo "   📄 Config: $CONFIG_NAME | 🖥️ GPUs: $GPU_DEVICES | 📊 Log: $LOG_LEVEL"
+    echo "   📄 Config: $CONFIG_NAME"
+    echo "   🖥️  GPUs: $GPU_DEVICES"
+    echo "   📄 Log file: $LOG_NAME"
+    echo "   📊 Log level: $LOG_LEVEL"
     echo "   🏗️  Architecture: src_new (simplified, modular design)"
     if [[ "$to_console" == "true" ]]; then
-        echo "   🐛 DEBUG MODE: Console output enabled"
+        echo "   🐛 Console output enabled"
     else
-        echo "   📄 Output redirected to run_new.log"
+        echo "   📄 Output will be redirected to $LOG_NAME"   
     fi
+    echo ""
     
     setup_environment
     determine_deepspeed_usage
@@ -264,5 +280,5 @@ PY
 # SCRIPT EXECUTION
 # =============================================================================
 
-# Run main function with all arguments
-main "$@"
+# Run main function
+main

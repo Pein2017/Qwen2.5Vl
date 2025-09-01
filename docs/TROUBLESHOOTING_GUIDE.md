@@ -21,7 +21,7 @@ ls -la data/  # Should see train.jsonl, val.jsonl, teacher_pool.jsonl
 head -1 data/train.jsonl | python -m json.tool  # Verify format
 
 # Check configuration
-python -c "from src_new.config.config import load_config; config = load_config('configs/bbu_v2.yaml'); print('✅ Config OK')"
+python -c "from src_new.config.config import load_config; config = load_config('configs/bbu_v2/base.yaml'); print('✅ Config OK')"
 ```
 
 #### **Common Startup Issues**
@@ -228,7 +228,7 @@ print(f'✅ CUDA: {torch.cuda.is_available()}')
 print(f'✅ GPU Count: {torch.cuda.device_count()}')
 print(f'✅ PyTorch: {torch.__version__}')
 
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 print('✅ Configuration loaded successfully')
 
 print('✅ All systems operational')
@@ -243,7 +243,7 @@ from src_new.data.dataset import BBUDataset
 from src_new.config.config import load_config
 from transformers import AutoTokenizer
 
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 tokenizer = AutoTokenizer.from_pretrained(config.model_path)
 dataset = BBUDataset(config, tokenizer, split='train')
 
@@ -257,7 +257,7 @@ print('✅ Data pipeline operational')
 ### **Training Pipeline Test**
 ```bash
 # Quick training test
-python scripts/train.py --config configs/bbu_v2.yaml --max_steps 5 --output_dir /tmp/test_run
+python scripts/train.py --config configs/bbu_v2/base.yaml --max_steps 5 --output_dir /tmp/test_run
 
 # Check for successful completion
 if [ $? -eq 0 ]; then
@@ -322,7 +322,7 @@ fi
 ### **Common Resolution Steps**
 1. **Restart from clean state**: Remove checkpoints and temporary files
 2. **Verify environment**: Check CUDA, PyTorch, and dependency versions
-3. **Test with debug config**: Use `configs/bbu_v2_debug.yaml` for faster iteration
+3. **Test with debug config**: Use `configs/bbu_v2/debug.yaml` for faster iteration
 4. **Check logs**: Look for specific error messages and warning patterns
 5. **Run validation tests**: Use pytest to validate individual components
 

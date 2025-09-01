@@ -69,7 +69,7 @@ The system supports two operational modes:
 - **Coordinates**: Integer format `[150,10,211,35]`
 - **Vocabulary**: Minimal extension (+4 geometry tokens)
 - **Use Case**: Production training with stable performance
-- **Configuration**: `configs/bbu_v2.yaml`
+- **Configuration**: `configs/bbu_v2/base.yaml`
 
 #### **Coordinate Mode** (Advanced Features)
 - **Coordinates**: Token format `[<|coord_150|>,<|coord_10|>,<|coord_211|>,<|coord_35|>]`

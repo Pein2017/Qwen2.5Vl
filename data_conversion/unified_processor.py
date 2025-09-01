@@ -7,8 +7,9 @@ Merged SampleExtractor directly into UnifiedProcessor to eliminate redundancy.
 """
 
 import logging
-import random
+import statistics
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -79,6 +80,7 @@ class UnifiedProcessor:
         self.image_processor = ImageProcessor(config)
         self.teacher_selector = TeacherSelector(
             label_hierarchy=self.label_hierarchy,
+            allowed_object_types=set(config.object_types),
             max_teachers=config.max_teachers,
             seed=config.seed,
         )
@@ -172,6 +174,25 @@ class UnifiedProcessor:
         combo = f"{obj_type}/{prop}" if prop else obj_type
         return combo in allowed_props
 
+    def _sanitize_description(self, desc: str) -> str:
+        """Remove auxiliary occlusion tokens (contains '遮挡') per level/token.
+        - Split by '/' into levels, by ',' within levels.
+        - Drop any token containing '遮挡'.
+        - Rejoin; drop empty levels.
+        """
+        if not desc or not isinstance(desc, str):
+            return desc
+        levels = [lvl.strip() for lvl in desc.split("/")]
+        kept_levels = []
+        for lvl in levels:
+            if not lvl:
+                continue
+            tokens = [t.strip() for t in lvl.split(",")]
+            kept_tokens = [t for t in tokens if t and ("遮挡" not in t)]
+            if kept_tokens:
+                kept_levels.append(",".join(kept_tokens))
+        return "/".join(kept_levels)
+
     def extract_objects_from_datalist(self, data_list: List[Dict]) -> List[Dict]:
         """Extract objects from dataList format."""
         objects = []
@@ -206,7 +227,10 @@ class UnifiedProcessor:
                 content_dict, self.config.response_types, "chinese"
             )
             if desc:
-                objects.append({"bbox_2d": bbox, "desc": desc})
+                if getattr(self.config, "remove_occlusion_tokens", False):
+                    desc = self._sanitize_description(desc)
+                if desc:
+                    objects.append({"bbox_2d": bbox, "desc": desc})
 
         return objects
 
@@ -214,6 +238,12 @@ class UnifiedProcessor:
         """Extract objects from markResult features with native geometry types."""
         # Use hierarchical processor for V2 data support
         objects = self.hierarchical_processor.extract_objects_from_markresult(features)
+        # Apply sanitizer if configured
+        if getattr(self.config, "remove_occlusion_tokens", False):
+            for obj in objects:
+                d = obj.get("desc", "")
+                if d:
+                    obj["desc"] = self._sanitize_description(d)
         return objects
 
     def process_single_sample(self, json_path: Path) -> Optional[Dict]:
@@ -331,6 +361,13 @@ class UnifiedProcessor:
         """Filter objects using comprehensive validation with reporting."""
         if not objects:
             return objects
+
+        # Re-sanitize descriptions right before validation/output, in case any slipped through
+        if getattr(self.config, "remove_occlusion_tokens", False):
+            for obj in objects:
+                d = obj.get("desc", "")
+                if d:
+                    obj["desc"] = self._sanitize_description(d)
 
         # Use ValidationManager to filter objects
         valid_objects, invalid_objects = self.validation_manager.filter_valid_objects(
@@ -584,7 +621,9 @@ class UnifiedProcessor:
 
         # Select teacher samples first (before train/val split)
         teacher_selector = self.teacher_selector
-        teacher_samples, teacher_indices = teacher_selector.select_teachers(all_samples)
+        teacher_samples, teacher_indices, teacher_stats = (
+            teacher_selector.select_teachers(all_samples)
+        )
 
         # Remove teacher samples from the pool
         remaining_samples = [
@@ -597,6 +636,9 @@ class UnifiedProcessor:
         logger.info(
             f"✅ Split complete: {len(train_samples)} train, {len(val_samples)} val, {len(teacher_samples)} teacher samples"
         )
+
+        # Store teacher stats for later export
+        self._teacher_pool_stats = teacher_stats
 
         return train_samples, val_samples, teacher_samples
 
@@ -628,6 +670,13 @@ class UnifiedProcessor:
 
         # Extract and export unique labels from original samples
         self._export_label_vocabulary(all_direct_samples)
+
+        # Write teacher pool stats if available
+        stats = getattr(self, "_teacher_pool_stats", None)
+        if isinstance(stats, dict) and stats:
+            stats_path = self.output_dir / "teacher_pool_stats.json"
+            FileOperations.save_json_data(stats, stats_path, indent=2)
+            logger.info(f"📈 Teacher pool stats written to {stats_path}")
 
         # Export validation reports
         self._export_validation_reports()
@@ -847,216 +896,379 @@ class UnifiedProcessor:
 
 
 class TeacherSelector:
-    """Selects diverse teacher samples covering all labels and scene types."""
+    """Deterministic teacher pool builder using fixed vocabulary coverage.
+
+    Implements a greedy set-cover over a fixed universe of canonical tokens
+    derived from attribute taxonomy/mapping. Falls back to a simple free
+    vocabulary if the taxonomy/mapping files are unavailable.
+    """
+
+    FREE_TOP_K_PER_TYPE: int = 50
 
     def __init__(
         self,
         label_hierarchy: Dict[str, List[str]],
+        allowed_object_types: Set[str],
         max_teachers: int = 10,
         seed: int = 42,
     ):
         self.label_hierarchy = label_hierarchy
+        self.allowed_object_types = allowed_object_types
         self.max_teachers = max_teachers
         self.seed = seed
 
-        # Extract all possible labels from hierarchy
-        self.all_labels = set()
-        for obj_type, props in label_hierarchy.items():
-            self.all_labels.add(obj_type)
-            self.all_labels.update(props)
+        # Chinese → English object type mapping (static fallback)
+        self.cn2en_types: Dict[str, str] = {
+            "BBU设备": "bbu",
+            "挡风板": "bbu_shield",
+            "螺丝、光纤插头": "connect_point",
+            "标签": "label",
+            "光纤": "fiber",
+            "电线": "wire",
+        }
+
+        # Load fixed universe from taxonomy/mapping if available
+        (
+            self.mode,
+            self.universe_units,
+            self.unit_to_objtypes,
+            self.objtype_cn_by_en,
+        ) = self._build_universe()
 
         logger.info(
-            f"Initialized TeacherSelector with {len(self.all_labels)} labels, max_teachers={max_teachers}"
+            f"Initialized TeacherSelector mode={self.mode}, units={len(self.universe_units)}, max_teachers={max_teachers}"
         )
 
-    def _extract_sample_labels(self, sample: Dict) -> Set[str]:
-        """Extract all labels present in a sample."""
-        labels_in_sample = set()
-        objects = sample.get("objects", [])
+    def _build_universe(
+        self,
+    ) -> Tuple[str, Set[str], Dict[str, Set[str]], Dict[str, str]]:
+        """Build coverage universe from fixed taxonomy/mapping; fallback to free mode.
 
-        for obj in objects:
+        Returns:
+            (mode, universe_units, unit_to_objtypes, objtype_cn_by_en)
+        """
+        base_dir = Path(__file__).parent
+        taxonomy_path = base_dir / "attribute_taxonomy.json"
+        mapping_path = base_dir / "hierarchical_attribute_mapping.json"
+
+        if taxonomy_path.exists() and mapping_path.exists():
+            try:
+                taxonomy = FileOperations.load_json_data(taxonomy_path)
+                mapping = FileOperations.load_json_data(mapping_path)
+                units: Set[str] = set()
+                unit_to_objtypes: Dict[str, Set[str]] = defaultdict(set)
+                objtype_cn_by_en: Dict[str, str] = {}
+
+                # From mapping: object types and attributes
+                obj_types_map = mapping.get("object_types", {})
+                for en_type, spec in obj_types_map.items():
+                    cn_label = spec.get("chinese_label", "").strip()
+                    if cn_label:
+                        units.add(cn_label)
+                        unit_to_objtypes[cn_label].add(en_type)
+                        objtype_cn_by_en[en_type] = cn_label
+
+                    attributes = spec.get("attributes", [])
+                    for attr in attributes:
+                        if attr.get("is_free_text"):
+                            continue  # exclude free text
+                        values = attr.get("values")
+                        if isinstance(values, dict):
+                            kv_pairs = list(values.items())
+                        elif isinstance(values, list):
+                            kv_pairs = [(v, v) for v in values]
+                        else:
+                            kv_pairs = []
+
+                        for k, v in kv_pairs:
+                            for token in self._split_tokens(k) | self._split_tokens(v):
+                                units.add(token)
+                                unit_to_objtypes[token].add(en_type)
+
+                # Also incorporate explicit values from taxonomy attribute_groups
+                attr_groups = taxonomy.get("attribute_groups", {})
+                for group in attr_groups.values():
+                    attrs = group.get("attributes", {})
+                    for attr in attrs.values():
+                        vals = attr.get("values")
+                        if vals == "free_text":
+                            continue
+                        if isinstance(vals, dict):
+                            candidates = list(vals.keys()) + list(vals.values())
+                        elif isinstance(vals, list):
+                            candidates = vals
+                        else:
+                            candidates = []
+                        for c in candidates:
+                            for token in self._split_tokens(c):
+                                units.add(token)
+                                # Heuristic association: if applies_to present, map tokens to those types
+                                applies = attr.get("applies_to")
+                                if isinstance(applies, list):
+                                    for en_type in applies:
+                                        unit_to_objtypes[token].add(en_type)
+
+                # Filter units by allowed object types if mappings are exclusive
+                if self.allowed_object_types:
+                    filtered_units: Set[str] = set()
+                    for token in units:
+                        types = unit_to_objtypes.get(token)
+                        if not types:
+                            filtered_units.add(token)
+                        elif set(types) & self.allowed_object_types:
+                            filtered_units.add(token)
+                    units = filtered_units
+
+                return "fixed", units, unit_to_objtypes, objtype_cn_by_en
+            except Exception as e:
+                logger.warning(
+                    f"Failed loading fixed taxonomy/mapping: {e}; falling back to free mode"
+                )
+
+        # Fallback: universe will be derived later from dataset (free mode)
+        return "free", set(), defaultdict(set), {}
+
+    @staticmethod
+    def _split_tokens(text: str) -> Set[str]:
+        if not isinstance(text, str) or not text.strip():
+            return set()
+        parts: List[str] = []
+        for level in text.split("/"):
+            parts.extend([p.strip() for p in level.split(",")])
+        return {p for p in parts if p}
+
+    @staticmethod
+    def _geometry_types(sample: Dict) -> Set[str]:
+        g: Set[str] = set()
+        for obj in sample.get("objects", []):
+            if "bbox_2d" in obj:
+                g.add("bbox_2d")
+            if "quad" in obj:
+                g.add("quad")
+            if "line" in obj:
+                g.add("line")
+        return g
+
+    def _extract_units(self, sample: Dict) -> Set[str]:
+        tokens: Set[str] = set()
+        for obj in sample.get("objects", []):
             desc = obj.get("desc", "")
             if not desc:
                 continue
+            tokens |= self._split_tokens(desc)
+        if self.mode == "fixed":
+            return tokens & self.universe_units
+        return tokens
 
-            # Parse Chinese compact format: "螺丝、光纤插头/显示完整/BBU安装螺丝"
-            parts = desc.split("/")
-            for part in parts:
-                clean_part = part.strip()
-                if clean_part:
-                    labels_in_sample.add(clean_part)
+    def _detect_brand(self, sample_tokens: Set[str]) -> str:
+        for brand in ("华为", "中兴", "爱立信"):
+            if brand in sample_tokens:
+                return brand
+        return "unknown"
 
-        return labels_in_sample
+    def _build_free_universe(self, samples: List[Dict]) -> Set[str]:
+        # Build per-type token DF and select top-K per allowed type
+        df_by_type: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for s in samples:
+            seen_in_sample_by_type: Dict[str, Set[str]] = defaultdict(set)
+            for obj in s.get("objects", []):
+                desc = obj.get("desc", "")
+                if not desc:
+                    continue
+                parts = [p.strip() for p in desc.split("/") if p.strip()]
+                obj_type_cn = parts[0] if parts else ""
+                en_type = self.cn2en_types.get(obj_type_cn, "unknown")
+                if en_type != "unknown" and en_type not in self.allowed_object_types:
+                    continue
+                tokens = self._split_tokens(desc)
+                seen_in_sample_by_type[en_type] |= tokens
+            for en_type, toks in seen_in_sample_by_type.items():
+                for t in toks:
+                    df_by_type[en_type][t] += 1
 
-    def _calculate_object_density(self, sample: Dict) -> str:
-        """Calculate object density category."""
-        object_count = len(sample.get("objects", []))
+        universe: Set[str] = set()
+        for en_type, counter in df_by_type.items():
+            if en_type == "unknown":
+                continue
+            # Select top-K tokens
+            top = sorted(counter.items(), key=lambda kv: -kv[1])[
+                : self.FREE_TOP_K_PER_TYPE
+            ]
+            for token, _ in top:
+                universe.add(token)
+                self.unit_to_objtypes[token].add(en_type)
+        return universe
 
-        if object_count <= 3:
-            return "sparse"
-        elif object_count <= 8:
-            return "medium"
-        else:
-            return "dense"
-
-    def _calculate_spatial_coverage(self, sample: Dict) -> float:
-        """Calculate how much of the image space is covered by objects."""
-        objects = sample.get("objects", [])
-        if not objects:
-            return 0.0
-
-        width = sample.get("width", 1)
-        height = sample.get("height", 1)
-        total_area = width * height
-
-        covered_area = 0
-        for obj in objects:
-            if "bbox_2d" in obj:
-                bbox = obj["bbox_2d"]
-                if len(bbox) >= 4:
-                    x_min, y_min, x_max, y_max = bbox[:4]
-                    area = max(0, x_max - x_min) * max(0, y_max - y_min)
-                    covered_area += area
-
-        return min(1.0, covered_area / total_area)
-
-    def _calculate_geometry_diversity(self, sample: Dict) -> int:
-        """Calculate geometry type diversity (bbox_2d, quad, line)."""
-        geometry_types = set()
-        objects = sample.get("objects", [])
-
-        for obj in objects:
-            if "bbox_2d" in obj:
-                geometry_types.add("bbox_2d")
-            elif "quad" in obj:
-                geometry_types.add("quad")
-            elif "line" in obj:
-                geometry_types.add("line")
-
-        return len(geometry_types)
-
-    def select_teachers(self, samples: List[Dict]) -> Tuple[List[Dict], List[int]]:
-        """
-        Select diverse teacher samples using label coverage and scene diversity.
+    def select_teachers(
+        self, samples: List[Dict]
+    ) -> Tuple[List[Dict], List[int], Dict]:
+        """Deterministic greedy selection based on fixed rules.
 
         Returns:
-            Tuple of (teacher_samples, selected_indices)
+            teacher_samples, selected_indices, stats_dict
         """
         if not samples:
             logger.warning("No samples provided for teacher selection")
-            return [], []
+            return [], [], {}
 
         if len(samples) <= self.max_teachers:
             logger.info(
                 f"Using all {len(samples)} samples as teachers (below max_teachers)"
             )
-            return samples, list(range(len(samples)))
+            # Minimal stats
+            stats = {
+                "mode": self.mode,
+                "pool_size": len(samples),
+                "max_teachers": self.max_teachers,
+            }
+            return samples, list(range(len(samples))), stats
 
-        # Set random seed for reproducibility
-        random.seed(self.seed)
+        # Build universe if in free mode
+        if self.mode == "free":
+            self.universe_units = self._build_free_universe(samples)
 
-        # Pre-calculate metadata for all samples
-        metadata_list = []
-        for i, sample in enumerate(samples):
-            labels = self._extract_sample_labels(sample)
-            density = self._calculate_object_density(sample)
-            spatial_coverage = self._calculate_spatial_coverage(sample)
-            geometry_diversity = self._calculate_geometry_diversity(sample)
+        # Precompute per-sample metadata
+        per_sample_units: List[Set[str]] = []
+        per_sample_tokens: List[Set[str]] = []
+        per_sample_geometry: List[Set[str]] = []
+        per_sample_brand: List[str] = []
+        object_counts: List[int] = []
+        for s in samples:
+            tokens = (
+                self._extract_units(s)
+                if self.mode == "fixed"
+                else self._extract_units(s)
+            )
+            per_sample_tokens.append(tokens)
+            per_sample_units.append(
+                tokens if self.mode == "fixed" else (tokens & self.universe_units)
+            )
+            per_sample_geometry.append(self._geometry_types(s))
+            per_sample_brand.append(self._detect_brand(tokens))
+            object_counts.append(len(s.get("objects", [])))
 
-            metadata_list.append(
-                {
-                    "index": i,
-                    "labels": labels,
-                    "density": density,
-                    "spatial_coverage": spatial_coverage,
-                    "geometry_diversity": geometry_diversity,
-                    "label_count": len(labels),
-                }
+        median_objects = statistics.median(object_counts) if object_counts else 0
+        selected: List[int] = []
+        units_remaining: Set[str] = set(self.universe_units)
+        selected_geometries: Set[str] = set()
+        brand_counts: Dict[str, int] = defaultdict(int)
+
+        # Helper to produce sort key per candidate (recomputed each round)
+        def candidate_key(idx: int) -> Tuple:
+            units_hit = len(per_sample_units[idx] & units_remaining)
+            geom = per_sample_geometry[idx]
+            has_line = 1 if "line" in geom else 0
+            # Only activate line preference if fiber/wire-related units remain
+            fiber_wire_remaining = any(
+                (
+                    self.unit_to_objtypes.get(u)
+                    and (self.unit_to_objtypes[u] & {"fiber", "wire"})
+                )
+                for u in units_remaining
+            )
+            line_pref = has_line if fiber_wire_remaining else 0
+            brand = per_sample_brand[idx]
+            brand_balance = brand_counts[brand]
+            geom_novelty = len(geom - selected_geometries)
+            obj_delta = abs(object_counts[idx] - median_objects)
+            # Lexicographic fallback by first image path
+            img_path = ""
+            imgs = samples[idx].get("images") or []
+            if imgs:
+                img_path = str(imgs[0])
+            # Sort by descending units_hit, then line_pref, ascending brand_balance, descending geom_novelty, ascending obj_delta, lexicographic path
+            return (
+                -units_hit,
+                -line_pref,
+                brand_balance,
+                -geom_novelty,
+                obj_delta,
+                img_path,
             )
 
-        logger.debug(f"Calculated metadata for {len(metadata_list)} samples")
-
-        # Greedy selection for label coverage + diversity
-        selected_indices = []
-        covered_labels = set()
-        density_counts = {"sparse": 0, "medium": 0, "dense": 0}
-
-        # Priority 1: Ensure each object type is covered
-        object_types_needed = set(self.label_hierarchy.keys())
-        for metadata in sorted(metadata_list, key=lambda x: -x["label_count"]):
-            if len(selected_indices) >= self.max_teachers:
+        # Phase B: Greedy cover until cap or universe exhausted
+        candidate_indices = list(range(len(samples)))
+        while units_remaining and len(selected) < self.max_teachers:
+            # Filter candidates that contribute anything
+            contributing = [
+                i for i in candidate_indices if (per_sample_units[i] & units_remaining)
+            ]
+            if not contributing:
                 break
+            best = min(contributing, key=candidate_key)
+            selected.append(best)
+            units_remaining -= per_sample_units[best]
+            selected_geometries |= per_sample_geometry[best]
+            brand_counts[per_sample_brand[best]] += 1
+            candidate_indices.remove(best)
 
-            sample_object_types = metadata["labels"] & object_types_needed
-            if sample_object_types:
-                selected_indices.append(metadata["index"])
-                covered_labels.update(metadata["labels"])
-                object_types_needed -= sample_object_types
-                density_counts[metadata["density"]] += 1
-                logger.debug(
-                    f"Selected sample {metadata['index']} for object types: {sample_object_types}"
+        # Phase C: Cap and fill for diversity if capacity remains
+        if len(selected) < self.max_teachers and candidate_indices:
+
+            def fill_key(idx: int) -> Tuple:
+                geom = per_sample_geometry[idx]
+                geom_novelty = len(geom - selected_geometries)
+                brand = per_sample_brand[idx]
+                brand_balance = brand_counts[brand]
+                pool_units_seen = self.universe_units - units_remaining
+                pool_novelty = len(per_sample_units[idx] - pool_units_seen)
+                obj_delta = abs(object_counts[idx] - median_objects)
+                img_path = ""
+                imgs = samples[idx].get("images") or []
+                if imgs:
+                    img_path = str(imgs[0])
+                # Prefer higher geom_novelty, lower brand_balance, higher pool_novelty, lower obj_delta
+                return (
+                    -geom_novelty,
+                    brand_balance,
+                    -pool_novelty,
+                    obj_delta,
+                    img_path,
                 )
 
-        # Priority 2: Fill remaining slots with diverse samples
-        remaining_metadata = [
-            m for m in metadata_list if m["index"] not in selected_indices
-        ]
+            remaining_sorted = sorted(candidate_indices, key=fill_key)
+            for idx in remaining_sorted:
+                if len(selected) >= self.max_teachers:
+                    break
+                selected.append(idx)
+                selected_geometries |= per_sample_geometry[idx]
+                brand_counts[per_sample_brand[idx]] += 1
 
-        # Score remaining samples by uncovered labels + diversity factors
-        for metadata in remaining_metadata:
-            if len(selected_indices) >= self.max_teachers:
-                break
+        selected = sorted(set(selected))
+        teacher_samples = [samples[i] for i in selected]
 
-            uncovered_labels = metadata["labels"] - covered_labels
-            uncovered_score = len(uncovered_labels)
-
-            # Density diversity bonus (prefer underrepresented density types)
-            min_density_count = min(density_counts.values())
-            density_bonus = (
-                2 if density_counts[metadata["density"]] == min_density_count else 0
+        # Stats
+        covered_units = sorted(list(self.universe_units - units_remaining))
+        stats: Dict = {
+            "mode": self.mode,
+            "pool_size": len(selected),
+            "max_teachers": self.max_teachers,
+            "universe_size": len(self.universe_units),
+            "covered_units_count": len(covered_units),
+            "coverage_ratio": float(len(covered_units) / len(self.universe_units))
+            if self.universe_units
+            else 0.0,
+            "uncovered_units": sorted(list(units_remaining)) if units_remaining else [],
+            "brand_distribution": dict(brand_counts),
+            "geometry_presence": sorted(list(selected_geometries)),
+        }
+        pool_object_counts = [object_counts[i] for i in selected]
+        if pool_object_counts:
+            sorted_counts = sorted(pool_object_counts)
+            p95_idx = max(
+                0, min(len(sorted_counts) - 1, int(0.95 * (len(sorted_counts) - 1)))
             )
-
-            # Geometry diversity bonus
-            geometry_bonus = metadata["geometry_diversity"] * 1.5
-
-            # Spatial coverage bonus
-            spatial_bonus = metadata["spatial_coverage"] * 1.0
-
-            total_score = (
-                uncovered_score + density_bonus + geometry_bonus + spatial_bonus
-            )
-
-            metadata["diversity_score"] = total_score
-
-        # Select remaining by diversity score
-        remaining_sorted = sorted(
-            remaining_metadata, key=lambda x: -x.get("diversity_score", 0)
-        )
-
-        for metadata in remaining_sorted:
-            if len(selected_indices) >= self.max_teachers:
-                break
-
-            selected_indices.append(metadata["index"])
-            covered_labels.update(metadata["labels"])
-            density_counts[metadata["density"]] += 1
-
-        # Extract selected teacher samples
-        teacher_samples = [samples[i] for i in selected_indices]
-
-        logger.info(f"Selected {len(teacher_samples)} teacher samples")
-        logger.info(f"Density distribution: {density_counts}")
-
-        # Log selection statistics
-        total_labels_covered = set()
-        for idx in selected_indices:
-            total_labels_covered.update(metadata_list[idx]["labels"])
+            stats["object_count_summary"] = {
+                "min": sorted_counts[0],
+                "median": statistics.median(sorted_counts),
+                "p95": sorted_counts[p95_idx],
+            }
 
         logger.info(
-            f"Teacher pool covers {len(total_labels_covered)}/{len(self.all_labels)} labels"
+            f"Teacher pool built: size={len(selected)} coverage={stats.get('covered_units_count')}/{stats.get('universe_size')}"
         )
 
-        return teacher_samples, selected_indices
+        return teacher_samples, selected, stats
 
 
 def main():
@@ -1125,6 +1337,13 @@ def main():
         type=float,
         default=4.0,
         help="Weight for geometry diversity in teacher selection",
+    )
+
+    # New filtering flag
+    parser.add_argument(
+        "--strip_occlusion",
+        action="store_true",
+        help="Remove tokens containing '遮挡' from descriptions",
     )
 
     args = parser.parse_args()

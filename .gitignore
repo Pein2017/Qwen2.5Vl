@@ -34,6 +34,7 @@
 !src_coord_pretrain/**/*.sh
 !src_coord_pretrain/**/*.yaml
 !src_coord_pretrain/**/*.md
+!exp_docs
 
 # Allow essential root files
 !.gitignore

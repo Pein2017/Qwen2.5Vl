@@ -174,7 +174,7 @@ python src_new/tests/test_real_inference.py
 ```bash
 # Test with real dataset
 python src_new/inference.py \
-    --config configs/bbu_v2_use_coord.yaml \
+    --config configs/bbu_v2/coord_aux.yaml \
     --model_path /path/to/model \
     --input_file ds_v2/sample.jsonl \
     --output_file results/inference_output.json \

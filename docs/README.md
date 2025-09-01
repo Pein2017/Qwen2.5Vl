@@ -8,7 +8,7 @@ Canonical sources for assistants:
 Quick commands:
 ```bash
 python scripts/train_new.py --config bbu_v2
-python -m src_new.inference --config_path configs/bbu_v2.yaml --model_path checkpoints/best --input_file data/val.jsonl --output_file results/val.json --data_root /abs/path
+python -m src_new.inference --config_path configs/bbu_v2/base.yaml --model_path checkpoints/best --input_file data/val.jsonl --output_file results/val.json --data_root /abs/path
 python -m pytest src_new/tests -q
 ```
 

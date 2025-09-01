@@ -1,222 +1,455 @@
-🚀 BBU Training Launcher
-   📄 Config: bbu_v2_use_coord | 🖥️ GPUs: 2,3,4,5,6,7 | 📊 Log: INFO
-   🔧 Rank-aware logging: INFO/DEBUG on rank0 only, ERROR/WARNING on all ranks
-   📄 Output redirected to run.log
-🌍 Setting up environment...
-✅ Environment configured (Python: /root/miniconda3/envs/ms/bin/python)
-🚀 Multi-GPU detected (6 GPUs) - DeepSpeed ENABLED
+🚀 New Architecture Training Launcher (src_new)
+   📄 Config: phase_2/standard
+   🖥️  GPUs: 1,2,3,4
+   📄 Log file: run.log
+   📊 Log level: INFO
+   🏗️  Architecture: src_new (simplified, modular design)
+   📄 Output will be redirected to run.log
+
+🌍 Setting up environment for new architecture...
+✅ Environment configured for new architecture (Python: /root/miniconda3/envs/ms/bin/python)
+🚀 Optimized setup - removed performance-limiting environment variables
+🚀 Multi-GPU detected (4 GPUs) - DeepSpeed ENABLED
    🔧 BBU_DEEPSPEED_ENABLED=true
    ⚙️  BBU_DEEPSPEED_CONFIG=scripts/zero2.json
-   🖥️  BBU_NUM_GPUS=6
-🔍 Validating configuration...
+   🖥️  BBU_NUM_GPUS=4
+🔍 Validating configuration for new architecture...
+🧪 Testing config loading with src_new...
+✅ Config loading successful with new architecture
+   Model path: outputs/8-29-standard_phase_1/8-29-standard_phase_1-ep50-merger_5e-4/checkpoint-600
+   Coordinate tokens: False
+   Teacher ratio: 0.5
 ✅ DeepSpeed config validated: scripts/zero2.json
-✅ Configuration validation passed
-🚀 Multi-GPU Training with DeepSpeed
-   🖥️  GPUs: 6 devices (2,3,4,5,6,7)
+✅ Configuration validation passed for new architecture
+ℹ️ Not using flash_attention_2 — unsetting Triton/FlashAttention env
+🚀 Multi-GPU Training with New Architecture + DeepSpeed
+   🖥️  GPUs: 4 devices (1,2,3,4)
    ⚙️  DeepSpeed Config: scripts/zero2.json
-   📄 Training Config: bbu_v2_use_coord
-   📊 Log Level: INFO (rank-aware filtering enabled)
-   🔗 Master Port: 23320 (randomly generated)
-[2025-08-09 08:49:21,210] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-08-09 08:49:21,300] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-08-09 08:49:21,541] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-08-09 08:49:21,631] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-08-09 08:49:21,713] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-[2025-08-09 08:49:21,715] [INFO] [real_accelerator.py:239:get_accelerator] Setting ds_accelerator to cuda (auto detect)
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Training failed: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 272, in load_config
-    config = BBUConfig(**yaml_data)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/pydantic/main.py", line 243, in __init__
-    validated_self = self.__pydantic_validator__.validate_python(data, self_instance=self)
-pydantic_core._pydantic_core.ValidationError: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/data3/Qwen2.5-VL-main/scripts/train.py", line 142, in main
-    config = init_config(config_source_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 619, in init_config
-    _global_config = load_config(yaml_path)
-  File "/data3/Qwen2.5-VL-main/src/config/config.py", line 274, in load_config
-    raise ValueError(f"Failed to create configuration: {e}")
-ValueError: Failed to create configuration: 1 validation error for BBUConfig
-max_pixels
-  Extra inputs are not permitted [type=extra_forbidden, input_value=401408, input_type=int]
-    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
-W0809 08:49:23.103000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 920300 closing signal SIGTERM
-W0809 08:49:23.104000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 920301 closing signal SIGTERM
-W0809 08:49:23.104000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 920303 closing signal SIGTERM
-W0809 08:49:23.105000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 920304 closing signal SIGTERM
-W0809 08:49:23.105000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 920305 closing signal SIGTERM
-E0809 08:49:23.498000 920286 site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 2 (pid: 920302) of binary: /root/miniconda3/envs/ms/bin/python3.10
+   📄 Training Config: phase_2/standard
+   📊 Log Level: INFO
+   🔗 Master Port: 23408
+2025-08-30 08:26:19,227 [patches] INFO: Applying comprehensive Qwen2.5-VL compatibility patches...
+2025-08-30 08:26:19,227 [patches] INFO: Patching Qwen2.5-VL forward method...
+2025-08-30 08:26:19,227 [patches] INFO: ✅ Qwen2.5-VL forward method patched successfully
+2025-08-30 08:26:19,228 [patches] INFO: Patching Qwen2.5-VL prepare_inputs_for_generation method...
+2025-08-30 08:26:19,228 [patches] INFO: ✅ Qwen2.5-VL prepare_inputs_for_generation method patched successfully
+2025-08-30 08:26:19,228 [patches] INFO: Patching Qwen2.5-VL attention implementation...
+2025-08-30 08:26:19,228 [patches] INFO: ✓ flash_attn package found, no attention implementation patch needed
+2025-08-30 08:26:19,228 [patches] INFO: ✅ Qwen2.5-VL multimodal rotary position embedding patched successfully
+2025-08-30 08:26:19,228 [patches] INFO:    - Fixed dimension mismatch issue
+2025-08-30 08:26:19,228 [patches] INFO:    - Added intelligent mrope_section handling
+2025-08-30 08:26:19,228 [patches] INFO:    - Prevents batch duplication errors
+2025-08-30 08:26:19,228 [patches] INFO: ✅ All Qwen2.5-VL compatibility patches applied successfully
+2025-08-30 08:26:19,237 [validation] INFO: ✅ Directory structure validated: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+2025-08-30 08:26:19,237 [data_resolver] INFO: ✅ Dataset paths resolved successfully from: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+2025-08-30 08:26:19,237 [data_resolver] INFO: 📁 Train: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/train.jsonl
+2025-08-30 08:26:19,238 [data_resolver] INFO: 📁 Val: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/val.jsonl
+2025-08-30 08:26:19,238 [data_resolver] INFO: 📁 Teacher pool: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/teacher_pool.jsonl
+2025-08-30 08:26:19,238 [data_resolver] INFO: 📁 Images: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/images
+2025-08-30 08:26:19,313 [config] INFO: ✅ Configuration validation passed
+2025-08-30 08:26:19,313 [config] INFO: ✅ Configuration loaded successfully from configs/phase_2/standard.yaml
+2025-08-30 08:26:19,313 [config] INFO: 📋 Model path: outputs/8-29-standard_phase_1/8-29-standard_phase_1-ep50-merger_5e-4/checkpoint-600
+2025-08-30 08:26:19,313 [config] INFO: 📋 Data: train=/data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/train.jsonl, val=/data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield/val.jsonl
+2025-08-30 08:26:19,314 [config] INFO: 📋 Coordinate tokens: disabled
+2025-08-30 08:26:19,314 [config] INFO: 📋 Teacher ratio: 0.5
+2025-08-30 08:26:19,316 [training.train_new] INFO: 🔧 Seeded RNGs with seed=17
+[2025-08-30 08:26:19,471] [INFO] [real_accelerator.py:260:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-30 08:26:19,900] [INFO] [real_accelerator.py:260:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-30 08:26:20,085] [INFO] [real_accelerator.py:260:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-30 08:26:20,413] [INFO] [real_accelerator.py:260:get_accelerator] Setting ds_accelerator to cuda (auto detect)
+[2025-08-30 08:26:21,264] [INFO] [logging.py:107:log_dist] [Rank -1] [TorchCheckpointEngine] Initialized with serialization = False
+[2025-08-30 08:26:21,279] [INFO] [comm.py:821:init_distributed] cdb=None
+[2025-08-30 08:26:21,279] [INFO] [comm.py:852:init_distributed] Initializing TorchBackend in DeepSpeed with backend nccl
+[2025-08-30 08:26:21,583] [INFO] [logging.py:107:log_dist] [Rank -1] [TorchCheckpointEngine] Initialized with serialization = False
+[2025-08-30 08:26:21,596] [INFO] [comm.py:821:init_distributed] cdb=None
+[2025-08-30 08:26:21,751] [INFO] [logging.py:107:log_dist] [Rank -1] [TorchCheckpointEngine] Initialized with serialization = False
+[2025-08-30 08:26:21,765] [INFO] [comm.py:821:init_distributed] cdb=None
+[2025-08-30 08:26:22,243] [INFO] [logging.py:107:log_dist] [Rank -1] [TorchCheckpointEngine] Initialized with serialization = False
+[2025-08-30 08:26:22,260] [INFO] [comm.py:821:init_distributed] cdb=None
+2025-08-30 08:26:23,263 [training.train_new] INFO: 🚀 Fast checkpoint mode enabled - inference-ready checkpoints only (30s vs 200-400s)
+2025-08-30 08:26:23,295 [training.train_new] INFO: Loading tokenizer and processor from outputs/8-29-standard_phase_1/8-29-standard_phase_1-ep50-merger_5e-4/checkpoint-600
+2025-08-30 08:26:23,653 [training.train_new] INFO: 🔧 Set image_processor.max_pixels=401408
+2025-08-30 08:26:23,653 [src_new.data.teacher_pool] INFO: ✅ Teacher pool loaded with 10 examples
+2025-08-30 08:26:23,654 [src_new.data.teacher_pool] INFO: ✅ Image index built with 10 images
+2025-08-30 08:26:23,654 [training.train_new] INFO: Creating datasets...
+2025-08-30 08:26:23,656 [data] INFO: 🔁 Augmentation preset switched at epoch 0: conservative
+2025-08-30 08:26:23,656 [data] INFO: ✅ Augmentation enabled via schedule (epoch 0 applied)
+2025-08-30 08:26:23,656 [data] INFO: 🎯 HuggingFace-first processing components initialized
+2025-08-30 08:26:23,663 [data] INFO: 📊 Using all 365 samples (max_dataset_size=-1)
+2025-08-30 08:26:23,663 [data] INFO: Filtered 365 valid samples from 365 total
+2025-08-30 08:26:23,663 [data] INFO: ✅ HuggingFace-first dataset initialized with 365 samples
+2025-08-30 08:26:23,663 [data] INFO: 🔁 Augmentation preset switched at epoch 0: conservative
+2025-08-30 08:26:23,664 [data] INFO: ✅ Augmentation enabled via schedule (epoch 0 applied)
+2025-08-30 08:26:23,664 [data] INFO: 🎯 HuggingFace-first processing components initialized
+2025-08-30 08:26:23,664 [data] INFO: 📊 Using all 40 samples (max_dataset_size=-1)
+2025-08-30 08:26:23,664 [data] INFO: Filtered 40 valid samples from 40 total
+2025-08-30 08:26:23,664 [data] INFO: ✅ HuggingFace-first dataset initialized with 40 samples
+2025-08-30 08:26:23,664 [training.train_new] INFO: 🔧 Validation: augmentation disabled by default
+2025-08-30 08:26:23,665 [collator] INFO: PackedDataCollator initialized with max_length=12000
+2025-08-30 08:26:23,665 [training.train_new] INFO: Loading model from outputs/8-29-standard_phase_1/8-29-standard_phase_1-ep50-merger_5e-4/checkpoint-600
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.86it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  9.87it/s]
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.35it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  5.78it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  8.99it/s]
+Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  9.76it/s]
+2025-08-30 08:26:23,970 [src_new.models.wrapper] INFO: 🚀 Skipping tokenizer/model expansion - already completed in pre-distributed phase
+Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  4.71it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  7.91it/s]
+2025-08-30 08:26:24,079 [patches] INFO: Applying comprehensive Qwen2.5-VL compatibility patches...
+2025-08-30 08:26:24,084 [patches] INFO: Patching Qwen2.5-VL forward method...
+2025-08-30 08:26:24,085 [patches] INFO: ✅ Qwen2.5-VL forward method patched successfully
+2025-08-30 08:26:24,086 [patches] INFO: Patching Qwen2.5-VL prepare_inputs_for_generation method...
+2025-08-30 08:26:24,087 [patches] INFO: ✅ Qwen2.5-VL prepare_inputs_for_generation method patched successfully
+2025-08-30 08:26:24,087 [patches] INFO: Patching Qwen2.5-VL attention implementation...
+2025-08-30 08:26:24,087 [patches] INFO: ✓ flash_attn package found, no attention implementation patch needed
+2025-08-30 08:26:24,087 [patches] INFO: ✅ Qwen2.5-VL multimodal rotary position embedding patched successfully
+2025-08-30 08:26:24,087 [patches] INFO:    - Fixed dimension mismatch issue
+2025-08-30 08:26:24,087 [patches] INFO:    - Added intelligent mrope_section handling
+2025-08-30 08:26:24,087 [patches] INFO:    - Prevents batch duplication errors
+2025-08-30 08:26:24,087 [patches] INFO: ✅ All Qwen2.5-VL compatibility patches applied successfully
+2025-08-30 08:26:24,212 [src_new.training.phase_freeze_manager] INFO: [PhaseFreeze] Applied phase=phase_2 | trainable_params≈499170560 | coord_slice=False | coord_range=None | topK_llm=6 | topK_vision=0 | patch_embed_frozen=True
+2025-08-30 08:26:24,212 [training.train_new] INFO: ✅ PhaseFreeze applied: phase=phase_2, trainable≈499170560
+2025-08-30 08:26:24,213 [training.train_new] INFO: 📁 Created directories: output=/data3/Qwen2.5-VL-main/outputs/8-30-standard_phase_2/8-30-standard_phase_2-ep50-merger_5e-4-top_lr-1e-5-start_epoch_10-taug, tb=/data3/Qwen2.5-VL-main/tb/8-30-standard_phase_2-ep50-merger_5e-4-top_lr-1e-5-start_epoch_10-taug
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+2025-08-30 08:26:24,271 [src_new.training.bbu_trainer] INFO: 🌐 Distributed Training Information:
+2025-08-30 08:26:24,271 [src_new.training.bbu_trainer] INFO:    World Size: 4
+2025-08-30 08:26:24,271 [src_new.training.bbu_trainer] INFO:    Current Rank: 0
+2025-08-30 08:26:24,272 [src_new.training.bbu_trainer] INFO:    Is Main Process: True
+2025-08-30 08:26:24,272 [src_new.training.bbu_trainer] INFO:    Logging Strategy: INFO/DEBUG on rank 0 only, ERROR/WARNING on all ranks
+2025-08-30 08:26:24,275 [training.train_new] INFO: ✅ Pre-created optimizer before staged freezing
+2025-08-30 08:26:24,275 [training.train_new] INFO: ⏭ ProgressiveUnfreezeCallback deprecated; skipping registration
+2025-08-30 08:26:24,276 [training.train_new] INFO: ✅ Registered AugmentationScheduleCallback
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+The image processor of type `Qwen2VLImageProcessor` is now loaded as a fast processor by default, even if the model checkpoint was saved with a slow processor. This is a breaking change and may produce slightly different outputs. To continue using the slow processor, instantiate this class with `use_fast=False`. Note that this behavior will be extended to all models in a future release.
+2025-08-30 08:26:25,150 [training.train_new] INFO: ✅ Chat template validated and set from checkpoint/tokenizer
+2025-08-30 08:26:25,151 [training.train_new] INFO: 🔧 Set tokenizer as processing_class for automatic checkpoint saving
+2025-08-30 08:26:25,152 [data] INFO: ✅ HuggingFace processor and conversation processor initialized
+2025-08-30 08:26:25,152 [src_new.training.bbu_trainer] INFO: ✅ Set HuggingFace processor on training dataset
+2025-08-30 08:26:25,153 [data] INFO: ✅ HuggingFace processor and conversation processor initialized
+2025-08-30 08:26:25,154 [src_new.training.bbu_trainer] INFO: ✅ Set HuggingFace processor on evaluation dataset
+2025-08-30 08:26:25,154 [training.train_new] INFO: ✅ Set HuggingFace processor on trainer and datasets
+2025-08-30 08:26:25,154 [debug_logging] INFO: Logger reconfigured with current global settings
+2025-08-30 08:26:25,154 [debug_logging] INFO: 🚀 Started new training run - will log one training and one evaluation sample
+/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/utils/checkpoint.py:85: UserWarning: None of the inputs have requires_grad=True. Gradients will be None
+  warnings.warn(
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 538, in <module>
+[rank1]:     main()
+[rank1]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 534, in main
+[rank1]:     trainer.train()
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 236, in train
+[rank1]:     return super().train(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2238, in train
+[rank1]:     return inner_training_loop(
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2582, in _inner_training_loop
+[rank1]:     tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+[rank1]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3796, in training_step
+[rank1]:     loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 267, in compute_loss
+[rank1]:     loss = super().compute_loss(
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3884, in compute_loss
+[rank1]:     outputs = model(**inputs)
+[rank1]:               ^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank1]:     return forward_call(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/utils/nvtx.py", line 20, in wrapped_fn
+[rank1]:     ret_val = func(*args, **kwargs)
+[rank1]:               ^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/runtime/engine.py", line 2131, in forward
+[rank1]:     loss = self.module(*inputs, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1879, in _call_impl
+[rank1]:     return inner()
+[rank1]:            ^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1827, in inner
+[rank1]:     result = forward_call(*args, **kwargs)
+[rank1]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/models/wrapper.py", line 765, in forward
+[rank1]:     loss_components = self.loss_manager.compute_loss_components(
+[rank1]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 288, in compute_loss_components
+[rank1]:     granular_losses = self._compute_granular_teacher_student_loss(
+[rank1]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 582, in _compute_granular_teacher_student_loss
+[rank1]:     per_token_loss = self._compute_per_token_cross_entropy(
+[rank1]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 851, in _compute_per_token_cross_entropy
+[rank1]:     per_token_loss_flat = loss_fct(logits_flat, labels_flat)
+[rank1]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank1]:     return self._call_impl(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank1]:     return forward_call(*args, **kwargs)
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/loss.py", line 1310, in forward
+[rank1]:     return F.cross_entropy(
+[rank1]:            ^^^^^^^^^^^^^^^^
+[rank1]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/functional.py", line 3462, in cross_entropy
+[rank1]:     return torch._C._nn.cross_entropy_loss(
+[rank1]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.85 GiB. GPU 1 has a total capacity of 79.14 GiB of which 4.22 GiB is free. Process 2697778 has 41.53 GiB memory in use. Process 2744019 has 33.37 GiB memory in use. Of the allocated memory 32.53 GiB is allocated by PyTorch, and 141.92 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 538, in <module>
+[rank3]:     main()
+[rank3]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 534, in main
+[rank3]:     trainer.train()
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 236, in train
+[rank3]:     return super().train(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2238, in train
+[rank3]:     return inner_training_loop(
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2582, in _inner_training_loop
+[rank3]:     tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+[rank3]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3796, in training_step
+[rank3]:     loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 267, in compute_loss
+[rank3]:     loss = super().compute_loss(
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3884, in compute_loss
+[rank3]:     outputs = model(**inputs)
+[rank3]:               ^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank3]:     return forward_call(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/utils/nvtx.py", line 20, in wrapped_fn
+[rank3]:     ret_val = func(*args, **kwargs)
+[rank3]:               ^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/runtime/engine.py", line 2131, in forward
+[rank3]:     loss = self.module(*inputs, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1879, in _call_impl
+[rank3]:     return inner()
+[rank3]:            ^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1827, in inner
+[rank3]:     result = forward_call(*args, **kwargs)
+[rank3]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/models/wrapper.py", line 765, in forward
+[rank3]:     loss_components = self.loss_manager.compute_loss_components(
+[rank3]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 288, in compute_loss_components
+[rank3]:     granular_losses = self._compute_granular_teacher_student_loss(
+[rank3]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 582, in _compute_granular_teacher_student_loss
+[rank3]:     per_token_loss = self._compute_per_token_cross_entropy(
+[rank3]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 851, in _compute_per_token_cross_entropy
+[rank3]:     per_token_loss_flat = loss_fct(logits_flat, labels_flat)
+[rank3]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank3]:     return self._call_impl(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank3]:     return forward_call(*args, **kwargs)
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/loss.py", line 1310, in forward
+[rank3]:     return F.cross_entropy(
+[rank3]:            ^^^^^^^^^^^^^^^^
+[rank3]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/functional.py", line 3462, in cross_entropy
+[rank3]:     return torch._C._nn.cross_entropy_loss(
+[rank3]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.79 GiB. GPU 3 has a total capacity of 79.14 GiB of which 4.58 GiB is free. Process 2730925 has 41.46 GiB memory in use. Process 2744021 has 33.09 GiB memory in use. Of the allocated memory 32.29 GiB is allocated by PyTorch, and 144.53 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 538, in <module>
+[rank0]:     main()
+[rank0]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 534, in main
+[rank0]:     trainer.train()
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 236, in train
+[rank0]:     return super().train(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2238, in train
+[rank0]:     return inner_training_loop(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2582, in _inner_training_loop
+[rank0]:     tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3796, in training_step
+[rank0]:     loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 267, in compute_loss
+[rank0]:     loss = super().compute_loss(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3884, in compute_loss
+[rank0]:     outputs = model(**inputs)
+[rank0]:               ^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/utils/nvtx.py", line 20, in wrapped_fn
+[rank0]:     ret_val = func(*args, **kwargs)
+[rank0]:               ^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/runtime/engine.py", line 2131, in forward
+[rank0]:     loss = self.module(*inputs, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1879, in _call_impl
+[rank0]:     return inner()
+[rank0]:            ^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1827, in inner
+[rank0]:     result = forward_call(*args, **kwargs)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/models/wrapper.py", line 765, in forward
+[rank0]:     loss_components = self.loss_manager.compute_loss_components(
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 288, in compute_loss_components
+[rank0]:     granular_losses = self._compute_granular_teacher_student_loss(
+[rank0]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 582, in _compute_granular_teacher_student_loss
+[rank0]:     per_token_loss = self._compute_per_token_cross_entropy(
+[rank0]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 851, in _compute_per_token_cross_entropy
+[rank0]:     per_token_loss_flat = loss_fct(logits_flat, labels_flat)
+[rank0]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/loss.py", line 1310, in forward
+[rank0]:     return F.cross_entropy(
+[rank0]:            ^^^^^^^^^^^^^^^^
+[rank0]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/functional.py", line 3462, in cross_entropy
+[rank0]:     return torch._C._nn.cross_entropy_loss(
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 5.69 GiB. GPU 0 has a total capacity of 79.14 GiB of which 5.68 GiB is free. Process 2697777 has 40.79 GiB memory in use. Process 2744018 has 32.65 GiB memory in use. Of the allocated memory 31.85 GiB is allocated by PyTorch, and 144.05 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 538, in <module>
+[rank2]:     main()
+[rank2]:   File "/data3/Qwen2.5-VL-main/scripts/train_new.py", line 534, in main
+[rank2]:     trainer.train()
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 236, in train
+[rank2]:     return super().train(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2238, in train
+[rank2]:     return inner_training_loop(
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 2582, in _inner_training_loop
+[rank2]:     tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+[rank2]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3796, in training_step
+[rank2]:     loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/training/bbu_trainer.py", line 267, in compute_loss
+[rank2]:     loss = super().compute_loss(
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/transformers/trainer.py", line 3884, in compute_loss
+[rank2]:     outputs = model(**inputs)
+[rank2]:               ^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank2]:     return forward_call(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/utils/nvtx.py", line 20, in wrapped_fn
+[rank2]:     ret_val = func(*args, **kwargs)
+[rank2]:               ^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/deepspeed/runtime/engine.py", line 2131, in forward
+[rank2]:     loss = self.module(*inputs, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1879, in _call_impl
+[rank2]:     return inner()
+[rank2]:            ^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1827, in inner
+[rank2]:     result = forward_call(*args, **kwargs)
+[rank2]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/models/wrapper.py", line 765, in forward
+[rank2]:     loss_components = self.loss_manager.compute_loss_components(
+[rank2]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 288, in compute_loss_components
+[rank2]:     granular_losses = self._compute_granular_teacher_student_loss(
+[rank2]:                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 582, in _compute_granular_teacher_student_loss
+[rank2]:     per_token_loss = self._compute_per_token_cross_entropy(
+[rank2]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py", line 851, in _compute_per_token_cross_entropy
+[rank2]:     per_token_loss_flat = loss_fct(logits_flat, labels_flat)
+[rank2]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+[rank2]:     return self._call_impl(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+[rank2]:     return forward_call(*args, **kwargs)
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/modules/loss.py", line 1310, in forward
+[rank2]:     return F.cross_entropy(
+[rank2]:            ^^^^^^^^^^^^^^^^
+[rank2]:   File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/nn/functional.py", line 3462, in cross_entropy
+[rank2]:     return torch._C._nn.cross_entropy_loss(
+[rank2]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 6.03 GiB. GPU 2 has a total capacity of 79.14 GiB of which 3.72 GiB is free. Process 2697779 has 41.24 GiB memory in use. Process 2744020 has 34.16 GiB memory in use. Of the allocated memory 33.35 GiB is allocated by PyTorch, and 126.55 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank0]:[W830 08:26:38.052858043 ProcessGroupNCCL.cpp:1538] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+W0830 08:26:40.072000 353784 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 353961 closing signal SIGTERM
+W0830 08:26:40.073000 353784 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 353963 closing signal SIGTERM
+W0830 08:26:40.075000 353784 site-packages/torch/distributed/elastic/multiprocessing/api.py:900] Sending process 353964 closing signal SIGTERM
+E0830 08:26:41.092000 353784 site-packages/torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 1 (pid: 353962) of binary: /root/miniconda3/envs/ms/bin/python3.12
 Traceback (most recent call last):
   File "/root/miniconda3/envs/ms/bin/torchrun", line 8, in <module>
     sys.exit(main())
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+             ^^^^^^
+  File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 357, in wrapper
     return f(*args, **kwargs)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 919, in main
+           ^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/distributed/run.py", line 901, in main
     run(args)
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/run.py", line 910, in run
+  File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in run
     elastic_launch(
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+  File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 143, in __call__
     return launch_agent(self._config, self._entrypoint, list(args))
-  File "/root/miniconda3/envs/ms/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/envs/ms/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 277, in launch_agent
     raise ChildFailedError(
 torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
 ============================================================
-scripts/train.py FAILED
+/data3/Qwen2.5-VL-main/scripts/train_new.py FAILED
 ------------------------------------------------------------
 Failures:
   <NO_OTHER_FAILURES>
 ------------------------------------------------------------
 Root Cause (first observed failure):
 [0]:
-  time      : 2025-08-09_08:49:23
+  time      : 2025-08-30_08:26:40
   host      : bms-aizjmx01
-  rank      : 2 (local_rank: 2)
-  exitcode  : 1 (pid: 920302)
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 353962)
   error_file: <N/A>
   traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
 ============================================================

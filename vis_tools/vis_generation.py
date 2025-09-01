@@ -29,8 +29,8 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "/data3/Qwen2.5-VL-main/infer_results/output-818-base-ep50/val/inference/predictions.jsonl"  # JSONL format: one JSON object per line
-OUTPUT_DIR = "vis_generation/818-ep50-base-val"
+INPUT_FILE = "infer_results/8-30-standard_phase_3/train/inference/predictions.jsonl"  # JSONL format: one JSON object per line
+OUTPUT_DIR = "vis_generation/8-30-standard_phase_3-train"
 BASE_PATH = "."
 # Data root directory for image files
 DATA_ROOT_DIR = "data/ds_v2_bbu_bbu_shield/images"
@@ -406,8 +406,7 @@ def draw_quad(ax, item: Dict[str, Any], color: str, linestyle: str) -> None:
     # Convert to coordinate pairs
     raw_coords = [(quad[i], quad[i + 1]) for i in range(0, 8, 2)]
 
-    # Apply canonical clockwise ordering from top-left to align with vis_raw.py
-    ordered_coords = _canonical_quad_ordering(raw_coords)
+    ordered_coords = raw_coords
 
     base = GEOMETRY_STYLES["quad"]
     linewidth = base["linewidth"]

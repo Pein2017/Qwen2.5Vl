@@ -56,7 +56,7 @@ Behavior:
   - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
 - These replace the legacy soft-expectation L1 loss which has been removed.
 
-YAML keys (see `configs/bbu_v2_use_coord.yaml`):
+YAML keys (see `configs/bbu_v2/coord_aux.yaml`):
 ```
 coord_aux_enabled: true  # Must be true (auxiliary losses are always enabled)
 coord_aux_tau: 1.2

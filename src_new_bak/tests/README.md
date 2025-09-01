@@ -59,7 +59,7 @@ Notes:
 
 All tests that load a real configuration must use:
 
-- `/data3/Qwen2.5-VL-main/configs/bbu_v2_use_coord.yaml`
+- `/data3/Qwen2.5-VL-main/configs/bbu_v2/coord_aux.yaml`
 
 If specific paths (train/val JSONL, teacher pool) are required, create temporary files in fixtures and override the config accordingly (see `real_components.py`).
 

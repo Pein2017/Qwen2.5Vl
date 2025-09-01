@@ -68,7 +68,7 @@ GEOMETRY_TOKENS = {
 
 ### **Standard Mode Setup**
 ```yaml
-# configs/bbu_v2.yaml
+# configs/bbu_v2/base.yaml
 coordinate_tokens_enabled: false
 max_coord_value: 1024
 coordinate_loss_weight: 0.05  # Not used in standard mode
@@ -76,7 +76,7 @@ coordinate_loss_weight: 0.05  # Not used in standard mode
 
 ### **Coordinate Token Mode Setup**
 ```yaml
-# configs/bbu_v2.yaml (with coordinate tokens enabled)
+# configs/bbu_v2/coord_aux.yaml (with coordinate tokens enabled)
 coordinate_tokens_enabled: true
 max_coord_value: 1024
 coordinate_loss_weight: 0.05
@@ -283,7 +283,7 @@ PY
 ### **Multi-Image Inference**
 ```bash
 python -m src_new.inference \
-  --config_path configs/bbu_v2.yaml \
+  --config_path configs/bbu_v2/base.yaml \
   --model_path checkpoints/run_001/checkpoint-100 \
   --input_file data/val.jsonl \
   --output_file results/multi_geometry_output.json \
@@ -427,7 +427,7 @@ python -m pytest src_new/tests/test_coordinate_tokens.py -v
 # Full pipeline test
 python -c "
 from src_new.data.unified_processor import UnifiedDataProcessor
-processor = UnifiedDataProcessor('configs/bbu_v2.yaml')
+processor = UnifiedDataProcessor('configs/bbu_v2/base.yaml')
 result = processor.process_sample({
     'image': 'test.jpg',
     'conversations': [{'role': 'user', 'content': 'Describe objects'}]

@@ -184,10 +184,10 @@ The `src_new/` implementation uses a single unified configuration file with comp
 ```python
 # Load configuration with automatic validation
 from src_new.config.config import load_config
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 ```
 
-### **Configuration Structure (bbu_v2.yaml)**
+### **Configuration Structure (bbu_v2/base.yaml)**
 ```yaml
 # === REQUIRED FIELDS ===
 # Model settings
@@ -326,7 +326,7 @@ eval_dataset_size: -1               # Full eval dataset or limit
 ## 🎯 **Configuration Modes**
 
 ### **Production Mode**
-- **File**: `configs/bbu_v2.yaml`
+- **File**: `configs/bbu_v2/base.yaml`
 - **Features**: Standard integer coordinates, stable performance
 - **Use Case**: Production training, reliable results
 - **Memory**: ~13GB GPU memory per device
@@ -338,7 +338,7 @@ eval_dataset_size: -1               # Full eval dataset or limit
 - **Memory**: ~15GB GPU memory per device
 
 ### **Debug Mode**
-- **File**: `configs/bbu_v2_debug.yaml`
+- **File**: `configs/bbu_v2/debug.yaml`
 - **Features**: Limited dataset size, faster iteration
 - **Use Case**: Development, testing, debugging
 - **Memory**: ~8GB GPU memory per device
@@ -443,7 +443,7 @@ The `src_new/config/` system provides comprehensive validation with fail-fast er
 from src_new.config.config import Config, load_config
 
 # Load configuration with automatic validation
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 
 # Configuration sections are automatically validated
 print(f"Model: {config.model_path}")           # Path validation
@@ -453,7 +453,7 @@ print(f"Learning rate: {config.learning_rate}")  # Type validation
 
 ### **Environment Variable Support**
 ```yaml
-# configs/bbu_v2.yaml with environment variables
+# configs/bbu_v2/base.yaml with environment variables
 model_path: "${HF_HOME}/Qwen/Qwen2.5-VL-3B-Instruct"
 output_dir: "${TRAINING_OUTPUT_DIR}/checkpoints"
 logging_dir: "${TRAINING_OUTPUT_DIR}/logs"
@@ -482,7 +482,7 @@ path_manager.validate_paths()
 # Validate configuration without training
 python -c "
 from src_new.config.config import load_config
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 print('✅ Configuration valid')
 print(f'Model: {config.model_path}')
 print(f'Output: {config.output_dir}')
@@ -492,7 +492,7 @@ print(f'Output: {config.output_dir}')
 python -c "
 from src_new.utils.path_manager import PathManager
 from src_new.config.config import load_config
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 pm = PathManager(config)
 pm.validate_paths()
 print('✅ All paths valid')

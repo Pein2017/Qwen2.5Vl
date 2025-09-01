@@ -13,7 +13,7 @@ Note: For the fastest lookups, see `AI_ASSISTANT_KB.md`. This file documents ful
 from src_new.config.config import load_config
 
 # Load configuration from YAML file with comprehensive validation
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 
 # Access configuration parameters
 print(f"Model path: {config.model_path}")
@@ -249,7 +249,7 @@ domain_configs = DomainConfigs()
 
 # NEW (src_new/): Single unified configuration
 from src_new.config.config import load_config
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 ```
 
 #### **Model Loading**
@@ -303,11 +303,11 @@ from src_new.training.bbu_trainer import BBUTrainer
 ```python
 # OLD: Complex configuration initialization
 config = BBUConfig()
-config.load_from_yaml('configs/bbu_v2.yaml')
+config.load_from_yaml('configs/bbu_v2/base.yaml')
 config.validate_all_domains()
 
 # NEW: Simple configuration loading with automatic validation
-config = load_config('configs/bbu_v2.yaml')
+config = load_config('configs/bbu_v2/base.yaml')
 ```
 
 #### **Step 3: Update Training Code**
@@ -367,10 +367,10 @@ data_collator = create_data_collator(tokenizer, processor)
 python -m pytest src_new/tests/ -v
 
 # Compare outputs (optional)
-python scripts/compare_implementations.py --old_config configs/bbu_v2_old.yaml --new_config configs/bbu_v2.yaml
+python scripts/compare_implementations.py --old_config configs/bbu_v2_old.yaml --new_config configs/bbu_v2/base.yaml
 
 # Validate migration
-python scripts/validate_migration.py --config configs/bbu_v2.yaml
+python scripts/validate_migration.py --config configs/bbu_v2/base.yaml
 ```
 
 ---

@@ -45,6 +45,10 @@ ordering for stable learning signals.
   - Geometry constraints:
     - `fiber`, `wire` → line geometries
     - `bbu`, `bbu_shield`, `connect_point`, `label` → quad or bbox geometries
+- Optional fixed vocabulary files for teacher pool building (auto-detected):
+  - `data_conversion/attribute_taxonomy.json`
+  - `data_conversion/hierarchical_attribute_mapping.json`
+  - If present, they define a fixed universe of canonical tokens for coverage; otherwise, a simple free-vocabulary fallback is used automatically.
 
 ---
 
@@ -80,8 +84,17 @@ ordering for stable learning signals.
   - Processes/copies the image to match final transform (EXIF and smart resize)
 
 - Deterministic splitting and exports:
-  - Selects a diverse teacher pool, then splits remaining into train/val
+  - Selects a teacher pool using fixed rules (see below), then splits remaining into train/val
   - Writes flat-format JSONL files and summary artifacts
+
+### Teacher Pool Builder (Rule‑Based)
+- Fixed vocabulary mode (default):
+  - Builds a coverage universe from `attribute_taxonomy.json` and `hierarchical_attribute_mapping.json` (excludes any `free_text` fields).
+  - Greedy set‑cover picks samples to maximize token coverage up to `MAX_TEACHERS` with deterministic tie‑breakers: prefer `line` only if fiber/wire tokens remain → brand balancing → geometry novelty → object_count closest to median → lexicographic by image path.
+  - Respects `OBJECT_TYPES` (tokens tied exclusively to filtered‑out types are ignored).
+- Free vocabulary fallback:
+  - Automatically used only if the fixed files are missing. Builds top‑K frequent tokens per object type and geometry and applies the same greedy selection.
+- Emits `teacher_pool.jsonl` and `teacher_pool_stats.json` with coverage metrics (mode, universe size, covered/uncovered units, brand distribution, geometry presence, object_count summary).
 
 ---
 
@@ -106,6 +119,7 @@ Directory for each processed dataset (example shown as `data/{dataset_name}/`):
 train.jsonl            # Training samples (flat)
 val.jsonl              # Validation samples (flat)
 teacher_pool.jsonl     # Teacher pool (flat)
+teacher_pool_stats.json# Teacher pool coverage statistics
 all_samples.jsonl      # Combined flat samples (teacher + train + val)
 label_vocabulary.json  # Aggregated labels and statistics
 validation_report.json # Summary + counts of invalid objects/samples

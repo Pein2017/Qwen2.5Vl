@@ -1,0 +1,23 @@
+{
+  "mode": "free",
+  "pool_size": 10,
+  "max_teachers": 10,
+  "universe_size": 13,
+  "covered_units_count": 13,
+  "coverage_ratio": 1.0,
+  "uncovered_units": [],
+  "brand_distribution": {
+    "华为": 2,
+    "中兴": 4,
+    "爱立信": 4
+  },
+  "geometry_presence": [
+    "bbox_2d",
+    "quad"
+  ],
+  "object_count_summary": {
+    "min": 1,
+    "median": 1.0,
+    "p95": 4
+  }
+}

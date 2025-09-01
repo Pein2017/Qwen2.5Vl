@@ -46,7 +46,7 @@ conda activate ms
 bash data_conversion/convert_dataset.sh
 
 # 3. Start training (src_new)
-python scripts/train_new.py --config configs/bbu_v2.yaml
+python scripts/train_new.py --config configs/bbu_v2/base.yaml
 
 # 4. Run tests
 python -m pytest src_new/tests/ -v
@@ -61,7 +61,7 @@ conda activate ms
 bash data_conversion/convert_dataset.sh
 
 # 3. Start training (legacy)
-python -m src.training.trainer --config configs/bbu_v2.yaml
+python -m src.training.trainer --config configs/bbu_v2/base.yaml
 
 # 4. Run inference
 python src/inference.py --model_path path/to/checkpoint --image_path path/to/image.jpg

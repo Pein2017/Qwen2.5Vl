@@ -205,7 +205,7 @@ lr_full_model: 5.0e-6
 - `/data3/Qwen2.5-VL-main/src_new/training/callbacks.py` — place for `ProgressiveUnfreezeCallback`
 - `/data3/Qwen2.5-VL-main/src_new/config/config.py` — YAML schema and validation
 - `/data3/Qwen2.5-VL-main/scripts/train_new.py` — trainer creation, callback registration
-- `/data3/Qwen2.5-VL-main/configs/bbu_v2_debug.yaml` — debug config (can enable progressive unfreeze here)
+- `/data3/Qwen2.5-VL-main/configs/bbu_v2/debug.yaml` — debug config (can enable progressive unfreeze here)
 
 
 ## Notes

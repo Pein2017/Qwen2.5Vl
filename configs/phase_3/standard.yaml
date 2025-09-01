@@ -1,0 +1,45 @@
+num_train_epochs: 50
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1  
+learning_rate: 5.0e-5
+vision_lr: 1.0e-6
+merger_lr: 5.0e-4
+llm_lr: 1.0e-5
+lr_top_layers: 5.0e-6
+lr_coord_slice: 5.0e-6
+
+weight_decay: 1.0e-3
+teacher_ratio: 0.4
+
+model_path: outputs/8-30-standard_phase_3/8-30-standard_phase_3-ep50-merger_5e-4-llm_1e-5-vison_1e-6-no_occlusion-moderate_10_aggressive/checkpoint-1100
+
+run_name: "8-31-group_tokens-aggressive_augmentation_and_lr-group_2_1_0.3-teacher_ratio_0.4-new_teachers"
+output_dir: outputs/8-31-standard_phase_3
+
+phase_name: phase_3
+
+
+# Enable augmentation in phase_2
+use_aug: true
+augmentation_schedule:
+  - { start_epoch: 0, preset: "moderate" }
+  - { start_epoch: 20, preset: "aggressive" }
+  
+# Dedicated teacher augmentation (photometric-only)
+teacher_augmentation:
+  rng_seed: 12345
+  photometric:
+    enabled: true
+    apply_prob: 0.8
+    num_ops: 1
+    magnitude: 0.4
+    ocr_safe_pool: true
+
+teacher_loss_weight: 0.6
+student_loss_weight: 1
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# Group Loss Weights (caption/grounding/formatting)
+caption_loss_weight: 2.0
+grounding_loss_weight: 1.0
+formatting_loss_weight: 0.3

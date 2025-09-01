@@ -421,18 +421,22 @@ class Dataset(TorchDataset):
             and random.random() < self.teacher_ratio
             and len(self.teacher_pool_manager.teacher_pool) > 0
         ):
-            # Select random teachers
+            # Select teachers dynamically based on current student sample
+            # Note: Teacher samples serve as context input only during evaluation
+            # (no teacher loss computation - only student response is trained)
             num_teachers = min(
                 random.randint(1, self.num_teacher_samples),
                 len(self.teacher_pool_manager.teacher_pool),
             )
 
-            selected_teachers = random.sample(
-                self.teacher_pool_manager.teacher_pool, num_teachers
+            selected_teachers = self.teacher_pool_manager.select_teachers_for_student(
+                structured_sample, num_samples=num_teachers
             )
 
             structured_sample["teacher_samples"] = selected_teachers
-            logger.debug(f"Assigned {num_teachers} teachers to sample {idx}")
+            logger.debug(
+                f"Assigned {len(selected_teachers)} dynamic teacher(s) to sample {idx}"
+            )
 
         return structured_sample
 

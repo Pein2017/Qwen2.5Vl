@@ -748,13 +748,19 @@ class BBUTrainer(HFTrainer):
 
         if student_caption is not None:
             new_metrics["eval/caption_loss"] = round(float(student_caption), 4)
-            metrics[f"{metric_key_prefix}_caption_loss"] = round(float(student_caption), 4)
+            metrics[f"{metric_key_prefix}_caption_loss"] = round(
+                float(student_caption), 4
+            )
         if student_grounding is not None:
             new_metrics["eval/grounding_loss"] = round(float(student_grounding), 4)
-            metrics[f"{metric_key_prefix}_grounding_loss"] = round(float(student_grounding), 4)
+            metrics[f"{metric_key_prefix}_grounding_loss"] = round(
+                float(student_grounding), 4
+            )
         if student_formatting is not None:
             new_metrics["eval/formatting_loss"] = round(float(student_formatting), 4)
-            metrics[f"{metric_key_prefix}_formatting_loss"] = round(float(student_formatting), 4)
+            metrics[f"{metric_key_prefix}_formatting_loss"] = round(
+                float(student_formatting), 4
+            )
 
         # Remove any previously added teacher_* prefixed keys to keep eval panel clean
         for k in list(metrics.keys()):
