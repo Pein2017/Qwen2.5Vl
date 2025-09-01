@@ -26,6 +26,10 @@ from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
 from data_conversion.utils.file_ops import FileOperations
 from data_conversion.validation_manager import ValidationManager
 from data_conversion.vision_process import ImageProcessor
+from data_conversion.teacher_selector import TeacherSelector
+from data_conversion.utils.sanitizers import strip_occlusion_tokens
+from data_conversion.constants import DEFAULT_LABEL_HIERARCHY
+from data_conversion.utils.sorting import sort_objects_tlbr
 
 
 # Configure UTF-8 encoding for stdout/stderr if supported
@@ -62,14 +66,7 @@ class UnifiedProcessor:
             )
         else:
             # Default hierarchy matching actual v2 data structure
-            self.label_hierarchy = {
-                "螺丝、光纤插头": ["BBU安装螺丝", "BBU端光纤插头"],
-                "标签": [],  # Labels can have any content
-                "BBU设备": ["华为"],  # BBU equipment brand
-                "光纤": [],  # Fiber optics
-                "电线": [],  # Electrical wires
-                "挡风板": ["华为"],  # BBU shields
-            }
+            self.label_hierarchy = DEFAULT_LABEL_HIERARCHY
 
         # Initialize hierarchical processor for v2 data support (Chinese only)
         self.hierarchical_processor = HierarchicalProcessor(
@@ -175,23 +172,8 @@ class UnifiedProcessor:
         return combo in allowed_props
 
     def _sanitize_description(self, desc: str) -> str:
-        """Remove auxiliary occlusion tokens (contains '遮挡') per level/token.
-        - Split by '/' into levels, by ',' within levels.
-        - Drop any token containing '遮挡'.
-        - Rejoin; drop empty levels.
-        """
-        if not desc or not isinstance(desc, str):
-            return desc
-        levels = [lvl.strip() for lvl in desc.split("/")]
-        kept_levels = []
-        for lvl in levels:
-            if not lvl:
-                continue
-            tokens = [t.strip() for t in lvl.split(",")]
-            kept_tokens = [t for t in tokens if t and ("遮挡" not in t)]
-            if kept_tokens:
-                kept_levels.append(",".join(kept_tokens))
-        return "/".join(kept_levels)
+        # Delegate to shared sanitizer to avoid duplication
+        return strip_occlusion_tokens(desc) or desc
 
     def extract_objects_from_datalist(self, data_list: List[Dict]) -> List[Dict]:
         """Extract objects from dataList format."""
@@ -321,16 +303,7 @@ class UnifiedProcessor:
                 return None
 
             # Sort objects by position using first coordinate pair
-            def get_sort_key(obj):
-                if "bbox_2d" in obj:
-                    return (obj["bbox_2d"][1], obj["bbox_2d"][0])  # y, x
-                elif "quad" in obj:
-                    return (obj["quad"][1], obj["quad"][0])  # y, x of first point
-                elif "line" in obj:
-                    return (obj["line"][1], obj["line"][0])  # y, x of first point
-                return (0, 0)  # fallback
-
-            objects.sort(key=get_sort_key)
+                objects = sort_objects_tlbr(objects)
 
             # Process image (copy/resize) to match coordinate transformations
             processed_image_path, _, _ = self.image_processor.process_image(

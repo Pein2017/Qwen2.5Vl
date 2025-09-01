@@ -125,6 +125,7 @@ def to_rgb(pil_image: Image.Image) -> Image.Image:
     models.
     """
     from PIL import ImageOps
+from data_conversion.utils.exif_utils import apply_exif_orientation
 
     # CRITICAL FIX: Apply EXIF orientation transformation
     # This ensures the image is displayed as intended by the camera/annotation tool
@@ -734,17 +735,9 @@ class ImageProcessor:
         matches annotation space, then converts to RGB with white background
         for transparency handling.
         """
-        # Apply EXIF orientation transformation
-        transformed_image = ImageOps.exif_transpose(pil_image)
-        if transformed_image is not None:
-            pil_image = transformed_image
-
-        if pil_image.mode == "RGBA":
-            white_background = Image.new("RGB", pil_image.size, (255, 255, 255))
-            white_background.paste(pil_image, mask=pil_image.split()[3])
-            return white_background
-
-        return pil_image.convert("RGB")
+        # Apply EXIF orientation transformation (centralized)
+        pil_image = apply_exif_orientation(pil_image)
+        return pil_image
 
     def process_image(
         self,

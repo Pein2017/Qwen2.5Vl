@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image, ImageOps
+from data_conversion.utils.exif_utils import get_exif_transform
 
 
 logger = logging.getLogger(__name__)
@@ -40,26 +41,14 @@ class CoordinateManager:
         Returns:
             (is_transformed, original_width, original_height, new_width, new_height)
         """
-        with Image.open(image_path) as img:
-            original_width, original_height = img.size
-
-            # Apply EXIF orientation to get transformed dimensions
-            transformed_img = ImageOps.exif_transpose(img)
-            if transformed_img is None:
-                transformed_img = img
-            new_width, new_height = transformed_img.size
-
-            is_transformed = (
-                original_width != new_width or original_height != new_height
-            )
-
-            return (
-                is_transformed,
-                original_width,
-                original_height,
-                new_width,
-                new_height,
-            )
+        is_transformed, original_width, original_height, new_width, new_height = get_exif_transform(image_path)
+        return (
+            is_transformed,
+            original_width,
+            original_height,
+            new_width,
+            new_height,
+        )
 
     @staticmethod
     def apply_exif_orientation_to_bbox(
