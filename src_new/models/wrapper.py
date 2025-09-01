@@ -333,6 +333,16 @@ class DetectionModel(nn.Module):
                     token_processor=self.token_processor,
                     tokenizer=final_tokenizer,
                 )
+                # Enable grouped-LLM plugin unconditionally; weights control contribution
+                if final_tokenizer is None:
+                    raise ValueError(
+                        "Tokenizer must be available to initialize TokenGroupingPlugin"
+                    )
+                from src_new.losses.token_grouping import TokenGroupingPlugin
+
+                self.loss_manager.set_token_grouping_plugin(
+                    TokenGroupingPlugin(final_tokenizer)
+                )
                 # If auxiliary coordinate losses are enabled, configure options now
                 if self.training_config.coord_aux_enabled:
                     self.loss_manager.set_coordinate_aux_options(

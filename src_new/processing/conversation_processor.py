@@ -28,7 +28,7 @@ from src_new.types.arrays import (
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 from .coordinate_converter import CoordinateTokenConverter
-from .templates import CONSTANTS
+from .templates import CONSTANTS, get_system_prompt
 
 
 logger = get_rank_aware_logger(__name__)
@@ -662,12 +662,8 @@ class ConversationProcessor:
                 teacher_samples = teacher_samples[:max_teachers]
                 teacher_images_list = teacher_images_list[:max_teachers]
 
-            # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = (
-                CONSTANTS["SYSTEM_PROMPT"]
-                if self.coordinate_tokens_enabled
-                else CONSTANTS["SYSTEM_PROMPT_BASE"]
-            )
+            # Import prompts from builder (single-source prompt)
+            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -1364,12 +1360,8 @@ class ConversationProcessor:
                 objects
             )
 
-            # Import prompts from CONSTANTS (never hardcode)
-            system_prompt = (
-                CONSTANTS["SYSTEM_PROMPT"]
-                if self.coordinate_tokens_enabled
-                else CONSTANTS["SYSTEM_PROMPT_BASE"]
-            )
+            # Import prompts from builder (single-source prompt)
+            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             # Build conversation using official HuggingFace format
@@ -1490,12 +1482,8 @@ class ConversationProcessor:
             if not isinstance(images, list) or not images:
                 raise ConversationStructureError("images must be a non-empty list")
 
-            # Import system prompt from CONSTANTS
-            system_prompt = (
-                CONSTANTS["SYSTEM_PROMPT"]
-                if self.coordinate_tokens_enabled
-                else CONSTANTS["SYSTEM_PROMPT_BASE"]
-            )
+            # Import system prompt from builder (single-source prompt)
+            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
 
             # Build conversation for inference
             messages = [
@@ -1586,11 +1574,7 @@ class ConversationProcessor:
             )
 
             # Prompts
-            system_prompt = (
-                CONSTANTS["SYSTEM_PROMPT"]
-                if self.coordinate_tokens_enabled
-                else CONSTANTS["SYSTEM_PROMPT_BASE"]
-            )
+            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
             teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
@@ -1755,11 +1739,7 @@ class ConversationProcessor:
             if not isinstance(images, list) or not images:
                 raise ConversationStructureError("images must be a non-empty list")
 
-            system_prompt = (
-                CONSTANTS["SYSTEM_PROMPT"]
-                if self.coordinate_tokens_enabled
-                else CONSTANTS["SYSTEM_PROMPT_BASE"]
-            )
+            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
             student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
 
             messages: List[Dict[str, Any]] = [

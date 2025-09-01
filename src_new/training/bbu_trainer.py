@@ -776,24 +776,41 @@ class BBUTrainer(HFTrainer):
             top_layers_params = []
             coord_slice_params = []
 
-            # Resolve optional staged settings
-            top_k_layers = (
-                int(getattr(config, "prog_unfreeze_top_k_layers", 0))
-                if getattr(config, "prog_unfreeze_enabled", False)
-                else 0
-            )
-            num_layers = int(getattr(config, "model_num_layers", 0) or 0)
-
+            # Detect trainable LLM layers directly from model parameter flags to stay
+            # aligned with PhaseFreezeManager (which sets requires_grad per phase).
             def _extract_layer_index(param_name: str):
-                marker = "model.layers."
-                if marker not in param_name:
-                    return None
-                try:
-                    after = param_name.split(marker, 1)[1]
-                    idx_str = after.split(".", 1)[0]
-                    return int(idx_str)
-                except Exception:
-                    return None
+                markers = [
+                    "model.language_model.layers.",  # Qwen2.5-VL
+                    "language_model.layers.",
+                    "model.layers.",  # legacy
+                    "transformer.layers.",  # legacy
+                ]
+                for marker in markers:
+                    if marker in param_name:
+                        try:
+                            after = param_name.split(marker, 1)[1]
+                            idx_str = after.split(".", 1)[0]
+                            return int(idx_str)
+                        except Exception:
+                            return None
+                return None
+
+            # First pass: collect which LLM layer indices are present and which are trainable
+            all_layer_indices = set()
+            trainable_layer_indices = set()
+            for n, p in self.model.named_parameters():
+                idx = _extract_layer_index(n)
+                if idx is not None:
+                    all_layer_indices.add(idx)
+                    if p.requires_grad:
+                        trainable_layer_indices.add(idx)
+
+            # Consider "top layers" group only when a strict subset of layers is trainable
+            top_layers_active = (
+                len(trainable_layer_indices) > 0
+                and len(all_layer_indices) > 0
+                and len(trainable_layer_indices) < len(all_layer_indices)
+            )
 
             for name, param in self.model.named_parameters():
                 if not param.requires_grad:
@@ -806,13 +823,9 @@ class BBUTrainer(HFTrainer):
                 elif "visual" in name:
                     # Vision encoder gets vision_lr (lowest)
                     vision_params.append(param)
-                elif top_k_layers > 0 and _extract_layer_index(name) is not None:
+                elif _extract_layer_index(name) is not None:
                     idx = _extract_layer_index(name)
-                    if (
-                        idx is not None
-                        and num_layers > 0
-                        and idx >= max(0, num_layers - top_k_layers)
-                    ):
+                    if top_layers_active and idx in trainable_layer_indices:
                         top_layers_params.append(param)
                     else:
                         llm_params.append(param)

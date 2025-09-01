@@ -99,6 +99,10 @@ class Dataset(TorchDataset):
     teacher_assignments: Dict[str, Any]
     teacher_assignment_counts: Dict[str, int]
 
+    # Augmentation curriculum
+    augmentation_pipeline: Optional[object]
+    _augmentation_schedule: Optional[List[Dict[str, Any]]] = None
+
     def __init__(
         self,
         data_path: str,
@@ -159,22 +163,94 @@ class Dataset(TorchDataset):
         self.hf_processor = None
         self.conversation_processor = None
 
-        # Optional augmentation pipeline (AngleRotate)
-        self.augmentation_pipeline = None
-        try:
-            aug_cfg = getattr(self.config, "augmentation", None)
-            if aug_cfg is not None and getattr(aug_cfg, "enabled", False):
-                from src_new.augmentation.base import AugmentationPipeline
+        # Augmentation — fail-fast based on explicit configuration
+        if not hasattr(self.config, "use_aug"):
+            raise ValueError(
+                "Missing required boolean 'use_aug' in config. Set use_aug: true|false explicitly in YAML."
+            )
 
-                self.augmentation_pipeline = AugmentationPipeline.from_config(aug_cfg)
-                logger.info("✅ Augmentation pipeline (AngleRotate) initialized")
+        self.augmentation_pipeline = None
+        self._augmentation_schedule = getattr(
+            self.config, "augmentation_schedule", None
+        )
+
+        if bool(self.config.use_aug):
+            # If a schedule is provided, set initial preset at epoch 0; else require augmentation block
+            if self._augmentation_schedule:
+                self.set_epoch(0)
+                logger.info("✅ Augmentation enabled via schedule (epoch 0 applied)")
             else:
-                logger.info("🔧 Augmentation disabled or not configured")
-        except Exception as e:
-            logger.error(f"Failed to initialize augmentation pipeline: {e}")
-            raise
+                if (
+                    not hasattr(self.config, "augmentation")
+                    or self.config.augmentation is None
+                ):
+                    raise ValueError(
+                        "use_aug is true but 'augmentation' block is missing. Provide an explicit preset in YAML."
+                    )
+                # Accept either a ready AugmentationConfig or a preset wrapper
+                from src_new.augmentation import ObjectAwareAugmentationPipeline
+                from src_new.config.augmentation_config import (
+                    AugmentationConfig as _AugCfg,
+                )
+
+                if isinstance(self.config.augmentation, _AugCfg):
+                    self.augmentation_pipeline = (
+                        ObjectAwareAugmentationPipeline.from_config(
+                            self.config.augmentation
+                        )
+                    )
+                else:
+                    # Expect attributes: preset, rng_seed, apply_to_teachers
+                    aug = self.config.augmentation
+                    for key in ("preset", "rng_seed", "apply_to_teachers"):
+                        if not hasattr(aug, key):
+                            raise ValueError(
+                                f"augmentation.{key} must be set explicitly when use_aug=true"
+                            )
+                    from src_new.augmentation.wrappers import get_preset_config
+
+                    cfg = get_preset_config(
+                        getattr(aug, "preset"),
+                        rng_seed=int(getattr(aug, "rng_seed")),
+                        apply_to_teachers=bool(getattr(aug, "apply_to_teachers")),
+                    )
+                    self.augmentation_pipeline = (
+                        ObjectAwareAugmentationPipeline.from_config(cfg)
+                    )
+                logger.info("✅ Augmentation pipeline initialized (from config)")
+        else:
+            # No augmentation; ensure pipeline is None
+            self.augmentation_pipeline = None
+            logger.info("🔧 Augmentation disabled (use_aug=false)")
 
         logger.info("🎯 HuggingFace-first processing components initialized")
+
+    def set_epoch(self, epoch_index: int) -> None:
+        """Optional hook for trainer: update augmentation preset by epoch.
+
+        If config.augmentation_schedule = [{start_epoch, preset}, ...] is defined,
+        the first entry with start_epoch <= epoch_index and highest start_epoch wins.
+        """
+        if not self._augmentation_schedule:
+            return
+        from src_new.augmentation import ObjectAwareAugmentationPipeline
+        from src_new.augmentation.wrappers import get_preset_config
+
+        active = None
+        for entry in sorted(
+            self._augmentation_schedule, key=lambda e: int(e["start_epoch"])
+        ):
+            if epoch_index >= int(entry["start_epoch"]):
+                active = entry
+        if active is None:
+            return
+        cfg = get_preset_config(
+            active["preset"], rng_seed=getattr(self.config, "seed", 12345)
+        )
+        self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
+        logger.info(
+            f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
+        )
 
     def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
         """
@@ -377,137 +453,134 @@ class Dataset(TorchDataset):
         Raises:
             ValueError: If processing fails
         """
-        try:
-            # Extract teacher samples if present
-            teacher_samples = (
-                structured_sample["teacher_samples"]
-                if "teacher_samples" in structured_sample
-                else []
-            )
-            has_teachers = len(teacher_samples) > 0
+        # Extract teacher samples if present
+        teacher_samples = (
+            structured_sample["teacher_samples"]
+            if "teacher_samples" in structured_sample
+            else []
+        )
+        has_teachers = len(teacher_samples) > 0
 
-            # Load images
-            if has_teachers:
-                # Load teacher images
-                teacher_images_list = []
-                for teacher_sample in teacher_samples:
-                    if "images" not in teacher_sample:
-                        raise ValueError(
-                            "Teacher sample missing required 'images' list"
-                        )
-                    teacher_image_paths = teacher_sample["images"]
-                    teacher_images = self._load_images_from_paths(teacher_image_paths)
-                    teacher_images_list.append(teacher_images)
+        # Load images
+        if has_teachers:
+            # Load teacher images
+            teacher_images_list = []
+            for teacher_sample in teacher_samples:
+                if "images" not in teacher_sample:
+                    raise ValueError("Teacher sample missing required 'images' list")
+                teacher_image_paths = teacher_sample["images"]
+                teacher_images = self._load_images_from_paths(teacher_image_paths)
+                teacher_images_list.append(teacher_images)
 
-                # Load student images
-                if "images" not in structured_sample:
-                    raise ValueError("Sample missing required 'images' list")
-                student_image_paths = structured_sample["images"]
-                student_images = self._load_images_from_paths(student_image_paths)
+            # Load student images
+            if "images" not in structured_sample:
+                raise ValueError("Sample missing required 'images' list")
+            student_image_paths = structured_sample["images"]
+            student_images = self._load_images_from_paths(student_image_paths)
 
-                # Optional augmentation (student first, then teachers if enabled)
-                if self.augmentation_pipeline is not None:
-                    try:
-                        from torch.utils.data import (
-                            get_worker_info,  # local import to avoid top-level deps
-                        )
+            # Optional augmentation (student first, then teachers if enabled)
+            if self.augmentation_pipeline is not None:
+                from torch.utils.data import get_worker_info
 
-                        wi = get_worker_info()
-                        worker_id = wi.id if wi is not None else 0
-                    except Exception:
-                        worker_id = 0
-                    student_seed_index = idx ^ (worker_id << 16)
-                    student_images, structured_sample = (
-                        self.augmentation_pipeline.apply(
-                            sample=structured_sample,
-                            images=student_images,
-                            sample_index=student_seed_index,
-                        )
-                    )
-                    aug_cfg = getattr(self.config, "augmentation", None)
-                    if aug_cfg is not None and getattr(
-                        aug_cfg, "apply_to_teachers", False
-                    ):
-                        new_teacher_images_list = []
-                        new_teacher_samples = []
-                        for t_i, (t_sample, t_images) in enumerate(
-                            zip(teacher_samples, teacher_images_list)
-                        ):
-                            t_seed_index = (idx * 997 + t_i) ^ (worker_id << 16)
-                            t_images, t_sample = self.augmentation_pipeline.apply(
-                                sample=t_sample,
-                                images=t_images,
-                                sample_index=t_seed_index,
-                            )
-                            new_teacher_images_list.append(t_images)
-                            new_teacher_samples.append(t_sample)
-                        teacher_images_list = new_teacher_images_list
-                        teacher_samples = new_teacher_samples
-
-                # Use HuggingFace-first conversation processor
-                inputs = (
-                    self.conversation_processor.create_teacher_student_conversation(
-                        student_sample=structured_sample,
-                        teacher_samples=teacher_samples,
-                        student_images=student_images,
-                        teacher_images_list=teacher_images_list,
-                    )
+                wi = get_worker_info()
+                worker_id = wi.id if wi is not None else 0
+                student_seed_index = idx ^ (worker_id << 16)
+                student_images, structured_sample = self.augmentation_pipeline.apply(
+                    sample=structured_sample,
+                    images=student_images,
+                    sample_index=student_seed_index,
                 )
-
                 logger.debug(
-                    f"✅ Created teacher-student conversation for sample {idx}"
+                    f"✅ Applied augmentation (student) idx={idx}: image_size={student_images[0].size}, objects={len(structured_sample['objects'])}"
                 )
-            else:
-                # Load student images only
-                if "images" not in structured_sample:
-                    raise ValueError("Sample missing required 'images' list")
-                image_paths = structured_sample["images"]
-                images = self._load_images_from_paths(image_paths)
+                # Teacher augmentation: prefer dedicated teacher_augmentation if provided;
+                # else use main augmentation when apply_to_teachers is True.
+                taug_cfg = getattr(self.config, "teacher_augmentation", None)
+                aug_cfg = self.config.augmentation
+                if taug_cfg is not None:
+                    from src_new.augmentation import ObjectAwareAugmentationPipeline
 
-                # Optional augmentation (student-only flow)
-                if self.augmentation_pipeline is not None:
-                    try:
-                        from torch.utils.data import (
-                            get_worker_info,  # local import to avoid top-level deps
-                        )
-
-                        wi = get_worker_info()
-                        worker_id = wi.id if wi is not None else 0
-                    except Exception:
-                        worker_id = 0
-                    student_seed_index = idx ^ (worker_id << 16)
-                    images, structured_sample = self.augmentation_pipeline.apply(
-                        sample=structured_sample,
-                        images=images,
-                        sample_index=student_seed_index,
+                    teacher_pipeline = ObjectAwareAugmentationPipeline.from_config(
+                        taug_cfg
+                    )
+                    use_teacher_aug = True
+                else:
+                    teacher_pipeline = self.augmentation_pipeline
+                    use_teacher_aug = bool(
+                        aug_cfg is not None and aug_cfg.apply_to_teachers
                     )
 
-                # Use HuggingFace-first conversation processor
-                inputs = self.conversation_processor.create_simple_conversation(
-                    sample=structured_sample, images=images
-                )
-                logger.debug(f"✅ Created student-only conversation for sample {idx}")
+                if use_teacher_aug:
+                    new_teacher_images_list = []
+                    new_teacher_samples = []
+                    for t_i, (t_sample, t_images) in enumerate(
+                        zip(teacher_samples, teacher_images_list)
+                    ):
+                        t_seed_index = (idx * 997 + t_i) ^ (worker_id << 16)
+                        t_images, t_sample = teacher_pipeline.apply(
+                            sample=t_sample,
+                            images=t_images,
+                            sample_index=t_seed_index,
+                        )
+                        logger.debug(
+                            f"✅ Applied augmentation (teacher={t_i}) base_idx={idx}: image_size={t_images[0].size}, objects={len(t_sample['objects'])}"
+                        )
+                        new_teacher_images_list.append(t_images)
+                        new_teacher_samples.append(t_sample)
+                    teacher_images_list = new_teacher_images_list
+                    teacher_samples = new_teacher_samples
 
-            # Create labels with proper masking for training and extract spans
-            labels, teacher_spans, student_spans = (
-                self._create_masked_labels_with_spans(
-                    inputs["input_ids"],
-                    self.tokenizer,
-                    has_teachers=(len(teacher_samples) > 0),
-                )
+            # Use HuggingFace-first conversation processor
+            inputs = self.conversation_processor.create_teacher_student_conversation(
+                student_sample=structured_sample,
+                teacher_samples=teacher_samples,
+                student_images=student_images,
+                teacher_images_list=teacher_images_list,
             )
-            inputs["labels"] = labels
-            inputs["teacher_assistant_spans"] = teacher_spans
-            inputs["student_assistant_spans"] = student_spans
-            # Do not populate unified assistant_spans in legacy mode to avoid overriding teacher/student logic
-            inputs.pop("assistant_spans", None)
 
-            return inputs
+            logger.debug(f"✅ Created teacher-student conversation for sample {idx}")
+        else:
+            # Load student images only
+            if "images" not in structured_sample:
+                raise ValueError("Sample missing required 'images' list")
+            image_paths = structured_sample["images"]
+            images = self._load_images_from_paths(image_paths)
 
-        except Exception as e:
-            # Fail-fast: re-raise with context without swallowing the root cause
-            logger.error(f"Error processing sample {idx}: {type(e).__name__}: {e}")
-            raise
+            # Optional augmentation (student-only flow)
+            if self.augmentation_pipeline is not None:
+                from torch.utils.data import get_worker_info
+
+                wi = get_worker_info()
+                worker_id = wi.id if wi is not None else 0
+                student_seed_index = idx ^ (worker_id << 16)
+                images, structured_sample = self.augmentation_pipeline.apply(
+                    sample=structured_sample,
+                    images=images,
+                    sample_index=student_seed_index,
+                )
+                logger.debug(
+                    f"✅ Applied augmentation (student-only) idx={idx}: image_size={images[0].size}, objects={len(structured_sample['objects'])}"
+                )
+
+            # Use HuggingFace-first conversation processor
+            inputs = self.conversation_processor.create_simple_conversation(
+                sample=structured_sample, images=images
+            )
+            logger.debug(f"✅ Created student-only conversation for sample {idx}")
+
+        # Create labels with proper masking for training and extract spans
+        labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
+            inputs["input_ids"],
+            self.tokenizer,
+            has_teachers=(len(teacher_samples) > 0),
+        )
+        inputs["labels"] = labels
+        inputs["teacher_assistant_spans"] = teacher_spans
+        inputs["student_assistant_spans"] = student_spans
+        # Do not populate unified assistant_spans in legacy mode to avoid overriding teacher/student logic
+        inputs.pop("assistant_spans", None)
+
+        return inputs
 
     def _create_masked_labels_with_spans(
         self, input_ids: torch.Tensor, tokenizer, has_teachers: bool = False

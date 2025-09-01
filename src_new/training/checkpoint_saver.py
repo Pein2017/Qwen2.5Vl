@@ -6,7 +6,6 @@ import logging
 import os
 import shutil
 import time
-from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -39,7 +38,9 @@ class BestCheckpointManager:
 
     def create_best_checkpoint_name(self, metrics: Dict[str, float], step: int) -> str:
         val = metrics.get(self.metric_name)
-        suffix = f"{self.metric_name}{val:.4f}" if isinstance(val, (int, float)) else "best"
+        suffix = (
+            f"{self.metric_name}{val:.4f}" if isinstance(val, (int, float)) else "best"
+        )
         return f"best-{step}-{suffix}"
 
     def update_best_checkpoint(self, metrics: Dict[str, float], best_dir: str) -> None:
@@ -99,7 +100,9 @@ class CheckpointSaver:
             if os.path.exists(tmp_dst):
                 shutil.rmtree(tmp_dst)
         except Exception as e:
-            logger.warning(f"⚠️ Failed to remove existing tmp best path '{tmp_dst}': {e}")
+            logger.warning(
+                f"⚠️ Failed to remove existing tmp best path '{tmp_dst}': {e}"
+            )
 
         # First attempt: standard copytree into tmp
         try:
@@ -109,11 +112,15 @@ class CheckpointSaver:
                 if os.path.exists(dst):
                     shutil.rmtree(dst)
             except Exception as e:
-                logger.warning(f"⚠️ Failed to remove existing best path '{dst}' before rename: {e}")
+                logger.warning(
+                    f"⚠️ Failed to remove existing best path '{dst}' before rename: {e}"
+                )
             os.replace(tmp_dst, dst)
             return
         except Exception as e:
-            logger.warning(f"⚠️ copytree failed for best checkpoint (will fallback to per-file copy): {e}")
+            logger.warning(
+                f"⚠️ copytree failed for best checkpoint (will fallback to per-file copy): {e}"
+            )
 
         # Fallback: file-by-file copy
         try:
@@ -145,7 +152,9 @@ class CheckpointSaver:
                     shutil.rmtree(tmp_dst)
             except Exception:
                 pass
-            raise RuntimeError(f"Best checkpoint copy failed (fallback also failed): {e2}")
+            raise RuntimeError(
+                f"Best checkpoint copy failed (fallback also failed): {e2}"
+            )
 
     def save_checkpoint(
         self,
@@ -165,7 +174,9 @@ class CheckpointSaver:
                 Path to the checkpoint directory.
         """
         if self._checkpoint_in_progress:
-            logger.warning("⚠️ Checkpoint already in progress; skipping concurrent save.")
+            logger.warning(
+                "⚠️ Checkpoint already in progress; skipping concurrent save."
+            )
             return ""
         self._checkpoint_in_progress = True
         try:
@@ -173,7 +184,9 @@ class CheckpointSaver:
             should_log = bool(getattr(self.args, "should_save", False))
 
             # Determine final checkpoint directory (step-scoped)
-            final_checkpoint_dir = os.path.join(self.args.output_dir, f"checkpoint-{step}")
+            final_checkpoint_dir = os.path.join(
+                self.args.output_dir, f"checkpoint-{step}"
+            )
 
             # Save core model + processor/tokenizer files
             if is_deepspeed_enabled:
@@ -183,6 +196,12 @@ class CheckpointSaver:
                     processing_class=processing_class,
                     processor=processor,
                 )
+                checkpoint_dir = final_checkpoint_dir
+                # Best checkpoint handling
+                if current_metrics:
+                    self._maybe_update_best_and_rotate(
+                        checkpoint_dir, current_metrics, step
+                    )
             else:
                 checkpoint_dir = final_checkpoint_dir
                 if os.path.exists(checkpoint_dir):
@@ -199,7 +218,9 @@ class CheckpointSaver:
                 else:
                     os.makedirs(checkpoint_dir, exist_ok=True)
                     unwrapped = self._get_unwrapped_model(model)
-                    logger.info("💾 [RANK 0] Saving model weights (SafeTensors format)...")
+                    logger.info(
+                        "💾 [RANK 0] Saving model weights (SafeTensors format)..."
+                    )
                     unwrapped.save_pretrained(
                         checkpoint_dir,
                         safe_serialization=True,
@@ -219,6 +240,9 @@ class CheckpointSaver:
                     self._maybe_update_best_and_rotate(
                         checkpoint_dir, current_metrics, step
                     )
+
+            # Always rotate step checkpoints (regardless of metrics or deepspeed)
+            self._rotate_inference_checkpoints()
 
             if should_log:
                 dur = time.time() - save_start_time
@@ -282,12 +306,7 @@ class CheckpointSaver:
                             f"🗑️ Removed old best: {os.path.basename(old_best_path)}"
                         )
                     except (OSError, PermissionError) as e:
-                        logger.warning(
-                            f"⚠️ Could not remove old best checkpoint: {e}"
-                        )
-
-        # Rotate checkpoints after best handling
-        self._rotate_inference_checkpoints()
+                        logger.warning(f"⚠️ Could not remove old best checkpoint: {e}")
 
     def _rotate_inference_checkpoints(self) -> None:
         if not getattr(self.args, "should_save", False) or not hasattr(

@@ -20,22 +20,10 @@ from typing import Any, Dict, List, Optional, get_args, get_origin
 import yaml
 
 from src_new.config.augmentation_config import (
-    AngleRotateConfig as AngleRotateConfigType,
-)
-from src_new.config.augmentation_config import (
     AugmentationConfig as AugmentationConfigType,
 )
 from src_new.config.augmentation_config import (
-    ColorJitterConfig as ColorJitterConfigType,
-)
-from src_new.config.augmentation_config import (
-    validate_angle_rotate_config as validate_angle_rotate_config_fn,
-)
-from src_new.config.augmentation_config import (
     validate_augmentation_config as validate_augmentation_config_fn,
-)
-from src_new.config.augmentation_config import (
-    validate_color_jitter_config as validate_color_jitter_config_fn,
 )
 from src_new.utils.data_resolver import DataResolver
 from src_new.utils.validation import (
@@ -250,6 +238,17 @@ def _collect_schema_issues(data: Dict[str, Any]) -> List[str]:
     return issues
 
 
+def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merges override dict into base dict."""
+    merged = base.copy()
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @dataclass(frozen=True)
 class Config:
     """
@@ -317,7 +316,6 @@ class Config:
 
     # Loss settings
     coordinate_loss_weight: float
-    regular_loss_weight: float
     teacher_ratio: float
 
     # Collator
@@ -347,13 +345,22 @@ class Config:
     # Coordinate auxiliary losses (enabled via YAML)
     coord_aux_enabled: bool
 
-    # Progressive unfreeze (enabled via YAML)
-    prog_unfreeze_enabled: bool
+    # Group loss weights for caption/grounding/formatting (required)
+    caption_loss_weight: float
+    grounding_loss_weight: float
+    formatting_loss_weight: float
 
     # === OPTIONAL FIELDS WITH DEFAULTS (truly optional) ===
     seed: int = 17
     new_geometry_tokens: Optional[List[str]] = None
     augmentation: Optional[AugmentationConfigType] = None
+    # Optional: dedicated teacher augmentation (simple photometric-only). If provided,
+    # it overrides `augmentation.apply_to_teachers` and is applied to teacher samples only.
+    teacher_augmentation: Optional[AugmentationConfigType] = None
+    use_aug: bool = False
+    augmentation_schedule: Optional[List[Dict[str, Any]]] = None
+    # Phase-freeze control for separate runs: one of {off, phase_1, phase_2, phase_3}
+    phase_name: str = "off"
 
     # Coordinate aux knobs (only when coord_aux_enabled)
     coord_aux_tau: Optional[float] = None
@@ -363,13 +370,7 @@ class Config:
     coord_aux_lambda_kce: Optional[float] = None
     coord_aux_lambda_unlike: Optional[float] = None
 
-    # Progressive unfreeze knobs
-    prog_unfreeze_epoch_stage0_end: Optional[int] = None
-    prog_unfreeze_epoch_stage1_end: Optional[int] = None
-    prog_unfreeze_top_k_layers: Optional[int] = None
-    prog_unfreeze_coord_slice_only: bool = True
-
-    # Optional learning rates for specific parameter groups (progressive unfreeze / fine-grained control)
+    # Optional learning rates for specific parameter groups
     lr_merger: Optional[float] = None
     lr_coord_slice: Optional[float] = None
     lr_top_layers: Optional[float] = None
@@ -406,8 +407,10 @@ class Config:
         self._validate_training_settings()
         self._validate_data_settings()
         self._validate_coordinate_settings()
-        self._validate_progressive_unfreeze_settings()
         self._validate_augmentation_settings()
+        self._validate_phase_name()
+        self._validate_learning_rate_groups()
+        self._validate_group_loss_settings()
 
         logger.info("✅ Configuration validation passed")
 
@@ -524,11 +527,6 @@ class Config:
                 f"coordinate_loss_weight cannot be negative, got {self.coordinate_loss_weight}"
             )
 
-        if self.regular_loss_weight <= 0:
-            raise ValueError(
-                f"regular_loss_weight must be positive, got {self.regular_loss_weight}"
-            )
-
         # Coordinate auxiliary losses validation
         if self.coord_aux_enabled:
             missing: list[str] = []
@@ -598,38 +596,7 @@ class Config:
                 ],
             )
 
-    def _validate_progressive_unfreeze_settings(self) -> None:
-        """Validate progressive unfreeze related settings when enabled."""
-        if not self.prog_unfreeze_enabled:
-            return
-
-        # Epoch boundaries
-        if self.prog_unfreeze_epoch_stage0_end is not None:
-            if self.prog_unfreeze_epoch_stage0_end < 1:
-                raise ValueError(
-                    f"prog_unfreeze_epoch_stage0_end must be >= 1 when provided, got {self.prog_unfreeze_epoch_stage0_end}"
-                )
-        if (
-            self.prog_unfreeze_epoch_stage1_end is not None
-            and self.prog_unfreeze_epoch_stage0_end is not None
-        ):
-            if (
-                self.prog_unfreeze_epoch_stage1_end
-                <= self.prog_unfreeze_epoch_stage0_end
-            ):
-                raise ValueError(
-                    "prog_unfreeze_epoch_stage1_end must be > prog_unfreeze_epoch_stage0_end"
-                )
-
-        # Top-K layers
-        if (
-            self.prog_unfreeze_top_k_layers is not None
-            and self.prog_unfreeze_top_k_layers < 1
-        ):
-            raise ValueError(
-                f"prog_unfreeze_top_k_layers must be >= 1 when provided, got {self.prog_unfreeze_top_k_layers}"
-            )
-
+    def _validate_learning_rate_groups(self) -> None:
         # Learning rates (if provided) must be positive
         for lr_name in (
             "lr_merger",
@@ -648,53 +615,153 @@ class Config:
         """Validate augmentation settings when provided."""
         aug = getattr(self, "augmentation", None)
         if aug is None:
+            # Still validate schedule if present
+            sched = getattr(self, "augmentation_schedule", None)
+            if sched is not None:
+                self._validate_augmentation_schedule(sched)
             return
         try:
             validate_augmentation_config_fn(aug)
-            validate_angle_rotate_config_fn(aug.op)
         except Exception as e:
             raise ValueError(f"Invalid augmentation configuration: {e}")
 
+        # Validate schedule alongside an explicit augmentation config if provided
+        sched = getattr(self, "augmentation_schedule", None)
+        if sched is not None:
+            self._validate_augmentation_schedule(sched)
 
-def load_config(config_path: str) -> Config:
+        # Optional teacher-specific augmentation
+        taug = getattr(self, "teacher_augmentation", None)
+        if taug is not None:
+            try:
+                validate_augmentation_config_fn(taug)
+            except Exception as e:
+                raise ValueError(f"Invalid teacher_augmentation configuration: {e}")
+
+    def _validate_augmentation_schedule(self, schedule: List[Dict[str, Any]]) -> None:
+        """
+        Validate the augmentation schedule.
+
+        Expected format (per entry): {"start_epoch": int, "preset": str}
+        where preset ∈ {off, conservative, moderate, aggressive}.
+        """
+        if not isinstance(schedule, list):
+            raise ValueError("augmentation_schedule must be a list of dictionaries.")
+
+        valid_presets = {"off", "conservative", "moderate", "aggressive"}
+        for step in schedule:
+            if not isinstance(step, dict):
+                raise ValueError(
+                    f"Each step in augmentation_schedule must be a dictionary, got {type(step)}"
+                )
+
+            if "start_epoch" not in step or "preset" not in step:
+                raise ValueError(
+                    "Each augmentation_schedule step must have 'start_epoch' and 'preset' fields."
+                )
+
+            start_epoch = step["start_epoch"]
+            preset = step["preset"]
+
+            if not isinstance(start_epoch, int) or start_epoch < 0:
+                raise ValueError(
+                    f"augmentation_schedule.start_epoch must be a non-negative int, got {start_epoch!r}"
+                )
+            if not isinstance(preset, str) or preset not in valid_presets:
+                raise ValueError(
+                    f"augmentation_schedule.preset must be one of {sorted(valid_presets)}, got {preset!r}"
+                )
+
+    def _validate_phase_name(self) -> None:
+        # Accept off or explicit phase markers
+        allowed = {"off", "phase_1", "phase_2", "phase_3"}
+        pn = str(getattr(self, "phase_name", "off") or "off").lower()
+        if pn not in allowed:
+            raise ValueError(f"phase_name must be one of {sorted(allowed)}, got {pn!r}")
+
+    def _validate_group_loss_settings(self) -> None:
+        """Validate group loss weights (strict, fail-fast)."""
+        for name in (
+            "caption_loss_weight",
+            "grounding_loss_weight",
+            "formatting_loss_weight",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"{name} must be a number, got {type(value).__name__}")
+            if value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        total = float(
+            self.caption_loss_weight
+            + self.grounding_loss_weight
+            + self.formatting_loss_weight
+        )
+        if total <= 0:
+            raise ValueError(
+                "All group weights are zero; at least one of caption/grounding/formatting must be > 0"
+            )
+
+
+def load_config(override_config_path: str) -> Config:
     """
-    Load configuration from YAML file with comprehensive validation.
+    Load configuration from a base YAML and an override YAML file.
+
+    This function implements a hierarchical configuration system. It first loads a
+    base configuration (`base.yaml`) from a conventional location and then merges
+    an experiment-specific override file on top of it.
 
     Args:
-        config_path: Path to the YAML configuration file
+        override_config_path: Path to the experiment-specific override YAML file.
 
     Returns:
-        Config: Validated configuration object
+        Config: Validated configuration object after merging.
 
     Raises:
-        FileNotFoundError: If config file doesn't exist
-        yaml.YAMLError: If YAML file is malformed
-        ValueError: If configuration contains invalid values
-        TypeError: If configuration values have wrong types
+        FileNotFoundError: If either the base or override config file doesn't exist.
+        yaml.YAMLError: If a YAML file is malformed.
+        ValueError: If the resulting configuration is invalid.
     """
-    # FAIL-FAST: Validate config path
-    if not config_path:
-        raise ValueError("config_path cannot be empty")
+    # FAIL-FAST: Validate override config path
+    if not override_config_path:
+        raise ValueError("override_config_path cannot be empty")
 
-    config_file = Path(config_path)
-    if not config_file.exists():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    override_file = Path(override_config_path)
+    if not override_file.exists():
+        raise FileNotFoundError(
+            f"Override configuration file not found: {override_config_path}"
+        )
+    if not override_file.is_file():
+        raise ValueError(
+            f"Override configuration path is not a file: {override_config_path}"
+        )
 
-    if not config_file.is_file():
-        raise ValueError(f"Configuration path is not a file: {config_path}")
-
-    # Load YAML with error handling
+    # Determine and load base config from its conventional location
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        raise yaml.YAMLError(f"Invalid YAML in config file {config_path}: {e}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to read config file {config_path}: {e}")
+        project_root = Path(__file__).resolve().parent.parent.parent
+        base_config_path = project_root / "configs" / "phase_1" / "base.yaml"
+        if not base_config_path.exists():
+            raise FileNotFoundError(
+                f"Base configuration file not found: {base_config_path}"
+            )
 
-    # FAIL-FAST: Validate YAML loaded correctly
-    if data is None:
-        raise ValueError(f"Configuration file is empty: {config_path}")
+        with open(base_config_path, "r", encoding="utf-8") as f:
+            base_data = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        raise RuntimeError(
+            f"Failed to load or parse base config at {base_config_path}: {e}"
+        )
+
+    # Load override YAML
+    try:
+        with open(override_file, "r", encoding="utf-8") as f:
+            override_data = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        raise RuntimeError(
+            f"Failed to load or parse override config at {override_config_path}: {e}"
+        )
+
+    # Deep merge the configurations
+    data = _deep_merge_dicts(base_data, override_data)
 
     if not isinstance(data, dict):
         raise ValueError(f"Configuration must be a dictionary, got {type(data)}")
@@ -702,98 +769,89 @@ def load_config(config_path: str) -> Config:
     # Convert numeric-like strings to floats based on annotations
     data = _convert_scientific_notation(data)
 
-    # === Unified dataset path defaults ===
-    # Auto-derive data paths from data_root using centralized data resolver
-    # Expected structure under data_root:
-    #   - images/  (image files referenced in JSONL as ./images/xxx.jpeg)
-    #   - train.jsonl
-    #   - val.jsonl
-    #   - teacher_pool.jsonl
-    try:
-        if "data_root" in data and data["data_root"]:
-            data_root_value = data["data_root"]
-            # Use DataResolver for automatic path discovery and validation
-            # Only derive paths if they're not explicitly provided (backward compatibility)
-            missing_paths = [
-                key
-                for key in ["train_data_path", "val_data_path", "teacher_pool_file"]
-                if key not in data or not data[key]
-            ]
-            if missing_paths:
-                try:
-                    dataset_paths = DataResolver.resolve_dataset_paths(data_root_value)
-
-                    # Only set paths that weren't explicitly provided
-                    if "train_data_path" not in data or not data["train_data_path"]:
-                        data["train_data_path"] = str(dataset_paths.train_data_path)
-                    if "val_data_path" not in data or not data["val_data_path"]:
-                        data["val_data_path"] = str(dataset_paths.val_data_path)
-                    if "teacher_pool_file" not in data or not data["teacher_pool_file"]:
-                        data["teacher_pool_file"] = str(dataset_paths.teacher_pool_file)
-
-                    logger.debug(
-                        f"✅ Auto-resolved dataset paths from data_root: {data_root_value}"
-                    )
-                except (FileNotFoundError, ValueError) as e:
-                    logger.warning(
-                        f"⚠️ Could not auto-resolve dataset paths from data_root '{data_root_value}': {e}"
-                    )
-                    # Fall back to manual derivation for backward compatibility
-                    data_root_path = Path(data_root_value)
-                    if "train_data_path" not in data or not data["train_data_path"]:
-                        data["train_data_path"] = str(data_root_path / "train.jsonl")
-                    if "val_data_path" not in data or not data["val_data_path"]:
-                        data["val_data_path"] = str(data_root_path / "val.jsonl")
-                    if "teacher_pool_file" not in data or not data["teacher_pool_file"]:
-                        data["teacher_pool_file"] = str(
-                            data_root_path / "teacher_pool.jsonl"
-                        )
-    except Exception as e:
-        # Do not block config loading if derivation fails; validation will catch later
-        logger.debug(f"Data path derivation failed: {e}")
-        pass
+    # === Dataset path resolution (auto-derive from data_root when missing) ===
+    required_paths = ["train_data_path", "val_data_path", "teacher_pool_file"]
+    missing_paths = [k for k in required_paths if k not in data or not data[k]]
+    if missing_paths:
+        if "data_root" not in data or not data["data_root"]:
+            raise ValueError(
+                "Missing required dataset paths: "
+                + ", ".join(missing_paths)
+                + " and data_root is not provided to derive them"
+            )
+        try:
+            ds_paths = DataResolver.resolve_dataset_paths(data["data_root"])
+        except Exception as e:
+            raise ValueError(
+                f"Failed to derive dataset paths from data_root={data['data_root']}: {e}"
+            )
+        data["train_data_path"] = str(ds_paths.train_data_path)
+        data["val_data_path"] = str(ds_paths.val_data_path)
+        data["teacher_pool_file"] = str(ds_paths.teacher_pool_file)
 
     # Normalize path-like fields; preserve relativity (no forced absolute)
     # Normalize data_root first
-    if "data_root" in data and data["data_root"]:
-        try:
-            data["data_root"] = str(normalize_path_input(data["data_root"]))
-        except Exception as e:
-            raise ValueError(
-                f"Failed to normalize path for 'data_root': {data.get('data_root')}; {e}"
-            )
+    if "data_root" not in data or not data["data_root"]:
+        raise ValueError("data_root is required and must be non-empty")
+    try:
+        data["data_root"] = str(normalize_path_input(data["data_root"]))
+    except Exception as e:
+        raise ValueError(
+            f"Failed to normalize path for 'data_root': {data.get('data_root')}; {e}"
+        )
 
-    # Determine base for dataset files: prefer current working directory (PWD)
-    # Relative paths will be interpreted from the process working directory
-
-    # Normalize model_path relative to config_dir
-    if "model_path" in data and data["model_path"]:
-        try:
-            data["model_path"] = str(normalize_path_input(data["model_path"]))
-        except Exception as e:
-            raise ValueError(
-                f"Failed to normalize path for 'model_path': {data.get('model_path')}; {e}"
-            )
+    # Normalize model_path
+    if "model_path" not in data or not data["model_path"]:
+        raise ValueError("model_path is required and must be non-empty")
+    try:
+        data["model_path"] = str(normalize_path_input(data["model_path"]))
+    except Exception as e:
+        raise ValueError(
+            f"Failed to normalize path for 'model_path': {data.get('model_path')}; {e}"
+        )
 
     # Normalize dataset file paths relative to dataset_base
     for key in ("train_data_path", "val_data_path", "teacher_pool_file"):
-        if key in data and data[key]:
-            try:
-                data[key] = str(normalize_path_input(data[key]))
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
-                )
+        try:
+            data[key] = str(normalize_path_input(data[key]))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+            )
 
     # Normalize output/log directories relative to config_dir
-    for key in ("output_dir", "tb_dir", "logging_dir"):
-        if key in data and data[key]:
-            try:
-                data[key] = str(normalize_path_input(data[key]))
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
-                )
+    for key in ("output_dir", "tb_dir"):
+        if key not in data or not data[key]:
+            raise ValueError(f"Missing required output/log path: {key}")
+        try:
+            data[key] = str(normalize_path_input(data[key]))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+            )
+
+    # Gate augmentation by use_aug flag (no external files)
+    if "use_aug" not in data:
+        raise ValueError("use_aug must be explicitly set to true or false in the YAML")
+    if not isinstance(data["use_aug"], bool):
+        raise ValueError("use_aug must be a boolean (true/false)")
+    use_aug_flag = data["use_aug"]
+    if not use_aug_flag:
+        # Explicitly ignore any inline augmentation block when disabled
+        if "augmentation" in data:
+            data.pop("augmentation", None)
+    else:
+        # Require either an inline augmentation block or an augmentation_schedule
+        has_aug_block = "augmentation" in data and data["augmentation"] is not None
+        has_schedule = (
+            "augmentation_schedule" in data
+            and isinstance(data["augmentation_schedule"], list)
+            and len(data["augmentation_schedule"]) > 0
+        )
+        if not (has_aug_block or has_schedule):
+            raise ValueError(
+                "use_aug=True but neither 'augmentation' block nor 'augmentation_schedule' is provided in the YAML. Provide a preset-based block or a schedule."
+            )
 
     # Build augmentation dataclasses from nested dicts (if provided)
     try:
@@ -803,221 +861,254 @@ def load_config(config_path: str) -> Config:
                 raise ValueError(
                     f"augmentation must be a mapping when provided, got {type(aug_dict)}"
                 )
-            op_dict = aug_dict.get("op")
-            if not isinstance(op_dict, dict):
-                raise ValueError("augmentation.op must be a mapping when provided")
-            # Coerce fill_color to tuple if present
-            fill_color_val = op_dict.get("fill_color")
-            if fill_color_val is not None and isinstance(fill_color_val, list):
-                op_dict = dict(op_dict)
-                op_dict["fill_color"] = tuple(fill_color_val)
-            angle_op_cfg = AngleRotateConfigType(**op_dict)
-            # Optional color_jitter
-            cj_cfg = None
-            if "color_jitter" in aug_dict and aug_dict["color_jitter"] is not None:
-                cj_dict = aug_dict["color_jitter"]
-                if not isinstance(cj_dict, dict):
-                    raise ValueError(
-                        "augmentation.color_jitter must be a mapping when provided"
-                    )
 
-                def _to_tuple(name):
-                    v = cj_dict.get(name)
-                    return tuple(v) if isinstance(v, list) else v
-
-                # Enforce explicit values; no implicit defaults here
-                if "enabled" not in cj_dict or "apply_prob" not in cj_dict:
-                    raise ValueError(
-                        "color_jitter requires explicit 'enabled' and 'apply_prob' in config"
-                    )
-                cj_cfg = ColorJitterConfigType(
-                    enabled=bool(cj_dict["enabled"]),
-                    apply_prob=float(cj_dict["apply_prob"]),
-                    brightness=_to_tuple("brightness"),
-                    contrast=_to_tuple("contrast"),
-                    saturation=_to_tuple("saturation"),
-                    sharpness=_to_tuple("sharpness"),
-                    order=cj_dict.get("order"),
+            # New: allow preset-based shorthand to drastically reduce hyperparameters
+            if "preset" in aug_dict:
+                from src_new.augmentation.presets import (
+                    PresetOptions as _PresetOptions,
                 )
-                validate_color_jitter_config_fn(cj_cfg)
+                from src_new.augmentation.presets import (
+                    build_augmentation_config_from_preset as _build_from_preset,
+                )
 
-            # Optional albumentations random aug
-            alb_rand_cfg = None
-            if (
-                "albumentations_rand" in aug_dict
-                and aug_dict["albumentations_rand"] is not None
-            ):
-                ar_dict = aug_dict["albumentations_rand"]
-                if not isinstance(ar_dict, dict):
+                preset_value = (
+                    str(aug_dict["preset"]) if aug_dict["preset"] is not None else None
+                )
+                if preset_value is None:
                     raise ValueError(
-                        "augmentation.albumentations_rand must be a mapping when provided"
+                        "augmentation.preset cannot be null; choose off|conservative|moderate|aggressive"
                     )
+                # Minimal options allowed alongside preset
+                rng_seed = (
+                    int(aug_dict["rng_seed"]) if "rng_seed" in aug_dict else 12345
+                )
+                apply_to_teachers = (
+                    bool(aug_dict["apply_to_teachers"])
+                    if "apply_to_teachers" in aug_dict
+                    else False
+                )
+                lines_policy = (
+                    str(aug_dict["lines_policy"])
+                    if "lines_policy" in aug_dict
+                    else "transform"
+                )
+                debug_visualization = (
+                    bool(aug_dict["debug_visualization"])
+                    if "debug_visualization" in aug_dict
+                    else False
+                )
+                debug_output_dir = (
+                    aug_dict["debug_output_dir"]
+                    if "debug_output_dir" in aug_dict
+                    else None
+                )
+
+                opts = _PresetOptions(
+                    preset=preset_value,  # type: ignore[arg-type]
+                    rng_seed=rng_seed,
+                    apply_to_teachers=apply_to_teachers,
+                    lines_policy=lines_policy,  # validated downstream
+                    debug_visualization=debug_visualization,
+                    debug_output_dir=debug_output_dir,
+                )
+                aug_cfg = _build_from_preset(opts)
+                validate_augmentation_config_fn(aug_cfg)
+                data["augmentation"] = aug_cfg
+            else:
+                # Explicit object-aware config path (no legacy 'op' support)
                 from src_new.config.augmentation_config import (
-                    AlbumentationsRandAugConfig as _AlbRand,
-                )
-                from src_new.config.augmentation_config import (
-                    validate_albumentations_rand_config as _validate_alb,
-                )
-
-                # Enforce explicit values; no implicit defaults here
-                required_ar = [
-                    "enabled",
-                    "apply_prob",
-                    "num_ops",
-                    "magnitude",
-                    "safe_ops_only",
-                ]
-                missing_ar = [k for k in required_ar if k not in ar_dict]
-                if missing_ar:
-                    raise ValueError(
-                        "albumentations_rand requires explicit fields: "
-                        + ", ".join(missing_ar)
-                    )
-                alb_rand_cfg = _AlbRand(
-                    enabled=bool(ar_dict["enabled"]),
-                    apply_prob=float(ar_dict["apply_prob"]),
-                    num_ops=int(ar_dict["num_ops"]),
-                    magnitude=float(ar_dict["magnitude"]),
-                    safe_ops_only=bool(ar_dict["safe_ops_only"]),
-                )
-                _validate_alb(alb_rand_cfg)
-
-            # Optional object copy-paste
-            ocp_cfg = None
-            if (
-                "object_copy_paste" in aug_dict
-                and aug_dict["object_copy_paste"] is not None
-            ):
-                ocp_dict = aug_dict["object_copy_paste"]
-                if not isinstance(ocp_dict, dict):
-                    raise ValueError(
-                        "augmentation.object_copy_paste must be a mapping when provided"
-                    )
-                from src_new.config.augmentation_config import (
-                    ObjectCopyPasteConfig as _OCP,
+                    AugmentationConfig as _Aug,
                 )
                 from src_new.config.augmentation_config import (
-                    validate_object_copy_paste_config as _validate_ocp,
-                )
-
-                ocp_cfg = _OCP(
-                    enabled=bool(ocp_dict["enabled"]),
-                    per_object_prob=float(ocp_dict["per_object_prob"]),
-                    num_copies_per_object=int(ocp_dict["num_copies_per_object"]),
-                    translate_px=int(ocp_dict["translate_px"]),
-                    rotation_jitter_deg=float(ocp_dict["rotation_jitter_deg"]),
-                    scale_jitter_min=float(ocp_dict["scale_jitter_min"]),
-                    scale_jitter_max=float(ocp_dict["scale_jitter_max"]),
-                    occ_grid_downscale=int(ocp_dict["occ_grid_downscale"]),
-                    occ_margin_px=int(ocp_dict["occ_margin_px"]),
-                    max_occ_fraction=float(ocp_dict["max_occ_fraction"]),
-                    max_iou_with_existing=float(ocp_dict["max_iou_with_existing"]),
-                    attempts=int(ocp_dict["attempts"]),
-                    allowed_types=ocp_dict.get("allowed_types"),
-                )
-                _validate_ocp(ocp_cfg)
-
-            # Optional object blur
-            obj_blur_cfg = None
-            if "object_blur" in aug_dict and aug_dict["object_blur"] is not None:
-                ob_dict = aug_dict["object_blur"]
-                if not isinstance(ob_dict, dict):
-                    raise ValueError(
-                        "augmentation.object_blur must be a mapping when provided"
-                    )
-                from src_new.config.augmentation_config import (
-                    ObjectBlurConfig as _OB,
+                    CriteriaConfig as _CR,
                 )
                 from src_new.config.augmentation_config import (
-                    validate_object_blur_config as _validate_ob,
+                    ImageGeomConfig as _IG,
                 )
-
-                obj_blur_cfg = _OB(
-                    enabled=bool(ob_dict["enabled"]),
-                    per_object_prob=float(ob_dict["per_object_prob"]),
-                    blur_type=str(ob_dict["blur_type"]),
-                    radius_min=float(ob_dict["radius_min"]),
-                    radius_max=float(ob_dict["radius_max"]),
-                )
-                _validate_ob(obj_blur_cfg)
-
-            # Optional rand pool
-            rand_pool_cfg = None
-            if "rand_pool" in aug_dict and aug_dict["rand_pool"] is not None:
-                rp_dict = aug_dict["rand_pool"]
-                if not isinstance(rp_dict, dict):
-                    raise ValueError(
-                        "augmentation.rand_pool must be a mapping when provided"
-                    )
                 from src_new.config.augmentation_config import (
-                    RandAugPoolConfig as _RP,
+                    LineAugConfig as _LN,
                 )
-
-                rand_pool_cfg = _RP(
-                    enabled=bool(rp_dict["enabled"]),
-                    apply_prob=float(rp_dict["apply_prob"]),
-                    num_ops=int(rp_dict["num_ops"]),
-                    include_object_affine=bool(
-                        rp_dict.get("include_object_affine", False)
-                    ),
-                    include_object_copy_paste=bool(
-                        rp_dict.get("include_object_copy_paste", False)
-                    ),
-                    include_object_blur=bool(rp_dict.get("include_object_blur", False)),
-                )
-
-            # Optional criteria
-            criteria_cfg = None
-            if "criteria" in aug_dict and aug_dict["criteria"] is not None:
-                cr_dict = aug_dict["criteria"]
-                if not isinstance(cr_dict, dict):
-                    raise ValueError(
-                        "augmentation.criteria must be a mapping when provided"
-                    )
-                from src_new.config.augmentation_config import CriteriaConfig as _CR
                 from src_new.config.augmentation_config import (
                     OcclusionCriterionConfig as _OC,
                 )
+                from src_new.config.augmentation_config import (
+                    PhotometricConfig as _PH,
+                )
+                from src_new.config.augmentation_config import (
+                    TypePolicyConfig as _TP,
+                )
 
-                occ_cfg = None
-                occ_dict = cr_dict.get("occlusion")
-                if occ_dict is not None:
-                    if not isinstance(occ_dict, dict):
+                ig = None
+                if "image_geom" in aug_dict and aug_dict["image_geom"] is not None:
+                    ig_dict = aug_dict["image_geom"]
+                    if not isinstance(ig_dict, dict):
                         raise ValueError(
-                            "augmentation.criteria.occlusion must be a mapping"
+                            "augmentation.image_geom must be a mapping when provided"
                         )
-                    occ_cfg = _OC(
-                        enabled=bool(occ_dict["enabled"]),
-                        min_overlap_fraction_bbox=float(
-                            occ_dict["min_overlap_fraction_bbox"]
-                        ),
-                        min_overlap_fraction_line=float(
-                            occ_dict["min_overlap_fraction_line"]
-                        ),
-                        mask_downscale=int(occ_dict["mask_downscale"]),
-                        line_width_px=int(occ_dict["line_width_px"]),
+                    ig = _IG(
+                        rotate_deg_range=tuple(ig_dict["rotate_deg_range"]),
+                        translate_pct=float(ig_dict["translate_pct"]),
+                        scale_range=tuple(ig_dict["scale_range"]),
+                        perspective_pct=float(ig_dict["perspective_pct"]),
+                        crop_pct=float(ig_dict["crop_pct"]),
+                        multiscale_short_edges=ig_dict.get("multiscale_short_edges"),
                     )
-                criteria_cfg = _CR(occlusion=occ_cfg)
 
-            aug_cfg = AugmentationConfigType(
-                enabled=aug_dict["enabled"],
-                rng_seed=aug_dict["rng_seed"],
-                apply_to_teachers=aug_dict["apply_to_teachers"],
-                lines_policy=aug_dict["lines_policy"],
-                debug_visualization=aug_dict["debug_visualization"],
-                debug_output_dir=aug_dict.get("debug_output_dir"),
-                op=angle_op_cfg,
-                color_jitter=cj_cfg,
-                albumentations_rand=alb_rand_cfg,
-                object_copy_paste=ocp_cfg,
-                object_blur=obj_blur_cfg,
-                rand_pool=rand_pool_cfg,
-                criteria=criteria_cfg,
+                ph = None
+                if "photometric" in aug_dict and aug_dict["photometric"] is not None:
+                    ph_dict = aug_dict["photometric"]
+                    if not isinstance(ph_dict, dict):
+                        raise ValueError(
+                            "augmentation.photometric must be a mapping when provided"
+                        )
+                    ph = _PH(
+                        enabled=bool(ph_dict["enabled"]),
+                        apply_prob=float(ph_dict["apply_prob"]),
+                        num_ops=int(ph_dict["num_ops"]),
+                        magnitude=float(ph_dict["magnitude"]),
+                        ocr_safe_pool=bool(ph_dict["ocr_safe_pool"]),
+                    )
+
+                ln = None
+                if "lines" in aug_dict and aug_dict["lines"] is not None:
+                    ln_dict = aug_dict["lines"]
+                    if not isinstance(ln_dict, dict):
+                        raise ValueError(
+                            "augmentation.lines must be a mapping when provided"
+                        )
+                    ln = _LN(
+                        enabled=bool(ln_dict["enabled"]),
+                        jitter_px_minmax=tuple(ln_dict["jitter_px_minmax"]),
+                        resample_points=int(ln_dict["resample_points"]),
+                        min_length_px=int(ln_dict["min_length_px"]),
+                    )
+
+                # Optional type_policies
+                tp = None
+                if (
+                    "type_policies" in aug_dict
+                    and aug_dict["type_policies"] is not None
+                ):
+                    tp = {}
+                    if not isinstance(aug_dict["type_policies"], dict):
+                        raise ValueError(
+                            "augmentation.type_policies must be a mapping when provided"
+                        )
+                    for k, v in aug_dict["type_policies"].items():
+                        if not isinstance(v, dict):
+                            raise ValueError(f"type_policies.{k} must be a mapping")
+                        tp[k] = _TP(
+                            allow_move=bool(v["allow_move"]),
+                            allow_copy_paste=bool(v["allow_copy_paste"]),
+                            allow_blur=bool(v["allow_blur"]),
+                            occluder_prob=float(v["occluder_prob"]),
+                            inpaint_source=bool(v["inpaint_source"]),
+                            max_iou_with_existing=v.get("max_iou_with_existing"),
+                            max_occ_fraction=v.get("max_occ_fraction"),
+                            occ_grid_downscale=v.get("occ_grid_downscale"),
+                            occ_margin_px=v.get("occ_margin_px"),
+                            same_plane_constraint=bool(
+                                v.get("same_plane_constraint", True)
+                            ),
+                            copy_paste_attempts=v.get("copy_paste_attempts"),
+                            alpha_feather_px=v.get("alpha_feather_px"),
+                            allowed_copy_types=v.get("allowed_copy_types"),
+                        )
+
+                # Optional criteria
+                cr = None
+                if "criteria" in aug_dict and aug_dict["criteria"] is not None:
+                    cr_dict = aug_dict["criteria"]
+                    if not isinstance(cr_dict, dict):
+                        raise ValueError(
+                            "augmentation.criteria must be a mapping when provided"
+                        )
+                    occ_cfg = None
+                    if "occlusion" in cr_dict and cr_dict["occlusion"] is not None:
+                        oc = cr_dict["occlusion"]
+                        if not isinstance(oc, dict):
+                            raise ValueError(
+                                "augmentation.criteria.occlusion must be a mapping"
+                            )
+                        occ_cfg = _OC(
+                            enabled=bool(oc["enabled"]),
+                            min_overlap_fraction_bbox=float(
+                                oc["min_overlap_fraction_bbox"]
+                            ),
+                            min_overlap_fraction_line=float(
+                                oc["min_overlap_fraction_line"]
+                            ),
+                            mask_downscale=int(oc["mask_downscale"]),
+                            line_width_px=int(oc["line_width_px"]),
+                        )
+                    cr = _CR(occlusion=occ_cfg)
+
+                aug_cfg = _Aug(
+                    enabled=bool(aug_dict["enabled"]),
+                    rng_seed=int(aug_dict["rng_seed"]),
+                    apply_to_teachers=bool(aug_dict["apply_to_teachers"]),
+                    lines_policy=str(aug_dict["lines_policy"]),
+                    debug_visualization=bool(aug_dict["debug_visualization"]),
+                    debug_output_dir=aug_dict.get("debug_output_dir"),
+                    criteria=cr,
+                    image_geom=ig,
+                    photometric=ph,
+                    lines=ln,
+                    type_policies=tp,
+                    ocr=None,
+                )
+                validate_augmentation_config_fn(aug_cfg)
+                data["augmentation"] = aug_cfg
+
+        # Optional: teacher_augmentation (photometric-only; simple mapping)
+        if "teacher_augmentation" in data and data["teacher_augmentation"] is not None:
+            taug_dict = data["teacher_augmentation"]
+            if not isinstance(taug_dict, dict):
+                raise ValueError(
+                    f"teacher_augmentation must be a mapping when provided, got {type(taug_dict)}"
+                )
+            from src_new.config.augmentation_config import (
+                AugmentationConfig as _TAug,
             )
-            # Validate early (fail-fast)
-            validate_angle_rotate_config_fn(angle_op_cfg)
-            validate_augmentation_config_fn(aug_cfg)
-            data["augmentation"] = aug_cfg
+            from src_new.config.augmentation_config import (
+                PhotometricConfig as _TPH,
+            )
+
+            # rng_seed optional; default 12345
+            t_rng_seed = int(taug_dict.get("rng_seed", 12345))
+            # photometric block required
+            if "photometric" not in taug_dict or taug_dict["photometric"] is None:
+                raise ValueError(
+                    "teacher_augmentation.photometric must be provided (photometric-only policy)"
+                )
+            tph_dict = taug_dict["photometric"]
+            if not isinstance(tph_dict, dict):
+                raise ValueError(
+                    "teacher_augmentation.photometric must be a mapping when provided"
+                )
+            tph = _TPH(
+                enabled=bool(tph_dict["enabled"]),
+                apply_prob=float(tph_dict["apply_prob"]),
+                num_ops=int(tph_dict["num_ops"]),
+                magnitude=float(tph_dict["magnitude"]),
+                ocr_safe_pool=bool(tph_dict["ocr_safe_pool"]),
+            )
+            taug_cfg = _TAug(
+                enabled=True,
+                rng_seed=t_rng_seed,
+                apply_to_teachers=True,  # explicit teacher pipeline
+                lines_policy="transform",
+                debug_visualization=False,
+                debug_output_dir=None,
+                criteria=None,
+                image_geom=None,  # enforce photometric-only
+                photometric=tph,
+                lines=None,
+                type_policies=None,
+                ocr=None,
+            )
+            validate_augmentation_config_fn(taug_cfg)
+            data["teacher_augmentation"] = taug_cfg
     except KeyError as e:
         raise ValueError(f"Missing required augmentation field: {e}")
     except TypeError as e:
@@ -1042,9 +1133,11 @@ def load_config(config_path: str) -> Config:
     except TypeError as e:
         raise TypeError(f"Configuration contains invalid field types: {e}")
     except Exception as e:
-        raise ValueError(f"Failed to create configuration from {config_path}: {e}")
+        raise ValueError(
+            f"Failed to create configuration from {override_config_path}: {e}"
+        )
 
-    logger.info(f"✅ Configuration loaded successfully from {config_path}")
+    logger.info(f"✅ Configuration loaded successfully from {override_config_path}")
     logger.info(f"📋 Model path: {config.model_path}")
     logger.info(f"📋 Data: train={config.train_data_path}, val={config.val_data_path}")
     logger.info(

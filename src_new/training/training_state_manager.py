@@ -187,13 +187,18 @@ class TrainingStateManager:
         # Build comprehensive logs dictionary
         logs = {}
 
-        # Add main loss
-        if torch.is_tensor(tr_loss):
-            logs["loss"] = (
-                tr_loss.item() if tr_loss.numel() == 1 else tr_loss.mean().item()
-            )
+        # Prefer locally averaged loss (from the same window as components) when available
+        local_avg_loss = component_logs.pop("loss", None)
+        if local_avg_loss is not None:
+            logs["loss"] = float(local_avg_loss)
         else:
-            logs["loss"] = float(tr_loss)
+            # Fallback to Trainer-provided smoothed loss
+            if torch.is_tensor(tr_loss):
+                logs["loss"] = (
+                    tr_loss.item() if tr_loss.numel() == 1 else tr_loss.mean().item()
+                )
+            else:
+                logs["loss"] = float(tr_loss)
 
         # Add loss components (only meaningful ones)
         logs.update(component_logs)

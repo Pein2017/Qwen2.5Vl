@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import logging
 from typing import Dict, List, Tuple
 
 from src_new.types.coords import CoordTokenRange
@@ -84,12 +85,14 @@ def get_coord_token_range(tokenizer) -> CoordTokenRange:
 def validate_geometry_tokens(tokenizer) -> None:
     """Ensure required geometry tokens exist in the tokenizer vocabulary.
 
-    Raises:
-            ValueError if any of the canonical geometry tokens are missing.
+    Emits a warning listing any missing tokens but does not raise.
+    This allows running models trained/inferred with a subset of shapes
+    (e.g., bbox and quad without line).
     """
     vocab = tokenizer.get_vocab() if hasattr(tokenizer, "get_vocab") else {}
-    missing: List[str] = []
-    for _, (ref_s, ref_e, geo_s, geo_e) in GEOMETRY_TOKENS.items():
+    missing_by_type: Dict[str, List[str]] = {}
+    for geom_type, (ref_s, ref_e, geo_s, geo_e) in GEOMETRY_TOKENS.items():
+        missing: List[str] = []
         if ref_s not in vocab:
             missing.append(ref_s)
         if ref_e not in vocab:
@@ -98,9 +101,16 @@ def validate_geometry_tokens(tokenizer) -> None:
             missing.append(geo_s)
         if geo_e not in vocab:
             missing.append(geo_e)
-    if missing:
-        raise ValueError(
-            f"Geometry tokens missing from vocabulary: {sorted(set(missing))}"
+        if missing:
+            missing_by_type[geom_type] = missing
+
+    if missing_by_type:
+        # Flatten for concise message
+        all_missing = sorted({tok for toks in missing_by_type.values() for tok in toks})
+        logging.getLogger(__name__).warning(
+            "Geometry tokens missing from vocabulary (non-fatal): %s. "
+            "Continuing with available tokens; shapes with missing tokens will be disabled.",
+            all_missing,
         )
 
 

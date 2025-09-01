@@ -7,16 +7,19 @@
 ## 📋 Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Training Pipeline Flow](#training-pipeline-flow)
-3. [Input Data Format](#input-data-format)
-4. [Token Conversion Pipeline](#token-conversion-pipeline)
-5. [Conversation Structure & Templates](#conversation-structure--templates)
-6. [Span Detection & Loss Masking](#span-detection--loss-masking)
-7. [Training Architecture](#training-architecture)
-8. [Loss Computation System](#loss-computation-system)
-9. [Distributed Training & Checkpoints](#distributed-training--checkpoints)
-10. [Configuration & Setup](#configuration--setup)
-11. [Troubleshooting](#troubleshooting)
+2. [Quick Start](#quick-start)
+3. [Training Pipeline Flow](#training-pipeline-flow)
+4. [Input Data Format](#input-data-format)
+5. [Token Conversion Pipeline](#token-conversion-pipeline)
+6. [Conversation Structure & Templates](#conversation-structure--templates)
+7. [Span Detection & Loss Masking](#span-detection--loss-masking)
+8. [Training Architecture](#training-architecture)
+9. [Loss Computation System](#loss-computation-system)
+10. [Data Augmentation](#data-augmentation)
+11. [Distributed Training & Checkpoints](#distributed-training--checkpoints)
+12. [Configuration & Setup](#configuration--setup)
+13. [Testing](#testing)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -37,6 +40,23 @@ The Qwen2.5-VL training pipeline implements **teacher-student learning** for BBU
 ```
 Raw Data (JSONL) → Coordinate Conversion → Conversation Templates →
 Tokenization → Span Detection → Training → Model Checkpoints
+```
+
+---
+
+## 🚀 Quick Start
+
+### Training
+```bash
+cd /data3/Qwen2.5-VL-main
+source ~/.bashrc && conda activate ms
+bash scripts/run_new_train.sh
+```
+
+### Inference
+```bash
+source ~/.bashrc && conda activate ms
+python -m src_new.inference --config /abs/path/to/config.yaml --checkpoint /abs/path/to/checkpoint --image /abs/path/to/image.jpg
 ```
 
 ---
@@ -130,10 +150,10 @@ Raw Objects → Structured → Conversations → Batched → Model → Loss → 
 
 **After Tokenization & Span Detection**:
 ```python
-input_ids: [151644, 8948, 198, 你是通信..., 151645, 151644, 872, 198, 现在请你..., <image_tokens>, 151645, 151644, 77091, 198, 151652, BBU设备, 151653, 151659, 91, 151767, 151867, 151967, 152067, 93, 151660, 151645]
-labels:    [-100, -100, -100, -100, ..., -100, -100, -100, -100, 151652, BBU设备, 151653, 151659, 91, 151767, 151867, 151967, 152067, 93, 151660, 151645]
-teacher_spans: []  # No teacher in this example
-student_spans: [(span_start, span_end)]  # Assistant content span
+input_ids: [...]
+labels:    [...]
+teacher_spans: []
+student_spans: [(span_start, span_end)]
 ```
 
 ---
@@ -632,83 +652,105 @@ def perform_pre_distributed_expansion(base_model, tokenizer, config):
 
 ### Configuration System (`src_new/config/config.py`)
 
-The configuration uses a unified dataclass with explicit, required fields. In addition to the baseline coordinate settings, the following keys enable and configure the auxiliary coordinate losses:
+The configuration uses a unified dataclass with explicit, required fields. Coordinate auxiliary losses are controlled via the following keys:
 
 ```yaml
 # Coordinate auxiliary losses
-coord_aux_enabled: true        # Enable the auxiliary path (default false in baseline configs)
-coord_aux_tau: 1.2             # Temperature for coordinate slice during Kernelized‑KL
-coord_aux_sigma_bins: 8        # Gaussian sigma in BIN units for target kernel
-coord_aux_window_bins: 32      # Half-window radius in BIN units (total width = 2*window+1)
-coord_aux_topk: 100            # Top‑K non‑coordinate tokens for Unlikelihood
-coord_aux_lambda_kce: 0.5      # Weight for Kernelized‑KL
-coord_aux_lambda_unlike: 0.05  # Weight for Unlikelihood
+coord_aux_enabled: true
+coord_aux_tau: 1.2
+coord_aux_sigma_bins: 8
+coord_aux_window_bins: 32
+coord_aux_topk: 100
+coord_aux_lambda_kce: 0.5
+coord_aux_lambda_unlike: 0.05
 ```
 
-- Debug config (example): `configs/bbu_v2_debug.yaml` sets `coord_aux_enabled: true` with the knobs above so you can smoke‑test the new features.
-- Baseline training config: `configs/bbu_v2_use_coord.yaml` includes the fields but keeps `coord_aux_enabled: false` for backward compatibility.
+- Debug config: `configs/bbu_v2/debug.yaml` demonstrates enabling and tuning auxiliary losses.
+- Baseline training config: `configs/bbu_v2/standard.yaml` keeps `coord_aux_enabled: false` by default.
 
-Runtime wiring:
-- The wrapper configures `LossManager` with these knobs at initialization when `coord_aux_enabled` is true.
+### Phase-based Freezing for Separate Runs (New)
 
-#### **Training Entry Point** (`scripts/train_new.py`)
+We removed the legacy progressive-unfreeze callback and epoch-knob settings. Instead, use explicit phases per run:
 
-The training script orchestrates the complete pipeline:
+- `phase_name: off | phase_1 | phase_2 | phase_3`
+- Implemented by `src_new/training/phase_freeze_manager.py` and applied in `scripts/train_new.py` before optimizer creation.
 
-```python
-def main():
-    # 1. Load and validate configuration
-    config = load_config(f"configs/{args.config}.yaml")
+Behavior per phase:
+- `phase_1`: Train `visual.merger` and, when coordinate tokens exist, apply coord-slice grad masks to the coordinate-token rows of `embed_tokens.weight` and `lm_head.weight`. Freeze all LLM decoder layers and the vision backbone.
+- `phase_2`: Phase 1 + unfreeze last-K LLM decoder layers. If not provided, the manager uses an internal default of `K=6` that works well for both 3B and 7B. Vision backbone remains frozen; `visual.patch_embed` remains frozen.
+- `phase_3`: Unfreeze all parameters by default. Keep `visual.patch_embed` frozen by default for stability, and optionally restrict to the last-K vision blocks if configured. The aligner (`visual.merger`) stays trainable in all phases.
 
-    # 2. Create training arguments with DeepSpeed support
-    training_args = create_training_arguments_with_deepspeed(config)
+Run pattern:
+- Run Phase 1 → save checkpoint → Phase 2 resume → save checkpoint → Phase 3 resume.
+- Each phase uses its own cosine schedule.
 
-    # 3. Create trainer with new architecture
-    trainer = create_trainer_with_new_architecture(training_args, config)
+Minimal YAML examples:
+```yaml
+# base.yaml
+phase_name: off
 
-    # 4. Start training with automatic checkpointing
-    trainer.train()
+# standard.yaml (phase 1)
+phase_name: phase_1
+
+# coord_aux.yaml (phase 1)
+phase_name: phase_1
 ```
 
-#### **Setup Process**
+Internal per‑phase defaults and semantics (PhaseFreezeManager):
+- Components (Qwen2.5‑VL):
+  - Vision backbone: `model.visual.patch_embed`, `model.visual.blocks.*`
+  - Aligner (patch‑merger MLP): `model.visual.merger` (always trainable)
+  - Language model: `model.language_model.embed_tokens`, `model.language_model.layers.*`, `lm_head`
+- Keys (resolved internally when only `phase_name` is provided):
+  - `top_k_layers`: number of last LLM decoder blocks to unfreeze (0 keeps all LLM blocks frozen)
+  - `vision_top_k_blocks` (phase_3 only): unfreeze only the last K vision blocks (0 disables restriction)
+  - `coord_slice_only`: enable coord‑slice grad masks on embeddings/LM head in phase_1/2 when coord tokens exist
+  - `freeze_patch_embed` (phase_3): keep `visual.patch_embed` frozen for stability
+- Default values:
+  - phase_1 → `top_k_layers: 0`, `vision_top_k_blocks: 0`, `coord_slice_only: true`, `freeze_patch_embed: true`
+  - phase_2 → `top_k_layers: 6`, `vision_top_k_blocks: 0`, `coord_slice_only: true`, `freeze_patch_embed: true`
+  - phase_3 → `top_k_layers: 0`, `vision_top_k_blocks: 0`, `coord_slice_only: true`, `freeze_patch_embed: true`
 
-1. **Configuration Loading**: Load and validate YAML configuration with fail-fast validation
-2. **Model Loading**: Load base Qwen2.5-VL model with optimized loading parameters
-3. **Pre-Distributed Expansion**: Extend tokenizer and model embeddings BEFORE distributed training
-4. **Dataset Creation**: Initialize HuggingFace-first datasets with teacher pool management
-5. **Trainer Initialization**: Configure BBUTrainer with local loss aggregation
-6. **Processor Setup**: Configure extended tokenizer and processor for checkpoint saving
-
-#### **Critical Setup Details**
-
-**Tokenizer Extension** (`src_new/processing/token_processor.py`):
+Entry point applies the phase:
 ```python
-# Add coordinate tokens: <|coord_0|> to <|coord_MAX_COORD|>
-# Add geometry tokens: <|line_start|>, <|line_end|>
-# Initialize embeddings using positional encoding
-expanded_tokenizer = token_processor.extend_tokenizer_vocabulary(tokenizer)
-expanded_model = token_processor.extend_model_embeddings(base_model, expanded_tokenizer)
+# scripts/train_new.py
+from src_new.training.phase_freeze_manager import PhaseFreezeManager
+pfm = PhaseFreezeManager()
+phase = config.phase_name  # off|phase_1|phase_2|phase_3
+if phase != "off":
+    pfm.apply_phase(model, tokenizer, phase=phase)  # uses internal per-phase defaults
 ```
 
-**Processing Class Setup**:
-```python
-# CRITICAL: Use tokenizer (not processor) for checkpoint compatibility
-trainer.processing_class = tokenizer  # Has get_vocab() method
-trainer.set_processor(processor)      # Saved separately for inference
-```
+Optimizer learning‑rate groups (aligned with phases)
+- The trainer groups parameters by component and uses your YAML LR keys:
+  - `vision` group (vision backbone) → `vision_lr`
+  - `merger` group (aligner `visual.merger`) → `merger_lr`
+  - `top_layers` group (when only a suffix subset of LLM layers is trainable) → `lr_top_layers` (fallback to `llm_lr`)
+  - `coord_slice` group (`embed_tokens.weight`, `lm_head.weight` when trainable) → `lr_coord_slice` (fallback to `llm_lr`)
+  - `llm` group (remaining LLM params) → `llm_lr` (or `lr_full_model` if explicitly set)
+- Grouping derives from `requires_grad`, which PhaseFreezeManager sets per phase. LLM layer detection supports Qwen2.5‑VL naming (`model.language_model.layers.<idx>.*`).
 
-**Model Wrapper**:
-```python
-# DetectionModel wraps base model with coordinate token support
-model = DetectionModel(
-    base_model=expanded_model,
-    config=config,
-    tokenizer=expanded_tokenizer,
-    skip_expansion=True,  # Already expanded
-)
+Optional per-group LRs (validated by `config.py`):
+```yaml
+lr_merger: 3.0e-5
+lr_coord_slice: 5.0e-6
+lr_top_layers: 1.0e-5
+lr_full_model: 1.0e-5
 ```
 
 ---
+
+## 🧪 Testing
+
+```bash
+cd /data3/Qwen2.5-VL-main/src_new/tests
+python run_comprehensive_tests.py
+```
+
+Augmentation visualization (optional):
+```bash
+python /data3/Qwen2.5-VL-main/src_new/tests/vis_aug_angle_rotate_real.py
+```
 
 ## 🔧 Troubleshooting
 
@@ -1041,8 +1083,8 @@ This ensures model input uses a single deterministic coordinate ordering, elimin
 
 ## 📦 Module-by-Module Overview (Refactored `src_new`)
 
-- **`config/`**: Unified, frozen dataclass config with strict validation and path normalization (relative paths and `@src_new/` alias supported).
-  - `config/config.py`: `Config` schema, `load_config` (auto-resolve dataset paths via `DataResolver`), fail-fast checks, progressive unfreeze knobs.
+- **`config/`**: Unified, frozen dataclass config with strict validation and path normalization.
+  - `config/config.py`: `Config` schema, `load_config` (auto-resolve dataset paths via `DataResolver`), fail-fast checks, `phase_name` control and LR-group validation.
 - **`data/`**: Data loading and HuggingFace-first conversation assembly.
   - `data/dataset.py`: Reads JSONL, validates samples, loads images via `utils.path_manager`, builds conversations via `processing/conversation/builder.py`, creates masked labels and teacher/student spans using offset mapping, masks `<|image_pad|>`.
   - `data/teacher_pool.py`: Loads teacher pool JSONL, builds image index, random sampling APIs.
@@ -1062,14 +1104,12 @@ This ensures model input uses a single deterministic coordinate ordering, elimin
 - **`losses/`**: Auxiliary loss implementations.
   - `losses/coord_aux.py`: `build_kernel_indices_and_q`, `kernelized_kl_sparse`, `unlikelihood_topk_text`, `build_noncoord_vocab_mask`.
 - **`training/`**: Trainer and checkpointing.
-  - `training/bbu_trainer.py`: Local aggregation (no custom distributed ops); overrides HF logging cycle; integrates `TrainingStateManager` and `CheckpointSaver`/`BestCheckpointManager`; supports proper LR logging and eval/save cadence.
-  - `training/training_state_manager.py`: Accumulates loss components locally, computes logging dictionary, verifies loss decomposition, estimates remaining time.
-  - `training/callbacks.py`: Loss tracking helpers and rotation‑safe best checkpoint naming (if used).
-  - `training/checkpoint_saver.py`: Centralized inference‑ready checkpoint saving (SafeTensors + sharding) and best‑checkpoint management via `BestCheckpointManager` with rotation.
-- **`inference.py`**: Inference engine using the same builders (strict parsing, teacher‑guided options, data path resolution, dynamic coord range).
-- **`utils/`**: Rank‑aware logging, path/data resolution, validation, error formatting, debug logging.
-- **`types/`**: Shapes and typed helpers (e.g., `IMAGE_GRID_THW_SHAPE_DESC`).
-- **`reference/`**: Official collator reference and notes.
+  - `training/phase_freeze_manager.py`: Phase-based freezing for separate runs.
+  - `training/bbu_trainer.py`: Local aggregation; proper LR logging; eval/save cadence.
+  - `training/training_state_manager.py`: Local metrics aggregation.
+  - `training/checkpoint_saver.py`: SafeTensors + best-checkpoint manager.
+- **`inference.py`**: Inference engine.
+- **`utils/`**: Rank-aware logging, path/data resolution, validation, debug logging.
 
 ## 🧭 Refactored Roadmap & Training Procedure
 
@@ -1101,3 +1141,184 @@ This ensures model input uses a single deterministic coordinate ordering, elimin
 - **Loss system**: single‑pass CE; optional auxiliary coordinate losses with diagnostics; legacy L1 path retired; Laplacian regularizers removed.
 - **Trainer**: no custom distributed ops; local aggregation only; unified best‑checkpoint handling.
 - **Embedding extension**: padded to 128; original pretrained rows preserved; deterministic coordinate init (`ms_mean`/`fourier_ramp`).
+
+## 🎛️ Data Augmentation
+
+Integrated, training‑ready data augmentation for detection‑focused VL fine‑tuning. The module runs inside `src_new/data/dataset.py` before conversation assembly/tokenization, keeping downstream tokenization and span logic unchanged.
+
+### Quick start (apply in 60 seconds)
+
+Add under your training YAML:
+```yaml
+augmentation:
+  preset: moderate   # off|conservative|moderate|aggressive
+  rng_seed: 12345
+```
+Then launch training (ensure `ms` conda env):
+```bash
+cd /data3/Qwen2.5-VL-main
+source ~/.bashrc && conda activate ms
+bash scripts/run_new_train.sh
+```
+
+### Preset‑based configuration
+
+- off: augmentation disabled (rotation fixed at 0°)
+- conservative: light photometric + small geometry
+- moderate: balanced default for most runs
+- aggressive: strong perturbations, higher CPU cost
+
+Advanced users can still provide the explicit block below for fine‑grained control. Teachers are not augmented by default (`apply_to_teachers: false`).
+
+### Integration & execution order
+
+1) Load images
+2) Image‑level AngleRotate (image + coordinates)
+3) Albumentations RandAug (image‑only photometric)
+4) Per‑object Local Affine (pixels + coordinates) if `apply_pixels: true`
+5) Object Copy‑Paste (with feathered alpha) if enabled
+6) Object Blur (masked blur) if enabled
+7) Optional RandAug pool over object‑level ops
+8) Conversation building and tokenization
+
+Implementation: `src_new/augmentation/base.py::AugmentationPipeline`, called from `src_new/data/dataset.py`.
+
+### Human‑readable object transform wrappers
+
+Switch behaviors via a single key:
+- `off`: no object‑level movement
+- `cut_paste`: move objects (erase source and paste at new location) — uses `object_local_affine` with `apply_pixels: true`
+- `copy_paste`: duplicate objects (keep source, add a new object) — uses `object_copy_paste`
+- `both`: enable both behaviors (order: cut/move → copy/duplicate)
+
+Examples:
+```yaml
+# Cut‑paste (move objects, no duplicates)
+augmentation:
+  object_transform: cut_paste
+  object_local_affine:
+    enabled: true
+    apply_pixels: true
+    per_object_prob: 0.8
+    max_rotation_deg: 10
+    translate_px: 8
+    avoid_overlap: true
+    iou_thresh: 0.05
+    max_resample: 10
+```
+
+```yaml
+# Copy‑paste (duplicate objects)
+augmentation:
+  object_transform: copy_paste
+  object_copy_paste:
+    enabled: true
+    per_object_prob: 0.6
+    num_copies_per_object: 1
+    translate_px: 48
+    rotation_jitter_deg: 8.0
+    scale_jitter_min: 0.95
+    scale_jitter_max: 1.05
+    occ_grid_downscale: 8
+    occ_margin_px: 6
+    max_occ_fraction: 0.15
+    max_iou_with_existing: 0.25
+    attempts: 20
+    alpha_feather_px: 1.5
+```
+
+### Full configuration (YAML)
+
+```yaml
+augmentation:
+  enabled: true
+  preset: moderate           # off|conservative|moderate|aggressive (optional; overrides detailed knobs)
+  rng_seed: 12345
+  apply_to_teachers: false
+  lines_policy: transform    # identity|drop_objects|error|transform
+  debug_visualization: false
+  debug_output_dir: null
+
+  # Image-level rotation (backbone)
+  op:
+    sample_mode: uniform_range   # fixed|uniform_range|set
+    angle_min_deg: -30
+    angle_max_deg: 30
+    angles_set_deg: null
+    expand: true
+    interpolation: bilinear      # nearest|bilinear|bicubic
+    fill_color: [0, 0, 0]
+
+  # Photometric RandAug (image-only)
+  albumentations_rand:
+    enabled: true
+    apply_prob: 0.8
+    num_ops: 2
+    magnitude: 0.6               # 0..1, coarse strength scale
+    safe_ops_only: true
+
+  # Per-object local affine (v1)
+  object_local_affine:
+    enabled: true
+    apply_pixels: true           # REQUIRED for v1; no coords-only jitter
+    per_object_prob: 0.8
+    max_rotation_deg: 10.0
+    translate_px: 8
+    avoid_overlap: true
+    iou_thresh: 0.05
+    max_resample: 10
+
+  # Object copy-paste (optional)
+  object_copy_paste:
+    enabled: true
+    per_object_prob: 0.6
+    num_copies_per_object: 1
+    translate_px: 48
+    rotation_jitter_deg: 8.0
+    scale_jitter_min: 0.95
+    scale_jitter_max: 1.05
+    occ_grid_downscale: 8
+    occ_margin_px: 6
+    max_occ_fraction: 0.15
+    max_iou_with_existing: 0.25
+    attempts: 20
+    allowed_types: null
+    alpha_feather_px: 1.5        # soften pasted edges to avoid halos
+
+  # Object blur (optional)
+  object_blur:
+    enabled: true
+    per_object_prob: 0.5
+    blur_type: gaussian          # gaussian|box
+    radius_min: 0.5
+    radius_max: 1.2
+
+  # Object-level RandAug pool (optional)
+  rand_pool:
+    enabled: true
+    apply_prob: 1.0
+    num_ops: 2
+    include_object_affine: true
+    include_object_copy_paste: true
+    include_object_blur: true
+```
+
+### Canonicalization & guarantees
+
+- Quad ordering: top‑left → clockwise
+- Bounds: every vertex `0 ≤ x < width`, `0 ≤ y < height`
+- Non‑degenerate: polygon area must be positive (invalid candidates rejected)
+- Pixel–coord consistency: per‑object affine runs only when `apply_pixels: true`; otherwise skipped entirely (no coordinates‑only jitter)
+- Lines: receive image‑level rotation; skipped in v1 for object‑level transforms
+
+### Debugging & visualization
+
+- Real‑data visualization script: `src_new/tests/vis_aug_angle_rotate_real.py`
+  - Outputs in `outputs/aug_vis/aug_vis_*.jpg`
+
+### Dependencies
+
+- Albumentations (tested: 1.3.x)
+- `albucore<0.1` and `opencv-python-headless~4.10` for 1.3.x
+
+---

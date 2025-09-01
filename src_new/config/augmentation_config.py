@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
+
+
+# ---------------- Legacy / common blocks ----------------
 
 
 @dataclass(frozen=True)
@@ -28,19 +31,6 @@ class AngleRotateConfig:
     expand: bool
     interpolation: Literal["nearest", "bilinear", "bicubic"]
     fill_color: Optional[Tuple[int, int, int]]  # RGB
-
-
-@dataclass(frozen=True)
-class ColorJitterConfig:
-    """Image-only color jitter configuration (does not change coordinates)."""
-
-    enabled: bool
-    apply_prob: float
-    brightness: Optional[Tuple[float, float]]
-    contrast: Optional[Tuple[float, float]]
-    saturation: Optional[Tuple[float, float]]
-    sharpness: Optional[Tuple[float, float]]
-    order: Optional[List[str]]
 
 
 @dataclass(frozen=True)
@@ -95,6 +85,9 @@ class ObjectCopyPasteConfig:
     max_iou_with_existing: float
     attempts: int
     allowed_types: Optional[List[str]]
+    # Soft blending radius (in pixels) applied to the alpha mask of pasted patches
+    # to reduce hard seams/halo artifacts. Set 0.0 to disable.
+    alpha_feather_px: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -139,6 +132,59 @@ class CriteriaConfig:
     occlusion: Optional[OcclusionCriterionConfig] = None
 
 
+# ---------------- Object-aware new blocks ----------------
+
+
+@dataclass(frozen=True)
+class ImageGeomConfig:
+    rotate_deg_range: Tuple[float, float]
+    translate_pct: float
+    scale_range: Tuple[float, float]
+    perspective_pct: float
+    crop_pct: float
+    multiscale_short_edges: Optional[List[int]]
+
+
+@dataclass(frozen=True)
+class PhotometricConfig:
+    enabled: bool
+    apply_prob: float
+    num_ops: int
+    magnitude: float
+    ocr_safe_pool: bool
+
+
+@dataclass(frozen=True)
+class LineAugConfig:
+    enabled: bool
+    jitter_px_minmax: Tuple[int, int]
+    resample_points: int
+    min_length_px: int
+
+
+@dataclass(frozen=True)
+class TypePolicyConfig:
+    allow_move: bool
+    allow_copy_paste: bool
+    allow_blur: bool
+    occluder_prob: float
+    inpaint_source: bool
+    max_iou_with_existing: Optional[float] = None
+    max_occ_fraction: Optional[float] = None
+    occ_grid_downscale: Optional[int] = None
+    occ_margin_px: Optional[int] = None
+    same_plane_constraint: bool = True
+    copy_paste_attempts: Optional[int] = None
+    alpha_feather_px: Optional[float] = None
+    allowed_copy_types: Optional[List[str]] = None
+
+
+@dataclass(frozen=True)
+class OCRPolicyConfig:
+    label_protect: bool
+    force_unreadable_on_strong_distortion: bool
+
+
 @dataclass(frozen=True)
 class AugmentationConfig:
     """Top-level augmentation configuration.
@@ -154,214 +200,86 @@ class AugmentationConfig:
     debug_visualization: bool
     debug_output_dir: Optional[str]
 
-    # Single op plan: arbitrary-angle rotation (required)
-    op: AngleRotateConfig
-
-    # Optional image-only photometric augmentations
-    color_jitter: Optional[ColorJitterConfig] = (
-        None  # legacy manual jitter (deprecated in favor of Albumentations)
-    )
-    albumentations_rand: Optional[AlbumentationsRandAugConfig] = None
-
-    # Optional per-object local affine (coords-only)
-    object_local_affine: Optional[ObjectLocalAffineConfig] = None
-
-    # Optional object copy-paste
-    object_copy_paste: Optional[ObjectCopyPasteConfig] = None
-
-    # Optional object blur
-    object_blur: Optional[ObjectBlurConfig] = None
-
-    # Optional randomized pool
-    rand_pool: Optional[RandAugPoolConfig] = None
-
     # Criteria/guards
     criteria: Optional[CriteriaConfig] = None
 
-
-def validate_angle_rotate_config(cfg: AngleRotateConfig) -> None:
-    mode = cfg.sample_mode
-
-    # Helper for near-zero test
-    def is_near_zero(x: float) -> bool:
-        return abs(float(x)) < 1e-6
-
-    if mode == "fixed":
-        if cfg.fixed_angle_deg is None:
-            raise ValueError(
-                "AngleRotateConfig: fixed_angle_deg must be set when sample_mode='fixed'"
-            )
-    elif mode == "uniform_range":
-        if cfg.angle_min_deg is None or cfg.angle_max_deg is None:
-            raise ValueError(
-                "AngleRotateConfig: angle_min_deg and angle_max_deg must be set when sample_mode='uniform_range'"
-            )
-        if cfg.angle_min_deg > cfg.angle_max_deg:
-            raise ValueError(
-                f"AngleRotateConfig: angle_min_deg ({cfg.angle_min_deg}) must be <= angle_max_deg ({cfg.angle_max_deg})"
-            )
-    elif mode == "set":
-        if not cfg.angles_set_deg or len(cfg.angles_set_deg) == 0:
-            raise ValueError(
-                "AngleRotateConfig: angles_set_deg must be a non-empty list when sample_mode='set'"
-            )
-    else:
-        raise ValueError(f"AngleRotateConfig: unsupported sample_mode: {mode}")
-
-    if cfg.interpolation not in ("nearest", "bilinear", "bicubic"):
-        raise ValueError(
-            f"AngleRotateConfig: unsupported interpolation '{cfg.interpolation}'. Choose from nearest|bilinear|bicubic"
-        )
-
-    # Fail-fast: forbid keep-size for any non-zero rotation (prevents boundary clipping)
-    if cfg.expand is False:
-        if (
-            mode == "fixed"
-            and cfg.fixed_angle_deg is not None
-            and not is_near_zero(cfg.fixed_angle_deg)
-        ):
-            raise ValueError(
-                "AngleRotateConfig: expand=False with non-zero fixed_angle is not allowed. "
-                "Set expand=True or use fixed_angle_deg=0.0."
-            )
-        if mode == "uniform_range" and (
-            (cfg.angle_min_deg is not None and not is_near_zero(cfg.angle_min_deg))
-            or (cfg.angle_max_deg is not None and not is_near_zero(cfg.angle_max_deg))
-        ):
-            raise ValueError(
-                "AngleRotateConfig: expand=False with a non-zero angle range is not allowed. "
-                "Set expand=True or restrict the range to 0.0."
-            )
-        if mode == "set" and any(
-            not is_near_zero(a) for a in (cfg.angles_set_deg or [])
-        ):
-            raise ValueError(
-                "AngleRotateConfig: expand=False with a set containing non-zero angles is not allowed. "
-                "Set expand=True or include only 0.0."
-            )
+    # New object-aware blocks (optional)
+    image_geom: Optional[ImageGeomConfig] = None
+    photometric: Optional[PhotometricConfig] = None
+    lines: Optional[LineAugConfig] = None
+    type_policies: Optional[Dict[str, TypePolicyConfig]] = None
+    ocr: Optional[OCRPolicyConfig] = None
 
 
-def validate_color_jitter_config(cfg: ColorJitterConfig) -> None:
+# ---------------- Validators ----------------
+
+
+def validate_image_geom_config(cfg: ImageGeomConfig) -> None:
+    if cfg.rotate_deg_range[0] > cfg.rotate_deg_range[1]:
+        raise ValueError("ImageGeomConfig.rotate_deg_range min must be <= max")
+    if cfg.translate_pct < 0:
+        raise ValueError("ImageGeomConfig.translate_pct must be >=0")
+    if cfg.scale_range[0] <= 0 or cfg.scale_range[0] > cfg.scale_range[1]:
+        raise ValueError("ImageGeomConfig.scale_range must satisfy 0<min<=max")
+    if cfg.perspective_pct < 0 or cfg.crop_pct < 0:
+        raise ValueError("ImageGeomConfig perspective/crop must be >=0")
+
+
+def validate_photometric2_config(cfg: PhotometricConfig) -> None:
     if not isinstance(cfg.enabled, bool):
-        raise ValueError(
-            f"ColorJitterConfig.enabled must be bool, got {type(cfg.enabled)}: {cfg.enabled!r}"
-        )
+        raise ValueError("PhotometricConfig.enabled must be bool")
     if not (0.0 <= cfg.apply_prob <= 1.0):
-        raise ValueError(
-            f"ColorJitterConfig.apply_prob must be in [0,1], got {cfg.apply_prob}"
-        )
-
-    def _validate_range(name: str, rng: Optional[Tuple[float, float]]):
-        if rng is None:
-            return
-        if not isinstance(rng, tuple) or len(rng) != 2:
-            raise ValueError(
-                f"ColorJitterConfig.{name} must be a tuple(min,max), got {rng}"
-            )
-        lo, hi = rng
-        if lo <= 0 or hi <= 0 or lo > hi:
-            raise ValueError(f"ColorJitterConfig.{name} invalid range: {rng}")
-
-    _validate_range("brightness", cfg.brightness)
-    _validate_range("contrast", cfg.contrast)
-    _validate_range("saturation", cfg.saturation)
-    _validate_range("sharpness", cfg.sharpness)
-
-    if cfg.order is not None:
-        valid = {"brightness", "contrast", "saturation", "sharpness"}
-        if any(x not in valid for x in cfg.order):
-            raise ValueError(
-                f"ColorJitterConfig.order contains invalid transform; valid: {sorted(valid)}"
-            )
-
-
-def validate_albumentations_rand_config(cfg: AlbumentationsRandAugConfig) -> None:
-    if not isinstance(cfg.enabled, bool):
-        raise ValueError(
-            f"AlbumentationsRandAugConfig.enabled must be bool, got {type(cfg.enabled)}: {cfg.enabled!r}"
-        )
-    if not (0.0 <= cfg.apply_prob <= 1.0):
-        raise ValueError(
-            f"AlbumentationsRandAugConfig.apply_prob must be in [0,1], got {cfg.apply_prob}"
-        )
-    if not isinstance(cfg.num_ops, int) or cfg.num_ops < 1:
-        raise ValueError(
-            f"AlbumentationsRandAugConfig.num_ops must be >=1, got {cfg.num_ops}"
-        )
+        raise ValueError("PhotometricConfig.apply_prob must be in [0,1]")
+    if cfg.num_ops < 0:
+        raise ValueError("PhotometricConfig.num_ops must be >=0")
     if not (0.0 <= cfg.magnitude <= 1.0):
+        raise ValueError("PhotometricConfig.magnitude must be in [0,1]")
+
+
+def validate_line_aug_config(cfg: LineAugConfig) -> None:
+    mn, mx = cfg.jitter_px_minmax
+    if mn < 0 or mx < 0 or mn > mx:
         raise ValueError(
-            f"AlbumentationsRandAugConfig.magnitude must be in [0,1], got {cfg.magnitude}"
+            "LineAugConfig.jitter_px_minmax must be non-negative and min<=max"
         )
+    if cfg.resample_points < 2:
+        raise ValueError("LineAugConfig.resample_points must be >=2")
+    if cfg.min_length_px < 0:
+        raise ValueError("LineAugConfig.min_length_px must be >=0")
 
 
-def validate_object_copy_paste_config(cfg: ObjectCopyPasteConfig) -> None:
-    if not isinstance(cfg.enabled, bool):
-        raise ValueError("ObjectCopyPasteConfig.enabled must be bool")
-    if not (0.0 <= cfg.per_object_prob <= 1.0):
-        raise ValueError("ObjectCopyPasteConfig.per_object_prob must be in [0,1]")
-    if cfg.num_copies_per_object < 1:
-        raise ValueError("ObjectCopyPasteConfig.num_copies_per_object must be >=1")
-    if cfg.translate_px < 0:
-        raise ValueError("ObjectCopyPasteConfig.translate_px must be >=0")
-    if cfg.rotation_jitter_deg < 0:
-        raise ValueError("ObjectCopyPasteConfig.rotation_jitter_deg must be >=0")
-    if not (0.0 < cfg.scale_jitter_min <= cfg.scale_jitter_max):
-        raise ValueError("scale_jitter_min/max must satisfy 0 < min <= max")
-    if cfg.occ_grid_downscale < 1:
-        raise ValueError("occ_grid_downscale must be >=1")
-    if cfg.occ_margin_px < 0:
-        raise ValueError("occ_margin_px must be >=0")
-    if not (0.0 <= cfg.max_occ_fraction <= 1.0):
-        raise ValueError("max_occ_fraction must be in [0,1]")
-    if not (0.0 <= cfg.max_iou_with_existing <= 1.0):
-        raise ValueError("max_iou_with_existing must be in [0,1]")
-    if cfg.attempts < 1:
-        raise ValueError("attempts must be >=1")
+def validate_type_policies(tp: Dict[str, TypePolicyConfig]) -> None:
+    for t, p in tp.items():
+        if p.occluder_prob < 0 or p.occluder_prob > 1:
+            raise ValueError(f"TypePolicyConfig.occluder_prob for {t} must be in [0,1]")
+        if p.max_iou_with_existing is not None and not (
+            0.0 <= p.max_iou_with_existing <= 1.0
+        ):
+            raise ValueError(
+                f"TypePolicyConfig.max_iou_with_existing for {t} must be in [0,1]"
+            )
+        if p.max_occ_fraction is not None and not (0.0 <= p.max_occ_fraction <= 1.0):
+            raise ValueError(
+                f"TypePolicyConfig.max_occ_fraction for {t} must be in [0,1]"
+            )
+        if p.occ_grid_downscale is not None and p.occ_grid_downscale < 1:
+            raise ValueError(f"TypePolicyConfig.occ_grid_downscale for {t} must be >=1")
+        if p.occ_margin_px is not None and p.occ_margin_px < 0:
+            raise ValueError(f"TypePolicyConfig.occ_margin_px for {t} must be >=0")
+        if p.copy_paste_attempts is not None and p.copy_paste_attempts < 1:
+            raise ValueError(
+                f"TypePolicyConfig.copy_paste_attempts for {t} must be >=1"
+            )
+        if p.alpha_feather_px is not None and p.alpha_feather_px < 0:
+            raise ValueError(f"TypePolicyConfig.alpha_feather_px for {t} must be >=0")
 
 
-def validate_object_blur_config(cfg: ObjectBlurConfig) -> None:
-    if not isinstance(cfg.enabled, bool):
-        raise ValueError("ObjectBlurConfig.enabled must be bool")
-    if not (0.0 <= cfg.per_object_prob <= 1.0):
-        raise ValueError("ObjectBlurConfig.per_object_prob must be in [0,1]")
-    if cfg.blur_type not in ("gaussian", "box"):
-        raise ValueError("ObjectBlurConfig.blur_type must be 'gaussian' or 'box'")
-    if cfg.radius_min <= 0 or cfg.radius_max <= 0 or cfg.radius_min > cfg.radius_max:
-        raise ValueError("ObjectBlurConfig.radius_min/max must be >0 and min<=max")
-
-
-def validate_rand_pool_config(
-    cfg: RandAugPoolConfig, aug_cfg: "AugmentationConfig"
-) -> None:
-    if not isinstance(cfg.enabled, bool):
-        raise ValueError("RandAugPoolConfig.enabled must be bool")
-    if not (0.0 <= cfg.apply_prob <= 1.0):
-        raise ValueError("RandAugPoolConfig.apply_prob must be in [0,1]")
-    includes = [
-        cfg.include_object_affine,
-        cfg.include_object_copy_paste,
-        cfg.include_object_blur,
-    ]
-    if cfg.num_ops < 1:
-        raise ValueError("RandAugPoolConfig.num_ops must be >=1")
-    if not any(includes):
-        raise ValueError("RandAugPoolConfig: at least one include_* must be True")
-    if cfg.num_ops > sum(1 for x in includes if x):
+def validate_ocr_policy(cfg: OCRPolicyConfig) -> None:
+    if not isinstance(cfg.label_protect, bool):
+        raise ValueError("OCRPolicyConfig.label_protect must be bool")
+    if not isinstance(cfg.force_unreadable_on_strong_distortion, bool):
         raise ValueError(
-            "RandAugPoolConfig.num_ops cannot exceed number of included ops"
-        )
-    # Ensure required sub-configs exist when included
-    if cfg.include_object_affine and aug_cfg.object_local_affine is None:
-        raise ValueError(
-            "RandAugPoolConfig requires object_local_affine when include_object_affine=True"
-        )
-    if cfg.include_object_copy_paste and aug_cfg.object_copy_paste is None:
-        raise ValueError(
-            "RandAugPoolConfig requires object_copy_paste when include_object_copy_paste=True"
-        )
-    if cfg.include_object_blur and aug_cfg.object_blur is None:
-        raise ValueError(
-            "RandAugPoolConfig requires object_blur when include_object_blur=True"
+            "OCRPolicyConfig.force_unreadable_on_strong_distortion must be bool"
         )
 
 
@@ -403,30 +321,15 @@ def validate_augmentation_config(cfg: AugmentationConfig) -> None:
             f"AugmentationConfig.debug_visualization must be bool, got {type(cfg.debug_visualization)}: {cfg.debug_visualization!r}"
         )
 
-    validate_angle_rotate_config(cfg.op)
-    if cfg.color_jitter is not None:
-        validate_color_jitter_config(cfg.color_jitter)
-    if cfg.albumentations_rand is not None:
-        validate_albumentations_rand_config(cfg.albumentations_rand)
-    if cfg.object_local_affine is not None:
-        ola = cfg.object_local_affine
-        if not (0.0 <= ola.per_object_prob <= 1.0):
-            raise ValueError(
-                f"ObjectLocalAffine.per_object_prob must be in [0,1], got {ola.per_object_prob}"
-            )
-        if ola.max_rotation_deg < 0:
-            raise ValueError("ObjectLocalAffine.max_rotation_deg must be >= 0")
-        if ola.translate_px < 0:
-            raise ValueError("ObjectLocalAffine.translate_px must be >= 0")
-        if ola.avoid_overlap and not (0.0 <= ola.iou_thresh <= 1.0):
-            raise ValueError("ObjectLocalAffine.iou_thresh must be in [0,1]")
-        if ola.max_resample < 0:
-            raise ValueError("ObjectLocalAffine.max_resample must be >= 0")
-    if cfg.object_copy_paste is not None:
-        validate_object_copy_paste_config(cfg.object_copy_paste)
-    if cfg.object_blur is not None:
-        validate_object_blur_config(cfg.object_blur)
-    if cfg.rand_pool is not None and cfg.rand_pool.enabled:
-        validate_rand_pool_config(cfg.rand_pool, cfg)
     if cfg.criteria is not None:
         validate_criteria_config(cfg.criteria)
+    if cfg.image_geom is not None:
+        validate_image_geom_config(cfg.image_geom)
+    if cfg.photometric is not None:
+        validate_photometric2_config(cfg.photometric)
+    if cfg.lines is not None:
+        validate_line_aug_config(cfg.lines)
+    if cfg.type_policies is not None:
+        validate_type_policies(cfg.type_policies)
+    if cfg.ocr is not None:
+        validate_ocr_policy(cfg.ocr)

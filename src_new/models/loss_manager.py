@@ -186,7 +186,6 @@ class LossManager:
         """
         # Extract configuration parameters (strict, no fallbacks)
         self.coordinate_loss_weight = config.coordinate_loss_weight
-        self.regular_loss_weight = config.regular_loss_weight
         self.teacher_loss_weight = config.teacher_loss_weight
         self.student_loss_weight = config.student_loss_weight
         # Keep full config for feature flags (e.g., coordinate_tokens_enabled)
@@ -197,6 +196,20 @@ class LossManager:
         # Store tokenizer and token processor for auxiliary losses and coordinate token range
         self._tokenizer = tokenizer
         self._token_processor = token_processor
+
+        # Grouped-LLM controls (strictly from config; no defaults)
+        for required in (
+            "caption_loss_weight",
+            "grounding_loss_weight",
+            "formatting_loss_weight",
+        ):
+            if not hasattr(config, required):
+                raise ValueError(f"Missing required config field: {required}")
+        self._grouping_enabled: bool = True
+        self._weight_caption: float = float(config.caption_loss_weight)
+        self._weight_grounding: float = float(config.grounding_loss_weight)
+        self._weight_formatting: float = float(config.formatting_loss_weight)
+        self._token_grouping_plugin = None
 
         # Get coordinate token range from tokenizer (derived, no hard-coded IDs)
         try:
@@ -221,6 +234,22 @@ class LossManager:
         self._lambda_lap1 = 0.0
         self._lambda_lap2 = 0.0
         self._embedding_accessor = None
+
+    def set_token_grouping_plugin(self, plugin) -> None:
+        """Set token grouping plugin (internal enablement).
+
+        The plugin must expose build_group_masks(labels, teacher_spans, student_spans)
+        and return masks aligned to shifted CE positions. Fails fast if the plugin is invalid.
+        """
+        if plugin is None:
+            raise ValueError("Token grouping plugin must not be None")
+        # Basic interface validation
+        if not hasattr(plugin, "build_group_masks"):
+            raise ValueError(
+                "Token grouping plugin missing required method 'build_group_masks'"
+            )
+        self._token_grouping_plugin = plugin
+        self._grouping_enabled = True
 
         # No legacy coordinate loss function; coordinate losses are handled via auxiliary path only.
 
@@ -301,9 +330,7 @@ class LossManager:
             # Weight teacher LLM loss
             if granular_losses["teacher_llm_loss"] is not None:
                 teacher_llm_weighted = (
-                    self.teacher_loss_weight
-                    * self.regular_loss_weight
-                    * granular_losses["teacher_llm_loss"]
+                    self.teacher_loss_weight * granular_losses["teacher_llm_loss"]
                 )
 
             # Weight teacher coord components separately
@@ -329,9 +356,7 @@ class LossManager:
             # Weight student LLM loss
             if granular_losses["student_llm_loss"] is not None:
                 student_llm_weighted = (
-                    self.student_loss_weight
-                    * self.regular_loss_weight
-                    * granular_losses["student_llm_loss"]
+                    self.student_loss_weight * granular_losses["student_llm_loss"]
                 )
 
             # Weight student coord components separately
@@ -358,14 +383,15 @@ class LossManager:
             total_loss = torch.tensor(0.0, device=logits.device)
             if teacher_llm_weighted is not None:
                 total_loss += teacher_llm_weighted
-            # Do not add aggregated teacher_l1_weighted; add separate components instead
+
             if teacher_kce_weighted is not None:
                 total_loss += teacher_kce_weighted
             if teacher_unlike_weighted is not None:
                 total_loss += teacher_unlike_weighted
+
             if student_llm_weighted is not None:
                 total_loss += student_llm_weighted
-            # Do not add aggregated student_l1_weighted; add separate components instead
+
             if student_kce_weighted is not None:
                 total_loss += student_kce_weighted
             if student_unlike_weighted is not None:
@@ -382,14 +408,52 @@ class LossManager:
                     key = f"{group}_{name}"
                     if key in granular_losses and granular_losses[key] is not None:
                         diagnostics[key] = granular_losses[key]
+            # Log six final group losses (teacher/student‑weighted)
+            t_map = {
+                "teacher_caption_loss": "teacher_caption_loss",
+                "teacher_grounding_loss": "teacher_grounding_loss",
+                "teacher_formatting_loss": "teacher_formatting_loss",
+            }
+            s_map = {
+                "student_caption_loss": "student_caption_loss",
+                "student_grounding_loss": "student_grounding_loss",
+                "student_formatting_loss": "student_formatting_loss",
+            }
+            for out_key, src_key in t_map.items():
+                if src_key in granular_losses and granular_losses[src_key] is not None:
+                    diagnostics[out_key] = (
+                        self.teacher_loss_weight * granular_losses[src_key]
+                    )
+            for out_key, src_key in s_map.items():
+                if src_key in granular_losses and granular_losses[src_key] is not None:
+                    diagnostics[out_key] = (
+                        self.student_loss_weight * granular_losses[src_key]
+                    )
+
+            # CORRECTED: Compute combined weighted L1 losses for accurate logging
+            teacher_l1_weighted = torch.tensor(0.0, device=logits.device)
+            if teacher_kce_weighted is not None:
+                teacher_l1_weighted += teacher_kce_weighted
+            if teacher_unlike_weighted is not None:
+                teacher_l1_weighted += teacher_unlike_weighted
+
+            student_l1_weighted = torch.tensor(0.0, device=logits.device)
+            if student_kce_weighted is not None:
+                student_l1_weighted += student_kce_weighted
+            if student_unlike_weighted is not None:
+                student_l1_weighted += student_unlike_weighted
 
             # Create loss components with final weighted values (diagnostics dictionary preferred)
             loss_components = LossComponents(
                 loss=total_loss,
                 teacher_llm_loss=teacher_llm_weighted,
-                teacher_l1_loss=None,
+                teacher_l1_loss=teacher_l1_weighted
+                if teacher_l1_weighted > 0
+                else None,
                 student_llm_loss=student_llm_weighted,
-                student_l1_loss=None,
+                student_l1_loss=student_l1_weighted
+                if student_l1_weighted > 0
+                else None,
                 teacher_kce_loss=teacher_kce_weighted,
                 teacher_unlike_loss=teacher_unlike_weighted,
                 student_kce_loss=student_kce_weighted,
@@ -401,18 +465,15 @@ class LossManager:
             # Fallback: compute standard LLM loss only (no legacy coord path)
             llm_loss = self._compute_llm_loss(logits, labels)
 
-            # Apply weights
-            weighted_llm_loss = self.regular_loss_weight * llm_loss
-
             # Total loss is regular LLM loss only in this path
-            total_loss = weighted_llm_loss
+            total_loss = llm_loss
 
             # Create loss components (treating as student loss for consistency)
             loss_components = LossComponents(
                 loss=total_loss,
                 teacher_llm_loss=None,
                 teacher_l1_loss=None,
-                student_llm_loss=weighted_llm_loss,
+                student_llm_loss=llm_loss,
                 student_l1_loss=None,
             )
 
@@ -565,16 +626,136 @@ class LossManager:
             shifted_logits, shifted_labels
         )
 
+        # New: grouped LLM path (internally enabled)
         teacher_llm_loss = None
         student_llm_loss = None
-        if teacher_llm_mask_shifted.any():
-            teacher_llm_loss = self._apply_mask_to_per_token_loss(
-                per_token_loss, teacher_llm_mask_shifted
+
+        if self._grouping_enabled:
+            if self._token_grouping_plugin is None:
+                from src_new.losses.token_grouping import TokenGroupingPlugin
+
+                self._token_grouping_plugin = TokenGroupingPlugin(self._tokenizer)
+            gm = self._token_grouping_plugin.build_group_masks(
+                labels=labels,
+                teacher_spans=teacher_spans,
+                student_spans=student_spans,
             )
-        if student_llm_mask_shifted.any():
-            student_llm_loss = self._apply_mask_to_per_token_loss(
-                per_token_loss, student_llm_mask_shifted
+
+            def _masked_sum_and_count(
+                loss_mat: torch.Tensor, mask: torch.Tensor
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                masked = loss_mat * mask.float()
+                return masked.sum(), mask.sum()
+
+            def _masked_mean(
+                loss_mat: torch.Tensor, mask: torch.Tensor
+            ) -> torch.Tensor:
+                s, c = _masked_sum_and_count(loss_mat, mask)
+                if c > 0:
+                    return s / c
+                return torch.tensor(0.0, device=loss_mat.device)
+
+            # Per-group sums and counts for proper weighted aggregation
+            t_cap_sum, t_cap_cnt = _masked_sum_and_count(
+                per_token_loss, gm.teacher_caption
             )
+            t_grd_sum, t_grd_cnt = _masked_sum_and_count(
+                per_token_loss, gm.teacher_grounding
+            )
+            t_fmt_sum, t_fmt_cnt = _masked_sum_and_count(
+                per_token_loss, gm.teacher_formatting
+            )
+            s_cap_sum, s_cap_cnt = _masked_sum_and_count(
+                per_token_loss, gm.student_caption
+            )
+            s_grd_sum, s_grd_cnt = _masked_sum_and_count(
+                per_token_loss, gm.student_grounding
+            )
+            s_fmt_sum, s_fmt_cnt = _masked_sum_and_count(
+                per_token_loss, gm.student_formatting
+            )
+
+            # Aggregated (teacher+student) group metrics
+
+            # Weighted teacher/student LLM losses as per-token weighted averages
+            # Convert counts to float for stable weighted normalization
+            t_cap_cnt_f = t_cap_cnt.float()
+            t_grd_cnt_f = t_grd_cnt.float()
+            t_fmt_cnt_f = t_fmt_cnt.float()
+            s_cap_cnt_f = s_cap_cnt.float()
+            s_grd_cnt_f = s_grd_cnt.float()
+            s_fmt_cnt_f = s_fmt_cnt.float()
+
+            # Unweighted totals (for presence checks and safe fallback)
+            t_total = t_cap_cnt_f + t_grd_cnt_f + t_fmt_cnt_f
+            s_total = s_cap_cnt_f + s_grd_cnt_f + s_fmt_cnt_f
+            teacher_caption_loss_contrib = None
+            teacher_grounding_loss_contrib = None
+            teacher_formatting_loss_contrib = None
+            student_caption_loss_contrib = None
+            student_grounding_loss_contrib = None
+            student_formatting_loss_contrib = None
+
+            if t_total > 0:
+                t_weighted_sum = (
+                    self._weight_caption * t_cap_sum
+                    + self._weight_grounding * t_grd_sum
+                    + self._weight_formatting * t_fmt_sum
+                )
+                # Weighted denominator to stabilize scale across group mixes
+                t_den = (
+                    self._weight_caption * t_cap_cnt_f
+                    + self._weight_grounding * t_grd_cnt_f
+                    + self._weight_formatting * t_fmt_cnt_f
+                )
+                # Safe fallback if weighted count is zero (e.g., all tokens fall into a zero-weight group)
+                if float(t_den.item()) == 0.0:
+                    t_den = t_total
+                teacher_llm_loss = t_weighted_sum / t_den
+                teacher_caption_loss_contrib = (
+                    self._weight_caption * t_cap_sum
+                ) / t_den
+                teacher_grounding_loss_contrib = (
+                    self._weight_grounding * t_grd_sum
+                ) / t_den
+                teacher_formatting_loss_contrib = (
+                    self._weight_formatting * t_fmt_sum
+                ) / t_den
+
+            if s_total > 0:
+                s_weighted_sum = (
+                    self._weight_caption * s_cap_sum
+                    + self._weight_grounding * s_grd_sum
+                    + self._weight_formatting * s_fmt_sum
+                )
+                # Weighted denominator to stabilize scale across group mixes
+                s_den = (
+                    self._weight_caption * s_cap_cnt_f
+                    + self._weight_grounding * s_grd_cnt_f
+                    + self._weight_formatting * s_fmt_cnt_f
+                )
+                # Safe fallback if weighted count is zero
+                if float(s_den.item()) == 0.0:
+                    s_den = s_total
+                student_llm_loss = s_weighted_sum / s_den
+                student_caption_loss_contrib = (
+                    self._weight_caption * s_cap_sum
+                ) / s_den
+                student_grounding_loss_contrib = (
+                    self._weight_grounding * s_grd_sum
+                ) / s_den
+                student_formatting_loss_contrib = (
+                    self._weight_formatting * s_fmt_sum
+                ) / s_den
+        else:
+            if teacher_llm_mask_shifted.any():
+                teacher_llm_loss = self._apply_mask_to_per_token_loss(
+                    per_token_loss, teacher_llm_mask_shifted
+                )
+            if student_llm_mask_shifted.any():
+                student_llm_loss = self._apply_mask_to_per_token_loss(
+                    per_token_loss, student_llm_mask_shifted
+                )
 
         # Coordinate losses: only where the TARGET token is a coordinate token
         teacher_coord_mask_shifted = teacher_mask_shifted & coord_label_mask[:, 1:]
@@ -717,8 +898,8 @@ class LossManager:
 
             if teacher_coord_mask_shifted.any():
                 kce_t, ul_t, m_t = _compute_group_aux(teacher_coord_mask_shifted)
-                teacher_kce = (self._lambda_kce or 0.0) * kce_t
-                teacher_unlike = (self._lambda_unlike or 0.0) * ul_t
+                teacher_kce = kce_t
+                teacher_unlike = ul_t
                 teacher_l1_loss = teacher_kce + teacher_unlike
                 teacher_window_mass = m_t["window_mass"]
                 teacher_coord_slice_mass = m_t["coord_slice_mass"]
@@ -734,8 +915,8 @@ class LossManager:
                 teacher_coord_pos_count = m_t["coord_pos_count"]
             if student_coord_mask_shifted.any():
                 kce_s, ul_s, m_s = _compute_group_aux(student_coord_mask_shifted)
-                student_kce = (self._lambda_kce or 0.0) * kce_s
-                student_unlike = (self._lambda_unlike or 0.0) * ul_s
+                student_kce = kce_s
+                student_unlike = ul_s
                 student_l1_loss = student_kce + student_unlike
                 student_window_mass = m_s["window_mass"]
                 student_coord_slice_mass = m_s["coord_slice_mass"]
@@ -770,12 +951,19 @@ class LossManager:
             "teacher_l1_loss": teacher_l1_loss,
             "student_llm_loss": student_llm_loss,
             "student_l1_loss": student_l1_loss,
-            # New separate (unweighted by teacher/student weights, but with lambda applied)
+            # Final weighted group losses (teacher & student)
+            "teacher_caption_loss": teacher_caption_loss_contrib,
+            "teacher_grounding_loss": teacher_grounding_loss_contrib,
+            "teacher_formatting_loss": teacher_formatting_loss_contrib,
+            "student_caption_loss": student_caption_loss_contrib,
+            "student_grounding_loss": student_grounding_loss_contrib,
+            "student_formatting_loss": student_formatting_loss_contrib,
+            # Coordinate aux (if any)
             "teacher_kce_loss": teacher_kce,
             "teacher_unlike_loss": teacher_unlike,
             "student_kce_loss": student_kce,
             "student_unlike_loss": student_unlike,
-            # Diagnostics (unweighted metrics)
+            # Coord diagnostics retained
             "teacher_window_mass": teacher_window_mass,
             "student_window_mass": student_window_mass,
             "teacher_coord_slice_mass": teacher_coord_slice_mass,

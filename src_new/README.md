@@ -73,7 +73,7 @@ Behavior:
   - `teacher_kce_loss`, `teacher_unlike_loss`, `student_kce_loss`, `student_unlike_loss`
 - Legacy L1 has been retired in favor of auxiliary losses.
 
-YAML keys (see `configs/bbu_v2_use_coord.yaml`):
+YAML keys (see `configs/bbu_v2/coord_aux.yaml`):
 ```
 coord_aux_enabled: true
 coord_aux_tau: 1.2

@@ -157,12 +157,16 @@ class CoordinateTokenConverter:
 
         # Convert coordinates either to tokens or to raw integers
         coord_texts: List[str] = []
-        for coord in coordinates:
-            clamped = max(0, min(int(coord), self.max_coord_value))
+        for i, coord in enumerate(coordinates):
+            int_coord = int(coord)
+            if int_coord < 0 or int_coord > self.max_coord_value:
+                raise ValueError(
+                    f"Object {obj_index} coordinate {i} value {int_coord} out of valid range [0, {self.max_coord_value}]"
+                )
             if self.coordinate_tokens_enabled:
-                coord_texts.append(f"<|coord_{clamped}|>")
+                coord_texts.append(f"<|coord_{int_coord}|>")
             else:
-                coord_texts.append(str(clamped))
+                coord_texts.append(str(int_coord))
 
         coord_string = ", ".join(coord_texts)
         # Use empty string if description is missing (graceful handling)
