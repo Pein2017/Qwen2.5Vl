@@ -446,7 +446,9 @@ class BBUTrainer(HFTrainer):
             )
 
             # Add component loss metrics to evaluation results
-            added_metrics = self._add_eval_component_metrics(metrics, eval_dataset, metric_key_prefix)
+            added_metrics = self._add_eval_component_metrics(
+                metrics, eval_dataset, metric_key_prefix
+            )
 
             # Log only newly added metrics (so we don't duplicate the base ones already logged by HF)
             if isinstance(added_metrics, dict) and len(added_metrics) > 0:
@@ -720,7 +722,7 @@ class BBUTrainer(HFTrainer):
     def _add_eval_component_metrics(
         self, metrics: Dict[str, Any], eval_dataset, metric_key_prefix: str
     ):
-        """Add component loss metrics to evaluation results."""
+        """Add component loss metrics to evaluation results (student-only)."""
         # Get averaged evaluation loss components
         eval_components = self.training_state_manager.get_averaged_losses_and_reset()
 
@@ -735,51 +737,29 @@ class BBUTrainer(HFTrainer):
         # Prepare a dict of newly added metrics to log (avoid duplicating base eval logs)
         new_metrics: Dict[str, float] = {}
 
-        # Add component metrics with eval prefix
-        for component_name, component_value in eval_components.items():
-            if component_name != "loss":  # eval_loss is already added by HuggingFace
-                key = f"{metric_key_prefix}_{component_name}"
-                metrics[key] = round(component_value, 4)
-
-        # Aggregate caption/grounding/formatting across teacher and student for concise eval panel
-        def _sum_if_present(a: Optional[float], b: Optional[float]) -> Optional[float]:
-            if a is None and b is None:
-                return None
-            a_val = 0.0 if a is None else float(a)
-            b_val = 0.0 if b is None else float(b)
-            return a_val + b_val
-
-        cap_total = _sum_if_present(
-            eval_components.get("teacher_caption_loss"),
-            eval_components.get("student_caption_loss"),
-        )
-        grd_total = _sum_if_present(
-            eval_components.get("teacher_grounding_loss"),
-            eval_components.get("student_grounding_loss"),
-        )
-        fmt_total = _sum_if_present(
-            eval_components.get("teacher_formatting_loss"),
-            eval_components.get("student_formatting_loss"),
-        )
+        # Only surface student grouped losses; skip teacher_* keys entirely
+        student_caption = eval_components.get("student_caption_loss")
+        student_grounding = eval_components.get("student_grounding_loss")
+        student_formatting = eval_components.get("student_formatting_loss")
 
         # Duplicate eval_loss under eval/loss for TensorBoard grouping
         if "eval_loss" in metrics:
             new_metrics["eval/loss"] = round(float(metrics["eval_loss"]), 4)
 
-        if cap_total is not None:
-            new_metrics["eval/caption_loss"] = round(cap_total, 4)
-        if grd_total is not None:
-            new_metrics["eval/grounding_loss"] = round(grd_total, 4)
-        if fmt_total is not None:
-            new_metrics["eval/formatting_loss"] = round(fmt_total, 4)
+        if student_caption is not None:
+            new_metrics["eval/caption_loss"] = round(float(student_caption), 4)
+            metrics[f"{metric_key_prefix}_caption_loss"] = round(float(student_caption), 4)
+        if student_grounding is not None:
+            new_metrics["eval/grounding_loss"] = round(float(student_grounding), 4)
+            metrics[f"{metric_key_prefix}_grounding_loss"] = round(float(student_grounding), 4)
+        if student_formatting is not None:
+            new_metrics["eval/formatting_loss"] = round(float(student_formatting), 4)
+            metrics[f"{metric_key_prefix}_formatting_loss"] = round(float(student_formatting), 4)
 
-        # Also expose underscore variants alongside slash keys (optional, harmless)
-        if cap_total is not None:
-            metrics[f"{metric_key_prefix}_caption_loss"] = round(cap_total, 4)
-        if grd_total is not None:
-            metrics[f"{metric_key_prefix}_grounding_loss"] = round(grd_total, 4)
-        if fmt_total is not None:
-            metrics[f"{metric_key_prefix}_formatting_loss"] = round(fmt_total, 4)
+        # Remove any previously added teacher_* prefixed keys to keep eval panel clean
+        for k in list(metrics.keys()):
+            if k.startswith(f"{metric_key_prefix}_teacher_"):
+                metrics.pop(k, None)
 
         # If no components were captured, log a warning
         if not eval_components and self.args.should_save:
