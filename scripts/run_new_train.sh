@@ -6,19 +6,20 @@ set -euo pipefail
 # CONFIGURATION
 # =============================================================================
 
-export PYTHONPATH=/data3/Qwen2.5-VL-main
+export PYTHONPATH=.
 export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
-PROJECT_ROOT="/data3/Qwen2.5-VL-main"
+PROJECT_ROOT="."
+CONFIG_NAME="phase_2/standard"
 
 
 # Set configuration based on experiment number
 if [[ $# -eq 0 ]]; then
     # Default configuration when no arguments provided
-    GPU_DEVICES="1,2,3,4"
+    GPU_DEVICES="0,1,2,3,4,5,6,7"
     LOG_NAME="run.log"
-    echo "🚀 Default run: GPUs 1,2,3,4 → run.log"
+    echo "🚀 Default run: GPUs 0,1,2,3,4,5,6,7 → run.log"
 else
     EXP_NUM="$1"
     case "$EXP_NUM" in
@@ -44,7 +45,6 @@ else
 fi
 
 # Fixed configuration
-CONFIG_NAME="phase_3/standard"
 DEEPSPEED_CONFIG="scripts/zero2.json"
 LOG_LEVEL="INFO"
 to_console=false
@@ -61,8 +61,8 @@ setup_environment() {
     conda activate ms
 
     # Core environment variables
-    export HF_MODULES_CACHE="/data3/Qwen2.5-VL-main/model_cache"
-    export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
+    export HF_MODULES_CACHE="${PROJECT_ROOT}/model_cache"
+    export HF_HOME="${PROJECT_ROOT}/model_cache"
     export TOKENIZERS_PARALLELISM=false
     export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
     
@@ -191,7 +191,7 @@ except Exception as e:
 launch_single_gpu() {
     echo "🖥️  Single GPU Training with New Architecture (GPU: ${GPU_DEVICES%%,*})"
     
-    python /data3/Qwen2.5-VL-main/scripts/train_new.py \
+    python "${PROJECT_ROOT}/scripts/train_new.py" \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL"
 }
@@ -212,7 +212,7 @@ launch_deepspeed() {
     torchrun \
         --master_port="$MASTER_PORT" \
         --nproc_per_node="$NUM_GPUS" \
-        /data3/Qwen2.5-VL-main/scripts/train_new.py \
+        "${PROJECT_ROOT}/scripts/train_new.py" \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL"
 }

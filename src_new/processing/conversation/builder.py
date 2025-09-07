@@ -4,6 +4,7 @@ import torch
 from PIL import Image
 
 from ..conversation_processor import ConversationProcessor
+from ..templates import CONSTANTS
 
 
 class ConversationBuilder:
@@ -50,14 +51,11 @@ class ConversationBuilder:
         teacher_selection_strategy: str = "all",
         enable_caching: bool = True,
     ) -> Dict[str, torch.Tensor]:
-        return self._impl.create_multi_teacher_conversation(
+        return self._impl.create_teacher_student_conversation(
             student_sample,
             teacher_samples,
             student_images,
             teacher_images_list,
-            max_conversation_length,
-            teacher_selection_strategy,
-            enable_caching,
         )
 
     def create_inference_conversation(
@@ -74,13 +72,9 @@ class ConversationBuilder:
         max_tokens: int = 2048,
         truncation_strategy: str = "reduce_teachers",
     ) -> Dict[str, torch.Tensor]:
-        return self._impl.create_conversation_with_truncation(
-            student_sample,
-            teacher_samples,
-            student_images,
-            teacher_images_list,
-            max_tokens,
-            truncation_strategy,
+        # Use default robust builder then apply truncation externally if needed
+        return self._impl.create_teacher_student_conversation(
+            student_sample, teacher_samples, student_images, teacher_images_list
         )
 
     def create_teacher_student_conversation_for_generation(
@@ -102,4 +96,25 @@ class ConversationBuilder:
     def create_simple_conversation_for_generation(
         self, sample: Dict[str, Any], images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
-        return self._impl.create_simple_conversation_for_generation(sample, images)
+        # Build user-only + generation prompt
+        return self._impl.create_inference_conversation(
+            CONSTANTS["BASE_USER_PROMPT"], images
+        )
+
+    # New variant delegates
+    # Unified variant entry (new)
+    def create_conversation(
+        self,
+        sample: Dict[str, Any],
+        images: List[Image.Image],
+        variant: str,
+        teacher_samples: Optional[List[Dict[str, Any]]] = None,
+        teacher_images_list: Optional[List[List[Image.Image]]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        return self._impl.create_conversation(
+            sample=sample,
+            images=images,
+            variant=variant,
+            teacher_samples=teacher_samples,
+            teacher_images_list=teacher_images_list,
+        )

@@ -10,6 +10,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
+import math
 
 from data_conversion.utils.file_ops import FileOperations
 
@@ -25,6 +26,17 @@ class TeacherSelector:
     """
 
     FREE_TOP_K_PER_TYPE: int = 50
+
+    # Negative/issue-oriented tokens to emphasize during selection (coverage-focused)
+    NEGATIVE_TOKENS: Set[str] = {
+        "未拧紧",
+        "露铜",
+        "复接",
+        "生锈",
+        "安装方向错误",
+        "无保护措施",
+        "弯曲半径不合理（弯曲半径<4cm或者成环）",
+    }
 
     def __init__(
         self,
@@ -140,6 +152,14 @@ class TeacherSelector:
                             filtered_units.add(token)
                     units = filtered_units
 
+                # Remove occlusion-related tokens from the universe entirely
+                if units:
+                    units = {t for t in units if ("遮挡" not in t)}
+                    # Also prune unit_to_objtypes for removed tokens
+                    for t in list(unit_to_objtypes.keys()):
+                        if "遮挡" in t:
+                            unit_to_objtypes.pop(t, None)
+
                 return "fixed", units, unit_to_objtypes, objtype_cn_by_en
             except Exception as e:
                 logger.warning(
@@ -179,6 +199,9 @@ class TeacherSelector:
             if not desc:
                 continue
             tokens |= self._split_tokens(desc)
+        # Ignore occlusion-related tokens (contain '遮挡') as they add low training value
+        if tokens:
+            tokens = {t for t in tokens if ("遮挡" not in t)}
         if self.mode == "fixed":
             return tokens & self.universe_units
         return tokens
@@ -216,9 +239,89 @@ class TeacherSelector:
             # Select top-K tokens
             top = sorted(counter.items(), key=lambda kv: -kv[1])[: self.FREE_TOP_K_PER_TYPE]
             for token, _ in top:
+                if "遮挡" in token:
+                    continue  # ignore occlusion tokens entirely
                 universe.add(token)
                 self.unit_to_objtypes[token].add(en_type)
         return universe
+
+    def _compute_idf_weights(self, per_sample_units: List[Set[str]]) -> Dict[str, float]:
+        """Compute IDF-like weights over the current universe to emphasize rare tokens."""
+        N = len(per_sample_units)
+        df: Dict[str, int] = defaultdict(int)
+        for units in per_sample_units:
+            for u in units:
+                df[u] += 1
+        idf: Dict[str, float] = {}
+        for u in self.universe_units:
+            d = df.get(u, 0)
+            idf[u] = math.log(1.0 + (N / (1.0 + d))) if N > 0 else 0.0
+        return idf
+
+    @staticmethod
+    def _polyline_length(points: List[int]) -> float:
+        if not points or len(points) < 4:
+            return 0.0
+        total = 0.0
+        for i in range(0, len(points) - 2, 2):
+            x1, y1 = points[i], points[i + 1]
+            x2, y2 = points[i + 2], points[i + 3]
+            dx = float(x2 - x1)
+            dy = float(y2 - y1)
+            total += math.hypot(dx, dy)
+        return total
+
+    def _compute_sample_meta(self, sample: Dict) -> Dict[str, float | int | bool | List[str]]:
+        width = int(sample.get("width", 0) or 0)
+        height = int(sample.get("height", 0) or 0)
+        img_area = float(width * height) if width > 0 and height > 0 else 0.0
+        diag = math.hypot(float(width), float(height)) if width > 0 and height > 0 else 1.0
+
+        small_box_count = 0
+        total_box_count = 0
+        line_points = 0
+        line_length = 0.0
+        negative_hits: Set[str] = set()
+
+        for obj in sample.get("objects", []) or []:
+            desc = obj.get("desc", "") or ""
+            toks = self._split_tokens(desc)
+            for t in toks:
+                if t in self.NEGATIVE_TOKENS:
+                    negative_hits.add(t)
+
+            if "bbox_2d" in obj:
+                total_box_count += 1
+                if img_area > 0:
+                    x1, y1, x2, y2 = obj["bbox_2d"]
+                    area = float(max(0, x2 - x1) * max(0, y2 - y1))
+                    if area / img_area < 0.003:  # <0.3% of image area
+                        small_box_count += 1
+            if "line" in obj:
+                pts = obj["line"]
+                line_points += max(0, len(pts) // 2)
+                line_length += self._polyline_length(pts)
+
+        small_box_frac = (float(small_box_count) / float(total_box_count)) if total_box_count > 0 else 0.0
+        line_length_norm = (line_length / diag) if diag > 0 else 0.0
+        has_negative = len(negative_hits) > 0
+
+        # Simple difficulty heuristic
+        if has_negative or line_length_norm > 0.6 or small_box_frac > 0.2:
+            difficulty = "hard"
+        elif line_length_norm < 0.2 and small_box_frac < 0.05 and not has_negative:
+            difficulty = "easy"
+        else:
+            difficulty = "medium"
+
+        return {
+            "small_box_frac": small_box_frac,
+            "line_points": int(line_points),
+            "line_length_norm": float(line_length_norm),
+            "has_negative": has_negative,
+            "negatives": sorted(list(negative_hits)),
+            "difficulty": difficulty,
+        }
 
     def select_teachers(self, samples: List[Dict]) -> Tuple[List[Dict], List[int], Dict]:
         """Deterministic greedy selection based on fixed rules.
@@ -252,6 +355,7 @@ class TeacherSelector:
         per_sample_geometry: List[Set[str]] = []
         per_sample_brand: List[str] = []
         object_counts: List[int] = []
+        per_sample_meta: List[Dict] = []
         for s in samples:
             tokens = self._extract_units(s) if self.mode == "fixed" else self._extract_units(s)
             per_sample_tokens.append(tokens)
@@ -259,16 +363,51 @@ class TeacherSelector:
             per_sample_geometry.append(self._geometry_types(s))
             per_sample_brand.append(self._detect_brand(tokens))
             object_counts.append(len(s.get("objects", [])))
+            per_sample_meta.append(self._compute_sample_meta(s))
 
         median_objects = statistics.median(object_counts) if object_counts else 0
+        # Dataset-level brand distribution and line presence
+        brand_df: Dict[str, int] = defaultdict(int)
+        for b in per_sample_brand:
+            if b != "unknown":
+                brand_df[b] += 1
+        total_known_brands = sum(brand_df.values()) or 1
+        brand_target: Dict[str, int] = {}
+        for b, cnt in brand_df.items():
+            share = float(cnt) / float(total_known_brands)
+            brand_target[b] = max(0, int(round(self.max_teachers * share)))
+        # Ensure at least 1 for any present brand if capacity allows
+        leftover = self.max_teachers - sum(brand_target.values())
+        if leftover > 0:
+            # Distribute leftover to brands with highest dataset share
+            for b, _ in sorted(brand_df.items(), key=lambda kv: -kv[1]):
+                if leftover <= 0:
+                    break
+                brand_target[b] += 1
+                leftover -= 1
+
+        line_dataset_ratio = (
+            sum(1 for g in per_sample_geometry if "line" in g) / float(len(per_sample_geometry))
+            if per_sample_geometry
+            else 0.0
+        )
+        # Encourage lines at least to dataset proportion, with a floor
+        target_line_ratio = max(0.30, line_dataset_ratio)
+
         selected: List[int] = []
         units_remaining: Set[str] = set(self.universe_units)
         selected_geometries: Set[str] = set()
         brand_counts: Dict[str, int] = defaultdict(int)
+        selected_line_count: int = 0
+
+        # IDF weights over universe for coverage-driven rare token emphasis
+        idf_weights = self._compute_idf_weights(per_sample_units)
 
         # Helper to produce sort key per candidate (recomputed each round)
         def candidate_key(idx: int) -> Tuple:
-            units_hit = len(per_sample_units[idx] & units_remaining)
+            # IDF-weighted units hit
+            hit_units = per_sample_units[idx] & units_remaining
+            units_hit = sum(idf_weights.get(u, 0.0) for u in hit_units)
             geom = per_sample_geometry[idx]
             has_line = 1 if "line" in geom else 0
             # Only activate line preference if fiber/wire-related units remain
@@ -278,9 +417,18 @@ class TeacherSelector:
                 )
                 for u in units_remaining
             )
-            line_pref = has_line if fiber_wire_remaining else 0
+            # Line encouragement if under target ratio
+            current_line_ratio = (selected_line_count / float(max(1, len(selected)))) if selected else 0.0
+            line_needed = current_line_ratio < target_line_ratio
+            line_pref = 0
+            if fiber_wire_remaining and has_line:
+                line_pref += 1
+            if line_needed and has_line:
+                line_pref += 1
             brand = per_sample_brand[idx]
-            brand_balance = brand_counts[brand]
+            # Prefer brands under their dataset-proportional target
+            on_target = brand_counts[brand] >= brand_target.get(brand, 0)
+            brand_balance = brand_counts[brand] if on_target else 0
             geom_novelty = len(geom - selected_geometries)
             obj_delta = abs(object_counts[idx] - median_objects)
             # Lexicographic fallback by first image path
@@ -288,7 +436,7 @@ class TeacherSelector:
             imgs = samples[idx].get("images") or []
             if imgs:
                 img_path = str(imgs[0])
-            # Sort by descending units_hit, then line_pref, ascending brand_balance, descending geom_novelty, ascending obj_delta, lexicographic path
+            # Sort by: more units_hit (IDF), more line_pref, better brand balance, more geom novelty, closer to median count, lexicographic
             return (-units_hit, -line_pref, brand_balance, -geom_novelty, obj_delta, img_path)
 
         # Phase B: Greedy cover until cap or universe exhausted
@@ -303,6 +451,8 @@ class TeacherSelector:
             units_remaining -= per_sample_units[best]
             selected_geometries |= per_sample_geometry[best]
             brand_counts[per_sample_brand[best]] += 1
+            if "line" in per_sample_geometry[best]:
+                selected_line_count += 1
             candidate_indices.remove(best)
 
         # Phase C: Cap and fill for diversity if capacity remains
@@ -330,12 +480,44 @@ class TeacherSelector:
                 selected.append(idx)
                 selected_geometries |= per_sample_geometry[idx]
                 brand_counts[per_sample_brand[idx]] += 1
+                if "line" in per_sample_geometry[idx]:
+                    selected_line_count += 1
 
         selected = sorted(set(selected))
-        teacher_samples = [samples[i] for i in selected]
+        teacher_samples: List[Dict] = []
+        # Attach lightweight meta info for downstream pairing (optional)
+        for i in selected:
+            sample = samples[i].copy()
+            tokens_list = sorted(list(per_sample_tokens[i]))
+            meta_extra = per_sample_meta[i]
+            sample["meta"] = {
+                "tokens": tokens_list,
+                "object_types_present": sorted(list({
+                    self.cn2en_types.get(next(iter(self._split_tokens(obj.get("desc", "").split("/")[0]) or []), ""), "unknown")
+                    for obj in sample.get("objects", []) or []
+                } - {"unknown"})),
+                "geometry_set": sorted(list(per_sample_geometry[i])),
+                "brand": per_sample_brand[i],
+                "object_count": object_counts[i],
+                **meta_extra,
+            }
+            teacher_samples.append(sample)
 
         # Stats
         covered_units = sorted(list(self.universe_units - units_remaining))
+        total_idf = sum(idf_weights.get(u, 0.0) for u in self.universe_units) or 1.0
+        covered_idf = sum(idf_weights.get(u, 0.0) for u in covered_units)
+        # Negative token coverage
+        neg_df_dataset: Dict[str, int] = defaultdict(int)
+        for toks in per_sample_tokens:
+            for t in toks:
+                if t in self.NEGATIVE_TOKENS:
+                    neg_df_dataset[t] += 1
+        neg_covered: Dict[str, int] = defaultdict(int)
+        for i in selected:
+            for t in per_sample_tokens[i]:
+                if t in self.NEGATIVE_TOKENS:
+                    neg_covered[t] += 1
         stats: Dict = {
             "mode": self.mode,
             "pool_size": len(selected),
@@ -346,6 +528,12 @@ class TeacherSelector:
             "uncovered_units": sorted(list(units_remaining)) if units_remaining else [],
             "brand_distribution": dict(brand_counts),
             "geometry_presence": sorted(list(selected_geometries)),
+            "idf_coverage_ratio": float(covered_idf / total_idf) if total_idf > 0 else 0.0,
+            "brand_distribution_dataset": dict(brand_df),
+            "line_ratio_dataset": line_dataset_ratio,
+            "line_ratio_selected": (selected_line_count / float(max(1, len(selected)))) if selected else 0.0,
+            "negative_tokens_dataset": dict(neg_df_dataset),
+            "negative_tokens_selected": dict(neg_covered),
         }
         pool_object_counts = [object_counts[i] for i in selected]
         if pool_object_counts:

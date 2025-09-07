@@ -27,7 +27,7 @@ export PATH="$NPM_PREFIX/bin:$PATH"
 which claude || echo "Claude not found in PATH, trying alternative locations..."
 
 # export python path
-export PYTHONPATH=/data3/Qwen2.5-VL-main
+export PYTHONPATH=.
 
 # Add to shell profile for permanent access
 echo "Adding Claude to PATH permanently..."

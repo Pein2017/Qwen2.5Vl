@@ -11,6 +11,7 @@ import os
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+import math
 
 
 if TYPE_CHECKING:
@@ -314,6 +315,96 @@ class TeacherPoolManager:
             "image_basename": image_basename,
         }
 
+    def _sample_indices_softmax(
+        self,
+        scored: List[tuple[float, int]],
+        num_samples: int,
+        temperature: float,
+        topk: Optional[int],
+    ) -> List[int]:
+        """Sample indices without replacement using softmax over scores.
+
+        Args:
+            scored: list of (score, idx) pairs sorted by score desc
+            num_samples: number of indices to draw
+            temperature: softmax temperature (>0)
+            topk: optional cap on candidates considered
+        """
+        if not scored:
+            return []
+        k = max(1, min(len(scored), topk if (topk is not None and topk > 0) else len(scored)))
+        candidates = scored[:k]
+        if len(candidates) <= num_samples:
+            return [idx for _, idx in candidates]
+        scores = [s for s, _ in candidates]
+        # If all scores <= 0, fallback to uniform random among candidates
+        if max(scores) <= 0.0:
+            pool = [idx for _, idx in candidates]
+            return random.sample(pool, num_samples) if len(pool) > num_samples else pool
+        # Stable softmax with temperature
+        logits = [s / float(temperature) for s in scores]
+        max_logit = max(logits)
+        exps = [math.exp(l - max_logit) for l in logits]
+        total = sum(exps)
+        if total <= 0.0 or not math.isfinite(total):
+            pool = [idx for _, idx in candidates]
+            return random.sample(pool, num_samples) if len(pool) > num_samples else pool
+        base_softmax = [e / total for e in exps]
+        # Mix with uniform for flatter distribution
+        alpha = 0.15  # small uniform mixing weight
+        n = len(candidates)
+        uniform_p = 1.0 / n
+        # Start with mixed weights over all candidates
+        weights = [
+            (1.0 - alpha) * p + alpha * uniform_p
+            for p in base_softmax
+        ]
+        # Sample without replacement using updated weights; after each pick,
+        # renormalize remaining using the base softmax mixed with uniform over remaining
+        chosen: List[int] = []
+        remaining = list(range(n))
+        for _ in range(min(num_samples, n)):
+            # Draw using current weights restricted to remaining
+            cum = 0.0
+            r = random.random()
+            picked_local = None
+            for i in remaining:
+                w = weights[i]
+                cum += w
+                if r <= cum:
+                    picked_local = i
+                    break
+            if picked_local is None:
+                picked_local = remaining[-1]
+            chosen.append(candidates[picked_local][1])
+            # Remove picked and recompute mixed weights for remaining
+            remaining.remove(picked_local)
+            if not remaining:
+                break
+            # Zero picked in base_softmax and renormalize on remaining
+            base_softmax[picked_local] = 0.0
+            rem_sum = sum(base_softmax[i] for i in remaining)
+            if rem_sum > 0.0 and math.isfinite(rem_sum):
+                rem_base = [base_softmax[i] / rem_sum for i in remaining]
+            else:
+                rem_base = [0.0 for _ in remaining]
+            rem_uniform = 1.0 / len(remaining)
+            # Mixed weights on remaining
+            new_weights = {}
+            for j, i in enumerate(remaining):
+                new_weights[i] = (1.0 - alpha) * rem_base[j] + alpha * rem_uniform
+            # Normalize numerically
+            norm = sum(new_weights.values())
+            if norm > 0.0:
+                for i in remaining:
+                    weights[i] = new_weights[i] / norm
+            else:
+                for i in remaining:
+                    weights[i] = 1.0 / len(remaining)
+            # Ensure picked weight is zero
+            weights[picked_local] = 0.0
+        return chosen
+
     def select_teachers_for_student(
         self, student_sample: Dict[str, Any], num_samples: int = 1
     ) -> List[Dict[str, Any]]:
@@ -386,9 +477,16 @@ class TeacherPoolManager:
         if scored and scored[0][0] <= 0.0:
             return self.get_random_teachers(num_samples=num_samples)
 
-        top_indices = [idx for _, idx in scored[: max(1, num_samples)]]
+        # Always probabilistic selection via softmax over scores with slight flattening
+        sampled_indices = self._sample_indices_softmax(
+            scored=scored,
+            num_samples=max(1, num_samples),
+            temperature=1.5,
+            topk=None,
+        )
+
         selected: List[Dict[str, Any]] = []
-        for idx in top_indices:
+        for idx in sampled_indices:
             teacher = self.teacher_pool[idx]
             teacher_with_id = teacher.copy()
             teacher_with_id["teacher_id"] = f"teacher_{idx}"

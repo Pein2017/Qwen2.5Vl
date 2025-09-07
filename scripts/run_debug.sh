@@ -7,20 +7,18 @@ set -euo pipefail
 # CONFIGURATION
 # =============================================================================
 
-export PYTHONPATH=/data3/Qwen2.5-VL-main
+export PYTHONPATH=.
 export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
-PROJECT_ROOT="/data3/Qwen2.5-VL-main"
-
-# Training configuration
-CONFIG_NAME="phase_3/debug"                      # Config to use: bbu_v2
-GPU_DEVICES="4,5"                             # Single GPU for robust debugging
+PROJECT_ROOT="."
+CONFIG_NAME="phase_1/debug"                      # Config to use: bbu_v2
+GPU_DEVICES="0,1,2,3"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
 LOG_LEVEL="DEBUG"                          # Logging level: INFO (production) | DEBUG (development)
-to_console=true                             # true: console output, false: log to run_new.log
+to_console=false                             # true: console output, false: log to run_new.log
 
 
 setup_environment() {
@@ -31,10 +29,13 @@ setup_environment() {
     conda activate ms
 
     # Core environment variables
-    export HF_MODULES_CACHE="/data3/Qwen2.5-VL-main/model_cache"
-    export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
+    export HF_MODULES_CACHE="${PROJECT_ROOT}/model_cache"
+    export HF_HOME="${PROJECT_ROOT}/model_cache"
     export TOKENIZERS_PARALLELISM=false
     export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
+
+    # Rank-aware logging: enable DEBUG from process start
+    export BBU_LOG_LEVEL="$LOG_LEVEL"
 
     # Distributed training coordination
     export MASTER_ADDR="127.0.0.1"
@@ -189,7 +190,7 @@ main() {
     if [[ "$to_console" == "true" ]]; then
         echo "   🐛 DEBUG MODE: Console output enabled"
     else
-        echo "   📄 Output redirected to run_new.log"
+        echo "   📄 Output redirected to run_debug.log"
     fi
     
     setup_environment

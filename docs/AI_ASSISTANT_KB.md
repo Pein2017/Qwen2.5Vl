@@ -103,7 +103,7 @@ python -m src_new.inference \
 - Data: `train_data_path`, `val_data_path`, `teacher_pool_file`, `data_root`, `language`, `max_pixels`
 
 ## Data Conversion (object-oriented)
-- Shell: `/data3/Qwen2.5-VL-main/data_conversion/convert_dataset.sh` with `OBJECT_TYPES` in {`bbu`,`bbu_shield`,`connect_point`,`label`,`fiber`,`wire`} or `full`
+- Shell: `data_conversion/convert_dataset.sh` with `OBJECT_TYPES` in {`bbu`,`bbu_shield`,`connect_point`,`label`,`fiber`,`wire`} or `full`
 - Python: `data_conversion.unified_processor.UnifiedProcessor` with `DataConversionConfig`
 - Outputs: `data/<dataset>/{train.jsonl,val.jsonl,teacher.jsonl,all_samples.jsonl,label_vocabulary.json,images/}`
 - Normalization rules in inference utils: `'square' → 'quad'`, `'desc'` fallback from `'label'`; coordinates coerced to ints when possible

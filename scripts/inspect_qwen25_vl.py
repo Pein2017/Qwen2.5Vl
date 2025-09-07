@@ -5,13 +5,13 @@ import torch
 from transformers import AutoTokenizer, Qwen2_5_VLForConditionalGeneration
 
 
-MODEL_PATH = "/data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
+MODEL_PATH = "./model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024-fourier"
 
 
 def main():
     # Use project caches
-    os.environ["HF_HOME"] = "/data3/Qwen2.5-VL-main/model_cache"
-    os.environ["HF_MODULES_CACHE"] = "/data3/Qwen2.5-VL-main/model_cache"
+    os.environ["HF_HOME"] = "./model_cache"
+    os.environ["HF_MODULES_CACHE"] = "./model_cache"
 
     torch.set_grad_enabled(False)
 

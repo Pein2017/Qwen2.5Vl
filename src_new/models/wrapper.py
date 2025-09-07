@@ -402,15 +402,25 @@ class DetectionModel(nn.Module):
         if not Path(model_path).exists():
             raise FileNotFoundError(f"Model path does not exist: {model_path}")
 
-        # Load tokenizer - fail fast on any issues
+        # Load tokenizer - require fast tokenizer
         tok = AutoTokenizer.from_pretrained(
             model_path, trust_remote_code=False, use_fast=True
         )
+        if not getattr(tok, "is_fast", False):
+            raise RuntimeError("Fast tokenizer required for DetectionModel (use_fast=True)")
+        _enc = tok(
+            "sanity",
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )
+        if _enc.get("offset_mapping") is None:
+            raise RuntimeError(
+                "Fast tokenizer did not return offset_mapping; ensure tokenizer.json is valid."
+            )
         vocab = tok.get_vocab()
-
         if not isinstance(vocab, dict):
             raise ValueError(f"Invalid tokenizer vocabulary type: {type(vocab)}")
-
         return any(
             isinstance(t, str) and t.startswith("<|coord_") for t in vocab.keys()
         )
@@ -698,6 +708,40 @@ class DetectionModel(nn.Module):
             "assistant_spans",
         ]
         base_kwargs = {k: v for k, v in kwargs.items() if k not in excluded_args}
+
+        # Optional: build block-diagonal causal mask to isolate packed segments
+        try:
+            seg_lens = kwargs.get("segment_lengths", None)
+            if (
+                seg_lens is not None
+                and isinstance(seg_lens, torch.Tensor)
+                and seg_lens.dim() == 1
+                and input_ids is not None
+            ):
+                # Create per-row causal mask that is block-diagonal across segments
+                # Shapes: input_ids [B, S]; we assume B=1 for packed row, but support general B
+                B, S = int(input_ids.shape[0]), int(input_ids.shape[1])
+                lengths = seg_lens.to(device=input_ids.device, dtype=torch.long)
+                if lengths.sum().item() == S:
+                    # Build [S, S] lower-triangular causal base
+                    causal = torch.tril(torch.ones(S, S, device=input_ids.device, dtype=torch.bool))
+                    # Zero out cross-segment regions
+                    idx = 0
+                    blocks: list[tuple[int, int]] = []
+                    for L in lengths.tolist():
+                        blocks.append((idx, idx + L))
+                        idx += L
+                    mask_bool = torch.zeros_like(causal)
+                    for (s, e) in blocks:
+                        mask_bool[s:e, s:e] = causal[s:e, s:e]
+                    # Convert to additive mask with -inf for masked positions; expand to [B, 1, S, S]
+                    attn_add = (~mask_bool).to(dtype=input_ids.dtype) * torch.finfo(input_ids.dtype).min
+                    attn_add = attn_add.view(1, 1, S, S).expand(B, 1, S, S)
+                    # Supply as mapping expected by Qwen2.5-VL (full_attention key)
+                    base_kwargs["attention_mask"] = {"full_attention": attn_add}
+        except Exception:
+            # Do not fail training if isolation mask construction has any issue
+            pass
 
         # SOLUTION 1: Bypass official loss computation when teacher-student spans provided
         if should_bypass_official_loss:

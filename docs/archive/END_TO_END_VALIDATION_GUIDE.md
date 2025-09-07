@@ -68,7 +68,6 @@ src_new/tests/
 ### **Quick Start**
 ```bash
 # Run complete validation suite
-cd /data3/Qwen2.5-VL-main
 python src_new/tests/run_end_to_end_validation.py
 
 # Fast mode (skip memory/performance tests)

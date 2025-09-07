@@ -14,6 +14,7 @@ with the following features:
 import os
 import sys
 
+# PROJECT_ROOT not needed - using relative paths
 
 # Prevent stdlib shadowing when running this file directly (python src_new/inference.py)
 # If sys.path[0] points to the script directory (src_new), remove it and ensure
@@ -27,8 +28,7 @@ try:
     if _PROJECT_ROOT not in sys.path:
         sys.path.insert(0, _PROJECT_ROOT)
 except Exception:
-    # Best-effort; continue even if path adjustments fail
-    pass
+    raise
 
 import argparse
 import json
@@ -157,8 +157,7 @@ class InferenceEngine:
         self.teacher_pool_manager = None
         teacher_pool_path: Optional[str] = None
 
-        # Resolve teacher pool path using DataResolver first (authoritative to data_root);
-        # fall back to provided/config path if explicitly given.
+        # Resolve teacher pool path using DataResolver first (authoritative to data_root)
         if self.data_root is None:
             raise ValueError("data_root must be provided for teacher pool resolution")
         try:
@@ -167,10 +166,9 @@ class InferenceEngine:
             )
             default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
         except Exception as e:
-            logger.warning(
+            raise RuntimeError(
                 f"Failed to resolve dataset paths from data_root for teacher pool: {e}"
             )
-            default_teacher_pool = None
 
         candidate_path = self.teacher_pool_file or default_teacher_pool
 
@@ -192,16 +190,13 @@ class InferenceEngine:
                         f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
                     )
                 except Exception as e2:
-                    logger.warning(
-                        f"Teacher pool path could not be resolved: {candidate_path} - {e}; fallback also failed: {e2}"
+                    raise RuntimeError(
+                        f"Teacher pool path could not be resolved: {candidate_path} - {e}; secondary resolution failed: {e2}"
                     )
-                    teacher_pool_path = None
             else:
-                # Allow missing teacher pool during tests or minimal inference; proceed without teachers
-                logger.warning(
+                raise RuntimeError(
                     f"Teacher pool path could not be resolved: {candidate_path} - {e}"
                 )
-                teacher_pool_path = None
 
         if teacher_pool_path and os.path.exists(teacher_pool_path):
             try:
@@ -214,19 +209,15 @@ class InferenceEngine:
                 logger.info(
                     f"✅ Teacher pool manager loaded with {len(self.teacher_pool_manager.teacher_pool)} examples for dynamic pairing"
                 )
-                # Keep legacy teacher_samples for backward compatibility
-                self.teacher_samples = self.teacher_pool_manager.teacher_pool
             except Exception as e:
                 logger.warning(
                     f"Failed to load teacher pool manager from {teacher_pool_path}: {e}"
                 )
                 self.teacher_samples = []
         else:
-            # Strict: do not proceed silently without teachers when configured
-            logger.warning(
+            raise RuntimeError(
                 f"Teacher pool file not found or unreadable: {candidate_path}"
             )
-            self.teacher_samples = []
 
         # Use teacher guidance only when explicitly requested via num_teachers > 0
         if self.teacher_pool_manager and self.num_teachers > 0:
@@ -256,8 +247,8 @@ class InferenceEngine:
         # Set up critical environment variables for fast loading (same as training)
         import os
 
-        os.environ["HF_MODULES_CACHE"] = "/data3/Qwen2.5-VL-main/model_cache"
-        os.environ["HF_HOME"] = "/data3/Qwen2.5-VL-main/model_cache"
+        os.environ["HF_MODULES_CACHE"] = "./model_cache"
+        os.environ["HF_HOME"] = "./model_cache"
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         # Only set Triton/FlashAttention-specific env when using FlashAttention v2
@@ -290,6 +281,18 @@ class InferenceEngine:
             trust_remote_code=True,
             use_fast=True,
         )
+        if not getattr(self.tokenizer, "is_fast", False):
+            raise RuntimeError("Fast tokenizer required for inference (use_fast=True)")
+        _enc = self.tokenizer(
+            "sanity",
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )
+        if _enc.get("offset_mapping") is None:
+            raise RuntimeError(
+                "Fast tokenizer did not return offset_mapping in inference. Ensure tokenizer.json is valid."
+            )
 
         # Load image processor from checkpoint
         logger.info(f"Loading image processor from checkpoint: {self._model_path}")
@@ -591,13 +594,11 @@ class InferenceEngine:
         if seed is not None:
             random.seed(seed)
 
-        # For inference, we need a dummy student sample to trigger dynamic pairing
-        # Since we don't have the actual student sample here, we'll use random selection
-        # as a fallback, but the actual dynamic pairing happens in prepare_inference_inputs
-        if self.num_teachers >= len(self.teacher_samples):
-            return self.teacher_samples.copy()
-
-        return random.sample(self.teacher_samples, self.num_teachers)
+        # For inference without a student sample context, do not fabricate random picks here.
+        # Delegate to teacher_pool_manager for deterministic selection.
+        return self.teacher_pool_manager.select_teachers_for_student(
+            student_sample=None, num_samples=self.num_teachers
+        )
 
     def prepare_inference_inputs(
         self,
@@ -628,11 +629,7 @@ class InferenceEngine:
             self.data_root = data_root
 
         # Use teacher-guided approach only when explicitly requested
-        if (
-            self.teacher_samples
-            and len(self.teacher_samples) > 0
-            and self.num_teachers > 0
-        ):
+        if self.teacher_pool_manager and self.num_teachers > 0:
             return self._prepare_training_matched_inputs(sample, seed)
         else:
             # Simple conversation path (default in tests)
@@ -843,12 +840,8 @@ class InferenceEngine:
                     sample=sample, images=images
                 )
             )
-
         except Exception as e:
-            logger.error(f"ConversationBuilder failed: {e}")
-            raise RuntimeError(
-                f"Failed to create simple training format conversation: {e}"
-            )
+            raise RuntimeError(f"ConversationBuilder failed: {e}")
 
         # Validate conversation structure using the processed inputs
         final_text = self.tokenizer.decode(

@@ -8,7 +8,6 @@ Thin pointer for AI assistants.
 
 ## Quick
 ```bash
-cd /data3/Qwen2.5-VL-main
 ./data_conversion/convert_dataset.sh
 ```
 

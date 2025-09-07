@@ -194,6 +194,16 @@ class CheckpointValidator:
                             trust_remote_code=False,
                             use_fast=True,
                         )
+                        if not getattr(tok, "is_fast", False):
+                            raise RuntimeError("Fast tokenizer required for checkpoint validation")
+                        _enc = tok(
+                            "sanity",
+                            return_offsets_mapping=True,
+                            add_special_tokens=False,
+                            return_tensors="pt",
+                        )
+                        if _enc.get("offset_mapping") is None:
+                            raise RuntimeError("Fast tokenizer did not return offset_mapping in validator")
                         rng = get_coord_token_range(tok)
                         has_coords = rng.end_exclusive > rng.start_id
                     except Exception:

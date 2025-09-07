@@ -33,6 +33,7 @@ from ..utils.rank_aware_logging import (
 )
 from .checkpoint_saver import BestCheckpointManager, CheckpointSaver
 from .training_state_manager import TrainingStateManager
+from .metrics_adapter import adapt_group_losses
 
 
 # Import debug logging utilities
@@ -66,8 +67,6 @@ class BBUTrainer(HFTrainer):
         data_collator=None,
         compute_metrics=None,
         callbacks: Optional[list] = None,
-        # Backward compatibility - deprecated parameter
-        tokenizer: Optional[PreTrainedTokenizer] = None,
         **kwargs,
     ) -> None:
         """
@@ -82,13 +81,8 @@ class BBUTrainer(HFTrainer):
             data_collator: Data collator for batching
             compute_metrics: Metrics computation function
             callbacks: Additional trainer callbacks
-            tokenizer: DEPRECATED - use processing_class instead
             **kwargs: Additional arguments passed to HF Trainer
         """
-        # Backward-compat: if tokenizer provided, prefer processing_class strictly
-        if tokenizer is not None and processing_class is None:
-            processing_class = tokenizer
-
         # Initialize parent trainer
         super().__init__(
             model=model,
@@ -172,23 +166,7 @@ class BBUTrainer(HFTrainer):
         logger.debug("📊 No evaluation metrics found in log history")
         return {}
 
-    @property
-    def tokenizer(self):
-        """
-        Backward compatibility property for accessing the tokenizer.
-
-        This property provides access to the processing_class (tokenizer) for
-        backward compatibility with existing code that expects self.tokenizer.
-        """
-        import warnings
-
-        warnings.warn(
-            "Accessing 'trainer.tokenizer' is deprecated. Use 'trainer.processing_class' instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.processing_class
-
+    # Note: legacy 'tokenizer' property removed; use 'processing_class'
     def set_processor(self, processor):
         """Set the processor for saving during checkpoints and dataset processing.
 
@@ -331,6 +309,14 @@ class BBUTrainer(HFTrainer):
                 args=self.args,
                 start_time=self._training_start_time,
             )
+            # Augment with adapted group losses if diagnostics present
+            try:
+                if isinstance(final_logs, dict) and "diagnostics" in final_logs:
+                    diag = final_logs.get("diagnostics")
+                    extra = adapt_group_losses("train", diag)
+                    final_logs.update(extra)
+            except Exception:
+                pass
 
             # Add correctly labeled learning rates
             lr_dict = self._get_learning_rates_with_correct_labels()
@@ -394,13 +380,16 @@ class BBUTrainer(HFTrainer):
             logs=logs,
             lr_scheduler=None,  # Don't let it add LRs automatically
             args=self.args,
-            start_time=start_time,
+            start_time=self._training_start_time,
         )
-
-        # Add correctly labeled learning rates
-        lr_dict = self._get_learning_rates_with_correct_labels()
-        final_logs.update(lr_dict)
-
+        # Augment with adapted group losses for eval logs
+        try:
+            if isinstance(final_logs, dict) and "diagnostics" in final_logs:
+                diag = final_logs.get("diagnostics")
+                extra = adapt_group_losses("eval", diag)
+                final_logs.update(extra)
+        except Exception:
+            pass
         # Format logs for better readability before logging
         formatted_logs = self._format_logs_for_display(final_logs)
 
@@ -1035,13 +1024,8 @@ class BBUTrainer(HFTrainer):
                     and isinstance(ids_list[0], list)
                 ):
                     ids_list = ids_list[0]
-            except Exception:
-                # Fallback: best-effort conversion
-                ids_list = (
-                    sample_input_ids.tolist()
-                    if hasattr(sample_input_ids, "tolist")
-                    else list(sample_input_ids)
-                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to convert sample_input_ids to list: {e}")
 
             chat_text = self.processing_class.decode(
                 ids_list, skip_special_tokens=False

@@ -19,17 +19,18 @@ import warnings
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 import torch
 import torchvision
 from packaging import version
-from PIL import Image, ImageOps
-from data_conversion.utils.exif_utils import apply_exif_orientation
+from PIL import Image
 from torchvision import io
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TF
+
+from data_conversion.utils.exif_utils import apply_exif_orientation
 
 
 logger = logging.getLogger(__name__)
@@ -285,7 +286,7 @@ def smart_nframes(
 
 def _read_video_torchvision(
     ele: dict,
-) -> tuple[torch.Tensor, float]:
+) -> "tuple[torch.Tensor, float]":
     """read video using torchvision.io.read_video
 
     Args:
@@ -392,7 +393,7 @@ def calculate_video_frame_range(
 
 def _read_video_decord(
     ele: dict,
-) -> tuple[torch.Tensor, float]:
+) -> "tuple[torch.Tensor, float]":
     """read video using decord.VideoReader
 
     Args:
@@ -404,7 +405,7 @@ def _read_video_decord(
     Returns:
         torch.Tensor: the video tensor with shape (T, C, H, W).
     """
-    import decord  
+    import decord
 
     video_path = ele["video"]
     st = time.time()
@@ -433,7 +434,7 @@ def is_torchcodec_available() -> bool:
 
         if importlib.util.find_spec("torchcodec") is None:
             return False
-        from torchcodec.decoders import VideoDecoder  # type: ignore 
+        from torchcodec.decoders import VideoDecoder  # type: ignore
 
         return True
     except (ImportError, AttributeError, Exception):
@@ -442,7 +443,7 @@ def is_torchcodec_available() -> bool:
 
 def _read_video_torchcodec(
     ele: dict,
-) -> tuple[torch.Tensor, float]:
+) -> "tuple[torch.Tensor, float]":
     """read video using torchcodec.decoders.VideoDecoder
 
     Args:
@@ -510,12 +511,12 @@ def get_video_reader_backend() -> str:
 
 def fetch_video(
     ele: dict, image_factor: int = IMAGE_FACTOR, return_video_sample_fps: bool = False
-) -> (
-    torch.Tensor
-    | list[Image.Image]
-    | tuple[torch.Tensor, float]
-    | tuple[list[Image.Image], float]
-):
+) -> Union[
+    "torch.Tensor",
+    List[Image.Image],
+    Tuple["torch.Tensor", float],
+    Tuple[List[Image.Image], float]
+]:
     if isinstance(ele["video"], str):
         video_reader_backend = get_video_reader_backend()
         try:
@@ -601,7 +602,7 @@ def fetch_video(
         return images
 
 
-def extract_vision_info(conversations: list[dict] | list[list[dict]]) -> list[dict]:
+def extract_vision_info(conversations: Union[List[dict], List[List[dict]]]) -> List[dict]:
     """Extract vision information from conversations.
 
     Args:
@@ -642,12 +643,12 @@ def extract_vision_info(conversations: list[dict] | list[list[dict]]) -> list[di
 
 
 def process_vision_info(
-    conversations: list[dict] | list[list[dict]],
+    conversations: Union[List[dict], List[List[dict]]],
     return_video_kwargs: bool = False,
-) -> tuple[
-    list[Image.Image] | None,
-    list[torch.Tensor | list[Image.Image]] | None,
-    dict[str, list[float]] | None,
+) -> Tuple[
+    Union[List[Image.Image], None],
+    Union[List[Union["torch.Tensor", List[Image.Image]]], None],
+    Union[Dict[str, List[float]], None],
 ]:
     """Process vision information from conversations.
 

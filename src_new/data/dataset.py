@@ -37,15 +37,14 @@ from src_new.types.arrays import (
     jaxtyped_beartype,
 )
 from src_new.utils.path_manager import create_path_manager
+from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 
 def get_data_logger() -> logging.Logger:
     """Get rank-aware logger for data module."""
     try:
-        from ..utils.rank_aware_logging import get_rank_aware_logger
-
         return get_rank_aware_logger("data")
-    except ImportError:
+    except Exception:
         # Fallback to standard logging
         logger = logging.getLogger("data")
         if not logger.handlers:
@@ -103,6 +102,9 @@ class Dataset(TorchDataset):
     augmentation_pipeline: Optional[object]
     _augmentation_schedule: Optional[List[Dict[str, Any]]] = None
 
+    # Split flag
+    is_eval: bool = False
+
     def __init__(
         self,
         data_path: str,
@@ -136,6 +138,13 @@ class Dataset(TorchDataset):
         self.image_processor = image_processor  # Kept for compatibility, not used
         self.teacher_pool_manager = teacher_pool_manager
         self.config = config
+
+        # Mark split
+        try:
+            # Use normalized paths from config; load_config already normalizes
+            self.is_eval = str(Path(self.data_path)) == str(Path(self.config.val_data_path))
+        except Exception:
+            self.is_eval = False
 
         # Initialize processing components
         self._initialize_processing_components()
@@ -201,18 +210,14 @@ class Dataset(TorchDataset):
                     )
                 else:
                     # Expect attributes: preset, rng_seed, apply_to_teachers
-                    aug = self.config.augmentation
-                    for key in ("preset", "rng_seed", "apply_to_teachers"):
-                        if not hasattr(aug, key):
-                            raise ValueError(
-                                f"augmentation.{key} must be set explicitly when use_aug=true"
-                            )
                     from src_new.augmentation.wrappers import get_preset_config
 
                     cfg = get_preset_config(
-                        getattr(aug, "preset"),
-                        rng_seed=int(getattr(aug, "rng_seed")),
-                        apply_to_teachers=bool(getattr(aug, "apply_to_teachers")),
+                        getattr(self.config.augmentation, "preset"),
+                        rng_seed=int(getattr(self.config.augmentation, "rng_seed")),
+                        apply_to_teachers=bool(
+                            getattr(self.config.augmentation, "apply_to_teachers")
+                        ),
                     )
                     self.augmentation_pipeline = (
                         ObjectAwareAugmentationPipeline.from_config(cfg)
@@ -251,6 +256,21 @@ class Dataset(TorchDataset):
         logger.info(
             f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
         )
+        # Variant schedule (optional)
+        schedule = getattr(self.config, "conversation_variant_schedule", None)
+        if isinstance(schedule, list) and schedule:
+            chosen = None
+            for entry in sorted(schedule, key=lambda e: int(e.get("start_epoch", 0))):
+                if epoch_index >= int(entry.get("start_epoch", 0)):
+                    chosen = entry
+            if chosen and isinstance(chosen.get("ratios"), dict):
+                self._active_variant_ratios = {
+                    ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
+                    for k, v in chosen["ratios"].items()
+                }
+                logger.info(
+                    f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
+                )
 
     def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
         """
@@ -440,168 +460,172 @@ class Dataset(TorchDataset):
 
         return structured_sample
 
+    # --- New helpers: unified variant sampling & image loading ---
+    def _sample_variant(self) -> str:
+        if self.is_eval:
+            return "dense_caption"
+        ratios = getattr(self, "_active_variant_ratios", None) or getattr(self.config, "conversation_variant_ratios", None) or {
+            "dense_caption": 1.0,
+            "coords_to_desc": 0.0,
+            "desc_to_coords": 0.0,
+        }
+        keys = list(ratios.keys())
+        weights = [float(ratios[k]) for k in keys]
+        total = sum(weights)
+        if total <= 0:
+            return "dense_caption"
+        r = random.random() * total
+        acc = 0.0
+        for k, w in zip(keys, weights):
+            acc += w
+            if r <= acc:
+                logger.debug(f"🎛️ Variant sampled: '{k}' from ratios={ratios}")
+                return k
+        return keys[-1]
+
+    def _load_images(self, image_paths: List[str]) -> List[Image.Image]:
+        path_manager = create_path_manager(self.data_root)
+        images = []
+        for img_path in image_paths:
+            try:
+                resolved = path_manager.resolve_path(img_path)
+                image = Image.open(str(resolved)).convert("RGB")
+                images.append(image)
+            except Exception as e:
+                logger.error(f"Failed to load image {img_path}: {e}")
+                raise
+        return images
+
     @jaxtyped_beartype
     def _process_sample_unified(
         self, structured_sample: Dict[str, Any], idx: int
     ) -> Dict[str, torch.Tensor]:
         """
-        Process sample through HuggingFace-first pipeline.
-
-        Args:
-            structured_sample: Structured sample data with potential teacher assignments
-            idx: Sample index for logging
-
-        Returns:
-            Processed sample with tensors ready for model input
-
-        Raises:
-            ValueError: If processing fails
+        Unified processing: centralized variant sampling and unified builder entry.
         """
-        # Extract teacher samples if present
-        teacher_samples = (
-            structured_sample["teacher_samples"]
-            if "teacher_samples" in structured_sample
-            else []
-        )
+        if self.conversation_processor is None:
+            raise ValueError("Conversation processor not initialized")
+
+        # Variant selection
+        variant = self._sample_variant()
+
+        # Teacher presence
+        teacher_samples = structured_sample.get("teacher_samples", [])
         has_teachers = len(teacher_samples) > 0
+        logger.debug(
+            f"🧪 Sample idx={idx}: variant='{variant}', has_teachers={has_teachers}"
+        )
 
         # Load images
         if has_teachers:
-            # Load teacher images
-            teacher_images_list = []
-            for teacher_sample in teacher_samples:
-                if "images" not in teacher_sample:
+            teacher_images_list: List[List[Image.Image]] = []
+            for t_sample in teacher_samples:
+                t_paths = t_sample.get("images", [])
+                if not t_paths:
                     raise ValueError("Teacher sample missing required 'images' list")
-                teacher_image_paths = teacher_sample["images"]
-                teacher_images = self._load_images_from_paths(teacher_image_paths)
-                teacher_images_list.append(teacher_images)
+                t_images = self._load_images(t_paths)
+                teacher_images_list.append(t_images)
+            student_images = self._load_images(structured_sample.get("images", []))
+        else:
+            teacher_images_list = []
+            student_images = self._load_images(structured_sample.get("images", []))
 
-            # Load student images
-            if "images" not in structured_sample:
-                raise ValueError("Sample missing required 'images' list")
-            student_image_paths = structured_sample["images"]
-            student_images = self._load_images_from_paths(student_image_paths)
+        # Optional augmentation
+        if self.augmentation_pipeline is not None:
+            from torch.utils.data import get_worker_info
 
-            # Optional augmentation (student first, then teachers if enabled)
-            if self.augmentation_pipeline is not None:
-                from torch.utils.data import get_worker_info
+            wi = get_worker_info()
+            worker_id = wi.id if wi is not None else 0
 
-                wi = get_worker_info()
-                worker_id = wi.id if wi is not None else 0
-                student_seed_index = idx ^ (worker_id << 16)
-                student_images, structured_sample = self.augmentation_pipeline.apply(
-                    sample=structured_sample,
-                    images=student_images,
-                    sample_index=student_seed_index,
-                )
-                logger.debug(
-                    f"✅ Applied augmentation (student) idx={idx}: image_size={student_images[0].size}, objects={len(structured_sample['objects'])}"
-                )
-                # Teacher augmentation: prefer dedicated teacher_augmentation if provided;
-                # else use main augmentation when apply_to_teachers is True.
-                taug_cfg = getattr(self.config, "teacher_augmentation", None)
-                aug_cfg = self.config.augmentation
-                if taug_cfg is not None:
-                    from src_new.augmentation import ObjectAwareAugmentationPipeline
+            # Student first
+            student_seed_index = idx ^ (worker_id << 16)
+            student_images, structured_sample = self.augmentation_pipeline.apply(
+                sample=structured_sample,
+                images=student_images,
+                sample_index=student_seed_index,
+            )
+            logger.debug(
+                f"✅ Applied augmentation (student) idx={idx}: image_size={student_images[0].size}, objects={len(structured_sample['objects'])}"
+            )
 
-                    teacher_pipeline = ObjectAwareAugmentationPipeline.from_config(
-                        taug_cfg
+            # Teachers optionally
+            taug_cfg = getattr(self.config, "teacher_augmentation", None)
+            aug_cfg = getattr(self.config, "augmentation", None)
+            use_teacher_aug = False
+            teacher_pipeline = None
+            if taug_cfg is not None:
+                from src_new.augmentation import ObjectAwareAugmentationPipeline
+
+                teacher_pipeline = ObjectAwareAugmentationPipeline.from_config(taug_cfg)
+                use_teacher_aug = True
+            elif aug_cfg is not None and getattr(aug_cfg, "apply_to_teachers", False):
+                teacher_pipeline = self.augmentation_pipeline
+                use_teacher_aug = True
+
+            if has_teachers and use_teacher_aug and teacher_pipeline is not None:
+                new_teacher_images_list = []
+                new_teacher_samples = []
+                for t_i, (t_sample, t_images) in enumerate(
+                    zip(teacher_samples, teacher_images_list)
+                ):
+                    t_seed_index = (idx * 997 + t_i) ^ (worker_id << 16)
+                    t_images, t_sample = teacher_pipeline.apply(
+                        sample=t_sample, images=t_images, sample_index=t_seed_index
                     )
-                    use_teacher_aug = True
-                else:
-                    teacher_pipeline = self.augmentation_pipeline
-                    use_teacher_aug = bool(
-                        aug_cfg is not None and aug_cfg.apply_to_teachers
+                    logger.debug(
+                        f"✅ Applied augmentation (teacher={t_i}) base_idx={idx}: image_size={t_images[0].size}, objects={len(t_sample['objects'])}"
                     )
+                    new_teacher_images_list.append(t_images)
+                    new_teacher_samples.append(t_sample)
+                teacher_images_list = new_teacher_images_list
+                teacher_samples = new_teacher_samples
 
-                if use_teacher_aug:
-                    new_teacher_images_list = []
-                    new_teacher_samples = []
-                    for t_i, (t_sample, t_images) in enumerate(
-                        zip(teacher_samples, teacher_images_list)
-                    ):
-                        t_seed_index = (idx * 997 + t_i) ^ (worker_id << 16)
-                        t_images, t_sample = teacher_pipeline.apply(
-                            sample=t_sample,
-                            images=t_images,
-                            sample_index=t_seed_index,
-                        )
-                        logger.debug(
-                            f"✅ Applied augmentation (teacher={t_i}) base_idx={idx}: image_size={t_images[0].size}, objects={len(t_sample['objects'])}"
-                        )
-                        new_teacher_images_list.append(t_images)
-                        new_teacher_samples.append(t_sample)
-                    teacher_images_list = new_teacher_images_list
-                    teacher_samples = new_teacher_samples
-
-            # Use HuggingFace-first conversation processor
-            inputs = self.conversation_processor.create_teacher_student_conversation(
-                student_sample=structured_sample,
+        # Unified builder call
+        if has_teachers:
+            inputs = self.conversation_processor.create_conversation(
+                sample=structured_sample,
+                images=student_images,
+                variant=variant,
                 teacher_samples=teacher_samples,
-                student_images=student_images,
                 teacher_images_list=teacher_images_list,
             )
-
-            logger.debug(f"✅ Created teacher-student conversation for sample {idx}")
+            logger.debug(f"✅ Created teacher-student conversation for sample {idx} (variant='{variant}')")
         else:
-            # Load student images only
-            if "images" not in structured_sample:
-                raise ValueError("Sample missing required 'images' list")
-            image_paths = structured_sample["images"]
-            images = self._load_images_from_paths(image_paths)
-
-            # Optional augmentation (student-only flow)
-            if self.augmentation_pipeline is not None:
-                from torch.utils.data import get_worker_info
-
-                wi = get_worker_info()
-                worker_id = wi.id if wi is not None else 0
-                student_seed_index = idx ^ (worker_id << 16)
-                images, structured_sample = self.augmentation_pipeline.apply(
-                    sample=structured_sample,
-                    images=images,
-                    sample_index=student_seed_index,
-                )
-                logger.debug(
-                    f"✅ Applied augmentation (student-only) idx={idx}: image_size={images[0].size}, objects={len(structured_sample['objects'])}"
-                )
-
-            # Use HuggingFace-first conversation processor
-            inputs = self.conversation_processor.create_simple_conversation(
-                sample=structured_sample, images=images
+            inputs = self.conversation_processor.create_conversation(
+                sample=structured_sample,
+                images=student_images,
+                variant=variant,
             )
-            logger.debug(f"✅ Created student-only conversation for sample {idx}")
+            logger.debug(f"✅ Created student-only conversation for sample {idx} (variant='{variant}')")
 
-        # Create labels with proper masking for training and extract spans
+        # Create labels with proper masking for training and extract spans (unchanged)
         labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
-            inputs["input_ids"],
-            self.tokenizer,
-            has_teachers=(len(teacher_samples) > 0),
+            input_ids=inputs["input_ids"],
+            tokenizer=self.tokenizer,
+            has_teachers=has_teachers,
+            conversation_text=inputs.get("conversation_text"),
+            offset_mapping=inputs.get("offset_mapping"),
         )
         inputs["labels"] = labels
         inputs["teacher_assistant_spans"] = teacher_spans
         inputs["student_assistant_spans"] = student_spans
-        # Do not populate unified assistant_spans in legacy mode to avoid overriding teacher/student logic
         inputs.pop("assistant_spans", None)
 
         return inputs
 
     def _create_masked_labels_with_spans(
-        self, input_ids: torch.Tensor, tokenizer, has_teachers: bool = False
+        self,
+        input_ids: torch.Tensor,
+        tokenizer,
+        has_teachers: bool = False,
+        conversation_text: Optional[str] = None,
+        offset_mapping: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, List[tuple[int, int]], List[tuple[int, int]]]:
         """
         Create properly masked labels using OFFSET MAPPING for accurate span detection.
 
         This method uses tokenizer's offset_mapping to get precise token-to-character
         alignment, ensuring spans correspond to actual token positions.
-
-        Args:
-            input_ids: Token sequence [1, seq_len]
-            tokenizer: Tokenizer with offset_mapping support
-            has_teachers: Whether this conversation has teacher examples
-
-        Returns:
-            Tuple of (masked_labels, teacher_spans, student_spans)
         """
         # Remove batch dimension for processing
         input_ids_1d = input_ids.squeeze(0) if input_ids.dim() > 1 else input_ids
@@ -610,24 +634,31 @@ class Dataset(TorchDataset):
         student_spans = []
 
         try:
-            # STEP 1: Get the full conversation text
-            full_text = tokenizer.decode(input_ids_1d, skip_special_tokens=False)
+            # STEP 1: Derive the full conversation text by decoding input_ids to GUARANTEE alignment
+            full_text = tokenizer.decode(
+                input_ids_1d, skip_special_tokens=False
+            )
 
-            # STEP 2: Re-tokenize with offset mapping for accurate alignment
+            # STEP 2: Compute offset mapping from the decoded text to GUARANTEE token alignment
             tokenized_with_offsets = tokenizer(
                 full_text,
                 return_offsets_mapping=True,
                 add_special_tokens=False,
                 return_tensors="pt",
             )
-
             offset_mapping = tokenized_with_offsets["offset_mapping"][
                 0
             ]  # Remove batch dim
 
             # STEP 3: Find assistant content spans using accurate text-to-token mapping
-            assistant_spans = self._find_assistant_spans_with_offsets(
-                full_text, offset_mapping, has_teachers
+            from src_new.processing.span_extraction import find_assistant_spans
+            assistant_spans = find_assistant_spans(
+                full_text=full_text,
+                offset_mapping=offset_mapping,
+                tokenizer=tokenizer,
+                include_eos=bool(getattr(self.config, "span_include_im_end_in_labels", True)),
+                has_teachers=has_teachers,
+                input_ids_1d=input_ids_1d,
             )
 
             # STEP 4: Mask all tokens initially
@@ -679,6 +710,44 @@ class Dataset(TorchDataset):
                 image_pad_mask = input_ids_1d == image_pad_id
                 labels[image_pad_mask] = -100
 
+            # STEP 7 (debug): strict invariants for alignment and coverage
+            if getattr(self.config, "debug_alignment", False):
+                # Re-decode labels where not -100 and check round-trip equals input_ids
+                # (We check ids equality on unmasked region spans.)
+                all_spans = teacher_spans + student_spans
+                # Non-empty and sorted, non-overlapping
+                if len(all_spans) == 0:
+                    raise RuntimeError("debug_alignment: no assistant spans found")
+                all_spans_sorted = sorted(all_spans)
+                prev_end = -1
+                for st, ed in all_spans_sorted:
+                    if st <= prev_end:
+                        raise RuntimeError(
+                            f"debug_alignment: overlapping/unsorted spans detected: prev_end={prev_end}, curr=({st},{ed})"
+                        )
+                    prev_end = ed
+                # Labels must equal input_ids inside spans
+                for st, ed in all_spans_sorted:
+                    if not torch.equal(labels[st:ed], input_ids_1d[st:ed]):
+                        raise RuntimeError(
+                            f"debug_alignment: labels do not match input_ids within span ({st},{ed})"
+                        )
+                # Outside spans must be -100
+                mask = torch.zeros_like(labels, dtype=torch.bool)
+                for st, ed in all_spans_sorted:
+                    mask[st:ed] = True
+                if (labels[~mask] != -100).any():
+                    raise RuntimeError(
+                        "debug_alignment: found non -100 labels outside assistant spans"
+                    )
+                # Offset mapping consistency: token offsets must be non-decreasing and within text bounds
+                if not (offset_mapping[:, 0] <= offset_mapping[:, 1]).all():
+                    raise RuntimeError("debug_alignment: invalid offset ranges")
+                if offset_mapping[-1, 1].item() > len(full_text):
+                    raise RuntimeError(
+                        "debug_alignment: offset mapping exceeds text length"
+                    )
+
         except Exception as e:
             # Fail-fast: do not silently continue with invalid spans
             logger.error(
@@ -691,60 +760,15 @@ class Dataset(TorchDataset):
             f"📊 Final spans - Teachers: {len(teacher_spans)}, Students: {len(student_spans)}"
         )
 
-        # Restore batch dimension if needed
-        if input_ids.dim() > 1:
-            labels = labels.unsqueeze(0)
+        # Sanity check: ensure we unmasked some assistant tokens
+        unmasked_count = int((labels != -100).sum().item())
+        if unmasked_count == 0:
+            raise RuntimeError(
+                "Masking produced no learnable tokens; check assistant span detection and offset mapping."
+            )
 
         return labels, teacher_spans, student_spans
 
-    def _find_assistant_spans_with_offsets(
-        self, full_text: str, offset_mapping: torch.Tensor, has_teachers: bool
-    ) -> List[tuple[int, int, bool]]:
-        """
-        Find assistant content spans using offset mapping for accurate token alignment.
-
-        Args:
-            full_text: Full conversation text
-            offset_mapping: Token-to-character mapping from tokenizer
-            has_teachers: Whether conversation has teacher examples
-
-        Returns:
-            List of (start_token, end_token, is_teacher) tuples
-        """
-
-        assistant_spans = []
-        assistant_count = 0
-
-        # Find all assistant segments using centralized regex
-        for match in re.finditer(ASSISTANT_SPAN_PATTERN, full_text, re.DOTALL):
-            # Get character positions
-            content_start_char = match.start(1)  # Start of assistant content (group 1)
-            content_end_char = match.end(1)  # End of assistant content (group 1)
-
-            # Convert character positions to token positions using offset mapping
-            start_token = self._char_to_token_position(
-                content_start_char, offset_mapping
-            )
-            end_token = self._char_to_token_position(content_end_char, offset_mapping)
-
-            if start_token is not None and end_token is not None:
-                # Determine if this is a teacher or student
-                if has_teachers and assistant_count == 0:
-                    # First assistant in teacher-student mode is teacher
-                    is_teacher = True
-                else:
-                    # All others are students
-                    is_teacher = False
-
-                assistant_spans.append((start_token, end_token, is_teacher))
-                assistant_count += 1
-
-                logger.debug(
-                    f"Found {'teacher' if is_teacher else 'student'} span: "
-                    f"chars {content_start_char}:{content_end_char} -> tokens {start_token}:{end_token}"
-                )
-
-        return assistant_spans
 
     def _char_to_token_position(
         self, char_pos: int, offset_mapping: torch.Tensor

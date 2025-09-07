@@ -216,14 +216,6 @@ class TrainingStateManager:
                     "Missing coordinate diagnostics while coord_aux is enabled. "
                     f"Absent keys: {missing}. This indicates an upstream computation issue (spans, labels, or tokenizer ranges)."
                 )
-        else:
-            # Backward-compatible: fill with zeros only when coord aux is disabled
-            for group in ("teacher", "student"):
-                for name in DIAGNOSTIC_METRIC_NAMES:
-                    key = f"{group}_{name}"
-                    if key not in logs:
-                        logs[key] = 0.0
-
         # Verify loss decomposition if we have component losses
         self._verify_loss_decomposition(logs)
 
@@ -336,34 +328,34 @@ class TrainingStateManager:
         total_loss = logs["loss"]
         component_sum = 0.0
 
-        # Sum all component losses
-        for key in [
-            "teacher_llm_loss",
-            "student_llm_loss",
-            # Sum separate coord components instead of legacy aggregate
-            "teacher_kce_loss",
-            "teacher_unlike_loss",
-            "student_kce_loss",
-            "student_unlike_loss",
-            "laplace_1_loss",
-            "laplace_2_loss",
-        ]:
+        # Sum per-role LLM and group losses (all weighted). Groups must sum to role LLM; roles sum to total.
+        groups = ["caption", "grounding", "formatting"]
+        role_sums = {"teacher": 0.0, "student": 0.0}
+
+        # Role LLM
+        for role in ("teacher", "student"):
+            key = f"{role}_llm_loss"
             if key in logs and logs[key] is not None:
+                role_sums[role] = logs[key]
                 component_sum += logs[key]
 
-        # Check if we have any components to verify
-        if component_sum > 0:
-            # Allow small floating point differences (1e-6 relative tolerance)
-            relative_error = abs(total_loss - component_sum) / max(
-                abs(total_loss), 1e-8
-            )
-            if relative_error > 1e-6:
-                if self.logger:
+        # Group per role
+        group_totals = {"teacher": 0.0, "student": 0.0}
+        for role in ("teacher", "student"):
+            for g in groups:
+                k = f"{role}_{g}_loss"
+                if k in logs and logs[k] is not None:
+                    group_totals[role] += logs[k]
+
+        # Verify group sums per role when present
+        for role in ("teacher", "student"):
+            if role_sums[role] and group_totals[role]:
+                rel = abs(role_sums[role] - group_totals[role]) / max(abs(role_sums[role]), 1e-8)
+                if rel > 1e-6 and self.logger:
                     self.logger.warning(
-                        f"Loss decomposition mismatch: total={total_loss:.6f}, "
-                        f"components_sum={component_sum:.6f}, "
-                        f"relative_error={relative_error:.2e}"
+                        f"{role} loss mismatch: llm={role_sums[role]:.6f}, groups_sum={group_totals[role]:.6f}, rel_err={rel:.2e}"
                     )
+
 
     def _calculate_remaining_hours(
         self, start_time: float, trainer_state: Any

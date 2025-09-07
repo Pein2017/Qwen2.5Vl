@@ -23,7 +23,7 @@ The inference pipeline was generating empty responses (0 characters) due to two 
 ## Solution Overview
 
 ### 1. Temperature Parameter Fix
-**Location**: `/data3/Qwen2.5-VL-main/src_new/inference.py` (line 834)
+**Location**: src_new/inference.py (line 834)
 
 **Problem**: 
 ```python
@@ -40,7 +40,7 @@ temperature=temperature if do_sample else 1.0,
 **Rationale**: Qwen2.5-VL model requires `temperature=1.0` for stable generation when `do_sample=False`. This maintains deterministic behavior while ensuring reliable output generation.
 
 ### 2. Response Extraction Fix
-**Location**: `/data3/Qwen2.5-VL-main/src_new/inference.py` (line 898)
+**Location**: src_new/inference.py (line 898)
 
 **Problem**:
 ```python

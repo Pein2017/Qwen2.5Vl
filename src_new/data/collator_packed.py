@@ -50,9 +50,15 @@ class PackedDataCollator:
     def _collate_with_images(
         self, features: List[Dict[str, Any]]
     ) -> Dict[str, torch.Tensor]:
-        input_ids = [f["input_ids"] for f in features]
-        attention_mask = [f["attention_mask"] for f in features]
-        labels = [f["labels"] for f in features]
+        # Flatten to 1D sequences if coming as [1, L]
+        def _to_1d(t: torch.Tensor) -> torch.Tensor:
+            if t.dim() == 2 and t.shape[0] == 1:
+                return t.squeeze(0)
+            return t
+
+        input_ids_1d = [_to_1d(f["input_ids"]) for f in features]
+        attention_mask_1d = [_to_1d(f["attention_mask"]) for f in features]
+        labels_1d = [_to_1d(f["labels"]) for f in features]
         pixel_values_list = []
         for f in features:
             pv = f["pixel_values"]
@@ -72,32 +78,68 @@ class PackedDataCollator:
         else:
             pixel_values = torch.stack(pixel_values_list)
 
-        teacher_assistant_spans = None
-        student_assistant_spans = None
-        assistant_spans = None
-        if "teacher_assistant_spans" in features[0]:
-            teacher_assistant_spans = [f["teacher_assistant_spans"] for f in features]
-        if "student_assistant_spans" in features[0]:
-            student_assistant_spans = [f["student_assistant_spans"] for f in features]
-        if "assistant_spans" in features[0]:
-            assistant_spans = [f["assistant_spans"] for f in features]
+        # True text packing: concatenate sequences into a single row [1, sum(Li)]
+        total_length = sum(int(t.size(0)) for t in input_ids_1d)
+        packed_input_ids = torch.zeros(1, total_length, dtype=torch.long)
+        packed_attention_mask = torch.zeros(1, total_length, dtype=torch.long)
+        packed_labels = torch.full(
+            (1, total_length), self.label_pad_token_id, dtype=torch.long
+        )
 
-        padded_input_ids = self._pad_sequence(input_ids, self.pad_token_id)
-        padded_attention_mask = self._pad_sequence(attention_mask, 0)
-        padded_labels = self._pad_sequence(labels, self.label_pad_token_id)
+        offsets: List[int] = []
+        offset = 0
+        for ids, am, lbl in zip(input_ids_1d, attention_mask_1d, labels_1d):
+            length = int(ids.size(0))
+            packed_input_ids[0, offset : offset + length] = ids
+            packed_attention_mask[0, offset : offset + length] = am
+            packed_labels[0, offset : offset + length] = lbl
+            offsets.append(offset)
+            offset += length
+        # Only emit segment_lengths if isolation is enabled in config
+        segment_lengths = None
+        if self.config and getattr(self.config, 'packed_segment_isolation', False):
+            segment_lengths = torch.tensor([int(t.size(0)) for t in input_ids_1d], dtype=torch.long)
+
+        # Mask cross-sample boundaries to avoid learning transitions across samples
+        # For next-token CE (shifted), mask the first token of each subsequent sample
+        for b_off in offsets[1:]:
+            packed_labels[0, b_off] = self.label_pad_token_id
+
+        # Merge and offset spans into a single row when present
+        def _offset_merge_spans(spans_list: List[List[tuple]], offs: List[int]) -> List[tuple]:
+            merged: List[tuple] = []
+            for spans, o in zip(spans_list, offs):
+                if spans:
+                    for s, e in spans:
+                        merged.append((int(s) + o, int(e) + o))
+            return merged
 
         batch = {
-            "input_ids": padded_input_ids,
-            "attention_mask": padded_attention_mask,
-            "labels": padded_labels,
+            "input_ids": packed_input_ids,
+            "attention_mask": packed_attention_mask,
+            "labels": packed_labels,
             "pixel_values": pixel_values,
+            "segment_lengths": segment_lengths,
         }
-        if teacher_assistant_spans is not None:
-            batch["teacher_assistant_spans"] = teacher_assistant_spans
-        if student_assistant_spans is not None:
-            batch["student_assistant_spans"] = student_assistant_spans
-        if assistant_spans is not None:
-            batch["assistant_spans"] = assistant_spans
+
+        if "teacher_assistant_spans" in features[0]:
+            t_spans_lists = [f["teacher_assistant_spans"] for f in features]
+            merged_t = _offset_merge_spans(t_spans_lists, offsets)
+            batch["teacher_assistant_spans"] = [merged_t]
+        if "student_assistant_spans" in features[0]:
+            s_spans_lists = [f["student_assistant_spans"] for f in features]
+            merged_s = _offset_merge_spans(s_spans_lists, offsets)
+            batch["student_assistant_spans"] = [merged_s]
+        if "assistant_spans" in features[0]:
+            a_spans_lists = [f["assistant_spans"] for f in features]
+            merged_a = _offset_merge_spans(a_spans_lists, offsets)
+            batch["assistant_spans"] = [merged_a]
+
+        # Provide the original item count for diagnostics (ignored by model forward)
+        try:
+            batch["num_items_in_batch"] = torch.tensor([len(features)], dtype=torch.long)
+        except Exception:
+            pass
 
         if "image_grid_thw" in features[0]:
             image_grid_thw_list = []

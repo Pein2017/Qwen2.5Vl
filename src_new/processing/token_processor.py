@@ -489,7 +489,16 @@ class TokenProcessor:
         # Note: Some official checkpoints ship embedding matrices larger than the
         # true base vocabulary due to internal padding or reserved slots. We only
         # enforce immutability for the true base region [0, original_vocab_size).
-        freeze_rows = int(original_vocab_size)
+        # Freeze only the true base region: derive max base token id by excluding newly added tokens
+        base_token_ids = [
+            tid
+            for tok, tid in vocab.items()
+            if not (isinstance(tok, str) and (tok.startswith("<|coord_") or tok in ("<|line_start|>", "<|line_end|>")))
+        ]
+        if not base_token_ids:
+            raise AssertionError("Failed to derive base token id range for freeze validation")
+        max_base_id = max(base_token_ids)
+        freeze_rows = min(int(original_vocab_size), int(max_base_id) + 1)
         with torch.no_grad():
             cur_snapshot = in_w[:freeze_rows].detach().clone()  # type: ignore
             if not torch.allclose(cur_snapshot, original_snapshot[:freeze_rows]):

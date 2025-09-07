@@ -30,7 +30,7 @@ class TestTokenizerOptimization(unittest.TestCase):
         """Set up test fixtures."""
         self.temp_dir = tempfile.mkdtemp()
         self.tiny_dataset_path = (
-            "/data3/Qwen2.5-VL-main/src_coord_pretrain/data/coord_bootstrap_tiny.jsonl"
+            "src_coord_pretrain/data/coord_bootstrap_tiny.jsonl"
         )
 
         # Mock processor with fast tokenizer

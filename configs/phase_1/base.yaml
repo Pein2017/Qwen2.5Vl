@@ -14,9 +14,9 @@
 # - run_name:   UNIQUE name for the experiment. MUST BE OVERRIDDEN per run.
 # - tb_dir:     Base directory for TensorBoard logs.
 # --------------------------------------------------------------------------------------
-output_dir: &output_dir /data3/Qwen2.5-VL-main/outputs
+output_dir: &output_dir outputs
 run_name: "MUST_BE_OVERRIDDEN" # e.g., "experiment_8_20_coord_aux_run"
-tb_dir: &tb_dir /data3/Qwen2.5-VL-main/tb
+tb_dir: &tb_dir tb
 
 # --------------------------------------------------------------------------------------
 # Model Settings
@@ -26,7 +26,7 @@ tb_dir: &tb_dir /data3/Qwen2.5-VL-main/tb
 # - torch_dtype:            Computation precision ("bfloat16", "float16").
 # - use_cache:              Enable KV caching in the model (disable for training).
 # --------------------------------------------------------------------------------------
-model_path: model_cache/Qwen/Qwen2.5-VL-3B-Instruct
+model_path: outputs/7B/phase_3/9-2-7b-phase_3-smaller_lrs-added_data/checkpoint-5400
 attn_implementation: flash_attention_2
 torch_dtype: bfloat16
 use_cache: false
@@ -44,7 +44,7 @@ use_cache: false
 # - max_grad_norm:              Gradient clipping threshold.
 # - lr_scheduler_type:          Learning rate scheduler type (e.g., "cosine", "linear").
 # --------------------------------------------------------------------------------------
-num_train_epochs: 20
+num_train_epochs: 50
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1  
@@ -53,7 +53,7 @@ vision_lr: 1.0e-7
 merger_lr: 5.0e-5
 llm_lr: 5.0e-6
 warmup_ratio: 0.1
-weight_decay: 1.0e-5
+weight_decay: 1.0e-3
 max_grad_norm: 0.5
 lr_scheduler_type: cosine
 seed: 17
@@ -64,11 +64,12 @@ seed: 17
 # --------------------------------------------------------------------------------------
 phase_name: off
 
-data_root: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+data_root: data/ds_v2_full
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
 collator_type: packed
+packed_segment_isolation: true  # Enable block-diagonal attention to isolate packed segments
 teacher_ratio: 0.5
 
 bf16: true
@@ -77,7 +78,7 @@ gradient_checkpointing: true
 eval_strategy: steps
 eval_steps: 20
 save_strategy: steps
-save_steps: 200
+save_steps: 1000
 save_total_limit: 2
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"

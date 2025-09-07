@@ -23,8 +23,6 @@ augmentation:
 
 2) Launch training:
 ```bash
-cd /data3/Qwen2.5-VL-main
-source ~/.bashrc && conda activate ms
 bash scripts/run_new_train.sh
 ```
 

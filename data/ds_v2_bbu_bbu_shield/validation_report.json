@@ -3,9 +3,9 @@
   "total_invalid_samples": 0,
   "validation_manager_stats": {
     "validation_summary": {
-      "total_samples_processed": 674,
-      "total_objects_processed": 674,
-      "valid_samples": 674,
+      "total_samples_processed": 3340,
+      "total_objects_processed": 3340,
+      "valid_samples": 3340,
       "invalid_samples": 0,
       "validation_success_rate": 1.0,
       "total_errors": 1,
@@ -25,8 +25,8 @@
       "require_non_empty_description": true,
       "check_coordinate_bounds": true
     },
-    "timestamp": "2025-09-01T03:47:05.742942"
+    "timestamp": "2025-09-04T03:59:36.082418"
   },
   "invalid_sample_reasons": {},
-  "timestamp": "2025-09-01T03:47:05.742950"
+  "timestamp": "2025-09-04T03:59:36.082452"
 }

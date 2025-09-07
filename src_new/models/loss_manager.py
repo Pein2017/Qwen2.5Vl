@@ -403,12 +403,13 @@ class LossManager:
             diagnostics: Dict[str, torch.Tensor] = {}
             from .coord_metrics import DIAGNOSTIC_METRIC_NAMES
 
+            # Only include diagnostics when present (non-None) and relevant
             for group in ("teacher", "student"):
                 for name in DIAGNOSTIC_METRIC_NAMES:
                     key = f"{group}_{name}"
                     if key in granular_losses and granular_losses[key] is not None:
                         diagnostics[key] = granular_losses[key]
-            # Log six final group losses (teacher/student‑weighted)
+            # Log six final group losses (teacher/student‑weighted) only when present
             t_map = {
                 "teacher_caption_loss": "teacher_caption_loss",
                 "teacher_grounding_loss": "teacher_grounding_loss",
@@ -429,6 +430,61 @@ class LossManager:
                     diagnostics[out_key] = (
                         self.student_loss_weight * granular_losses[src_key]
                     )
+
+            # Structured grouped losses (weighted) for downstream adapters
+            group_losses_struct: Dict[str, Dict[str, torch.Tensor]] = {}
+            t_group: Dict[str, torch.Tensor] = {}
+            s_group: Dict[str, torch.Tensor] = {}
+            if (
+                "teacher_caption_loss" in granular_losses
+                and granular_losses["teacher_caption_loss"] is not None
+            ):
+                t_group["caption"] = (
+                    self.teacher_loss_weight * granular_losses["teacher_caption_loss"]
+                )
+            if (
+                "teacher_grounding_loss" in granular_losses
+                and granular_losses["teacher_grounding_loss"] is not None
+            ):
+                t_group["grounding"] = (
+                    self.teacher_loss_weight * granular_losses["teacher_grounding_loss"]
+                )
+            if (
+                "teacher_formatting_loss" in granular_losses
+                and granular_losses["teacher_formatting_loss"] is not None
+            ):
+                t_group["formatting"] = (
+                    self.teacher_loss_weight * granular_losses["teacher_formatting_loss"]
+                )
+            if t_group:
+                group_losses_struct["teacher"] = t_group
+
+            if (
+                "student_caption_loss" in granular_losses
+                and granular_losses["student_caption_loss"] is not None
+            ):
+                s_group["caption"] = (
+                    self.student_loss_weight * granular_losses["student_caption_loss"]
+                )
+            if (
+                "student_grounding_loss" in granular_losses
+                and granular_losses["student_grounding_loss"] is not None
+            ):
+                s_group["grounding"] = (
+                    self.student_loss_weight * granular_losses["student_grounding_loss"]
+                )
+            if (
+                "student_formatting_loss" in granular_losses
+                and granular_losses["student_formatting_loss"] is not None
+            ):
+                s_group["formatting"] = (
+                    self.student_loss_weight * granular_losses["student_formatting_loss"]
+                )
+            if s_group:
+                group_losses_struct["student"] = s_group
+
+            if group_losses_struct:
+                diagnostics["group_losses"] = group_losses_struct
 
             # CORRECTED: Compute combined weighted L1 losses for accurate logging
             teacher_l1_weighted = torch.tensor(0.0, device=logits.device)
@@ -641,37 +697,23 @@ class LossManager:
                 student_spans=student_spans,
             )
 
-            def _masked_sum_and_count(
-                loss_mat: torch.Tensor, mask: torch.Tensor
-            ) -> tuple[torch.Tensor, torch.Tensor]:
-                masked = loss_mat * mask.float()
-                return masked.sum(), mask.sum()
-
-            def _masked_mean(
-                loss_mat: torch.Tensor, mask: torch.Tensor
-            ) -> torch.Tensor:
-                s, c = _masked_sum_and_count(loss_mat, mask)
-                if c > 0:
-                    return s / c
-                return torch.tensor(0.0, device=loss_mat.device)
-
             # Per-group sums and counts for proper weighted aggregation
-            t_cap_sum, t_cap_cnt = _masked_sum_and_count(
+            t_cap_sum, t_cap_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.teacher_caption
             )
-            t_grd_sum, t_grd_cnt = _masked_sum_and_count(
+            t_grd_sum, t_grd_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.teacher_grounding
             )
-            t_fmt_sum, t_fmt_cnt = _masked_sum_and_count(
+            t_fmt_sum, t_fmt_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.teacher_formatting
             )
-            s_cap_sum, s_cap_cnt = _masked_sum_and_count(
+            s_cap_sum, s_cap_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.student_caption
             )
-            s_grd_sum, s_grd_cnt = _masked_sum_and_count(
+            s_grd_sum, s_grd_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.student_grounding
             )
-            s_fmt_sum, s_fmt_cnt = _masked_sum_and_count(
+            s_fmt_sum, s_fmt_cnt = self._masked_sum_and_count(
                 per_token_loss, gm.student_formatting
             )
 
@@ -1050,6 +1092,16 @@ class LossManager:
             return masked_loss.sum() / mask_sum
         else:
             return torch.tensor(0.0, device=per_token_loss.device)
+
+    def _masked_sum_and_count(self, loss_mat: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        masked = loss_mat * mask.float()
+        return masked.sum(), mask.sum()
+
+    def _masked_mean(self, loss_mat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        s, c = self._masked_sum_and_count(loss_mat, mask)
+        if c > 0:
+            return s / c
+        return torch.tensor(0.0, device=loss_mat.device)
 
     # No legacy coordinate loss function; coordinate losses are handled via auxiliary path only.
 

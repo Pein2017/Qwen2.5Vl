@@ -1,0 +1,50 @@
+checkpoint: outputs/7B-full/phase_1/9-5-7b-full-phase_1-merger_1e-4/checkpoint-3150
+processor: outputs/7B-full/phase_1/9-5-7b-full-phase_1-merger_1e-4/checkpoint-3150
+ref_checkpoint: outputs/7B-full/phase_1/9-5-7b-full-phase_1-merger_1e-4/checkpoint-3150
+train_data_dir: test_data
+eval_data_dir: ''
+output_dir: output-post
+mission: 挡风板安装检查
+device: cuda
+seed: 17
+
+# Generation
+temperature: 0.5
+top_p: 0.9
+max_new_tokens_stage_a: 128
+max_new_tokens_stage_b: 256
+mask_geometry_tokens: false
+mask_coordinate_tokens: false
+sanitize_stage_a: false
+
+# Sampling (GRPO)
+K_B: 4
+K_A: 3
+adv_clip: 1.5
+length_norm: true
+
+# Training
+train: true
+num_updates: 1
+batch_size: 1
+learning_rate: 1.0e-05
+weight_decay: 0.0
+max_grad_norm: 1.0
+train_lm_head: true
+train_last_n_layers: 1
+lr_lm_head: 1.0e-05
+lr_last_layers: 5.0e-06
+
+# KL regularization
+use_ref_kl: true
+ref_checkpoint: outputs/7B-full/phase_1/9-5-7b-full-phase_1-merger_1e-4/checkpoint-3150
+lambda_kl_stage_b: 0.02
+lambda_kl_stage_a: 0.02
+
+# Rewards
+reward_fns: label_match,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.5,0.7,-0.7,-0.4,-1.0
+
+# Misc
+limit_groups: 0
+results_jsonl: output-post/results.jsonl

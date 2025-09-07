@@ -297,6 +297,10 @@ class Config:
     # Teacher-student loss (aggregated)
     teacher_loss_weight: float
     student_loss_weight: float
+    # Group loss weights (compatibility)
+    caption_loss_weight: float
+    grounding_loss_weight: float
+    formatting_loss_weight: float
 
     # Features
     coordinate_tokens_enabled: bool
@@ -321,48 +325,52 @@ class Config:
     # Collator
     collator_type: str
 
-    # HF Trainer: evaluation/checkpoint settings
+    # HF Trainer: evaluation/checkpoint settings (compatibility)
     eval_strategy: str
     eval_steps: int
     save_strategy: str
+
+    # Checkpointing
     save_steps: int
     save_total_limit: int
     load_best_model_at_end: bool
     metric_for_best_model: str
     greater_is_better: bool
 
-    # Logging settings
+    # Logging settings (compatibility)
     logging_steps: int
     report_to: str
     disable_tqdm: bool
 
-    # Dataloader performance
+    # Dataloader performance (compatibility)
     dataloader_num_workers: int
     pin_memory: bool
     prefetch_factor: int
     remove_unused_columns: bool
 
-    # Coordinate auxiliary losses (enabled via YAML)
-    coord_aux_enabled: bool
+    # Optimizer/learning rate groups (optional overrides)
+    lr_merger: Optional[float] = None
+    lr_coord_slice: Optional[float] = None
+    lr_top_layers: Optional[float] = None
+    lr_full_model: Optional[float] = None
 
-    # Group loss weights for caption/grounding/formatting (required)
-    caption_loss_weight: float
-    grounding_loss_weight: float
-    formatting_loss_weight: float
+    # Optional: conversation variant ratios for training sampling
+    # keys in {"dense_caption", "coords_to_desc", "desc_to_coords"}, values are non-negative weights
+    conversation_variant_ratios: Optional[Dict[str, float]] = None
 
-    # === OPTIONAL FIELDS WITH DEFAULTS (truly optional) ===
+    # === OPTIONAL FIELDS WITH DEFAULTS (compatibility) ===
     seed: int = 17
     new_geometry_tokens: Optional[List[str]] = None
+
+    # Augmentation controls
     augmentation: Optional[AugmentationConfigType] = None
-    # Optional: dedicated teacher augmentation (simple photometric-only). If provided,
-    # it overrides `augmentation.apply_to_teachers` and is applied to teacher samples only.
     teacher_augmentation: Optional[AugmentationConfigType] = None
     use_aug: bool = False
     augmentation_schedule: Optional[List[Dict[str, Any]]] = None
-    # Phase-freeze control for separate runs: one of {off, phase_1, phase_2, phase_3}
     phase_name: str = "off"
 
-    # Coordinate aux knobs (only when coord_aux_enabled)
+    # Coordinate auxiliary losses (compatibility; only used when coord_aux_enabled: true)
+    coord_aux_enabled: bool = False
     coord_aux_tau: Optional[float] = None
     coord_aux_sigma_bins: Optional[int] = None
     coord_aux_window_bins: Optional[int] = None
@@ -370,11 +378,14 @@ class Config:
     coord_aux_lambda_kce: Optional[float] = None
     coord_aux_lambda_unlike: Optional[float] = None
 
-    # Optional learning rates for specific parameter groups
-    lr_merger: Optional[float] = None
-    lr_coord_slice: Optional[float] = None
-    lr_top_layers: Optional[float] = None
-    lr_full_model: Optional[float] = None
+    # Span extraction options
+    span_include_im_end_in_labels: bool = True
+    # Debug: enable strict alignment assertions (decode↔re-tokenize, span/mask invariants)
+    debug_alignment: bool = False
+    
+    # Packed segment isolation (experimental)
+    packed_segment_isolation: bool = False  # Enable block-diagonal attention to isolate packed segments
+
 
     # === COMPUTED PROPERTIES ===
     @property
@@ -411,6 +422,7 @@ class Config:
         self._validate_phase_name()
         self._validate_learning_rate_groups()
         self._validate_group_loss_settings()
+        self._validate_span_settings()
 
         logger.info("✅ Configuration validation passed")
 
@@ -486,8 +498,30 @@ class Config:
                 f"teacher_ratio must be between 0 and 1, got {self.teacher_ratio}"
             )
 
+
         if self.collator_type not in ["packed", "standard"]:
             raise ValueError(f"Invalid collator_type: {self.collator_type}")
+
+        # Conversation variant ratios (optional)
+        sampling = getattr(self, "conversation_variant_ratios", None)
+        if sampling is not None:
+            if not isinstance(sampling, dict):
+                raise ValueError("conversation_variant_ratios must be a dict if provided")
+            # Validate keys strictly against canonical set
+            allowed = {"dense_caption", "coords_to_desc", "desc_to_coords"}
+            total = 0.0
+            for k, v in sampling.items():
+                if k not in allowed:
+                    raise ValueError(
+                        f"conversation_variant_ratios contains unsupported key: {k}. Allowed: {sorted(allowed)}"
+                    )
+                if not isinstance(v, (int, float)) or v < 0:
+                    raise ValueError(
+                        f"conversation_variant_ratios[{k}] must be a non-negative number"
+                    )
+                total += float(v)
+            if total <= 0:
+                raise ValueError("Sum of conversation_variant_ratios must be > 0")
 
         # Required: validate coordinate init mode
         if self.coordinate_tokens_enabled:
@@ -701,6 +735,15 @@ class Config:
                 "All group weights are zero; at least one of caption/grounding/formatting must be > 0"
             )
 
+    def _validate_span_settings(self) -> None:
+        """Validate span extraction options."""
+        if not isinstance(self.span_include_im_end_in_labels, bool):
+            raise ValueError(
+                "span_include_im_end_in_labels must be a boolean (true/false)"
+            )
+        if not isinstance(self.debug_alignment, bool):
+            raise ValueError("debug_alignment must be a boolean (true/false)")
+
 
 def load_config(override_config_path: str) -> Config:
     """
@@ -753,6 +796,7 @@ def load_config(override_config_path: str) -> Config:
 
     # Load override YAML
     try:
+        
         with open(override_file, "r", encoding="utf-8") as f:
             override_data = yaml.safe_load(f) or {}
     except (yaml.YAMLError, OSError) as e:
@@ -768,6 +812,10 @@ def load_config(override_config_path: str) -> Config:
 
     # Convert numeric-like strings to floats based on annotations
     data = _convert_scientific_notation(data)
+
+    # Remove backward-compatible key normalization; enforce canonical keys upstream
+    if "conversation_variant_ratios" in data and isinstance(data["conversation_variant_ratios"], dict):
+        pass
 
     # === Dataset path resolution (auto-derive from data_root when missing) ===
     required_paths = ["train_data_path", "val_data_path", "teacher_pool_file"]
@@ -821,8 +869,12 @@ def load_config(override_config_path: str) -> Config:
 
     # Normalize output/log directories relative to config_dir
     for key in ("output_dir", "tb_dir"):
+        # default tb_dir to output_dir if not provided
         if key not in data or not data[key]:
-            raise ValueError(f"Missing required output/log path: {key}")
+            if key == "tb_dir" and "output_dir" in data and data["output_dir"]:
+                data["tb_dir"] = data["output_dir"]
+            else:
+                raise ValueError(f"Missing required output/log path: {key}")
         try:
             data[key] = str(normalize_path_input(data[key]))
         except Exception as e:
@@ -832,7 +884,7 @@ def load_config(override_config_path: str) -> Config:
 
     # Gate augmentation by use_aug flag (no external files)
     if "use_aug" not in data:
-        raise ValueError("use_aug must be explicitly set to true or false in the YAML")
+        data["use_aug"] = False
     if not isinstance(data["use_aug"], bool):
         raise ValueError("use_aug must be a boolean (true/false)")
     use_aug_flag = data["use_aug"]

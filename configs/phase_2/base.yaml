@@ -1,6 +1,6 @@
-output_dir: &output_dir /data3/Qwen2.5-VL-main/outputs
+output_dir: &output_dir outputs
 run_name: "MUST_BE_OVERRIDDEN" # e.g., "experiment_8_20_coord_aux_run"
-tb_dir: &tb_dir /data3/Qwen2.5-VL-main/tb
+tb_dir: &tb_dir tb
 
 model_path: model_cache/Qwen/Qwen2.5-VL-3B-Instruct
 attn_implementation: flash_attention_2
@@ -19,14 +19,15 @@ llm_lr: 5.0e-6
 lr_top_layers: 1.0e-5
 lr_coord_slice: 5.0e-6
 warmup_ratio: 0.2
-weight_decay: 1.0e-5
+weight_decay: 1.0e-3
+
 max_grad_norm: 0.5
 lr_scheduler_type: cosine
 seed: 17
 
 phase_name: phase_2
 
-data_root: /data3/Qwen2.5-VL-main/data/ds_v2_bbu_bbu_shield
+data_root: data/ds_v2_full
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
@@ -39,7 +40,7 @@ gradient_checkpointing: true
 eval_strategy: steps
 eval_steps: 20
 save_strategy: steps
-save_steps: 200
+save_steps: 500
 save_total_limit: 2
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"

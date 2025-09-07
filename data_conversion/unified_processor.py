@@ -303,7 +303,7 @@ class UnifiedProcessor:
                 return None
 
             # Sort objects by position using first coordinate pair
-                objects = sort_objects_tlbr(objects)
+            objects = sort_objects_tlbr(objects)
 
             # Process image (copy/resize) to match coordinate transformations
             processed_image_path, _, _ = self.image_processor.process_image(

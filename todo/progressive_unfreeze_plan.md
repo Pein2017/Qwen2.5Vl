@@ -11,14 +11,14 @@
 
 ## Background and Current State
 - Entry points
-  - Training launcher: `/data3/Qwen2.5-VL-main/scripts/run_new_train.sh` (prod) and `/data3/Qwen2.5-VL-main/scripts/run_debug.sh` (debug)
-  - Training script: `/data3/Qwen2.5-VL-main/scripts/train_new.py`
+  - Training launcher: `scripts/run_new_train.sh` (prod) and `scripts/run_debug.sh` (debug)
+  - Training script: `scripts/train_new.py`
 - Core modules (src_new)
-  - Model wrapper: `/data3/Qwen2.5-VL-main/src_new/models/wrapper.py`
-  - Loss manager: `/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py`
-  - Coordinate losses: `/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py`
-  - Config schema/validation: `/data3/Qwen2.5-VL-main/src_new/config/config.py`
-  - Callbacks: `/data3/Qwen2.5-VL-main/src_new/training/callbacks.py`
+  - Model wrapper: `src_new/models/wrapper.py`
+  - Loss manager: `src_new/models/loss_manager.py`
+  - Coordinate losses: `src_new/models/coordinate_loss.py`
+  - Config schema/validation: `src_new/config/config.py`
+  - Callbacks: `src_new/training/callbacks.py`
 - Current loss system (debug config)
   - LLM CE: teacher/student spans with next‑token alignment
   - Coordinate auxiliary losses (enabled): Kernelized‑KL (sparse window) + Unlikelihood(top‑K); Laplacian reg on coord embedding slice
@@ -199,13 +199,13 @@ lr_full_model: 5.0e-6
 
 
 ## Navigation Reference (src_new)
-- `/data3/Qwen2.5-VL-main/src_new/models/wrapper.py` — wrapper and LossManager wiring
-- `/data3/Qwen2.5-VL-main/src_new/models/loss_manager.py` — CE, aux coord losses
-- `/data3/Qwen2.5-VL-main/src_new/models/coordinate_loss.py` — KCE, Unlikelihood, Laplacian utils
-- `/data3/Qwen2.5-VL-main/src_new/training/callbacks.py` — place for `ProgressiveUnfreezeCallback`
-- `/data3/Qwen2.5-VL-main/src_new/config/config.py` — YAML schema and validation
-- `/data3/Qwen2.5-VL-main/scripts/train_new.py` — trainer creation, callback registration
-- `/data3/Qwen2.5-VL-main/configs/bbu_v2/debug.yaml` — debug config (can enable progressive unfreeze here)
+- `src_new/models/wrapper.py` — wrapper and LossManager wiring
+- `src_new/models/loss_manager.py` — CE, aux coord losses
+- `src_new/models/coordinate_loss.py` — KCE, Unlikelihood, Laplacian utils
+- `src_new/training/callbacks.py` — place for `ProgressiveUnfreezeCallback`
+- `src_new/config/config.py` — YAML schema and validation
+- `scripts/train_new.py` — trainer creation, callback registration
+- `configs/bbu_v2/debug.yaml` — debug config (can enable progressive unfreeze here)
 
 
 ## Notes

@@ -3,78 +3,55 @@
 """
 HuggingFace-first conversation processor for Qwen2.5-VL.
 
-This replaces 800+ lines of custom conversation processing with official
-HuggingFace components + focused coordinate token logic.
-
-Key Features:
-- Uses official processor.apply_chat_template() for all conversation formatting
-- Uses official processor for all image token calculation
-- Imports prompts from templates.py CONSTANTS (never hardcoded)
-- Only coordinate token conversion as custom logic
-- Fail-fast validation with explicit errors
+Simplified, self-contained implementation that:
+- Uses processor.apply_chat_template() for conversation formatting
+- Converts objects to strings via CoordinateTokenConverter
+- Provides dense-captioning builders and two additional detection-style variants
+- Supports teacher-student and simple flows; includes inference builder
 """
 
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
 from transformers import Qwen2VLProcessor
-
-from src_new.types.arrays import (
-    jaxtyped_beartype,
-)
-from src_new.utils.rank_aware_logging import get_rank_aware_logger
+from dataclasses import dataclass
+from enum import Enum
 
 from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS, get_system_prompt
+from .special_tokens import IMAGE_PAD
+from .variants import create_default_variant_registry
+from ..utils.rank_aware_logging import get_rank_aware_logger
+
+logger = get_rank_aware_logger("processing.conversation")
 
 
-logger = get_rank_aware_logger(__name__)
-
-
-# Custom Exception Classes for Enhanced Error Handling
 class ConversationError(Exception):
-    """Base exception for conversation processing errors."""
-
     pass
 
 
 class ConversationStructureError(ConversationError):
-    """Raised when conversation structure is invalid."""
-
-    def __init__(self, message: str, conversation_details: Optional[Dict] = None):
-        super().__init__(message)
-        self.conversation_details = conversation_details or {}
+    pass
 
 
-class ImageTokenMismatchError(ConversationError):
-    """Raised when image tokens don't match conversation structure."""
-
+class ImageTokenMismatchError(ConversationStructureError):
     def __init__(self, message: str, expected_count: int, actual_count: int):
         super().__init__(message)
         self.expected_count = expected_count
         self.actual_count = actual_count
 
 
-class TeacherStudentValidationError(ConversationError):
-    """Raised when teacher-student conversation validation fails."""
-
+class TeacherStudentValidationError(ConversationStructureError):
     pass
 
 
-class ConversationTruncationError(ConversationError):
-    """Raised when conversation needs truncation but cannot be safely handled."""
-
+class ConversationTruncationError(ConversationStructureError):
     pass
 
 
-# Validation Utilities
 @dataclass
 class ConversationValidationResult:
-    """Result of conversation validation."""
-
     is_valid: bool
     errors: List[str]
     warnings: List[str]
@@ -84,8 +61,6 @@ class ConversationValidationResult:
 
 
 class ConversationType(Enum):
-    """Types of conversations supported."""
-
     SIMPLE = "simple"
     TEACHER_STUDENT = "teacher_student"
     INFERENCE = "inference"
@@ -93,38 +68,23 @@ class ConversationType(Enum):
 
 
 class ConversationValidator:
-    """Comprehensive conversation structure validator."""
-
     @staticmethod
     def validate_conversation_structure(
         messages: List[Dict],
         images: List[Image.Image],
         conversation_type: ConversationType,
     ) -> ConversationValidationResult:
-        """
-        Validate conversation structure comprehensively.
-
-        Args:
-            messages: List of conversation messages
-            images: List of PIL images
-            conversation_type: Expected conversation type
-
-        Returns:
-            Validation result with detailed analysis
-        """
-        errors = []
-        warnings = []
-        details = {}
+        errors: List[str] = []
+        warnings: List[str] = []
+        details: Dict[str, Any] = {}
 
         try:
-            # Basic structure validation
             if not messages:
                 errors.append("Empty messages list")
 
             if not isinstance(images, list):
                 errors.append(f"Images must be a list, got {type(images)}")
 
-            # Count image placeholders in messages
             image_placeholder_count = 0
             user_turns = 0
             assistant_turns = 0
@@ -134,12 +94,11 @@ class ConversationValidator:
                 if not isinstance(message, dict):
                     errors.append(f"Message {i} must be a dict, got {type(message)}")
                     continue
-
                 if "role" not in message or "content" not in message:
-                    raise ValueError("Each message must include 'role' and 'content'")
+                    errors.append(f"Message {i} missing 'role' or 'content'")
+                    continue
                 role = message["role"]
                 content = message["content"]
-
                 if role == "system":
                     system_turns += 1
                 elif role == "user":
@@ -162,7 +121,6 @@ class ConversationValidator:
                 }
             )
 
-            # Validate conversation type-specific rules
             if conversation_type == ConversationType.SIMPLE:
                 if user_turns != 1:
                     errors.append(
@@ -176,7 +134,6 @@ class ConversationValidator:
                     errors.append(
                         f"Simple conversation must have exactly 1 image, got {len(images)}"
                     )
-
             elif conversation_type == ConversationType.TEACHER_STUDENT:
                 if user_turns < 2:
                     errors.append(
@@ -190,7 +147,6 @@ class ConversationValidator:
                     errors.append(
                         f"Teacher-student conversation must have at least 2 images, got {len(images)}"
                     )
-
             elif conversation_type == ConversationType.INFERENCE:
                 if assistant_turns > 0:
                     warnings.append(
@@ -199,22 +155,10 @@ class ConversationValidator:
                 if len(images) == 0:
                     errors.append("Inference conversation must have at least 1 image")
 
-            # Validate image count consistency
             if image_placeholder_count != len(images):
                 errors.append(
-                    f"Image placeholder count ({image_placeholder_count}) != "
-                    f"actual image count ({len(images)})"
+                    f"Image placeholder count ({image_placeholder_count}) != actual image count ({len(images)})"
                 )
-
-            # Validate teacher-student turn alternation if applicable
-            if conversation_type in [
-                ConversationType.TEACHER_STUDENT,
-                ConversationType.MULTI_TEACHER,
-            ]:
-                turn_pattern_errors = ConversationValidator._validate_turn_alternation(
-                    messages
-                )
-                errors.extend(turn_pattern_errors)
 
             return ConversationValidationResult(
                 is_valid=len(errors) == 0,
@@ -224,7 +168,6 @@ class ConversationValidator:
                 turn_count=len(messages),
                 details=details,
             )
-
         except Exception as e:
             errors.append(f"Validation failed with exception: {str(e)}")
             return ConversationValidationResult(
@@ -237,62 +180,15 @@ class ConversationValidator:
             )
 
     @staticmethod
-    def _validate_turn_alternation(messages: List[Dict]) -> List[str]:
-        """Validate that teacher-student conversations have proper turn alternation."""
-        errors = []
-
-        # Skip system message
-        non_system_messages = [msg for msg in messages if msg.get("role") != "system"]
-
-        if len(non_system_messages) < 2:
-            return errors
-
-        expected_pattern = ["user", "assistant"] * (len(non_system_messages) // 2)
-        if len(non_system_messages) % 2 == 1:
-            expected_pattern.append("user")
-
-        actual_pattern = [msg.get("role") for msg in non_system_messages]
-
-        if actual_pattern != expected_pattern:
-            errors.append(
-                f"Invalid turn alternation. Expected: {expected_pattern}, "
-                f"Got: {actual_pattern}"
-            )
-
-        return errors
-
-    @staticmethod
     def validate_image_token_consistency(
         text: str, images: List[Image.Image]
     ) -> Tuple[bool, List[str]]:
-        """
-        Validate that image tokens in text match provided images.
-
-        Args:
-            text: Processed conversation text
-            images: List of images
-
-        Returns:
-            Tuple of (is_valid, list_of_errors)
-        """
-        errors = []
-
-        # Count image tokens in text
-        image_token_count = text.count("<|image_pad|>")
-
+        errors: List[str] = []
+        image_token_count = text.count(IMAGE_PAD)
         if image_token_count != len(images):
             errors.append(
-                f"Image token count ({image_token_count}) != "
-                f"provided image count ({len(images)})"
+                f"Image token count ({image_token_count}) != provided image count ({len(images)})"
             )
-
-        # Validate image quality
-        for i, image in enumerate(images):
-            if not isinstance(image, Image.Image):
-                errors.append(f"Image {i} is not a PIL Image, got {type(image)}")
-            elif image.size[0] == 0 or image.size[1] == 0:
-                errors.append(f"Image {i} has invalid dimensions: {image.size}")
-
         return len(errors) == 0, errors
 
 
@@ -301,10 +197,8 @@ class ConversationProcessor:
     HuggingFace-first conversation processor.
 
     Wrapper around official HuggingFace processor with coordinate token conversion.
-    Replaces the complex custom logic in chat_processor.py and templates.py.
     """
 
-    # Non-trivial state annotations
     processor: Qwen2VLProcessor
     coordinate_tokens_enabled: bool
     coordinate_converter: CoordinateTokenConverter
@@ -314,1113 +208,182 @@ class ConversationProcessor:
         processor: Qwen2VLProcessor,
         max_coord_value: int,
         coordinate_tokens_enabled: bool,
-    ):
-        """
-        Initialize conversation processor.
-
-        Args:
-            processor: Official HuggingFace Qwen2VLProcessor
-            max_coord_value: Maximum coordinate value for coordinate tokens (required)
-            coordinate_tokens_enabled: Whether to emit <|coord_*|> tokens or raw numbers
-
-        Raises:
-            ValueError: If processor is None or invalid
-        """
+    ) -> None:
         if processor is None:
             raise ValueError("processor cannot be None")
-        if max_coord_value is None:
-            raise ValueError(
-                "max_coord_value is required and must be provided via configuration (YAML)."
-            )
         if not isinstance(max_coord_value, int) or max_coord_value <= 0:
             raise ValueError(
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
         if not isinstance(coordinate_tokens_enabled, bool):
             raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}: {coordinate_tokens_enabled!r}"
+                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}"
             )
-
         self.processor = processor
         self.coordinate_tokens_enabled = coordinate_tokens_enabled
         self.coordinate_converter = CoordinateTokenConverter(
             max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
+            coordinate_tokens_enabled=coordinate_tokens_enabled,
         )
+        # Cache system prompt once (stable per instance)
+        self._system_prompt: str = get_system_prompt(self.coordinate_tokens_enabled)
+        # Variant registry
+        self._variant_registry = create_default_variant_registry(self.coordinate_converter)
 
-    @jaxtyped_beartype
-    def _process_text_and_images(
-        self, text: str, images: List[Image.Image]
-    ) -> Dict[str, torch.Tensor]:
-        """Process text and images via HF processor with strict validation.
+    # ---------------- Variant user-text helpers are centralized in geometry_text/variants ----------------
 
-        Ensures a dict with at least 'input_ids' and 'attention_mask' is returned.
-        """
-        outputs: Dict[str, torch.Tensor] = {}
-        try:
-            raw_outputs = self.processor(
-                text=[text], images=images, return_tensors="pt", padding=True
-            )
-        except Exception as e:
-            # Fail-fast: processor must succeed; do not fall back to ad-hoc tokenization
-            raise RuntimeError(f"Processor call failed: {type(e).__name__}: {e}")
-
-        # If processor returned a BatchFeature or Mapping, coerce to plain dict
-        if isinstance(raw_outputs, dict):
-            outputs = raw_outputs
-        else:
-            try:
-                data_attr = getattr(raw_outputs, "data", None)
-                if isinstance(data_attr, dict):
-                    outputs = data_attr
-                elif hasattr(raw_outputs, "to_dict"):
-                    maybe = raw_outputs.to_dict()  # type: ignore[attr-defined]
-                    outputs = maybe if isinstance(maybe, dict) else {}
-                else:
-                    outputs = {}
-            except Exception as e:
-                logger.debug(f"Coercion to dict failed: {e}")
-                outputs = {}
-
-        # Ensure text tensors
-        if "input_ids" not in outputs or "attention_mask" not in outputs:
-            # Require tokenizer presence explicitly; no silent fallbacks
-            if not hasattr(self.processor, "tokenizer"):
-                raise RuntimeError(
-                    "Processor did not return input_ids/attention_mask and has no tokenizer attribute for recovery"
-                )
-            tokenizer = self.processor.tokenizer
-            try:
-                toks = tokenizer(
-                    text, return_tensors="pt", truncation=True, max_length=256
-                )
-                if isinstance(toks, dict):
-                    outputs.update(toks)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Tokenizer fallback failed to produce input tensors: {type(e).__name__}: {e}"
-                )
-
-            if "input_ids" not in outputs or "attention_mask" not in outputs:
-                raise RuntimeError(
-                    "Processor did not produce required text tensors and tokenizer fallback was insufficient"
-                )
-
-        # Optional image tensors
-        if images:
-            try:
-                # Do NOT overwrite tensors produced by the main processor call.
-                # Only compute via image_processor if they are missing.
-                need_pixel_values = "pixel_values" not in outputs
-                need_image_grid = "image_grid_thw" not in outputs
-
-                if need_pixel_values or need_image_grid:
-                    if not hasattr(self.processor, "image_processor"):
-                        raise RuntimeError(
-                            "Processor missing image_processor attribute required to compute image tensors"
-                        )
-                    image_processor = self.processor.image_processor
-                    if not hasattr(image_processor, "preprocess"):
-                        raise RuntimeError(
-                            "image_processor lacks required 'preprocess' method to compute image tensors"
-                        )
-                    img_out = image_processor.preprocess(images, return_tensors="pt")
-                    # Coerce BatchFeature to dict
-                    if not isinstance(img_out, dict):
-                        data_attr = getattr(img_out, "data", None)
-                        if isinstance(data_attr, dict):
-                            img_out = data_attr
-                        else:
-                            from collections.abc import Mapping
-
-                            if isinstance(img_out, Mapping):
-                                img_out = dict(img_out)
-                            else:
-                                img_out = {}
-                    # Only update missing keys to avoid shape/type mismatches
-                    if need_pixel_values and "pixel_values" in img_out:
-                        outputs["pixel_values"] = img_out["pixel_values"]
-                    if need_image_grid and "image_grid_thw" in img_out:
-                        outputs["image_grid_thw"] = img_out["image_grid_thw"]
-
-                # Fail-fast: if essential image tensors are missing after processor path, raise
-                missing_keys = []
-                if "pixel_values" not in outputs:
-                    missing_keys.append("pixel_values")
-                if "image_grid_thw" not in outputs:
-                    missing_keys.append("image_grid_thw")
-                if missing_keys:
-                    raise RuntimeError(
-                        f"HuggingFace processor did not return required keys: {missing_keys}. "
-                        f"Aborting to avoid training on invalid image tensors."
-                    )
-            except Exception as e:
-                # Fail-fast on any unexpected image processing error
-                raise RuntimeError(f"Image processing failed: {e}")
-
-        return outputs
-
-    def validate_conversation_structure(
+    # ------------- Core utilities -------------
+    def _validate_messages_and_images(
         self, messages: List[Dict], images: List[Image.Image]
-    ) -> bool:
-        """
-        Validate conversation structure comprehensively.
-
-        Args:
-            messages: List of conversation messages
-            images: List of PIL images
-
-        Returns:
-            True if valid, raises appropriate exception if not
-
-        Raises:
-            ConversationStructureError: If conversation structure is invalid
-            ImageTokenMismatchError: If image tokens don't match conversation
-        """
+    ) -> None:
         if not messages:
             raise ConversationStructureError("Empty messages list")
-
-        if not isinstance(images, list):
-            raise ConversationStructureError(
-                f"Images must be a list, got {type(images)}"
-            )
-
-        # Count image placeholders in messages
-        image_placeholder_count = 0
-        for i, message in enumerate(messages):
-            if not isinstance(message, dict):
+        if not isinstance(images, list) or not images:
+            raise ConversationStructureError("images must be a non-empty list")
+        image_placeholders = 0
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:
                 raise ConversationStructureError(
-                    f"Message {i} must be a dict, got {type(message)}"
+                    f"Invalid message at index {i}: {msg!r}"
                 )
-
-            if "role" not in message or "content" not in message:
-                raise ValueError("Each message must include 'role' and 'content'")
-            role = message["role"]
-            content = message["content"]
-
-            if role not in ["system", "user", "assistant"]:
-                raise ConversationStructureError(
-                    f"Invalid role '{role}' in message {i}"
+            content = msg["content"]
+            if isinstance(content, list):
+                image_placeholders += sum(
+                    1 for item in content if isinstance(item, dict) and item.get("type") == "image"
                 )
-
-            if role == "user" and isinstance(content, list):
-                image_placeholder_count += sum(
-                    1
-                    for item in content
-                    if isinstance(item, dict) and item.get("type") == "image"
-                )
-
-        # Validate image count consistency
-        if image_placeholder_count != len(images):
+        if image_placeholders != len(images):
             raise ImageTokenMismatchError(
-                f"Image placeholder count ({image_placeholder_count}) != actual image count ({len(images)})",
-                expected_count=image_placeholder_count,
+                f"Image placeholder count ({image_placeholders}) != actual image count ({len(images)})",
+                expected_count=image_placeholders,
                 actual_count=len(images),
             )
 
-        # Validate image quality
-        for i, image in enumerate(images):
-            if not isinstance(image, Image.Image):
-                raise ConversationStructureError(
-                    f"Image {i} is not a PIL Image, got {type(image)}"
-                )
-            elif image.size[0] == 0 or image.size[1] == 0:
-                raise ConversationStructureError(
-                    f"Image {i} has invalid dimensions: {image.size}"
-                )
-
-        return True
-
-    def interleave_images_with_turns(
+    def _interleave_images_with_turns(
         self, messages: List[Dict], all_images: List[Image.Image]
     ) -> Tuple[List[Dict], List[Image.Image]]:
-        """
-        Properly interleave images with conversation turns preserving flow.
-
-        Args:
-            messages: List of conversation messages
-            all_images: List of all PIL images
-
-        Returns:
-            Tuple of (validated_messages, ordered_images)
-
-        Raises:
-            ConversationStructureError: If interleaving fails
-            ImageTokenMismatchError: If image counts don't match
-        """
         if not messages or not all_images:
             raise ConversationStructureError("Messages and images cannot be empty")
-
-        validated_messages = []
-        ordered_images = []
+        validated_messages: List[Dict] = []
+        ordered_images: List[Image.Image] = []
         image_index = 0
-
-        for msg_idx, message in enumerate(messages):
-            if "role" not in message or "content" not in message:
-                raise ValueError("Each message must include 'role' and 'content'")
-            role = message["role"]
-            content = message["content"]
-
-            validated_messages.append(message.copy())
-
-            # For user messages with image content, ensure proper ordering
-            if role == "user" and isinstance(content, list):
-                image_count_in_message = sum(
-                    1
-                    for item in content
-                    if isinstance(item, dict) and item.get("type") == "image"
-                )
-
-                if image_count_in_message > 0:
-                    # Ensure we have enough images
-                    if image_index + image_count_in_message > len(all_images):
+        for msg in messages:
+            if "role" not in msg or "content" not in msg:
+                raise ConversationStructureError("Each message must include 'role' and 'content'")
+            validated_messages.append(dict(msg))
+            content = msg["content"]
+            if isinstance(content, list):
+                img_count = sum(1 for item in content if isinstance(item, dict) and item.get("type") == "image")
+                if img_count:
+                    end = image_index + img_count
+                    if end > len(all_images):
                         raise ImageTokenMismatchError(
-                            f"Not enough images for message {msg_idx}: need {image_count_in_message} "
-                            f"starting at index {image_index}, but only have {len(all_images)} total",
-                            expected_count=image_index + image_count_in_message,
+                            "Not enough images for provided image placeholders",
+                            expected_count=end,
                             actual_count=len(all_images),
                         )
-
-                    # Add images in order they appear in conversation
-                    for _ in range(image_count_in_message):
-                        ordered_images.append(all_images[image_index])
-                        image_index += 1
-
-        # Validate that we used all images
+                    ordered_images.extend(all_images[image_index:end])
+                    image_index = end
         if image_index != len(all_images):
             raise ImageTokenMismatchError(
                 f"Image usage mismatch: used {image_index} images but provided {len(all_images)}",
                 expected_count=len(all_images),
                 actual_count=image_index,
             )
-
         return validated_messages, ordered_images
 
-    def validate_image_token_consistency(
+    def _apply_chat_template_safe(
+        self,
+        messages: List[Dict[str, Any]],
+        images: List[Image.Image],
+        add_generation_prompt: bool,
+    ) -> Tuple[str, List[Image.Image]]:
+        """Validate, interleave, and safely apply the chat template."""
+        self._validate_messages_and_images(messages, images)
+        vm, oi = self._interleave_images_with_turns(messages, images)
+        proc_any: Any = self.processor
+        text = proc_any.apply_chat_template(
+            vm,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+            images=oi,
+        )
+        return text, oi
+
+    def _process_text_and_images(
         self, text: str, images: List[Image.Image]
-    ) -> bool:
-        """
-        Validate that image tokens in processed text match provided images.
-
-        Args:
-            text: Processed conversation text
-            images: List of images
-
-        Returns:
-            True if consistent
-
-        Raises:
-            ImageTokenMismatchError: If tokens don't match images
-        """
-        # Count image tokens in text
-        image_token_count = text.count("<|image_pad|>")
-
+    ) -> Dict[str, torch.Tensor]:
+        try:
+            outputs = self.processor(
+                text=[text], images=images, return_tensors="pt", padding=True
+            )
+            if not isinstance(outputs, dict):
+                try:
+                    outputs = outputs.data  # type: ignore[attr-defined]
+                except Exception:
+                    outputs = {}
+        except Exception as e:
+            raise RuntimeError(f"Processor call failed: {type(e).__name__}: {e}")
+        # Squeeze batch dimension on text tensors for downstream span/mask code
+        if isinstance(outputs.get("input_ids"), torch.Tensor) and outputs["input_ids"].dim() == 2 and outputs["input_ids"].shape[0] == 1:
+            outputs["input_ids"] = outputs["input_ids"].squeeze(0)
+        if isinstance(outputs.get("attention_mask"), torch.Tensor) and outputs["attention_mask"].dim() == 2 and outputs["attention_mask"].shape[0] == 1:
+            outputs["attention_mask"] = outputs["attention_mask"].squeeze(0)
+        # Validate that image placeholders in text match provided images
+        image_token_count = text.count(IMAGE_PAD)
         if image_token_count != len(images):
             raise ImageTokenMismatchError(
                 f"Image token count ({image_token_count}) != provided image count ({len(images)})",
-                expected_count=len(images),
-                actual_count=image_token_count,
+                expected_count=image_token_count,
+                actual_count=len(images),
             )
-
-        return True
-
-    def build_teacher_student_conversation_robust(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-        max_teachers: Optional[int] = None,
-        enable_recovery: bool = True,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Build robust teacher-student conversation with enhanced error handling.
-
-        Args:
-            student_sample: Student sample data with objects
-            teacher_samples: List of teacher sample data
-            student_images: List of student PIL images
-            teacher_images_list: List of teacher image lists
-            max_teachers: Maximum number of teachers to use (None = use all)
-            enable_recovery: Enable conversation repair mechanisms
-
-        Returns:
-            Processed inputs ready for model
-
-        Raises:
-            TeacherStudentValidationError: If validation fails
-            ConversationStructureError: If structure is invalid
-        """
+        # Ensure required keys exist
+        if "input_ids" not in outputs or "attention_mask" not in outputs:
+            raise RuntimeError("Processor did not produce required text tensors")
+        if images and ("pixel_values" not in outputs or "image_grid_thw" not in outputs):
+            raise RuntimeError(
+                "Processor did not return required image tensors (pixel_values, image_grid_thw)"
+            )
+        # Attach conversation text
+        outputs["conversation_text"] = text
+        # Attach offset_mapping from tokenizer strictly; fail if unavailable
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        if tokenizer is None:
+            raise RuntimeError("Processor missing tokenizer for offset mapping")
+        tokenized = tokenizer(
+            text,
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )
         try:
-            # Validate inputs with detailed error messages
-            self._validate_teacher_student_inputs(
-                student_sample, teacher_samples, student_images, teacher_images_list
-            )
-
-            # Apply teacher limiting if specified
-            if max_teachers is not None and len(teacher_samples) > max_teachers:
-                teacher_samples = teacher_samples[:max_teachers]
-                teacher_images_list = teacher_images_list[:max_teachers]
-
-            # Import prompts from builder (single-source prompt)
-            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
-            teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
-            student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
-
-            # Build conversation with proper validation
-            messages = [{"role": "system", "content": system_prompt}]
-
-            # Add teacher examples with validation
-            for i, (teacher_sample, teacher_images) in enumerate(
-                zip(teacher_samples, teacher_images_list)
-            ):
-                if "objects" not in teacher_sample:
-                    raise TeacherStudentValidationError(
-                        "Teacher sample missing required 'objects'"
-                    )
-                teacher_objects = teacher_sample["objects"]
-                if not teacher_objects:
-                    if enable_recovery:
-                        logger.warning(
-                            f"⚠️ WARNING: Teacher sample {i} has no objects, skipping"
-                        )
-                        continue
-                    else:
-                        raise TeacherStudentValidationError(
-                            f"Teacher sample {i} must contain non-empty objects list"
-                        )
-
-                teacher_response = self.coordinate_converter.convert_objects_to_tokens(
-                    teacher_objects
-                )
-
-                # Validate teacher images count
-                if len(teacher_images) != 1:
-                    if enable_recovery and len(teacher_images) > 1:
-                        logger.warning(
-                            f"⚠️ WARNING: Teacher sample {i} has {len(teacher_images)} images, using first"
-                        )
-                        teacher_images = teacher_images[:1]
-                    else:
-                        raise TeacherStudentValidationError(
-                            f"Teacher sample {i} must have exactly 1 image, got {len(teacher_images)}"
-                        )
-
-                # Add teacher turn
-                messages.extend(
-                    [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": teacher_prompt},
-                                {"type": "image"},
-                            ],
-                        },
-                        {"role": "assistant", "content": teacher_response},
-                    ]
-                )
-
-            # Add student query
-            if "objects" not in student_sample:
-                raise TeacherStudentValidationError(
-                    "Student sample missing required 'objects'"
-                )
-            student_objects = student_sample["objects"]
-            if not student_objects:
-                raise TeacherStudentValidationError(
-                    "Student sample must contain non-empty objects list"
-                )
-
-            # Validate student images
-            if len(student_images) != 1:
-                if enable_recovery and len(student_images) > 1:
-                    logger.warning(
-                        f"⚠️ WARNING: Student sample has {len(student_images)} images, using first"
-                    )
-                    student_images = student_images[:1]
-                else:
-                    raise TeacherStudentValidationError(
-                        f"Student sample must have exactly 1 image, got {len(student_images)}"
-                    )
-
-            student_response = self.coordinate_converter.convert_objects_to_tokens(
-                student_objects
-            )
-
-            # Add student turn
-            messages.extend(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": student_prompt},
-                            {"type": "image"},
-                        ],
-                    },
-                    {"role": "assistant", "content": student_response},
-                ]
-            )
-
-            # Collect and interleave images properly
-            all_images = []
-            for teacher_images in teacher_images_list:
-                all_images.extend(teacher_images)
-            all_images.extend(student_images)
-
-            # Use new interleaving system
-            validated_messages, ordered_images = self.interleave_images_with_turns(
-                messages, all_images
-            )
-
-            # Validate conversation structure
-            validation_result = ConversationValidator.validate_conversation_structure(
-                validated_messages, ordered_images, ConversationType.TEACHER_STUDENT
-            )
-
-            if not validation_result.is_valid:
-                if enable_recovery:
-                    logger.warning(
-                        f"⚠️ WARNING: Conversation validation failed: {validation_result.errors}"
-                    )
-                    logger.warning(
-                        f"⚠️ Attempting to continue with warnings: {validation_result.warnings}"
-                    )
-                else:
-                    raise ConversationStructureError(
-                        f"Conversation validation failed: {validation_result.errors}",
-                        conversation_details=validation_result.details,
-                    )
-
-            # Process with HuggingFace processor
-            try:
-                proc_any: Any = self.processor
-                text = proc_any.apply_chat_template(
-                    validated_messages,
-                    tokenize=False,
-                    add_generation_prompt=False,
-                    images=ordered_images,
-                )
-            except TypeError:
-                text = self.processor.apply_chat_template(
-                    validated_messages, tokenize=False, add_generation_prompt=False
-                )
-
-            # Validate image token consistency
-            self.validate_image_token_consistency(text, ordered_images)
-
-            # Final processing
-            inputs = self._process_text_and_images(text, ordered_images)
-
-            # Enhanced validation logging
-            self._log_processing_validation(inputs, ordered_images, text)
-
-            return inputs
-
+            om = tokenized.get("offset_mapping")
         except Exception:
-            # Fail-fast: propagate the original exception with context; do not mask it
-            raise
-
-    def _validate_teacher_student_inputs(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-    ) -> None:
-        """
-        Comprehensive validation of teacher-student inputs.
-
-        Args:
-            student_sample: Student sample data
-            teacher_samples: List of teacher samples
-            student_images: Student images
-            teacher_images_list: Teacher image lists
-
-        Raises:
-            TeacherStudentValidationError: If validation fails
-        """
-        if not isinstance(student_sample, dict):
-            raise TeacherStudentValidationError(
-                f"student_sample must be a dict, got {type(student_sample)}"
-            )
-
-        if not isinstance(teacher_samples, list) or not teacher_samples:
-            raise TeacherStudentValidationError(
-                "teacher_samples must be a non-empty list"
-            )
-
-        if len(teacher_samples) != len(teacher_images_list):
-            raise TeacherStudentValidationError(
-                f"Mismatch: {len(teacher_samples)} teacher samples but "
-                f"{len(teacher_images_list)} teacher image lists"
-            )
-
-        if not isinstance(student_images, list):
-            raise TeacherStudentValidationError(
-                f"student_images must be a list, got {type(student_images)}"
-            )
-
-        # Validate each teacher sample
-        for i, (sample, images) in enumerate(zip(teacher_samples, teacher_images_list)):
-            if not isinstance(sample, dict):
-                raise TeacherStudentValidationError(
-                    f"Teacher sample {i} must be a dict, got {type(sample)}"
-                )
-
-            if not isinstance(images, list):
-                raise TeacherStudentValidationError(
-                    f"Teacher images {i} must be a list, got {type(images)}"
-                )
-
-    def _log_processing_validation(
-        self, inputs: Dict[str, torch.Tensor], images: List[Image.Image], text: str
-    ) -> None:
-        """
-        Enhanced logging for processing validation.
-
-        Args:
-            inputs: Processed model inputs
-            images: List of images used
-            text: Processed conversation text
-        """
-        logger.debug(f"🔍 ENHANCED CONVERSATION PROCESSOR VALIDATION:")
-        logger.debug(f"   Total images: {len(images)}")
-        logger.debug(f"   Text length: {len(text)} characters")
-
-        if "pixel_values" in inputs and "image_grid_thw" in inputs:
-            pixel_values_shape = inputs["pixel_values"].shape
-            image_grid_thw_shape = inputs["image_grid_thw"].shape
-
-            logger.debug(f"📊 TENSOR VALIDATION:")
-            logger.debug(f"   Pixel values shape: {pixel_values_shape}")
-            logger.debug(f"   Image grid THW shape: {image_grid_thw_shape}")
-
-        # Compare placeholder tokens in pre-processor text with image count (this must match)
-        placeholder_tokens = text.count("<|image_pad|>")
-        logger.debug(f"✅ TEMPLATE VALIDATION:")
-        logger.debug(f"   Image placeholders in text: {placeholder_tokens}")
-        logger.debug(f"   Expected image placeholders: {len(images)}")
-        if placeholder_tokens != len(images):
-            logger.warning(f"⚠️ WARNING: Placeholder count mismatch in template!")
-
-        if "input_ids" in inputs:
-            processed_text = self.processor.tokenizer.decode(
-                inputs["input_ids"][0], skip_special_tokens=False
-            )
-            processed_image_tokens = processed_text.count("<|image_pad|>")
-            logger.debug(f"✅ TOKEN VALIDATION:")
-            logger.debug(
-                f"   Processed image tokens (post-processor): {processed_image_tokens}"
-            )
-            logger.debug(f"   Input IDs shape: {inputs['input_ids'].shape}")
-            # Note: a large number of <|image_pad|> tokens is normal after processing; no warning here
-
-    def create_multi_teacher_conversation(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-        max_conversation_length: Optional[int] = None,
-        teacher_selection_strategy: str = "all",
-        enable_caching: bool = True,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Create multi-teacher conversation with dynamic teacher handling.
-
-        Args:
-            student_sample: Student sample data with objects
-            teacher_samples: List of teacher sample data
-            student_images: List of student PIL images
-            teacher_images_list: List of teacher image lists
-            max_conversation_length: Maximum conversation length (truncate if needed)
-            teacher_selection_strategy: Strategy for selecting teachers ("all", "best", "random")
-            enable_caching: Enable conversation caching for performance
-
-        Returns:
-            Processed inputs ready for model
-
-        Raises:
-            ConversationError: If conversation creation fails
-        """
-        try:
-            # Apply teacher selection strategy
-            selected_teachers, selected_teacher_images = self._select_teachers(
-                teacher_samples, teacher_images_list, teacher_selection_strategy
-            )
-
-            # Use the robust conversation builder
-            return self.build_teacher_student_conversation_robust(
-                student_sample=student_sample,
-                teacher_samples=selected_teachers,
-                student_images=student_images,
-                teacher_images_list=selected_teacher_images,
-                max_teachers=None,  # Selection already done
-                enable_recovery=True,
-            )
-
-        except Exception as e:
-            raise ConversationError(
-                f"Multi-teacher conversation creation failed: {str(e)}"
-            )
-
-    def create_conversation_with_truncation(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-        max_tokens: int = 2048,
-        truncation_strategy: str = "reduce_teachers",
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Create conversation with intelligent truncation for memory optimization.
-
-        Args:
-            student_sample: Student sample data
-            teacher_samples: Teacher samples
-            student_images: Student images
-            teacher_images_list: Teacher image lists
-            max_tokens: Maximum token limit
-            truncation_strategy: How to truncate ("reduce_teachers", "truncate_content")
-
-        Returns:
-            Processed inputs within token limits
-
-        Raises:
-            ConversationTruncationError: If truncation fails
-        """
-        try:
-            # First try with all teachers
-            try:
-                result = self.build_teacher_student_conversation_robust(
-                    student_sample, teacher_samples, student_images, teacher_images_list
-                )
-
-                # Check if within limits
-                if result["input_ids"].shape[1] <= max_tokens:
-                    return result
-
-            except Exception as e:
-                logger.warning(f"⚠️ Initial conversation creation failed: {str(e)}")
-
-            # Apply truncation strategy
-            if truncation_strategy == "reduce_teachers":
-                return self._truncate_by_reducing_teachers(
-                    student_sample,
-                    teacher_samples,
-                    student_images,
-                    teacher_images_list,
-                    max_tokens,
-                )
-            elif truncation_strategy == "truncate_content":
-                return self._truncate_by_content(
-                    student_sample,
-                    teacher_samples,
-                    student_images,
-                    teacher_images_list,
-                    max_tokens,
-                )
-            else:
-                raise ConversationTruncationError(
-                    f"Unknown truncation strategy: {truncation_strategy}"
-                )
-
-        except Exception as e:
-            if isinstance(e, ConversationTruncationError):
-                raise
-            else:
-                raise ConversationTruncationError(
-                    f"Conversation truncation failed: {str(e)}"
-                )
-
-    def batch_process_conversations(
-        self,
-        conversation_data: List[Dict[str, Any]],
-        batch_size: int = 4,
-        enable_parallel: bool = False,
-    ) -> List[Dict[str, torch.Tensor]]:
-        """
-        Efficiently process multiple conversations in batches.
-
-        Args:
-            conversation_data: List of conversation data dictionaries
-            batch_size: Size of processing batches
-            enable_parallel: Enable parallel processing (if available)
-
-        Returns:
-            List of processed conversation inputs
-
-        Raises:
-            ConversationError: If batch processing fails
-        """
-        results = []
-
-        try:
-            for i in range(0, len(conversation_data), batch_size):
-                batch = conversation_data[i : i + batch_size]
-                batch_results = []
-
-                for conv_data in batch:
-                    try:
-                        # Determine conversation type and process accordingly
-                        conv_type = conv_data.get("type", "teacher_student")
-
-                        if conv_type == "simple":
-                            result = self.create_simple_conversation(
-                                conv_data["sample"], conv_data["images"]
-                            )
-                        elif conv_type == "teacher_student":
-                            result = self.build_teacher_student_conversation_robust(
-                                conv_data["student_sample"],
-                                conv_data["teacher_samples"],
-                                conv_data["student_images"],
-                                conv_data["teacher_images_list"],
-                            )
-                        elif conv_type == "inference":
-                            result = self.create_inference_conversation(
-                                conv_data["user_prompt"], conv_data["images"]
-                            )
-                        else:
-                            raise ConversationError(
-                                f"Unknown conversation type: {conv_type}"
-                            )
-
-                        batch_results.append(result)
-
-                    except Exception as e:
-                        logger.warning(
-                            f"⚠️ Failed to process conversation {i}: {str(e)}"
-                        )
-                        batch_results.append(
-                            None
-                        )  # Placeholder for failed conversation
-
-                results.extend(batch_results)
-
-            return results
-
-        except Exception as e:
-            raise ConversationError(f"Batch processing failed: {str(e)}")
-
-    def _select_teachers(
-        self,
-        teacher_samples: List[Dict[str, Any]],
-        teacher_images_list: List[List[Image.Image]],
-        strategy: str,
-    ) -> Tuple[List[Dict[str, Any]], List[List[Image.Image]]]:
-        """
-        Select teachers based on strategy.
-
-        Args:
-            teacher_samples: All teacher samples
-            teacher_images_list: All teacher image lists
-            strategy: Selection strategy
-
-        Returns:
-            Tuple of (selected_teachers, selected_images)
-        """
-        if strategy == "all":
-            return teacher_samples, teacher_images_list
-        elif strategy == "best":
-            # Select first teacher (assuming they're ordered by quality)
-            return teacher_samples[:1], teacher_images_list[:1]
-        elif strategy == "random":
-            # Select random teacher
-            import random
-
-            idx = random.randint(0, len(teacher_samples) - 1)
-            return [teacher_samples[idx]], [teacher_images_list[idx]]
-        else:
-            return teacher_samples, teacher_images_list
-
-    def _truncate_by_reducing_teachers(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-        max_tokens: int,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Truncate conversation by reducing number of teachers.
-
-        Args:
-            student_sample: Student sample
-            teacher_samples: Teacher samples
-            student_images: Student images
-            teacher_images_list: Teacher image lists
-            max_tokens: Token limit
-
-        Returns:
-            Truncated conversation inputs
-
-        Raises:
-            ConversationTruncationError: If cannot truncate adequately
-        """
-        for num_teachers in range(len(teacher_samples), 0, -1):
-            try:
-                result = self.build_teacher_student_conversation_robust(
-                    student_sample,
-                    teacher_samples[:num_teachers],
-                    student_images,
-                    teacher_images_list[:num_teachers],
-                    enable_recovery=True,
-                )
-
-                if result["input_ids"].shape[1] <= max_tokens:
-                    logger.debug(
-                        f"✅ Truncated to {num_teachers} teachers (tokens: {result['input_ids'].shape[1]})"
-                    )
-                    return result
-
-            except Exception as e:
-                logger.warning(f"⚠️ Failed with {num_teachers} teachers: {str(e)}")
-                continue
-
-        # If we can't fit even with 1 teacher, try student-only
-        try:
-            return self.create_simple_conversation(student_sample, student_images)
-        except Exception:
-            raise ConversationTruncationError(
-                f"Cannot truncate conversation within {max_tokens} tokens even with no teachers"
-            )
-
-    def _truncate_by_content(
-        self,
-        student_sample: Dict[str, Any],
-        teacher_samples: List[Dict[str, Any]],
-        student_images: List[Image.Image],
-        teacher_images_list: List[List[Image.Image]],
-        max_tokens: int,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Truncate conversation by reducing content length.
-
-        Args:
-            student_sample: Student sample
-            teacher_samples: Teacher samples
-            student_images: Student images
-            teacher_images_list: Teacher image lists
-            max_tokens: Token limit
-
-        Returns:
-            Content-truncated conversation inputs
-
-        Raises:
-            ConversationTruncationError: If truncation fails
-        """
-        # This is a simplified version - in practice, you might want to
-        # truncate coordinate tokens or object descriptions intelligently
-        try:
-            # Try reducing objects in teacher samples
-            truncated_teachers = []
-            for teacher_sample in teacher_samples:
-                truncated_sample = teacher_sample.copy()
-                if "objects" not in truncated_sample:
-                    raise ConversationStructureError(
-                        "Teacher sample missing 'objects' during truncation"
-                    )
-                objects = truncated_sample["objects"]
-                if len(objects) > 1:
-                    # Keep only first object
-                    truncated_sample["objects"] = objects[:1]
-                truncated_teachers.append(truncated_sample)
-
-            result = self.build_teacher_student_conversation_robust(
-                student_sample, truncated_teachers, student_images, teacher_images_list
-            )
-
-            if result["input_ids"].shape[1] <= max_tokens:
-                logger.debug(
-                    f"✅ Content truncated (tokens: {result['input_ids'].shape[1]})"
-                )
-                return result
-            else:
-                raise ConversationTruncationError("Content truncation insufficient")
-
-        except Exception as e:
-            raise ConversationTruncationError(f"Content truncation failed: {str(e)}")
-
-    def get_conversation_stats(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, Any]:
-        """
-        Get detailed statistics about processed conversation.
-
-        Args:
-            inputs: Processed conversation inputs
-
-        Returns:
-            Dictionary with conversation statistics
-        """
-        stats = {}
-
-        if "input_ids" in inputs:
-            input_ids = inputs["input_ids"]
-            stats["total_tokens"] = (
-                input_ids.shape[1] if len(input_ids.shape) > 1 else len(input_ids)
-            )
-            stats["batch_size"] = input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-
-            # Count special tokens
-            decoded_text = self.processor.tokenizer.decode(
-                input_ids[0], skip_special_tokens=False
-            )
-            stats["image_tokens"] = decoded_text.count("<|image_pad|>")
-            stats["text_length"] = len(decoded_text)
-
-        if "pixel_values" in inputs:
-            pixel_values = inputs["pixel_values"]
-            stats["pixel_values_shape"] = list(pixel_values.shape)
-            stats["estimated_memory_mb"] = (pixel_values.numel() * 4) / (
-                1024 * 1024
-            )  # 4 bytes per float32
-
-        if "image_grid_thw" in inputs:
-            stats["image_grid_shape"] = list(inputs["image_grid_thw"].shape)
-
-        return stats
-
-    def validate_memory_usage(
-        self, inputs: Dict[str, torch.Tensor], max_memory_mb: float = 1000.0
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """
-        Validate that conversation doesn't exceed memory limits.
-
-        Args:
-            inputs: Processed conversation inputs
-            max_memory_mb: Maximum memory in MB
-
-        Returns:
-            Tuple of (is_within_limits, memory_info)
-        """
-        memory_info = {}
-        total_memory = 0.0
-
-        for key, tensor in inputs.items():
-            if isinstance(tensor, torch.Tensor):
-                tensor_memory = (tensor.numel() * tensor.element_size()) / (1024 * 1024)
-                memory_info[key] = {
-                    "shape": list(tensor.shape),
-                    "dtype": str(tensor.dtype),
-                    "memory_mb": tensor_memory,
-                }
-                total_memory += tensor_memory
-
-        memory_info["total_memory_mb"] = total_memory
-        is_within_limits = total_memory <= max_memory_mb
-
-        if not is_within_limits:
-            memory_info["warning"] = (
-                f"Memory usage ({total_memory:.2f}MB) exceeds limit ({max_memory_mb}MB)"
-            )
-
-        return is_within_limits, memory_info
-
-    @jaxtyped_beartype
+            om = None
+        if om is None:
+            raise RuntimeError("Tokenizer did not return offset_mapping")
+        outputs["offset_mapping"] = om[0]
+        return outputs
+
+    # ------------- Dense captioning builders (baseline) -------------
     def create_simple_conversation(
         self, sample: Dict[str, Any], images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
-        """
-        Create simple conversation using official HuggingFace processor with enhanced validation.
+        if "objects" not in sample or not sample["objects"]:
+            raise ConversationStructureError("Sample missing non-empty 'objects'")
+        assistant_text = self.coordinate_converter.convert_objects_to_tokens(
+            sample["objects"]
+        )
+        # Dense caption variant: user contains only image(s)
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": ([{"type": "image"}] * len(images))},
+            {"role": "assistant", "content": assistant_text},
+        ]
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=images, add_generation_prompt=False
+        )
+        return self._process_text_and_images(text, oi)
 
-        Args:
-            sample: Sample data with objects
-            images: List of PIL images
-
-        Returns:
-            Processed inputs ready for model
-
-        Raises:
-            ConversationStructureError: If conversation structure is invalid
-            ImageTokenMismatchError: If image tokens don't match
-            ValueError: If sample or images are invalid
-        """
-        try:
-            # Enhanced input validation
-            if not isinstance(sample, dict):
-                raise ConversationStructureError(
-                    f"sample must be a dict, got {type(sample)}"
-                )
-
-            if not isinstance(images, list):
-                raise ConversationStructureError(
-                    f"images must be a list, got {type(images)}"
-                )
-
-            # Convert objects to coordinate tokens
-            if "objects" not in sample:
-                raise ConversationStructureError("Sample missing required 'objects'")
-            objects = sample["objects"]
-            if not objects:
-                raise ConversationStructureError(
-                    "Sample must contain non-empty objects list"
-                )
-
-            coordinate_response = self.coordinate_converter.convert_objects_to_tokens(
-                objects
-            )
-
-            # Import prompts from builder (single-source prompt)
-            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
-            student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
-
-            # Build conversation using official HuggingFace format
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        [{"type": "text", "text": student_prompt}]
-                        + [{"type": "image"} for _ in images]
-                    ),
-                },
-                {"role": "assistant", "content": coordinate_response},
-            ]
-
-            # Validate conversation structure
-            self.validate_conversation_structure(messages, images)
-
-            # Use new interleaving system
-            validated_messages, ordered_images = self.interleave_images_with_turns(
-                messages, images
-            )
-
-            # Use official processor for all processing
-            try:
-                proc_any: Any = self.processor
-                text = proc_any.apply_chat_template(
-                    validated_messages,
-                    tokenize=False,
-                    add_generation_prompt=False,
-                    images=ordered_images,
-                )
-            except TypeError:
-                text = self.processor.apply_chat_template(
-                    validated_messages, tokenize=False, add_generation_prompt=False
-                )
-
-            # Validate image token consistency
-            self.validate_image_token_consistency(text, ordered_images)
-
-            inputs = self._process_text_and_images(text, ordered_images)
-
-            # Enhanced validation logging (simplified for simple conversations)
-            logger.debug(f"✅ Simple conversation created successfully:")
-            logger.debug(f"   Images: {len(ordered_images)}")
-            logger.debug(
-                f"   Tokens: {inputs['input_ids'].shape[1] if 'input_ids' in inputs else 'unknown'}"
-            )
-
-            return inputs
-
-        except ConversationError:
-            raise
-        except Exception as e:
-            raise ConversationStructureError(
-                f"Simple conversation creation failed: {str(e)}"
-            )
-
-    @jaxtyped_beartype
     def create_teacher_student_conversation(
         self,
         student_sample: Dict[str, Any],
@@ -1428,127 +391,64 @@ class ConversationProcessor:
         student_images: List[Image.Image],
         teacher_images_list: List[List[Image.Image]],
     ) -> Dict[str, torch.Tensor]:
-        """
-        Create teacher-student conversation using enhanced robust builder.
-
-        Args:
-            student_sample: Student sample data with objects
-            teacher_samples: List of teacher sample data
-            student_images: List of student PIL images
-            teacher_images_list: List of teacher image lists
-
-        Returns:
-            Processed inputs ready for model
-
-        Raises:
-            TeacherStudentValidationError: If validation fails
-            ConversationStructureError: If structure is invalid
-        """
-        # Use the robust conversation builder with default settings
-        return self.build_teacher_student_conversation_robust(
-            student_sample=student_sample,
-            teacher_samples=teacher_samples,
-            student_images=student_images,
-            teacher_images_list=teacher_images_list,
-            max_teachers=None,  # Use all teachers
-            enable_recovery=True,  # Enable recovery by default
+        if not teacher_samples or not teacher_images_list:
+            raise TeacherStudentValidationError("teacher_samples/images cannot be empty")
+        if len(teacher_samples) != len(teacher_images_list):
+            raise TeacherStudentValidationError("Mismatch teachers vs images lists")
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
+        all_images: List[Image.Image] = []
+        # Teacher turns: user with only image; assistant full dense outputs
+        for t_sample, t_images in zip(teacher_samples, teacher_images_list):
+            if "objects" not in t_sample or not t_sample["objects"]:
+                continue
+            t_assistant = self.coordinate_converter.convert_objects_to_tokens(
+                t_sample["objects"]
+            )
+            messages.extend(
+                [
+                    {"role": "user", "content": [{"type": "image"}]},
+                    {"role": "assistant", "content": t_assistant},
+                ]
+            )
+            all_images.extend(t_images[:1])
+        # Student turn: user with only image; assistant full dense outputs (training)
+        if "objects" not in student_sample or not student_sample["objects"]:
+            raise TeacherStudentValidationError("Student sample missing objects")
+        s_assistant = self.coordinate_converter.convert_objects_to_tokens(
+            student_sample["objects"]
         )
+        messages.extend(
+            [
+                {"role": "user", "content": [{"type": "image"}]},
+                {"role": "assistant", "content": s_assistant},
+            ]
+        )
+        all_images.extend(student_images[:1])
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=all_images, add_generation_prompt=False
+        )
+        return self._process_text_and_images(text, oi)
 
-    @jaxtyped_beartype
     def create_inference_conversation(
         self, user_prompt: str, images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
-        """
-        Create conversation for inference with enhanced validation.
+        if not isinstance(user_prompt, str) or not user_prompt.strip():
+            raise ConversationStructureError("user_prompt must be non-empty string")
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image"},
+                ],
+            },
+        ]
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=images, add_generation_prompt=True
+        )
+        return self._process_text_and_images(text, oi)
 
-        Args:
-            user_prompt: User prompt text
-            images: List of PIL images
-
-        Returns:
-            Processed inputs ready for model inference
-
-        Raises:
-            ConversationStructureError: If conversation structure is invalid
-            ImageTokenMismatchError: If image tokens don't match
-        """
-        try:
-            # Enhanced input validation
-            if not isinstance(user_prompt, str) or not user_prompt.strip():
-                raise ConversationStructureError(
-                    "user_prompt must be a non-empty string"
-                )
-
-            if not isinstance(images, list) or not images:
-                raise ConversationStructureError("images must be a non-empty list")
-
-            # Import system prompt from builder (single-source prompt)
-            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
-
-            # Build conversation for inference
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image"},
-                    ],
-                },
-            ]
-
-            # Validate conversation structure (inference type)
-            validation_result = ConversationValidator.validate_conversation_structure(
-                messages, images, ConversationType.INFERENCE
-            )
-
-            if not validation_result.is_valid:
-                raise ConversationStructureError(
-                    f"Inference conversation validation failed: {validation_result.errors}"
-                )
-
-            # Use interleaving system for consistency
-            validated_messages, ordered_images = self.interleave_images_with_turns(
-                messages, images
-            )
-
-            # Use official processor
-            try:
-                proc_any: Any = self.processor
-                text = proc_any.apply_chat_template(
-                    validated_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    images=ordered_images,
-                )
-            except TypeError:
-                text = self.processor.apply_chat_template(
-                    validated_messages, tokenize=False, add_generation_prompt=True
-                )
-
-            # Validate image token consistency
-            self.validate_image_token_consistency(text, ordered_images)
-
-            inputs = self._process_text_and_images(text, ordered_images)
-
-            # Enhanced validation logging for inference
-            logger.debug(f"✅ Inference conversation created successfully:")
-            logger.debug(f"   Images: {len(ordered_images)}")
-            logger.debug(f"   Prompt length: {len(user_prompt)} chars")
-            logger.debug(
-                f"   Tokens: {inputs['input_ids'].shape[1] if 'input_ids' in inputs else 'unknown'}"
-            )
-
-            return inputs
-
-        except ConversationError:
-            raise
-        except Exception as e:
-            raise ConversationStructureError(
-                f"Inference conversation creation failed: {str(e)}"
-            )
-
-    @jaxtyped_beartype
     def create_teacher_student_conversation_for_generation(
         self,
         student_sample: Dict[str, Any],
@@ -1557,238 +457,149 @@ class ConversationProcessor:
         teacher_images_list: List[List[Image.Image]],
         enable_recovery: bool = True,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Create a teacher-student conversation that is ready for generation.
-
-        This includes full teacher examples (user+image -> assistant with coordinate tokens),
-        followed by the student's user turn (with image), and ends with an assistant
-        generation prompt. The student's assistant content is NOT included.
-
-        Returns processed tensors from the official HF processor to ensure
-        image-token alignment is preserved.
-        """
-        try:
-            # Validate inputs with detailed error messages
-            self._validate_teacher_student_inputs(
-                student_sample, teacher_samples, student_images, teacher_images_list
-            )
-
-            # Prompts
-            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
-            teacher_prompt = CONSTANTS["TEACHER_USER_PROMPT"]
-            student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
-
-            # Build messages list
-            messages: List[Dict[str, Any]] = [
-                {"role": "system", "content": system_prompt}
-            ]
-
-            # Add teacher examples
-            for i, (teacher_sample, teacher_images) in enumerate(
-                zip(teacher_samples, teacher_images_list)
-            ):
-                if "objects" not in teacher_sample:
-                    raise TeacherStudentValidationError(
-                        "Teacher sample missing required 'objects'"
-                    )
-                teacher_objects = teacher_sample["objects"]
-                if not teacher_objects:
-                    if enable_recovery:
-                        logger.warning(
-                            f"⚠️ WARNING: Teacher sample {i} has no objects, skipping"
-                        )
-                        continue
-                    raise TeacherStudentValidationError(
-                        f"Teacher sample {i} must contain non-empty objects list"
-                    )
-
-                teacher_response = self.coordinate_converter.convert_objects_to_tokens(
-                    teacher_objects
-                )
-
-                if len(teacher_images) != 1:
-                    if enable_recovery and len(teacher_images) > 1:
-                        logger.warning(
-                            f"⚠️ WARNING: Teacher sample {i} has {len(teacher_images)} images, using first"
-                        )
-                        teacher_images = teacher_images[:1]
-                    else:
-                        raise TeacherStudentValidationError(
-                            f"Teacher sample {i} must have exactly 1 image, got {len(teacher_images)}"
-                        )
-
-                messages.extend(
-                    [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": teacher_prompt},
-                                {"type": "image"},
-                            ],
-                        },
-                        {"role": "assistant", "content": teacher_response},
-                    ]
-                )
-
-            # Validate student sample
-            if "objects" not in student_sample:
-                raise TeacherStudentValidationError(
-                    "Student sample missing required 'objects'"
-                )
-            student_objects = student_sample["objects"]
-            if not student_objects:
-                raise TeacherStudentValidationError(
-                    "Student sample must contain non-empty objects list"
-                )
-
-            if len(student_images) != 1:
-                if enable_recovery and len(student_images) > 1:
-                    logger.warning(
-                        f"⚠️ WARNING: Student sample has {len(student_images)} images, using first"
-                    )
-                    student_images = student_images[:1]
-                else:
-                    raise TeacherStudentValidationError(
-                        f"Student sample must have exactly 1 image, got {len(student_images)}"
-                    )
-
-            # Add only the student's user turn; omit assistant content
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": student_prompt},
-                        {"type": "image"},
-                    ],
-                }
-            )
-
-            # Order images: all teacher images (one each), then student image
-            all_images: List[Image.Image] = []
-            for teacher_images in teacher_images_list:
-                all_images.extend(teacher_images[:1])
-            all_images.extend(student_images[:1])
-
-            # Interleave and validate
-            validated_messages, ordered_images = self.interleave_images_with_turns(
-                messages, all_images
-            )
-
-            validation_result = ConversationValidator.validate_conversation_structure(
-                validated_messages, ordered_images, ConversationType.INFERENCE
-            )
-            if not validation_result.is_valid:
+        if not teacher_samples or not teacher_images_list:
+            raise TeacherStudentValidationError("teacher_samples/images cannot be empty")
+        if len(teacher_samples) != len(teacher_images_list):
+            raise TeacherStudentValidationError("Mismatch teachers vs images lists")
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
+        all_images: List[Image.Image] = []
+        for t_sample, t_images in zip(teacher_samples, teacher_images_list):
+            objs = t_sample.get("objects", [])
+            if not objs:
                 if enable_recovery:
-                    logger.warning(
-                        f"⚠️ WARNING: Conversation validation failed: {validation_result.errors}"
-                    )
-                    logger.warning(
-                        f"⚠️ Attempting to continue with warnings: {validation_result.warnings}"
-                    )
-                else:
-                    raise ConversationStructureError(
-                        f"Conversation validation failed: {validation_result.errors}",
-                        conversation_details=validation_result.details,
-                    )
-
-            # Build text and process with generation prompt
-            try:
-                proc_any: Any = self.processor
-                text = proc_any.apply_chat_template(
-                    validated_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    images=ordered_images,
-                )
-            except TypeError:
-                text = self.processor.apply_chat_template(
-                    validated_messages, tokenize=False, add_generation_prompt=True
-                )
-
-            # Validate image tokens
-            self.validate_image_token_consistency(text, ordered_images)
-
-            # Final processing via HF processor
-            inputs = self._process_text_and_images(text, ordered_images)
-
-            self._log_processing_validation(inputs, ordered_images, text)
-            return inputs
-
-        except Exception as e:
-            if isinstance(e, (ConversationError, TeacherStudentValidationError)):
-                raise
-            raise TeacherStudentValidationError(
-                f"Unexpected error in generation conversation building: {str(e)}"
+                    continue
+                raise TeacherStudentValidationError("Empty teacher objects")
+            t_assistant = self.coordinate_converter.convert_objects_to_tokens(objs)
+            messages.extend(
+                [
+                    {"role": "user", "content": [{"type": "image"}]},
+                    {"role": "assistant", "content": t_assistant},
+                ]
             )
+            all_images.extend(t_images[:1])
+        if "objects" not in student_sample or not student_sample["objects"]:
+            raise TeacherStudentValidationError("Student sample missing objects")
+        messages.append({"role": "user", "content": [{"type": "image"}]})
+        all_images.extend(student_images[:1])
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=all_images, add_generation_prompt=True
+        )
+        return self._process_text_and_images(text, oi)
 
-    @jaxtyped_beartype
-    def create_simple_conversation_for_generation(
-        self, sample: Dict[str, Any], images: List[Image.Image]
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Create a simple conversation that ends with an assistant generation prompt.
-
-        Uses the same system and student prompts as training, but omits the
-        assistant content so the model will generate it.
-        """
+    # ------------- Unified variant dispatcher -------------
+    def _get_variant_handlers(self, variant: str):
+        handler = self._variant_registry.get(variant)
         try:
-            if not isinstance(sample, Dict):
-                raise ConversationStructureError(
-                    f"sample must be a dict, got {type(sample)}"
-                )
-            if not isinstance(images, list) or not images:
-                raise ConversationStructureError("images must be a non-empty list")
+            handler_name = type(handler).__name__
+        except Exception:
+            handler_name = str(handler)
+        logger.debug(f"🧩 Variant resolved: '{variant}' -> handler={handler_name}")
+        return handler.build_user_text, handler.build_assistant_text
 
-            system_prompt = get_system_prompt(self.coordinate_tokens_enabled)
-            student_prompt = CONSTANTS["STUDENT_USER_PROMPT"]
+    def _build_simple_conversation_unified(
+        self, sample: Dict[str, Any], images: List[Image.Image], variant: str
+    ) -> Dict[str, torch.Tensor]:
+        if "objects" not in sample or not sample["objects"]:
+            raise ConversationStructureError("Sample missing non-empty 'objects'")
+        logger.debug(
+            f"🗣️ Building simple conversation (variant='{variant}', images={len(images)})"
+        )
+        user_text_fn, assistant_fn = self._get_variant_handlers(variant)
+        user_text = user_text_fn(sample["objects"])  # may be None for dense
+        assistant_text = assistant_fn(sample["objects"])  # always a string
+        if user_text is None:
+            user_content = ([{"type": "image"}] * len(images))
+        else:
+            user_content = [{"type": "text", "text": user_text}, {"type": "image"}]
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": assistant_text},
+        ]
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=images, add_generation_prompt=False
+        )
+        return self._process_text_and_images(text, oi)
 
-            messages: List[Dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": student_prompt},
-                        {"type": "image"},
-                    ],
-                },
+    def _build_teacher_student_conversation_unified(
+        self,
+        student_sample: Dict[str, Any],
+        teacher_samples: List[Dict[str, Any]],
+        student_images: List[Image.Image],
+        teacher_images_list: List[List[Image.Image]],
+        variant: str,
+    ) -> Dict[str, torch.Tensor]:
+        if not teacher_samples or not teacher_images_list:
+            raise TeacherStudentValidationError("teacher_samples/images cannot be empty")
+        if len(teacher_samples) != len(teacher_images_list):
+            raise TeacherStudentValidationError("Mismatch teachers vs images lists")
+        logger.debug(
+            f"🗣️ Building teacher-student conversation (variant='{variant}', teachers={len(teacher_samples)}, student_images={len(student_images)})"
+        )
+        user_text_fn, assistant_fn = self._get_variant_handlers(variant)
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
+        all_images: List[Image.Image] = []
+        # Teachers
+        for t_sample, t_images in zip(teacher_samples, teacher_images_list):
+            objs = t_sample.get("objects", [])
+            if not objs:
+                continue
+            u_text = user_text_fn(objs)
+            t_assistant = assistant_fn(objs)
+            if u_text is None:
+                u_content = [{"type": "image"}]
+            else:
+                u_content = [{"type": "text", "text": u_text}, {"type": "image"}]
+            messages.extend(
+                [
+                    {"role": "user", "content": u_content},
+                    {"role": "assistant", "content": t_assistant},
+                ]
+            )
+            all_images.extend(t_images[:1])
+        # Student
+        if "objects" not in student_sample or not student_sample["objects"]:
+            raise TeacherStudentValidationError("Student sample missing objects")
+        s_u_text = user_text_fn(student_sample["objects"]) 
+        s_assistant = assistant_fn(student_sample["objects"]) 
+        if s_u_text is None:
+            s_u_content = [{"type": "image"}]
+        else:
+            s_u_content = [{"type": "text", "text": s_u_text}, {"type": "image"}]
+        messages.extend(
+            [
+                {"role": "user", "content": s_u_content},
+                {"role": "assistant", "content": s_assistant},
             ]
+        )
+        all_images.extend(student_images[:1])
+        text, oi = self._apply_chat_template_safe(
+            messages=messages, images=all_images, add_generation_prompt=False
+        )
+        return self._process_text_and_images(text, oi)
 
-            # Interleave and validate
-            validated_messages, ordered_images = self.interleave_images_with_turns(
-                messages, images
+    def create_conversation(
+        self,
+        sample: Dict[str, Any],
+        images: List[Image.Image],
+        variant: str,
+        teacher_samples: Optional[List[Dict[str, Any]]] = None,
+        teacher_images_list: Optional[List[List[Image.Image]]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Unified public entrypoint for conversation creation.
+
+        When teacher_samples/teacher_images_list are provided and non-empty, builds
+        a teacher-student conversation; otherwise builds a simple conversation.
+        """
+        logger.debug(
+            f"🧵 create_conversation: variant='{variant}', teachers={bool(teacher_samples and teacher_images_list)}"
+        )
+        if teacher_samples and teacher_images_list:
+            return self._build_teacher_student_conversation_unified(
+                student_sample=sample,
+                teacher_samples=teacher_samples,
+                student_images=images,
+                teacher_images_list=teacher_images_list,
+                variant=variant,
             )
-
-            validation_result = ConversationValidator.validate_conversation_structure(
-                validated_messages, ordered_images, ConversationType.INFERENCE
-            )
-            if not validation_result.is_valid:
-                raise ConversationStructureError(
-                    f"Simple generation conversation validation failed: {validation_result.errors}"
-                )
-
-            # Build text with generation prompt and process
-            try:
-                proc_any: Any = self.processor
-                text = proc_any.apply_chat_template(
-                    validated_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    images=ordered_images,
-                )
-            except TypeError:
-                text = self.processor.apply_chat_template(
-                    validated_messages, tokenize=False, add_generation_prompt=True
-                )
-            self.validate_image_token_consistency(text, ordered_images)
-
-            inputs = self._process_text_and_images(text, ordered_images)
-
-            self._log_processing_validation(inputs, ordered_images, text)
-            return inputs
-
-        except ConversationError:
-            raise
-        except Exception as e:
-            raise ConversationStructureError(
-                f"Simple generation conversation creation failed: {str(e)}"
-            )
+        return self._build_simple_conversation_unified(sample=sample, images=images, variant=variant)

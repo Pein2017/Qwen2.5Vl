@@ -61,6 +61,11 @@ def _get_rank_aware_logger() -> logging.Logger:
 
 logger = _get_rank_aware_logger()
 
+# Files that are optional for inference and can be safely skipped during best-checkpoint copying
+IGNORED_COPY_FILES = {
+    "special_tokens_map.json",
+}
+
 
 class CheckpointSaver:
     """
@@ -106,7 +111,13 @@ class CheckpointSaver:
 
         # First attempt: standard copytree into tmp
         try:
-            shutil.copytree(src, tmp_dst, dirs_exist_ok=False)
+            shutil.copytree(
+                src,
+                tmp_dst,
+                dirs_exist_ok=False,
+                ignore=shutil.ignore_patterns(*IGNORED_COPY_FILES),
+                copy_function=shutil.copy,
+            )
             # Replace destination atomically
             try:
                 if os.path.exists(dst):
@@ -119,26 +130,55 @@ class CheckpointSaver:
             return
         except Exception as e:
             logger.warning(
-                f"⚠️ copytree failed for best checkpoint (will fallback to per-file copy): {e}"
+                f"⚠️ copytree failed for best checkpoint (falling back to per-file copy): {e}"
             )
 
-        # Fallback: file-by-file copy
+        # Fallback: file-by-file copy into tmp, then atomic replace
         try:
-            os.makedirs(dst, exist_ok=True)
+            # Ensure tmp destination exists and is empty
+            try:
+                if os.path.exists(tmp_dst):
+                    shutil.rmtree(tmp_dst)
+            except Exception:
+                pass
+            os.makedirs(tmp_dst, exist_ok=True)
+
             for root, dirs, files in os.walk(src):
                 rel = os.path.relpath(root, src)
-                target_dir = dst if rel == "." else os.path.join(dst, rel)
+                target_dir = tmp_dst if rel == "." else os.path.join(tmp_dst, rel)
                 os.makedirs(target_dir, exist_ok=True)
                 for d in dirs:
                     os.makedirs(os.path.join(target_dir, d), exist_ok=True)
                 for f in files:
+                    if f in IGNORED_COPY_FILES:
+                        # Skip optional files that are not required for inference
+                        continue
                     src_f = os.path.join(root, f)
                     dst_f = os.path.join(target_dir, f)
-                    try:
-                        shutil.copy2(src_f, dst_f)
-                    except Exception as fe:
-                        logger.warning(f"⚠️ Failed to copy '{src_f}' → '{dst_f}': {fe}")
-            # Cleanup tmp if created
+                    # Retry a few times to work around transient FS errors (e.g., errno 524)
+                    last_exc: Optional[Exception] = None
+                    for attempt in range(3):
+                        try:
+                            shutil.copy(src_f, dst_f)
+                            last_exc = None
+                            break
+                        except Exception as fe:
+                            last_exc = fe
+                            time.sleep(0.2)
+                    if last_exc is not None:
+                        logger.warning(f"⚠️ Failed to copy '{src_f}' → '{dst_f}': {last_exc}")
+
+            # Replace destination atomically
+            try:
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Failed to remove existing best path '{dst}' before rename; proceeding with atomic replace: {e}"
+                )
+            os.replace(tmp_dst, dst)
+
+            # Cleanup tmp if created (should be gone after replace, but be safe)
             try:
                 if os.path.exists(tmp_dst):
                     shutil.rmtree(tmp_dst)
@@ -153,7 +193,7 @@ class CheckpointSaver:
             except Exception:
                 pass
             raise RuntimeError(
-                f"Best checkpoint copy failed (fallback also failed): {e2}"
+                f"Best checkpoint copy failed (per-file copy also failed): {e2}"
             )
 
     def save_checkpoint(

@@ -22,8 +22,8 @@ from src_new.config.augmentation_config import (
 from src_new.utils.path_manager import create_path_manager
 
 
-OUT_DIR = Path("/data3/Qwen2.5-VL-main/src_new/tests/vis")
-DATA_ROOT = Path("/data3/Qwen2.5-VL-main/data/ds_v2_full")
+OUT_DIR = Path("src_new/tests/vis")
+DATA_ROOT = Path("data/ds_v2_full")
 SAMPLES_JSONL = DATA_ROOT / "all_samples.jsonl"
 
 

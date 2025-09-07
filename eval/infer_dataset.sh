@@ -35,14 +35,16 @@ MAX_SAMPLES=40
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
 
-# Environment
-export PYTHONPATH=/data3/Qwen2.5-VL-main:$PYTHONPATH
+# Set PROJECT_ROOT dynamically
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export PYTHONPATH=.:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 export CUDA_VISIBLE_DEVICES=7
 
 # Normalize to absolute paths per repository rules
-ABS_REPO_ROOT="/data3/Qwen2.5-VL-main"
+ABS_REPO_ROOT="."
 ABS_CONFIG_PATH=$(readlink -f "$ABS_REPO_ROOT/$CONFIG_PATH")
 ABS_MODEL_PATH=$(readlink -f "$ABS_REPO_ROOT/$MODEL_PATH")
 ABS_DATA_ROOT=$(readlink -f "$ABS_REPO_ROOT/$DATA_ROOT")

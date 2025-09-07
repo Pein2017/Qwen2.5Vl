@@ -6,9 +6,7 @@
 
 ### Training
 ```bash
-cd /data3/Qwen2.5-VL-main
-source ~/.bashrc && conda activate ms
-bash /data3/Qwen2.5-VL-main/scripts/run_new_train.sh
+bash scripts/run_new_train.sh
 ```
 
 ### Inference
@@ -86,8 +84,6 @@ coord_aux_lambda_unlike: 1
 
 Run training with auxiliary coordinate losses:
 ```bash
-cd /data3/Qwen2.5-VL-main
-source ~/.bashrc && conda activate ms
 bash scripts/run_debug.sh
 ```
 

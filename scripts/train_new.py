@@ -363,6 +363,24 @@ def create_trainer_with_new_architecture(
         config.model_path, **loading_kwargs
     )
 
+    # Pre-align special tokens (Qwen: set BOS to PAD) to avoid Trainer runtime alignment
+    try:
+        if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        if hasattr(tokenizer, "padding_side"):
+            tokenizer.padding_side = "left"
+        bos_id = tokenizer.pad_token_id  # Qwen convention: use PAD as BOS
+        cfg = base_model.config
+        cfg.pad_token_id = tokenizer.pad_token_id
+        cfg.eos_token_id = tokenizer.eos_token_id
+        cfg.bos_token_id = bos_id
+        if getattr(base_model, "generation_config", None) is not None:
+            base_model.generation_config.pad_token_id = cfg.pad_token_id
+            base_model.generation_config.eos_token_id = cfg.eos_token_id
+            base_model.generation_config.bos_token_id = cfg.bos_token_id
+    except Exception:
+        pass
+
     # Strictly require pre-expanded checkpoints if coordinate tokens are enabled
     _validate_preexpanded_checkpoint(tokenizer, base_model, config)
 

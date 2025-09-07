@@ -9,12 +9,10 @@
 ### **Prerequisites**
 - Linux environment with CUDA GPUs
 - Python 3.10+ with PyTorch
-- Access to project directory: `/data3/Qwen2.5-VL-main`
+- Access to project directory: `.`
 
-### **Setup & First Training Run**
-```bash
 # 1. Navigate to project
-cd /data3/Qwen2.5-VL-main
+cd */Qwen2.5-VL-main
 
 # 2. Verify environment
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"

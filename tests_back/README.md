@@ -19,15 +19,13 @@ This test suite provides comprehensive coverage of all training pipeline compone
 
 - Conda environment: `ms` (activated)
 - CUDA-compatible GPU (A100 recommended)
-- Qwen2.5-VL-3B model cached at `/data3/Qwen2.5-VL-main/model_cache/`
+- Qwen2.5-VL-3B model cached at `model_cache/`
 
 ### Running Tests
 
 ```bash
-cd /data3/Qwen2.5-VL-main
-
 # Run all tests
-/root/miniconda3/envs/ms/bin/python -m pytest tests/ -v
+python -m pytest tests/ -v --tb=short
 
 # Run specific test modules
 /root/miniconda3/envs/ms/bin/python -m pytest tests/test_data_pipeline.py -v
@@ -208,7 +206,7 @@ export CUDA_VISIBLE_DEVICES=0
 #### Model Not Found
 ```bash
 # Ensure model is cached
-ls /data3/Qwen2.5-VL-main/model_cache/Qwen/Qwen2.5-VL-3B-Instruct/
+ls model_cache/Qwen/Qwen2.5-VL-3B-Instruct/
 ```
 
 #### Import Errors
@@ -275,30 +273,5 @@ with self.test_utils.measure_time("Operation name"):
 ```yaml
 - name: Run BBU Tests
   run: |
-    cd /data3/Qwen2.5-VL-main
     /root/miniconda3/envs/ms/bin/python -m pytest tests/ -v --tb=short
 ```
-
-### Performance Regression Detection
-Monitor key metrics:
-- Model loading time < 60s
-- Memory efficiency > 95% (packed collator)
-- Forward pass time < 2s per batch
-- GPU memory usage < 25GB
-
-## Contributing
-
-### Guidelines
-1. **Test First**: Write tests before implementing features
-2. **Comprehensive Coverage**: Test both success and failure cases
-3. **Realistic Data**: Use synthetic data that matches production format
-4. **Performance Aware**: Include timing and memory benchmarks
-5. **Documentation**: Update README for new test modules
-
-### Code Standards
-- **Type Hints**: Annotate all function parameters and returns
-- **Docstrings**: Document test purpose and expected behavior
-- **Error Messages**: Provide descriptive assertion messages
-- **Resource Cleanup**: Always clean up temporary files and GPU memory
-
-This professional test suite ensures reliable development and deployment of the BBU training pipeline with comprehensive validation and performance monitoring.

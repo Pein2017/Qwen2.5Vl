@@ -29,7 +29,6 @@ The teacher-student training system enables advanced dual-role training where th
 
 ### **Running Teacher-Student Training**
 ```bash
-cd /data3/Qwen2.5-VL-main
 ./scripts/run_new_train.sh
 ```
 

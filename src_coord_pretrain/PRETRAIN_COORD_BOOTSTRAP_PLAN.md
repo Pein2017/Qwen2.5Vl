@@ -29,7 +29,7 @@ Purpose: a clean, separate pre‑training module that teaches a new “coordinat
 Two supported paths (choose one and persist the result for reproducibility):
 
 1) Pre‑expanded model path (recommended)
-- Use an expanded checkpoint that already contains the coord tokens with deterministic init (e.g., produced by `/data3/Qwen2.5-VL-main/scripts/migrate_to_expanded_cache.py`).
+- Use an expanded checkpoint that already contains the coord tokens with deterministic init (e.g., produced by `scripts/migrate_to_expanded_cache.py`).
 - Load with:
   - `processor = Qwen2VLProcessor.from_pretrained(<expanded_model_path>)`
   - `model = Qwen2VLForConditionalGeneration.from_pretrained(<expanded_model_path>)`
@@ -123,9 +123,9 @@ Fail‑fast gates (both paths):
 ---
 
 ### Config (YAML) — this module
-File: `/data3/Qwen2.5-VL-main/src_coord_pretrain/config/coord_bootstrap.yaml`
+File: `src_coord_pretrain/config/coord_bootstrap.yaml`
 - Required keys
-  - `data_path`: `/data3/Qwen2.5-VL-main/src_coord_pretrain/data/coord_bootstrap.jsonl`
+  - `data_path`: `src_coord_pretrain/data/coord_bootstrap.jsonl`
   - `max_dataset_size`: integer or `-1`
   - `coordinate_tokens_enabled`: true
   - `max_coord_value`: 1024
@@ -140,14 +140,14 @@ File: `/data3/Qwen2.5-VL-main/src_coord_pretrain/config/coord_bootstrap.yaml`
 - Generate data
   ```bash
   source ~/.bashrc && conda activate ms
-  python /data3/Qwen2.5-VL-main/src_coord_pretrain/scripts/generate_coord_bootstrap.py \
-    --output /data3/Qwen2.5-VL-main/src_coord_pretrain/data/coord_bootstrap.jsonl \
-    --num_identity 50000 --num_arithmetic 20000 --max_coord 1024 --seed 1337
+  python src_coord_pretrain/scripts/generate_coord_bootstrap.py \
+    --output src_coord_pretrain/data/coord_bootstrap.jsonl \
+    --num_samples 100000 --ratio_identity 0.5 --ratio_arithmetic 0.2 --ratio_reverse 0.3 --max_coord 1024 --seed 42 --dedup
   ```
 - Run training
   ```bash
   source ~/.bashrc && conda activate ms
-  bash /data3/Qwen2.5-VL-main/src_coord_pretrain/scripts/run_coord_bootstrap.sh
+  bash src_coord_pretrain/scripts/run_coord_bootstrap.sh
   ```
 
 ---
@@ -173,16 +173,16 @@ File: `/data3/Qwen2.5-VL-main/src_coord_pretrain/config/coord_bootstrap.yaml`
 ### Example Commands
 ```bash
 source ~/.bashrc && conda activate ms
-python /data3/Qwen2.5-VL-main/src_coord_pretrain/scripts/generate_coord_bootstrap.py \
-  --output /data3/Qwen2.5-VL-main/src_coord_pretrain/data/coord_bootstrap.jsonl \
-  --num_identity 50000 --num_arithmetic 20000 --max_coord 1024 --seed 1337
-bash /data3/Qwen2.5-VL-main/src_coord_pretrain/scripts/run_coord_bootstrap.sh
+python src_coord_pretrain/scripts/generate_coord_bootstrap.py \
+  --output src_coord_pretrain/data/coord_bootstrap.jsonl \
+  --num_samples 100000 --ratio_identity 0.5 --ratio_arithmetic 0.2 --ratio_reverse 0.3 --max_coord 1024 --seed 42 --dedup
+bash src_coord_pretrain/scripts/run_coord_bootstrap.sh
 ```
 
 ---
 
 ### Implementation Order
-1) Add tests in `/data3/Qwen2.5-VL-main/src_coord_pretrain/tests/`
+1) Add tests in `src_coord_pretrain/tests/`
 2) Create/validate expanded tokenizer+model path; persist token→ID map JSON
 3) Implement generator, dataset, and custom collator (assistant‑only labels)
 4) Wire HF Trainer; run short bootstrap; export checkpoint

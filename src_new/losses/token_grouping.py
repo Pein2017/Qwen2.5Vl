@@ -289,6 +289,22 @@ class TokenGroupingPlugin:
             s_caption, s_ground, s_format, s_assist
         )
 
+        # Optional debug: verify disjointness and full coverage of assistant masks
+        try:
+            debug_alignment = bool(getattr(getattr(self._tok, "_config", None), "debug_alignment", False))
+        except Exception:
+            debug_alignment = False
+        if debug_alignment:
+            def _check(m_cap, m_grd, m_fmt, assist, who):
+                # pairwise disjoint
+                if (m_cap & m_grd).any() or (m_cap & m_fmt).any() or (m_grd & m_fmt).any():
+                    raise RuntimeError(f"debug_alignment: overlapping group masks for {who}")
+                union = m_cap | m_grd | m_fmt
+                if (union != assist).any():
+                    raise RuntimeError(f"debug_alignment: union of group masks does not equal assistant mask for {who}")
+            _check(t_caption, t_ground, t_format, t_assist, "teacher")
+            _check(s_caption, s_ground, s_format, s_assist, "student")
+
         return GroupMasks(
             teacher_caption=t_caption,
             teacher_grounding=t_ground,

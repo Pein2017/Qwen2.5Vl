@@ -77,6 +77,7 @@ ordering for stable learning signals.
   - Enforces geometry constraints and bounds
   - Minimum object size checks (square/bbox)
   - Requires non-empty `desc`
+  - Strips occlusion tokens containing “遮挡” by default (configurable). This property is deprecated and shown to be unhelpful for training, so occlusion words like “有遮挡/无遮挡/挡风板有遮挡” are removed from `desc` during conversion and are excluded from teacher‑pool coverage and selection entirely.
   - Records invalid objects/samples for reporting
 
 - Object ordering and image processing:
@@ -89,7 +90,7 @@ ordering for stable learning signals.
 
 ### Teacher Pool Builder (Rule‑Based)
 - Fixed vocabulary mode (default):
-  - Builds a coverage universe from `attribute_taxonomy.json` and `hierarchical_attribute_mapping.json` (excludes any `free_text` fields).
+  - Builds a coverage universe from `attribute_taxonomy.json` and `hierarchical_attribute_mapping.json` (excludes any `free_text` fields). Occlusion tokens containing “遮挡” are explicitly excluded from the universe and do not affect coverage scores.
   - Greedy set‑cover picks samples to maximize token coverage up to `MAX_TEACHERS` with deterministic tie‑breakers: prefer `line` only if fiber/wire tokens remain → brand balancing → geometry novelty → object_count closest to median → lexicographic by image path.
   - Respects `OBJECT_TYPES` (tokens tied exclusively to filtered‑out types are ignored).
 - Free vocabulary fallback:
@@ -208,7 +209,7 @@ Training samples use native multi-geometry with hierarchical descriptions:
     },
     {
       "line": [614, 1271, 498, 1179, 419, 1216, 280, 1280, 117, 1456, 3, 1721],
-      "desc": "光纤/有遮挡,有保护措施,弯曲半径合理/蛇形管"
+      "desc": "光纤/有保护措施,弯曲半径合理/蛇形管"
     }
   ],
   "width": 532,

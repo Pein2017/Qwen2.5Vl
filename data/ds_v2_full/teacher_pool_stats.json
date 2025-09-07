@@ -2,17 +2,19 @@
   "mode": "free",
   "pool_size": 50,
   "max_teachers": 50,
-  "universe_size": 13,
-  "covered_units_count": 13,
+  "universe_size": 81,
+  "covered_units_count": 81,
   "coverage_ratio": 1.0,
   "uncovered_units": [],
   "brand_distribution": {
-    "华为": 2,
-    "中兴": 13,
-    "爱立信": 35
+    "华为": 11,
+    "unknown": 34,
+    "中兴": 3,
+    "爱立信": 2
   },
   "geometry_presence": [
     "bbox_2d",
+    "line",
     "quad"
   ],
   "idf_coverage_ratio": 1.0,
@@ -21,17 +23,21 @@
     "中兴": 275,
     "爱立信": 35
   },
-  "line_ratio_dataset": 0.0,
-  "line_ratio_selected": 0.0,
+  "line_ratio_dataset": 0.7894321766561514,
+  "line_ratio_selected": 0.88,
   "negative_tokens_dataset": {
+    "无保护措施": 295,
+    "弯曲半径不合理（弯曲半径<4cm或者成环）": 27,
     "安装方向错误": 4
   },
   "negative_tokens_selected": {
+    "弯曲半径不合理（弯曲半径<4cm或者成环）": 1,
+    "无保护措施": 10,
     "安装方向错误": 1
   },
   "object_count_summary": {
-    "min": 1,
-    "median": 2.0,
-    "p95": 2
+    "min": 7,
+    "median": 8.0,
+    "p95": 37
   }
 }

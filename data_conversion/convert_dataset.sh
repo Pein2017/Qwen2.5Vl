@@ -26,7 +26,13 @@ export PYTHONIOENCODING=utf-8
 
 # Environment setup
 export PYTHONPATH=/data3/data_conversion:$PYTHONPATH
-export MODELSCOPE_CACHE="/data3/Qwen2.5-VL-main/modelscope/hub"
+
+# Dynamically determine project root from script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Set PROJECT_ROOT dynamically
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export MODELSCOPE_CACHE="./modelscope/hub"
 
 # ============================================================================
 # MANUAL CONFIGURATION - EDIT THESE VALUES BEFORE RUNNING
@@ -35,16 +41,16 @@ export MODELSCOPE_CACHE="/data3/Qwen2.5-VL-main/modelscope/hub"
 # Required paths - YOU MUST SET THESE
 INPUT_DIR="ds_v2"                    # e.g., "ds_v2" or "my_dataset"
 OUTPUT_DIR="data"                   # e.g., "data" or "/path/to/output"
-DATASET_NAME="ds_v2_bbu_bbu_shield"                 # e.g., "experiment_1" or leave empty to auto-detect
+DATASET_NAME="ds_v2_full"                 # e.g., "experiment_1" or leave empty to auto-detect
 
 # Optional configuration files - SET THESE IF YOU HAVE THEM
 HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" or leave empty
 
 # Processing parameters - YOU MUST SET THESE
-VAL_RATIO="0.1"                    # e.g., "0.1" for 10% validation split
-MAX_TEACHERS="10"                 # e.g., "10" for max teacher samples
+VAL_RATIO="0.2"                    # e.g., "0.1" for 10% validation split
+MAX_TEACHERS="50"                 # e.g., "10" for max teacher samples
 RESIZE="true"                       # "true" or "false" for image resizing
-OBJECT_TYPES="bbu bbu_shield"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
+OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
 
 # Optional settings
 LOG_LEVEL="INFO"                    # e.g., "INFO", "DEBUG", "WARNING", "ERROR" or leave empty
@@ -53,7 +59,7 @@ SEED="17"                         # e.g., "17" or leave empty
 # Validation settings - OPTIONAL (currently hardcoded in unified_processor.py)
 # TODO: These parameters will be configurable in a future update
 VALIDATION_MODE="strict"            # e.g., "strict", "lenient", "warning_only"
-MIN_OBJECT_SIZE="10"               # e.g., "10" for minimum object size in pixels
+MIN_OBJECT_SIZE="1"               # e.g., "10" for minimum object size in pixels
 ENABLE_VALIDATION_REPORTS="true"   # "true" or "false" to enable detailed validation reports
 
 # ============================================================================
@@ -122,7 +128,7 @@ if [ "$RESIZE" = "true" ]; then
     ARGS="$ARGS --resize"
 fi
 
-# Enable occlusion stripping by default (can be removed if needed)
+# Occlusion stripping enforced by default due to low training value
 ARGS="$ARGS --strip_occlusion"
 
 echo "🔄 Processing dataset: $DATASET_NAME ($INPUT_DIR)"

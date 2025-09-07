@@ -1,8 +1,8 @@
 num_train_epochs: 50
-per_device_train_batch_size: 4
-per_device_eval_batch_size: 4
-gradient_accumulation_steps: 1  
-learning_rate: 5.0e-5
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 4  
+learning_rate: 5.0e-4
 vision_lr: 1.0e-6
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
@@ -10,15 +10,14 @@ lr_top_layers: 5.0e-6
 lr_coord_slice: 5.0e-6
 
 weight_decay: 1.0e-3
-teacher_ratio: 0.4
+teacher_ratio: 0.2
 
-model_path: outputs/8-30-standard_phase_3/8-30-standard_phase_3-ep50-merger_5e-4-llm_1e-5-vison_1e-6-no_occlusion-moderate_10_aggressive/checkpoint-1100
+model_path: outputs/7B/phase_2/9-2-7b-phase_2/checkpoint-1100
 
-run_name: "8-31-group_tokens-aggressive_augmentation_and_lr-group_2_1_0.3-teacher_ratio_0.4-new_teachers"
-output_dir: outputs/8-31-standard_phase_3
+run_name: "9-4-7b-phase_3-ratio_4_3_3-epoch_50"
+output_dir: outputs/7B/phase_3
 
 phase_name: phase_3
-
 
 # Enable augmentation in phase_2
 use_aug: true
@@ -40,6 +39,11 @@ teacher_loss_weight: 0.6
 student_loss_weight: 1
 coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
-caption_loss_weight: 2.0
-grounding_loss_weight: 1.0
+caption_loss_weight: 1.2
+grounding_loss_weight: 1.5
 formatting_loss_weight: 0.3
+
+conversation_variant_ratios:
+  dense_caption: 0.4
+  coords_to_desc: 0.3
+  desc_to_coords: 0.3

@@ -10,8 +10,18 @@ has been moved to official HuggingFace components.
 MIGRATION NOTE: All conversation creation logic is now handled by official HuggingFace processor.apply_chat_template().
 """
 
-TEACHER_USER_PROMPT = "请按照上述规则，根据图像检测设备和部件并按要求输出:"
-STUDENT_USER_PROMPT = "请按照上述规则，根据图像检测设备和部件并按要求输出:"
+BASE_USER_PROMPT = "请按照上述规则，根据图像检测设备和部件并按要求输出:"
+
+# Variant prompts for pipeline builders
+# Dense caption uses image-only user turns by default; this text is retained for completeness.
+DENSE_USER_PROMPT = BASE_USER_PROMPT  # alias for backward compatibility
+# Header prompts (single use) for variant builders
+COORD_TO_DESC_USER_PROMPT = "请描述以下坐标中的物体"
+DESC_TO_COORD_USER_PROMPT = "请返回以下描述的物体的坐标"
+# (Legacy per-line pieces retained for backward compatibility; not used by new builders)
+COORD_TO_DESC_USER_LINE_PREFIX = "请描述"
+COORD_TO_DESC_USER_LINE_SUFFIX = "中的物体信息"
+DESC_TO_COORD_USER_LINE_PREFIX = "请描述"
 
 
 SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别图像中的设备和部件，给出规范的“描述 + 几何位置”结果。请严格按以下业务规则与格式输出。
@@ -21,7 +31,7 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
 - 使用简体中文描述；避免英文及中文标点混用；描述尽量简洁但信息完整。
 - 对同一对象，按预设层级顺序组织属性；不要改变层级顺序，不要添加未定义的属性名。
 - 严格使用下方“支持的对象类型、属性与取值”，不要自创类型/取值；同名取值必须完全一致（含标点）。
-- 输出顺序建议：自上而下、再从左到右；线对象按其起点坐标（y 再 x）排序。
+- 输出顺序（严格）：自上而下、再从左到右；线对象的起点统一为最左端点（先比较 x，x 相同再比较 y），排序仍按起点坐标（y 再 x）。
 
 支持的对象类型（与数据层严格一致）：
 - BBU设备、挡风板、螺丝、光纤插头（统称：螺丝、光纤插头）、标签、光纤、电线。
@@ -46,7 +56,7 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
   - 文字内容 为自由文本（当图像可读则写实际文字，否则为空字符“”）
 - 光纤：光纤/保护措施/弯曲半径/[保护类型]/[备注文本]
   - 保护措施：取值为 {无保护措施, 有保护措施}
-  - 弯曲半径：取值为 {弯曲半径合理, 弯曲半径不合理（弯曲半径小于 4cm 或者成环）}
+  - 弯曲半径：取值为 {弯曲半径合理, 弯曲半径不合理（弯曲半径<4cm或者成环）}
   - 保护类型（仅当 保护措施=有保护措施 时出现）：取值为 {蛇形管, 铠装, 同时有蛇形管和铠装}
 - 电线：电线/整齐度/[备注文本]
   - 整齐度：取值为 {捆扎整齐, 分布散乱}
@@ -55,7 +65,7 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
 
 - BBU设备（空间/挡风板）：
   - 当判断“机柜空间充足需要安装”时，应同时检测并输出对应的“挡风板”对象；若图像中未见挡风板，仍据实填写 BBU 的属性（不要臆造挡风板）。
-  - “挡风板配置符合性” 仅在需要安装时出现；按事实填写“这个BBU设备按要求配备了挡风板”或“未按要求配备挡风板”。
+  - “挡风板配置符合性” 仅在需要安装时出现；按事实填写“这个BBU设备按要求配备了挡风板”或“这个BBU设备未按要求配备挡风板”。
 - 挡风板（安装方向）：
   - 安装方向=安装方向正确|安装方向错误。
 
@@ -63,9 +73,9 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
   - 合规性=符合要求|不符合要求；若“不符合要求”，具体问题 从 {未拧紧, 露铜, 复接, 生锈} 中选择，可多值，用中文逗号分隔。
 - 光纤（保护/弯曲半径）：
   - 保护措施=无保护措施|有保护措施；若“有保护措施”，必须给出 保护类型：取值为 {蛇形管, 铠装, 同时有蛇形管和铠装}。
-  - 弯曲半径：不合理 指明显小于 4cm 或形成环路；否则为“弯曲半径合理”。
-- 电线（整齐度/遮挡）：
-  - 整齐度=捆扎整齐|分布散乱；遮挡情况=无遮挡|有遮挡。
+  - 弯曲半径：不合理 指明显小于4cm或形成环路；否则为“弯曲半径合理”。
+- 电线（整齐度）：
+  - 整齐度=捆扎整齐|分布散乱。
 - 标签（可读性）：
   - 文字内容 可读则写入实际文字；无法辨认则写空字符串 ""（两引号中间为空）。
 
@@ -79,11 +89,11 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
   - <|quad_start|> … <|quad_end|>
   - <|line_start|> … <|line_end|>
 - 使用原始数字坐标（整数），不得使用坐标令牌。
-- 方括号必须为英文 [ ]，元素之间使用英文逗号+空格分隔（", ");不得出现空元素、额外逗号或换行。
-- 坐标数量要求：
+- 方括号必须为英文[ ]，元素之间使用英文逗号+空格分隔（", ");不得出现空元素、额外逗号或换行。
+- 坐标数量与顺序要求（严格）：
   - <|box_start|>…<|box_end|>：恰好 4 个坐标，顺序为 [x1, y1, x2, y2]，且应满足 x1 小于 x2，y1 小于 y2；
   - <|quad_start|>…<|quad_end|>：恰好 8 个坐标，依次为四个点 [x1, y1, x2, y2, x3, y3, x4, y4]；顶点顺序固定为 左上→右上→右下→左下（从 top-left 开始，顺时针 clockwise）；
-  - <|line_start|>…<|line_end|>：偶数个（不少于 4 个）坐标，按 [x1, y1, x2, y2, …] 表示折线路径。
+  - <|line_start|>…<|line_end|>：偶数个（不少于 4 个）坐标，按 [x1, y1, x2, y2, …] 表示折线路径；若首尾两端点的 x 相同，则以 y 更小者为起点；若不满足“最左端点为起点”的规则，请将整个折线坐标反向后再输出（仅允许整序列反向，禁止打乱中间点顺序）。
 - 几何类型选择建议：规则矩形正面设备优先使用 矩形框；存在透视/倾斜平面的面板优先使用 四点四边形；线缆/导线/光纤使用 折线。
 
 输出结构（每行三选一）：
@@ -154,7 +164,18 @@ def get_system_prompt(coordinate_tokens_enabled: bool) -> str:
 
 CONSTANTS = {
     # System Prompt - BBU Detection Instructions (Chinese)
-    "TEACHER_USER_PROMPT": TEACHER_USER_PROMPT,
-    "STUDENT_USER_PROMPT": STUDENT_USER_PROMPT,
+    "BASE_USER_PROMPT": BASE_USER_PROMPT,
+    "DENSE_USER_PROMPT": DENSE_USER_PROMPT,
+    "COORD_TO_DESC_USER_PROMPT": COORD_TO_DESC_USER_PROMPT,
+    "DESC_TO_COORD_USER_PROMPT": DESC_TO_COORD_USER_PROMPT,
+    # Backward compatibility aliases
+    "TEACHER_USER_PROMPT": BASE_USER_PROMPT,
+    "STUDENT_USER_PROMPT": BASE_USER_PROMPT,
+    "COORD_TO_DESC_USER_HEADER": COORD_TO_DESC_USER_PROMPT,
+    "DESC_TO_COORD_USER_HEADER": DESC_TO_COORD_USER_PROMPT,
+    # Legacy per-line variants (not used by new builders)
+    "COORD_TO_DESC_USER_LINE_PREFIX": COORD_TO_DESC_USER_LINE_PREFIX,
+    "COORD_TO_DESC_USER_LINE_SUFFIX": COORD_TO_DESC_USER_LINE_SUFFIX,
+    "DESC_TO_COORD_USER_LINE_PREFIX": DESC_TO_COORD_USER_LINE_PREFIX,
     # The system prompt is built via get_system_prompt(); constants retained for user prompts only.
 }

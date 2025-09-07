@@ -161,7 +161,6 @@ print(f"Tokenization speed: {1000 / (end_time - start_time):.2f} samples/sec")
 Run the test suite to verify optimizations:
 
 ```bash
-cd /data3/Qwen2.5-VL-main
 python -m pytest src_coord_pretrain/tests/test_tokenizer_optimization.py -v
 ```
 

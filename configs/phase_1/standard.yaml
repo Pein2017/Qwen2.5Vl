@@ -1,19 +1,39 @@
 num_train_epochs: 50
-per_device_train_batch_size: 4
-per_device_eval_batch_size: 4
-gradient_accumulation_steps: 1  
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8 
+eval_strategy: steps
+eval_steps: 20
+save_strategy: steps
+save_steps: 500
+save_total_limit: 2 
 learning_rate: 5.0e-5
 vision_lr: 1.0e-7
-merger_lr: 5.0e-4
+merger_lr: 1.0e-4
 llm_lr: 5.0e-6
+lr_top_layers: 1.0e-5
 
+model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-max_coord_1024_fourier
 
-run_name: "8-29-standard_phase_1-ep50-merger_5e-4"
-output_dir: /data3/Qwen2.5-VL-main/outputs/8-29-standard_phase_1
+run_name: "9-7-7b-full-phase_1-from_original_model"
+output_dir: outputs/7B-full/phase_1
 
 phase_name: phase_1
 
 use_aug: false
 augmentation_schedule:
   - { start_epoch: 0, preset: "off" }
-  - { start_epoch: 3, preset: "off" }
+  - { start_epoch: 10, preset: "off" }
+
+teacher_loss_weight: 0.6
+student_loss_weight: 1
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# Group Loss Weights (caption/grounding/formatting)
+caption_loss_weight: 1.2
+grounding_loss_weight: 1.5
+formatting_loss_weight: 0.3
+
+conversation_variant_ratios:
+  dense_caption: 0.5
+  coords_to_desc: 0.25
+  desc_to_coords: 0.25

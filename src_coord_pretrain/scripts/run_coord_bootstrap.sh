@@ -3,8 +3,11 @@ set -euo pipefail
 
 # Module: src_coord_pretrain bootstrap trainer (Multi‑GPU + DeepSpeed zero2)
 
-# Paths
-PROJECT_ROOT="/data3/Qwen2.5-VL-main"
+# Dynamically determine project root from script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Project root is current directory
+PROJECT_ROOT="."
+
 MODULE_ROOT="src_coord_pretrain"
 CONFIG_PATH="src_coord_pretrain/config/coord_bootstrap.yaml"
 LOG_PATH="$MODULE_ROOT/run_coord.log"

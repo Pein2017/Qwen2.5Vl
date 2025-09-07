@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import logging
 from typing import Dict, List, Tuple
+import re
 
 from src_new.types.coords import CoordTokenRange
 
@@ -13,7 +14,8 @@ IMAGE_PAD: str = "<|image_pad|>"
 END_OF_TEXT: str = "<|endoftext|>"
 ASSISTANT_HEADER: str = f"{IM_START}assistant\n"
 # Regex pattern for assistant content spans (non-greedy)
-ASSISTANT_SPAN_PATTERN: str = r"<\|im_start\|>assistant\n(.*?)<\|im_end\|>"
+ASSISTANT_SPAN_PATTERN: str = r"<\|im_start\|>assistant\s*(.*?)<\|im_end\|>"
+ASSISTANT_SPAN_RE = re.compile(ASSISTANT_SPAN_PATTERN, re.DOTALL)
 
 
 # Canonical geometry tokens used across the stack
@@ -127,4 +129,5 @@ __all__ = [
     "END_OF_TEXT",
     "ASSISTANT_HEADER",
     "ASSISTANT_SPAN_PATTERN",
+    "ASSISTANT_SPAN_RE",
 ]

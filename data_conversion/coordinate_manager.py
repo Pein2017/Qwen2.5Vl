@@ -1194,8 +1194,10 @@ class CoordinateManager:
         """
         Establish canonical ordering for line points.
 
-        For 2-point lines: order by x-coordinate first, then y-coordinate for consistency
-        For multi-point lines: establish canonical direction while preserving path structure
+        For 2-point lines: order by x-coordinate first, then y-coordinate for consistency.
+        For multi-point lines: preserve the original path structure and choose a canonical
+        direction such that the first point is the leftmost endpoint (lowest x),
+        tie-breaking by y (lowest y). If needed, reverse the entire sequence.
 
         Args:
             points: List of (x, y) coordinate tuples
@@ -1211,9 +1213,7 @@ class CoordinateManager:
             else:
                 return [p2, p1]
         else:
-            # Multi-point polyline: establish canonical direction
-            # This addresses directional ambiguity where the same physical cable/wire
-            # can be traced in either direction by different annotators
+            # Multi-point polyline: determine orientation by endpoints (leftmost-first)
             return CoordinateManager._normalize_polyline_direction(points)
 
     @staticmethod
@@ -1223,52 +1223,29 @@ class CoordinateManager:
         """
         Normalize multi-point line direction to establish canonical ordering.
 
-        This addresses directional ambiguity where the same physical cable/wire
-        can be traced in either direction by different annotators, producing
-        semantically equivalent but different coordinate sequences.
-
         Strategy:
-        1. Preserve path structure (don't reorder intermediate points)
-        2. Establish consistent direction by choosing canonical starting point
-        3. Use deterministic rule: start from topmost point (lowest y),
-           then leftmost point (lowest x) if tied
-        4. If path needs reversal to meet criteria, reverse entire sequence
+        1. Preserve path structure (do not reorder intermediate points)
+        2. Establish consistent direction using endpoints only
+        3. Start from the leftmost endpoint (lowest x), tie-breaking by y (lowest y)
+        4. If the current sequence does not start from the leftmost endpoint,
+           reverse the entire sequence
 
         Args:
             points: List of (x, y) coordinate tuples representing the path
 
         Returns:
-            Points with canonical direction established
+            Points with canonical direction established (leftmost endpoint first)
         """
         if len(points) < 2:
             return points
 
-        # Find the canonical starting point (topmost, then leftmost)
-        canonical_start = min(points, key=lambda p: (p[1], p[0]))
+        start = points[0]
+        end = points[-1]
 
-        # Check if the current path already starts with the canonical point
-        current_start = points[0]
-        current_end = points[-1]
-
-        # If current start is already the canonical point, keep as-is
-        if current_start == canonical_start:
-            return points
-
-        # If current end is the canonical point, reverse the path
-        elif current_end == canonical_start:
-            return list(reversed(points))
-
-        # If canonical point is in the middle, choose direction based on endpoints
-        # Compare the endpoints and start from the one that's more "canonical"
-        # (topmost-leftmost between start and end)
-        start_priority = (current_start[1], current_start[0])  # (y, x)
-        end_priority = (current_end[1], current_end[0])  # (y, x)
-
-        if start_priority <= end_priority:
-            # Current start is more canonical than current end
+        # Compare endpoints by (x, y): leftmost-first, tie-break by y
+        if (start[0], start[1]) <= (end[0], end[1]):
             return points
         else:
-            # Current end is more canonical than current start
             return list(reversed(points))
 
     @staticmethod

@@ -15,7 +15,7 @@ Note: Quick config keys and behaviors are summarized in `AI_ASSISTANT_KB.md`. Th
 ### **Step 1: Environment Setup**
 ```bash
 # Navigate to project
-cd /data3/Qwen2.5-VL-main
+cd */Qwen2.5-VL-main
 
 # Verify Python environment
 python --version  # Should be Python 3.10+
@@ -351,7 +351,7 @@ eval_dataset_size: -1               # Full eval dataset or limit
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # Model cache directory
-export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
+export HF_HOME="model_cache"
 
 # FlashAttention optimization
 export TRITON_CACHE_DIR="/tmp/triton_cache"
@@ -459,8 +459,8 @@ output_dir: "${TRAINING_OUTPUT_DIR}/checkpoints"
 logging_dir: "${TRAINING_OUTPUT_DIR}/logs"
 
 # Set environment variables before training
-export HF_HOME="/data3/Qwen2.5-VL-main/model_cache"
-export TRAINING_OUTPUT_DIR="/data3/Qwen2.5-VL-main/output"
+export HF_HOME="model_cache"
+export TRAINING_OUTPUT_DIR="output"
 ```
 
 ### **Path Management Integration**

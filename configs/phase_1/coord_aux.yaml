@@ -10,7 +10,7 @@
 # Output & Run Name
 # --------------------------------------------------------------------------------------
 run_name: "8-29-coord_aux_phase_1"
-output_dir: /data3/Qwen2.5-VL-main/outputs/8-29-coord_aux_phase_1
+output_dir: outputs/8-29-coord_aux_phase_1
 
 # Separate-run phase control
 phase_name: phase_1
@@ -18,7 +18,7 @@ phase_name: phase_1
 # --------------------------------------------------------------------------------------
 # Model
 # --------------------------------------------------------------------------------------
-model_path: /data3/Qwen2.5-VL-main/src_coord_pretrain/output_back/checkpoint-3120
+model_path: src_coord_pretrain/output_back/checkpoint-3120
 
 # --------------------------------------------------------------------------------------
 # Training Settings

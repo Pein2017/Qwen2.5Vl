@@ -94,6 +94,42 @@ class CoordinateTokenConverter:
 
         return "\n".join(token_strings)
 
+    def convert_objects_to_desc_only(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert objects to description-only lines: <|object_ref_start|>desc<|object_ref_end|> per line."""
+        if not objects:
+            raise ValueError("Empty objects list encountered in convert_objects_to_desc_only")
+        lines: List[str] = []
+        ref_start, ref_end = self._get_ref_tokens()
+        for i, obj in enumerate(objects):
+            if not isinstance(obj, dict):
+                raise ValueError(f"Object {i} must be a dict, got {type(obj)}")
+            description = obj.get("desc", "")
+            lines.append(f"{ref_start}{description}{ref_end}")
+        return "\n".join(lines)
+
+    def convert_objects_to_geometry_only(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert objects to geometry-only lines: <|geom_start|>[coords]<|geom_end|> per line."""
+        if not objects:
+            raise ValueError("Empty objects list encountered in convert_objects_to_geometry_only")
+        lines: List[str] = []
+        for i, obj in enumerate(objects):
+            geometry_type, coordinates = self._extract_geometry(obj, i)
+            geom_start, geom_end = self._get_geom_tokens(geometry_type)
+            coord_texts: List[str] = []
+            for j, coord in enumerate(coordinates):
+                int_coord = int(coord)
+                if int_coord < 0 or int_coord > self.max_coord_value:
+                    raise ValueError(
+                        f"Object {i} coordinate {j} value {int_coord} out of valid range [0, {self.max_coord_value}]"
+                    )
+                if self.coordinate_tokens_enabled:
+                    coord_texts.append(f"<|coord_{int_coord}|>")
+                else:
+                    coord_texts.append(str(int_coord))
+            coord_string = ", ".join(coord_texts)
+            lines.append(f"{geom_start}[{coord_string}]{geom_end}")
+        return "\n".join(lines)
+
     def _convert_single_object(self, obj: Dict[str, Any], obj_index: int) -> str:
         """
         Convert a single object to coordinate token format.
@@ -109,48 +145,7 @@ class CoordinateTokenConverter:
             ValueError: If object has unsupported geometry type or invalid coordinates
         """
         # Determine geometry type and coordinates
-        geometry_type = None
-        coordinates = None
-
-        if "bbox_2d" in obj:
-            geometry_type = "bbox_2d"
-            coordinates = obj["bbox_2d"]
-        elif "quad" in obj:
-            geometry_type = "quad"
-            coordinates = obj["quad"]
-
-        elif "line" in obj:
-            geometry_type = "line"
-            coordinates = obj["line"]
-        elif all(key in obj for key in ["x1", "y1", "x2", "y2"]):
-            # Legacy format - convert to bbox_2d
-            geometry_type = "bbox_2d"
-            coordinates = [obj["x1"], obj["y1"], obj["x2"], obj["y2"]]
-        else:
-            # Fail-fast: Raise error for unsupported geometry types
-            available_keys = [k for k in obj.keys() if k not in ["desc", "category"]]
-            raise ValueError(
-                f"Object {obj_index} contains unsupported geometry type. "
-                f"Expected one of: {list(self.geometry_tokens.keys())}. "
-                f"Found geometry keys: {available_keys}. "
-                f"Full object: {obj}"
-            )
-
-        # Validate coordinates
-        if not isinstance(coordinates, list):
-            raise ValueError(
-                f"Object {obj_index} coordinates must be a list, got {type(coordinates)}"
-            )
-
-        if not coordinates:
-            raise ValueError(f"Object {obj_index} has empty coordinates list")
-
-        # Validate coordinate values are numeric
-        for i, coord in enumerate(coordinates):
-            if not isinstance(coord, (int, float)):
-                raise ValueError(
-                    f"Object {obj_index} coordinate {i} must be numeric, got {type(coord)}: {coord}"
-                )
+        geometry_type, coordinates = self._extract_geometry(obj, obj_index)
 
         # Get tokens for this geometry type
         ref_start, ref_end, geom_start, geom_end = self.geometry_tokens[geometry_type]
@@ -176,3 +171,44 @@ class CoordinateTokenConverter:
         return (
             f"{ref_start}{description}{ref_end}{geom_start}[{coord_string}]{geom_end}"
         )
+
+    def _extract_geometry(self, obj: Dict[str, Any], obj_index: int):
+        geometry_type = None
+        coordinates = None
+        if "bbox_2d" in obj:
+            geometry_type = "bbox_2d"
+            coordinates = obj["bbox_2d"]
+        elif "quad" in obj:
+            geometry_type = "quad"
+            coordinates = obj["quad"]
+        elif "line" in obj:
+            geometry_type = "line"
+            coordinates = obj["line"]
+        elif all(key in obj for key in ["x1", "y1", "x2", "y2"]):
+            geometry_type = "bbox_2d"
+            coordinates = [obj["x1"], obj["y1"], obj["x2"], obj["y2"]]
+        else:
+            available_keys = [k for k in obj.keys() if k not in ["desc", "category"]]
+            raise ValueError(
+                f"Object {obj_index} contains unsupported geometry type. "
+                f"Expected one of: {list(self.geometry_tokens.keys())}. "
+                f"Found geometry keys: {available_keys}. "
+                f"Full object: {obj}"
+            )
+        if not isinstance(coordinates, list) or not coordinates:
+            raise ValueError(f"Object {obj_index} has invalid coordinates list")
+        for i, coord in enumerate(coordinates):
+            if not isinstance(coord, (int, float)):
+                raise ValueError(
+                    f"Object {obj_index} coordinate {i} must be numeric, got {type(coord)}: {coord}"
+                )
+        return geometry_type, coordinates
+
+    def _get_ref_tokens(self) -> Any:
+        # Any geometry type shares the same ref tokens; use bbox_2d as representative
+        ref_start, ref_end, _, _ = self.geometry_tokens["bbox_2d"]
+        return ref_start, ref_end
+
+    def _get_geom_tokens(self, geometry_type: str) -> Any:
+        _, _, geom_start, geom_end = self.geometry_tokens[geometry_type]
+        return geom_start, geom_end
