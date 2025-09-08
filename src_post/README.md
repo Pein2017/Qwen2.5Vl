@@ -3,28 +3,36 @@
 ### What this module does
 - **Goal**: Fine‑tune an SFT‑trained Qwen2.5‑VL to make a single “pass/fail + reason” decision for a group of images (a work order), with one short Chinese summary per image.
 - **Two stages**:
-  - **Stage A (per image)**: generate one concise, informative Chinese summary per image.
-  - **Stage B (group aggregation)**: aggregate per‑image summaries and output: 总评: 通过/不通过 (+ 原因 when 不通过).
-- **Post‑training method**: **GRPO (Group Relative Policy Optimization)**.
-  - We sample multiple responses for the same prompt, compute group‑level rewards, convert them to relative advantages via z‑score, and push up the log‑probability of higher‑reward samples while pushing down lower‑reward ones.
-  - Optimizes Stage‑B (final decision) and, optionally, Stage‑A (image summaries) using conditional GRPO so per‑image summaries learn subjective biases directly from group labels.
+  - **Stage A (per image)**: generate one concise, informative Chinese summary per image。
+  - **Stage B (group aggregation)**: aggregate per‑image summaries and output: 总评: 通过/不通过 (+ 原因 when 不通过)。
+- **Post‑training method**: **GRPO (Group Relative Policy Optimization)**
+  - Sample multiple responses to the same prompt; compute rewards; convert to relative advantages via z‑score; push up higher‑reward samples and push down lower‑reward samples.
+  - Optimizes Stage‑B (final decision) and, optionally, Stage‑A (image summaries: conditional per‑image or joint‑set).
 
----
-
-## Previous background: SFT stage in `src_new/`
-
-- Purpose and result:
-  - Fine‑tune Qwen2.5‑VL for BBU detection/captioning with optional coordinate‑token support.
-  - Produces a base checkpoint and a matching `Qwen2VLProcessor` used as the starting point for RL post‑training.
-- Core mechanics (high level):
-  - Conversations built with the official processor’s `chat_template`; images are passed as typed content so `<|image_pad|>` tokens align with vision features.
-  - Dynamic coordinate tokens discovered via `src_new.processing.special_tokens.get_coord_token_range`; model/tokenizer expansion handled in `src_new.models.wrapper.DetectionModel` before distributed setup.
-  - Loss path is single‑pass CE over assistant spans; optional auxiliary coordinate losses (Kernelized‑KL, Unlikelihood) can be enabled in `src_new` but are not used during RL.
-  - Qwen2.5‑VL compatibility patches are applied (attention/prepare_inputs fixes). EOS `<|im_end|>` is included during SFT to teach proper termination.
-  - Alignment validated: expected `<|image_pad|>` count equals `sum_i(t_i*h_i*w_i)/(merge_size^2)` as computed from `image_grid_thw`.
-- From SFT to RL (bridge):
-  - SFT teaches the model to understand the domain and produce clean captions with proper EOS.
-  - RL reuses the SFT checkpoint + processor to keep tokenizer vocab, vision merge size, and chat template consistent.
+### Start here: GRPO in 5 minutes
+- **One‑liner**: Try several answers, score them, and make the model more likely to produce the better ones next time. No critic/value head.
+- **You need**:
+  - An SFT checkpoint + its processor (from `src_new/`).
+  - A dataset organized by group labels (`审核通过|审核不通过/{group_id}/*.jpg`) or a JSONL file.
+- **How it updates your SFT model**: Fine‑tunes the LM head and a few top text layers (vision usually mostly frozen). GRPO gradients flow through Stage‑B replies and optionally Stage‑A summaries.
+- **Quick run**:
+  ```bash
+  conda activate ms
+  bash scripts/run_group_qc_rl.sh
+  ```
+  Minimal keys in `configs/rl/group_qc_grpo.yaml`:
+  ```yaml
+  checkpoint: /abs/path/sft_ckpt
+  processor:  /abs/path/processor
+  train_data_dir: /abs/path/groups
+  output_dir: /abs/path/output_post/grpo
+  mission: bbu安装方式检查
+  # Sampling
+  K_B: 3                 # Stage-B replies per group
+  K_A: 3                 # Stage-A candidates per image (if enabled)
+  train_stage_a_mode: conditional   # conditional | joint | off
+  stage_a_weight: 1.0
+  ```
 
 ---
 
@@ -34,216 +42,258 @@
 conda activate ms
 bash scripts/run_group_qc_rl.sh
 ```
-- The script handles single/multi‑GPU and shards the dataset by rank.
-- Default config path: `configs/rl/group_qc_grpo.yaml`.
+- The script auto‑detects single vs multi‑GPU and launches with PyTorch DDP when `GPU_DEVICES` has multiple GPUs.
+- Default config: `configs/rl/group_qc_grpo.yaml`.
 
-Directory data layout (recommended):
+Data layout (recommended):
 ```text
-/abs/path/to/test_data/
+/abs/path/to/train_groups/
   审核通过/
     <group_id>/image_*.jpg
   审核不通过/
     <group_id>/image_*.jpg
 ```
-Labels are normalized: 审核通过|通过|pass → pass；审核不通过|不通过|fail → fail。
+Or JSONL: one group per line
+```json
+{"images": ["/abs/.../1.jpg", "/abs/.../2.jpg"], "label": "pass", "meta": {"group_id": "g1"}}
+```
+Label normalization: 审核通过|通过|pass → pass；审核不通过|不通过|fail → fail。
 
 ---
 
-## Process workflow (component interactions)
+## Process workflow (components)
 
 1) Data loading (group level)
 - File: `src_post/dataset_group_qc.py` (`RLGroupQCDataset`)
-- Yields a group: `{ image_paths, images, label, meta, num_images }` from the directory layout above (or JSONL).
+- Yields `{ image_paths, images, label, meta, num_images }` from the directory layout above or JSONL.
 
 2) Stage A summarization (per image, typed chat)
 - File: `src_post/conversation.py` → `GroupQCConversationBuilder.build_stage_a_messages(mission)` builds:
-  - system: “只输出一行摘要；纯中文；不要坐标/特殊符号；不要使用引号；不要罗列重复清单；尽量单句短语” (+ optional mission hints)
+  - system: 限制一行中文摘要；仅 BBU 场景对象；禁止坐标/几何/特殊标记 `<|...|>`；避免引号与重复清单；偏好简洁短语（品牌/挡风板/安装/是否需要/合规/标签可读性/光纤弯曲/电线整齐度等）。
   - user: typed list `[{'type': 'image'}, {'type': 'text', 'text': '请只输出一行摘要'}]`
 - Tokenization: `Qwen2VLProcessor.apply_chat_template(...)` → `processor(text=[...], images=[img], return_tensors='pt')`
-- Generation: keep one greedy line per image for Stage‑B context; optionally sample K_A variants during Stage‑A GRPO.
+- Generation:
+  - Greedy one line per image becomes Stage‑B context.
+  - When training Stage‑A GRPO, sample `K_A` candidates per image (conditional) or `K_set` candidate‑sets (joint).
+  - Stopping: Stage‑A decoding stops early on newline or `。` if tokenized as a single token.
 
 3) Stage B GRPO (group decision)
 - File: `src_post/grpo_runner.py` → builds prompt via `build_stage_b_messages(summary_lines, checklist_lines)`.
-- Sampling: sample K_B short answers; parse with `src_post/span_parser.py` to `{label, reason}`.
-- Reward: composed via `src_post/rewards/` (e.g., label_match, formatting, cleanliness, plus negative penalties for repetition/quotes/special tokens leaking into summaries).
-- GRPO update: teacher‑forcing on each sampled answer to compute log‑prob sums; use z‑scored rewards as advantages.
+- Sampling: sample `K_B` short replies; parse with `src_post/span_parser.py` to `{label, reason}`.
+- Reward: composed via `src_post/rewards/` (see “Rewards” below).
+- GRPO update: teacher‑forcing on each sampled reply to sum log‑probs over the reply; z‑score rewards → advantages → optimize `-A_k * logp_k` (+ optional KL to reference).
 
-4) Stage A GRPO (optional, conditional)
-- Conditional credit assignment:
-  - For image i, fix other images’ summaries to their current best; sample K_A variants for image i.
-  - Rebuild Stage‑B prompt with each candidate inserted; recompute group reward.
-  - Convert per‑image rewards to per‑image advantages via z‑score; teacher‑force the summary tokens and apply GRPO loss.
+4) Stage A GRPO (optional)
+- Modes: `conditional` (per‑image variants against fixed others) or `joint` (sample full sets across all images).
+- Rebuild Stage‑B prompt with the candidate(s), recompute group reward, z‑score to advantages, teacher‑force summary tokens, and apply GRPO loss (+ optional KL).
 
 5) Outputs
-- JSONL per rank: `results.rank{RANK}.jsonl` with `{group_index, mission, gt_label, pred_label, reward, images[captions], stage_b_raw}`
-- Checkpoints: `output_post/checkpoints/grpo/<tag>/` saving the policy (no value head needed).
+- Per‑rank JSONL: `results.rank{RANK}.jsonl` with `{group_index, mission, gt_label, pred_label, reward, images[captions], stage_b_raw}`.
+- Checkpoints: `output_dir/checkpoints/grpo_final/` with the policy and saved processor.
 
 ---
 
 ## Tensor flow (forward and backward)
 
-### Stage A (generation only unless training Stage‑A GRPO)
-- Encode with typed image message:
-  - `processor(..., images=[img])` → tensors: `input_ids [1,Lp]`, `pixel_values [B,T,H,W,C]` (internal), `image_grid_thw`.
-- Generate one‑line summary; no gradients for context building.
-- When training Stage‑A (conditional GRPO), do teacher‑forcing over the sampled summary tokens to compute log‑prob sums.
+### Stage A (context generation unless training Stage‑A)
+- Encode typed image message → tensors: `input_ids [1, L]`, `pixel_values`, `image_grid_thw`.
+- Generate one‑line summary (greedy) for each image; no gradients.
+- If training Stage‑A: teacher‑force over the sampled summary tokens to compute per‑candidate log‑prob sums.
 
 ### Stage B (GRPO – training focus)
-- Prompt only (text): `input_ids [1, L_prompt]`.
-- Sample K_B responses; for each response with tokens `response_ids [L_resp]`:
-  1) Build `full_ids = [prompt_ids + response_ids]` → shape `[1, L_total]`.
-  2) Forward once (teacher‑forcing):
-     - `logits [1, L_total-1, V]` (shifted next‑token prediction)
-     - `targets = full_ids[:, 1:]`
-     - Build response mask: `resp_mask[:, prompt_len-1 :] = True`
-     - Compute per‑token `logprobs = log_softmax(logits)`; sum over response positions → `logp_k`.
-  3) Compute rewards {`r_k`} and advantages:
-     - `A_k = (r_k - mean(r)) / (std(r)+eps)`; clip to a small range (e.g., ±1.5).
-  4) Loss (per response):
-     - `L_k = - stop_grad(A_k) * logp_k` (optionally divide by response length for length‑norm)
-  5) KL to reference (optional):
-     - `KL(π || π_ref)` over response positions; add `λ_KL * KL` to the loss to prevent drift.
-  6) Backprop; gradient clip; optimizer step (LM head + last N layers unfrozen).
+- Prompt‑only (text): `input_ids [1, L_prompt]`.
+- For each sampled reply `y_k` with token IDs:
+  1) Teacher‑force once over `[prompt + y_k]` → `logits [1, L-1, V]` and sum `logp_k` over reply positions (length‑norm optional).
+  2) Compute rewards `{r_k}` → `A_k = zscore(r_k)` (clipped).
+  3) Loss: `L_k = - stop_grad(A_k) * logp_k` (+ optional KL to reference policy on reply positions).
+  4) Backprop; gradient clip; optimizer step.
 
-### Stage A (conditional GRPO – training)
-- For each image i, sample K_A summary candidates; for each candidate:
-  1) Replace the i‑th line in summaries and evaluate Stage‑B reward → `r_i^k`.
-  2) Compute `A_i^k = zscore(r_i^k)`; clip.
-  3) Teacher‑force over the i‑th summary tokens to get `logp_i^k`; apply `- stop_grad(A_i^k) * logp_i^k` (length‑norm optional).
-  4) Optional KL to reference on Stage‑A tokens.
-
----
-
-## GRPO vs PPO (theory quick primer)
-
-- **PPO** adds a value head to estimate returns per token and uses the ratio‑clipped objective to keep policy updates stable; great sample efficiency, higher engineering overhead (critic, masks, advantage estimation), and more sensitive to absolute reward scale/noise.
-- **GRPO** discards the critic and uses relative advantages from multiple samples of the same prompt:
-  - Sample `K` responses → rewards `{r_k}` → `A_k = zscore(r_k)`.
-  - Optimize `-A_k * log_prob(y_k)` so higher‑reward samples get increased probability.
-  - Works particularly well for short generations and noisy/subjective rewards (only rankings/relative differences matter).
-- In our two‑stage setup:
-  - Stage‑B: short decision text, ideal for GRPO.
-  - Stage‑A: conditional GRPO gives image‑level credit without per‑image ground truth.
-
----
-
-## Intuitive demo examples
-
-### Example 1: Stage‑B GRPO with K_B=3
-- Prompt built from 3 summaries → sample 3 decisions:
-  - y1: “总评: 通过” → r1 = 0.2 (format looks OK but wrong label)
-  - y2: “总评: 不通过\n原因: 挡风板缺失” → r2 = 1.0 (label matches, clean format)
-  - y3: “总评: 不通过” → r3 = 0.8 (label matches, reason missing)
-- Advantages (z‑score): A ≈ [-1.1, +0.8, +0.3]
-- Loss: `L = -A1*logp(y1) - A2*logp(y2) - A3*logp(y3)` → pushes up y2,y3 and down y1.
-
-### Example 2: Stage‑A conditional GRPO (per‑image, K_A=3)
-- Fix other images to current best; for image i, sample 3 candidates:
-  - s1: “BBU/华为；挡风板/已安装” → r_i^1 = 0.9
-  - s2: “螺丝、螺丝、螺丝、螺丝...” → r_i^2 = 0.1 (repetition penalty)
-  - s3: “BBU/华为；挡风板/无需” → r_i^3 = 0.7
-- Advantages (z‑score): A_i ≈ [+0.8, -1.0, +0.2]
-- Loss on summary tokens: `L_i = -A_i^1*logp(s1) - A_i^2*logp(s2) - A_i^3*logp(s3)`.
+### Stage A (GRPO – conditional or joint)
+- Conditional: vary one image’s line at a time; recompute Stage‑B reward; z‑score; optimize on that image’s summary tokens.
+- Joint: sample `K_set` sets of summaries across all images; score each set via Stage‑B; z‑score across sets; optimize per‑set sum of summary log‑probs; optional set‑averaged KL.
 
 ---
 
 ## Rewards (modular registry)
 
 - File: `src_post/rewards/`, registry at `rewards/__init__.py`.
-- Inputs to rewards: `{ gt_label, pred_label, summary_lines, stage_b_reason, checklist_lines }`.
-- Typical composition (positive terms):
-  - **label_match** (binary)
-  - **formatting** (on‑domain vocabulary, basic structure)
-  - **cleanliness** (no illegal markers)
-  - **consistency**/**taxonomy** (optional domain rules)
-- Negative penalties (use negative weights in config):
-  - **rep_penalty**: penalize token repetition (e.g., ‘螺丝、螺丝、…’)
-  - **quote_penalty**: penalize quotes around summaries
-  - **special_penalty**: penalize `<|...|>` leakage into Stage‑A summaries
+- Inputs to reward functions: `{ gt_label, pred_label, summary_lines, stage_b_reason, checklist_lines, tf_p_pass, tf_p_fail }` (each fn uses the fields it needs).
+- Available rewards (names for `reward_fns`):
+  - `label_match`: 1.0 if `pred_label == gt_label` else 0.0.
+  - `decision_prob`: dense alignment from TF probabilities of "总评: 通过" vs "总评: 不通过".
+  - `violations`: aligns violation mentions with GT (reward for fail mentions when GT=fail; penalty if GT=pass).
+  - `coverage`: slot coverage in summaries (brand/shield/connection/fiber/wire/label) + optional mission checklist coverage.
+  - `formatting`: promotes clean, concise, on‑domain lines (with hint coverage factor).
+  - `cleanliness`: penalizes illegal tokens: `<|...|>`, bracketed coordinates, excessive ASCII, etc.
+  - `taxonomy`: rewards mission‑relevant vocabulary (if taxonomy JSON is present).
+  - `consistency`: overlaps between Stage‑A lines, Stage‑B reason, and checklist.
+  - Penalties (use negative weights): `rep_penalty`, `quote_penalty`, `special_penalty`.
 
-Config example (see `configs/rl/group_qc_grpo.yaml`):
+Example config:
 ```yaml
-reward_fns: label_match,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.5,0.7,-0.7,-0.4,-1.0
+reward_fns: label_match,decision_prob,violations,coverage,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.7,0.5,0.2,0.1,0.2,-0.7,-0.4,-1.0
 ```
-
 Notes:
-- Prefer shaping via rewards over hard masking/sanitization during training so the model learns to produce clean outputs by itself.
-- You can still enable decode‑time masking via `src_post/logits_processors.py` for evaluation.
+- Prefer shaping via rewards over hard masking during training so the model learns to produce clean outputs.
+- Optional decode‑time masking for geometry/coordinate tokens is available via `src_post/logits_processors.py` (see config below).
 
 ---
 
-## Multi‑GPU behavior and sharding
-- The launcher selects single vs multi‑GPU automatically and uses `torchrun` when needed.
-- Each rank processes `idx % world_size == rank` groups. Results are written to `results.rank{RANK}.jsonl`.
+## Multi‑GPU with PyTorch DDP (supported)
+
+- When launched with multiple GPUs via `torch.distributed.run` (script handles this), the runner initializes PyTorch DDP and wraps the trainable policy.
+- Dataset is manually sharded by index position: each rank iterates items where `idx % world_size == rank`. Do not use `DistributedSampler`.
+- Routing:
+  - Sampling/generation (Stage‑A lines and Stage‑B replies) are executed per‑rank with the plain policy (no gradients).
+  - Teacher‑forcing log‑prob and optional KL forwards use the DDP‑wrapped policy; gradients are all‑reduced.
+- Effective batch size: behaves like increasing TF/KL batch size by `world_size`; `K_B/K_A` still control sample diversity per rank.
+- Launch via the script: set `GPU_DEVICES="0,1"` then `bash scripts/run_group_qc_rl.sh`.
 
 ---
 
-## Key files (where to look)
-- `src_post/grpo_runner.py`: entry logic, dataset iteration, Stage‑A/B generation, reward composition, GRPO update loop (no value head).
-- `src_post/conversation.py`: Stage‑A and Stage‑B prompt builders, mission rules and hints.
-- `src_post/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
-- `src_post/logits_processors.py`: optional runtime masking for geometry/coordinate tokens (decode‑time only).
-- `src_post/rewards/`: modular rewards and penalties.
-- `src_post/span_parser.py`: robust parsing of Stage‑B decision text.
+## Selective unfreeze and per‑group LRs (src_new‑style)
 
-(Deprecated in this GRPO version: `ppo_runner.py`, `policy_vhead.py`.)
+- We mirror `src_new` behavior via `PhaseFreezeManager`:
+  - Always unfreeze the aligner/merger bridge.
+  - Optionally unfreeze only the last‑K LLM decoder layers and/or last‑K vision blocks.
+  - Keep `visual.patch_embed` frozen by default for stability.
+- YAML keys:
+  ```yaml
+  # Selective unfreeze
+  top_k_llm_layers: 2          # unfreeze last-K LLM layers
+  top_k_vision_blocks: 1       # unfreeze last-K vision blocks
+  freeze_vision_patch_embed: true
+
+  # Differential learning rates (three groups)
+  aligner_lr: 1.5e-5
+  llm_lr: 8.0e-6
+  vision_lr: 4.0e-6
+  ```
+- Implementation: `src_post/grpo_runner.py` uses `PhaseFreezeManager` (phase_3) and builds three optimizer groups: `aligner`, `llm_topk`, `vision_topk`.
 
 ---
 
-## Differences from SFT in `src_new/`
-- **Objective**: SFT minimizes CE to match reference text; RL here maximizes a composed task reward using GRPO (relative advantages across samples). No value head.
-- **Where gradients flow**: Stage‑B response tokens (always), and optionally Stage‑A summary tokens (conditional GRPO). Vision stack typically frozen; LM head + last N transformer layers trained.
-- **Images**: We reuse the official `Qwen2VLProcessor` and SFT‑style resizing so the vision token alignment stays correct.
-- **Decoding constraints**: Prefer reward‑based shaping; optional masking at decode time does not affect gradients.
+## Learning‑rate scheduler (cosine + warmup)
+
+- Optional scheduler via HuggingFace `get_scheduler` with warmup ratio:
+  ```yaml
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  ```
+- Total steps per rank derive from `num_updates * batch_size` (no grad accumulation in this runner). If `num_updates` isn’t set, a minimal default is used.
 
 ---
 
-## Troubleshooting
-- Repetition in Stage‑A summaries:
-  - Increase generation `repetition_penalty` / `no_repeat_ngram_size` (already higher by default), or raise the negative weight of `rep_penalty`.
-- Special tokens leak (`<|...|>`):
-  - Increase negative weight of `special_penalty`; optionally enable `logits_processors` masking during evaluation.
-- Quotes or long rambles:
-  - Penalize with `quote_penalty`; optionally cap Stage‑A summary length in preprocessing for logging only.
-- Advantage variance issues (std≈0):
-  - Skip update (A=0) or increase K (K_B/K_A) moderately.
-- Instability / drift:
-  - Increase KL weight(s) slightly; reduce learning rate; keep most layers frozen initially.
+## Rank‑synchronized logging, TensorBoard, and checkpointing
+
+- At the end of each update, metrics are aggregated across ranks and only rank‑0 logs:
+  - Printed fields: `loss`, `reward_best (mean±std)`, `acc_best`, `any_hit`, `resp_len`, `grad_norm`, `eta_hours`, and optional `kl_b`.
+- JSONL:
+  - Results: `results.rank{RANK}.jsonl` written by every rank.
+  - Metrics: `metrics.rank0.jsonl` written only by rank‑0 (others stay empty).
+- TensorBoard (optional): set `tb_log_dir` and `run_name` to enable rank‑0 TB scalars under `<tb_log_dir>/<run_name>/`.
+- Saving: rank‑0 saves final checkpoint to `output_dir/checkpoints/grpo_final/` (set `SKIP_SAVE=1` env or `skip_save_checkpoints: true` to skip).
 
 ---
 
 ## Minimal config (excerpt)
 ```yaml
+# Required paths
 checkpoint: /abs/path/to/sft_checkpoint
 processor:  /abs/path/to/processor
 output_dir: /abs/path/to/output_post/grpo
 train_data_dir: /abs/path/to/train_groups
+mission: bbu安装方式检查
 
 # Generation (short outputs; repetition control)
 temperature: 0.5
 top_p: 0.9
-max_new_tokens_stage_a: 64
-max_new_tokens_stage_b: 160
+max_new_tokens_stage_a: 32
+max_new_tokens_stage_b: 128
+mask_geometry_tokens: false
+mask_coordinate_tokens: false
 
 # GRPO sampling
-K_B: 4
+K_B: 3
 K_A: 3
 adv_clip: 1.5
 length_norm: true
 
-# Trainable parts
-train_lm_head: true
-train_last_n_layers: 1
+# Training loop
+train: true
+epochs: 1
+batch_size: 1
+learning_rate: 1.0e-5
+weight_decay: 1.0e-3
+max_grad_norm: 0.5
 
-# KL to reference
+# Stage‑A training mode
+train_stage_a_mode: conditional   # conditional | joint | off
+stage_a_weight: 1.0
+K_set: 1                          # used when train_stage_a_mode=joint
+max_images_tf: 1                  # cap images per update for conditional Stage-A
+
+# KL to reference policy (optional)
 use_ref_kl: true
+ref_checkpoint: /abs/path/to/sft_checkpoint
 lambda_kl_stage_b: 0.02
 lambda_kl_stage_a: 0.02
 
-# Rewards (include penalties)
-reward_fns: label_match,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.5,0.7,-0.7,-0.4,-1.0
-```
+# Selective unfreeze + per‑group LRs
+top_k_llm_layers: 1
+top_k_vision_blocks: 0
+freeze_vision_patch_embed: true
+aligner_lr: 1.5e-5
+llm_lr: 8.0e-6
+vision_lr: 1.0e-6
 
-This README reflects the GRPO‑based implementation and should be used as the source of truth for training and evaluation of group‑level QC with Stage‑A shaping.
+# LR scheduler (optional)
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+
+# Rewards (include penalties)
+reward_fns: label_match,decision_prob,violations,coverage,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.7,0.5,0.2,0.1,0.2,-0.7,-0.4,-1.0
+
+# Logging & outputs
+results_jsonl: /abs/path/output_post/results.jsonl
+metrics_jsonl: /abs/path/output_post/metrics.jsonl
+tb_log_dir: tb_post
+run_name: debug
+
+# Misc
+device: cuda
+seed: 17
+limit_groups: -1
+```
+Notes:
+- `reward_fns`/`reward_weights` must have the same length; unknown names will raise with a list of valid options.
+- Optional `sanitize_stage_a` exists in config but is off by default and not applied during training; prefer reward shaping and logits masking.
+
+---
+
+## Key files
+- `src_post/grpo_runner.py`: entry logic, dataset iteration, Stage‑A/B generation, reward composition, GRPO update loop (no value head).
+- `src_post/conversation.py`: Stage‑A/B prompt builders and mission hints.
+- `src_post/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
+- `src_post/logits_processors.py`: decode‑time masking for geometry/coordinate tokens.
+- `src_post/rewards/`: modular rewards and penalties.
+- `src_post/span_parser.py`: robust parsing of Stage‑B decision text.
+
+---
+
+## Differences from SFT in `src_new/`
+- **Objective**: SFT minimizes CE to match reference text; RL here maximizes a composed task reward using GRPO (relative advantages across samples). No value head.
+- **Where gradients flow**: Stage‑B reply tokens (always), and optionally Stage‑A summary tokens (conditional or joint). Vision stack largely frozen; LM head + last‑K text layers and last‑K vision blocks are trained.
+- **Images**: Reuse the official `Qwen2VLProcessor` and the SFT‑style EXIF‑aware resize so vision token alignment stays correct.
+- **Decoding constraints**: Prefer reward‑based shaping; optional runtime masking removes geometry/coord tokens during generation without affecting gradients.
+
+---
+
+## Troubleshooting
+- **Repetition in Stage‑A summaries**: raise generation `repetition_penalty`/`no_repeat_ngram_size` or increase negative weight of `rep_penalty`.
+- **Special tokens leak (`<|...|>`)**: increase negative weight of `special_penalty`; optionally enable decode‑time masking.
+- **Quotes or long rambles**: penalize with `quote_penalty`; you may also shorten Stage‑A `max_new_tokens_stage_a`.
+- **Advantage variance issues (std≈0)**: skip update (A=0) or increase `K_B`/`K_A` moderately.
+- **Instability/drift**: increase KL weight(s) slightly; reduce learning rate; keep most layers frozen initially.
