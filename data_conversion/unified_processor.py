@@ -27,7 +27,11 @@ from data_conversion.utils.file_ops import FileOperations
 from data_conversion.validation_manager import ValidationManager
 from data_conversion.vision_process import ImageProcessor
 from data_conversion.teacher_selector import TeacherSelector
-from data_conversion.utils.sanitizers import strip_occlusion_tokens
+from data_conversion.utils.sanitizers import (
+    strip_occlusion_tokens,
+    sanitize_text,
+    standardize_label_description,
+)
 from data_conversion.constants import DEFAULT_LABEL_HIERARCHY
 from data_conversion.utils.sorting import sort_objects_tlbr
 
@@ -172,8 +176,27 @@ class UnifiedProcessor:
         return combo in allowed_props
 
     def _sanitize_description(self, desc: str) -> str:
-        # Delegate to shared sanitizer to avoid duplication
-        return strip_occlusion_tokens(desc) or desc
+        # Apply built-in sanitizers based on flags
+        s = desc
+        if getattr(self.config, "sanitize_text", False):
+            s = sanitize_text(s) or s
+            # Also remove annotator notes like '框选范围*'
+            try:
+                from data_conversion.utils.sanitizers import strip_annotator_notes
+
+                s = strip_annotator_notes(s) or s
+            except Exception:
+                # Best effort; do not fail pipeline on optional sanitization
+                pass
+        if getattr(self.config, "remove_occlusion_tokens", False):
+            s = strip_occlusion_tokens(s) or s
+        # Standardize 标签 descriptions to eliminate empty-like cases
+        if getattr(self.config, "standardize_label_desc", False):
+            try:
+                s = standardize_label_description(s) or s
+            except Exception:
+                pass
+        return s
 
     def extract_objects_from_datalist(self, data_list: List[Dict]) -> List[Dict]:
         """Extract objects from dataList format."""
@@ -209,7 +232,7 @@ class UnifiedProcessor:
                 content_dict, self.config.response_types, "chinese"
             )
             if desc:
-                if getattr(self.config, "remove_occlusion_tokens", False):
+                if getattr(self.config, "remove_occlusion_tokens", False) or getattr(self.config, "sanitize_text", False) or getattr(self.config, "standardize_label_desc", False):
                     desc = self._sanitize_description(desc)
                 if desc:
                     objects.append({"bbox_2d": bbox, "desc": desc})
@@ -221,7 +244,7 @@ class UnifiedProcessor:
         # Use hierarchical processor for V2 data support
         objects = self.hierarchical_processor.extract_objects_from_markresult(features)
         # Apply sanitizer if configured
-        if getattr(self.config, "remove_occlusion_tokens", False):
+        if getattr(self.config, "remove_occlusion_tokens", False) or getattr(self.config, "sanitize_text", False) or getattr(self.config, "standardize_label_desc", False):
             for obj in objects:
                 d = obj.get("desc", "")
                 if d:
@@ -336,7 +359,7 @@ class UnifiedProcessor:
             return objects
 
         # Re-sanitize descriptions right before validation/output, in case any slipped through
-        if getattr(self.config, "remove_occlusion_tokens", False):
+        if getattr(self.config, "remove_occlusion_tokens", False) or getattr(self.config, "sanitize_text", False) or getattr(self.config, "standardize_label_desc", False):
             for obj in objects:
                 d = obj.get("desc", "")
                 if d:
@@ -943,6 +966,16 @@ def main():
         "--strip_occlusion",
         action="store_true",
         help="Remove tokens containing '遮挡' from descriptions",
+    )
+    parser.add_argument(
+        "--sanitize_text",
+        action="store_true",
+        help="Apply text normalization sanitization (spaces, hyphens, fullwidth digits, circled numbers)",
+    )
+    parser.add_argument(
+        "--standardize_label_desc",
+        action="store_true",
+        help="Standardize label descriptions: map '标签/*' empty-like values (空格/看不清/、 or empty) to '标签/无法识别'",
     )
 
     args = parser.parse_args()

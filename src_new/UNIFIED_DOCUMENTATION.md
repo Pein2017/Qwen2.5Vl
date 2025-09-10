@@ -90,8 +90,11 @@
 - Dataloader: `dataloader_num_workers`, `pin_memory`, `prefetch_factor`, `remove_unused_columns`.
 - LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_top_layers`, `lr_full_model`.
 - Variants: `conversation_variant_ratios` and/or `conversation_variant_schedule`.
-- Spans & debug: `span_include_im_end_in_labels`, `debug_alignment`.
-- Augmentation: `use_aug` (bool), optional `augmentation` or `augmentation_schedule` (preset schedule supported); teacher augmentation optional.
+- Format modes (global, mutually exclusive):
+  - `plain_text_mode_enabled: true` → plain JSON mode
+  - `coordinate_tokens_enabled: true` → coord_tokens mode
+  - both false → special_tokens mode (default)
+  - both true → invalid (fails fast in config validation)
 
 ---
 
@@ -102,6 +105,11 @@
   - Kernelized‑KL over Gaussian window centered at GT bin; Unlikelihood on non‑coord slice (top‑K).
   - Config: `coord_aux_enabled`, `coord_aux_tau`, `coord_aux_sigma_bins`, `coord_aux_window_bins`, `coord_aux_topk`, `coord_aux_lambda_kce`, `coord_aux_lambda_unlike`.
   - Diagnostics per role: `window_mass`, `coord_slice_mass`, `gt_prob`, `expected_mae_bins`, `top1_acc`, `top5_acc`, `outside_window_mass`, `noncoord_topk_mass`, `window_entropy`, `margin_top1_top2`, `mean_bin_offset`, `coord_pos_count`.
+- Grouping policy keyed by variant:
+  - `dense_caption`, `coords_to_desc`, `desc_to_coords` (special_tokens mode): require geometry/object-ref wrappers; fail fast if absent.
+  - Plain JSON (when enabled): require strict JSON Lines layout for variants; fail fast if invalid.
+  - `summary`: caption-only grouping over assistant spans; wrappers/JSON not required.
+  - The sampled variant is propagated as `conversation_variant` from dataset → collator → loss manager to select the correct grouping branch.
 
 ---
 
@@ -109,7 +117,7 @@
 
 - `phase_1`: Train `visual.merger`; if coord tokens present, enable coord‑slice grad masks on `embed_tokens.weight` and `lm_head.weight`; freeze LLM & vision.
 - `phase_2`: Phase 1 + unfreeze last‑K LLM decoder blocks (`top_k_layers`, default 6); vision remains frozen; merger trainable.
-- `phase_3`: Unfreeze all; keep `visual.patch_embed` frozen by default; optionally unfreeze only last‑K vision blocks (`vision_top_k_blocks`).
+- `phase_3`: Unfreeze all by default (keep `visual.patch_embed` frozen). For memory‑constrained runs, selectively unfreeze last‑K LLM blocks via `top_k_layers` and last‑K vision blocks via `vision_top_k_blocks`; merger always trainable.
 
 ---
 
@@ -162,3 +170,55 @@
 - `utils/`: rank‑aware logging; path/data resolvers; tensor validation; debug logging.
 
 ---
+
+## New: Per-image Summary Variant (SFT) & Prompt Alignment
+
+- Summary variant (SFT, optional): image → one-line Chinese summary per image
+  - Purpose: reduce distribution shift before RL by teaching a clean, single-line, per-image summary with no coordinates/special tokens.
+  - Source: distilled on-the-fly from each sample’s `objects[*].desc` (no extra JSONL required). The extractor respects slash-level semantics:
+    - Level-0: object type literal (e.g., “BBU设备”, “挡风板”, …)
+    - Level-1: comma-joined canonical attributes (e.g., visibility, compliance, bend radius, organization)
+    - Level-2 (conditional): present only when parent condition is met (e.g., `windshield_conformity`, `specific_issues`, `protection_details`)
+    - Level-Last (remarks): optional free-text “special circumstances” (e.g., cannot determine/rectified/space-limited). Detected strictly by position (last slash segment), not by keywords.
+  - Content priority in summary (from severe to mild):
+    - Screws/connectors noncompliant → list specific issues {未拧紧, 露铜, 复接, 生锈}
+    - Fiber bend violation（弯曲半径不合理）
+    - Wiring disorganized（分布散乱）
+    - Shield required but missing/nonconformant; shield install direction incorrect
+    - BBU visibility partial（只显示部分）
+    - Label readability: 清晰/不清晰 (no OCR text)
+    - Optional short remarks (Level-Last)
+  - Hard constraints: per-image only; no group-level or pass/fail decisions; no `<|...|>`, `<`, `>`, `[`, `]`, or coordinates.
+
+- YAML toggle (no code changes needed):
+  - Enable summary in training by setting non-zero ratio:
+    ```yaml
+    conversation_variant_ratios:
+      dense_caption: 0.45
+      coords_to_desc: 0.20
+      desc_to_coords: 0.20
+      summary: 0.15
+    ```
+  - Disable by omitting `summary` or setting `summary: 0.0`.
+  - Optional schedule:
+    ```yaml
+    conversation_variant_schedule:
+      - start_epoch: 0
+        ratios: {dense_caption: 0.50, coords_to_desc: 0.25, desc_to_coords: 0.25, summary: 0.00}
+      - start_epoch: 2
+        ratios: {dense_caption: 0.45, coords_to_desc: 0.20, desc_to_coords: 0.20, summary: 0.15}
+    ```
+
+- Prompt alignment (mitigate drift between SFT and RL):
+  - SFT summary system prompt (`SUMMARY_SYSTEM_PROMPT`, `src_new/processing/templates.py`) and RL Stage‑A system prompt (`STAGE_A_SYSTEM_PROMPT`, `src_post/conversation.py`) share the same core constraints:
+    - One-line Chinese; per-image only (no group-level/pass/fail)
+    - No coordinates or special tokens; no quotes or list-like repetition
+    - BBU-domain only; labels judged as clear/unclear; optional short extra_info/remarks
+  - Minor divergence by design:
+    - SFT summary is mission-agnostic to avoid overfitting; RL Stage‑A can add mission hints/checklists dynamically.
+  - User prompts are aligned in spirit:
+    - SFT: text instruction + typed image input
+    - RL: inline `<image>` placeholder in text; both are equivalent under the official chat template
+
+- Evaluation note:
+  - The default eval flow uses `dense_caption`; to evaluate summary behavior, run a small validation pass sampling the `summary` variant and check formatting/cleanliness metrics (symbol leakage=0, length 10–40 chars, coverage of severe slots).

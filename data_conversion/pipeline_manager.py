@@ -656,6 +656,11 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level",
     )
+    parser.add_argument(
+        "--standardize_label_desc",
+        action="store_true",
+        help="Standardize label descriptions: map '标签/*' empty-like values (空格/看不清/、 or empty) to '标签/无法识别'",
+    )
 
     # Environment variable support
     parser.add_argument(

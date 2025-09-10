@@ -816,12 +816,19 @@ class DetectionModel(nn.Module):
                 # This will use the optimized single-pass method when teacher-student spans are provided
                 # Ensure loss manager is initialized before computing components
                 self._ensure_loss_manager()
+                # Provide input_ids to loss manager for plain-mode grouping decode
+                try:
+                    if input_ids is not None and hasattr(self.loss_manager, "__dict__"):
+                        self.loss_manager._last_input_ids = input_ids.detach().clone()
+                except Exception as e:
+                    raise RuntimeError(f"Failed to attach last_input_ids for grouping: {e}")
                 loss_components = self.loss_manager.compute_loss_components(
                     logits=base_outputs.logits,
                     labels=labels,
                     coord_mask=None,  # No coordinate mask in standard mode
                     teacher_spans=teacher_spans,
                     student_spans=student_spans,
+                    conversation_variant=kwargs.get("conversation_variant"),
                 )
                 # Store for callback access
                 if self.loss_manager is not None:
@@ -840,54 +847,25 @@ class DetectionModel(nn.Module):
                     )
 
             elif hasattr(base_outputs, "loss") and base_outputs.loss is not None:
-                # Fallback for cases without input_ids/labels
-                loss_components = LossComponents(
-                    loss=base_outputs.loss,
-                    student_llm_loss=base_outputs.loss,
-                )
-                # Store for callback access
-                if self.loss_manager is not None:
-                    self.loss_manager.last_loss_components = loss_components
+                # Disallow implicit fallback; input_ids/labels are required for strict training semantics
+                raise RuntimeError("Base model returned a loss but input_ids/labels were not provided to wrapper; strict mode requires spans and labels.")
             else:
-                # No loss available
-                loss_components = LossComponents(loss=None)
-                if self.loss_manager is not None:
-                    self.loss_manager.last_loss_components = loss_components
+                # No loss available -> hard error
+                raise RuntimeError("No loss available from base model and wrapper; ensure labels/spans are provided.")
 
             # Return dict-like object for DataParallel compatibility
-            # Trainer accepts a dict with 'loss' key; dicts are safely gathered by DataParallel
-            class SimpleOutput(dict):
-                def __init__(self, loss, logits, loss_components, hidden_states=None):
-                    super().__init__(
-                        loss=loss,
-                        logits=logits,
-                        loss_components=loss_components,
-                        hidden_states=hidden_states,
-                    )
-                    # Also expose attributes for Trainer convenience
-                    self.loss = loss
-                    self.logits = logits
-                    self.loss_components = loss_components
-                    self.hidden_states = hidden_states
-
-                def __getitem__(self, key):
-                    if key in self:
-                        return super().__getitem__(key)
-                    return getattr(self, key)
-
-                def __contains__(self, key):
-                    return dict.__contains__(self, key) or hasattr(self, key)
-
-            return SimpleOutput(
-                loss=loss_components.loss
-                if loss_components.loss is not None
-                else (base_outputs.loss if hasattr(base_outputs, "loss") else None),
-                logits=base_outputs.logits if hasattr(base_outputs, "logits") else None,
-                loss_components=loss_components,
-                hidden_states=base_outputs.hidden_states
-                if hasattr(base_outputs, "hidden_states")
-                else None,
-            )
+            return {
+                "loss": (
+                    loss_components.loss
+                    if loss_components.loss is not None
+                    else (base_outputs.loss if hasattr(base_outputs, "loss") else None)
+                ),
+                "logits": base_outputs.logits if hasattr(base_outputs, "logits") else None,
+                "loss_components": loss_components,
+                "hidden_states": (
+                    base_outputs.hidden_states if hasattr(base_outputs, "hidden_states") else None
+                ),
+            }
 
     def _forward_with_coordinate_loss(
         self,
@@ -950,34 +928,15 @@ class DetectionModel(nn.Module):
             student_spans=student_spans,
         )
 
-        # Create simple output for DataParallel compatibility
-        class SimpleOutput:
-            def __init__(self, loss, logits, loss_components, hidden_states=None):
-                self.loss = loss
-                self.logits = logits
-                self.loss_components = loss_components
-                self.hidden_states = hidden_states
-
-            def __getitem__(self, key):
-                if key == "loss":
-                    return self.loss
-                elif key == "logits":
-                    return self.logits
-                elif key == 0:  # tuple access
-                    return self.loss
-                return getattr(self, key)
-
-            def __contains__(self, key):
-                return hasattr(self, key)
-
-        return SimpleOutput(
-            loss=loss_components.loss,
-            logits=masked_logits,
-            loss_components=loss_components,
-            hidden_states=base_outputs.hidden_states
-            if hasattr(base_outputs, "hidden_states")
-            else None,
-        )
+        # Return plain dict for compatibility with Accelerate recursive conversions
+        return {
+            "loss": loss_components.loss,
+            "logits": masked_logits,
+            "loss_components": loss_components,
+            "hidden_states": (
+                base_outputs.hidden_states if hasattr(base_outputs, "hidden_states") else None
+            ),
+        }
 
     def generate(self, **kwargs) -> torch.Tensor:
         """

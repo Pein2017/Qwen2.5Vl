@@ -121,6 +121,8 @@ class PackedDataCollator:
             "pixel_values": pixel_values,
             "segment_lengths": segment_lengths,
         }
+        if "conversation_variant" in features[0]:
+            batch["conversation_variant"] = features[0]["conversation_variant"]
 
         if "teacher_assistant_spans" in features[0]:
             t_spans_lists = [f["teacher_assistant_spans"] for f in features]
@@ -134,6 +136,7 @@ class PackedDataCollator:
             a_spans_lists = [f["assistant_spans"] for f in features]
             merged_a = _offset_merge_spans(a_spans_lists, offsets)
             batch["assistant_spans"] = [merged_a]
+
 
         # Provide the original item count for diagnostics (ignored by model forward)
         try:

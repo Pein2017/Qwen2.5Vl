@@ -12,6 +12,7 @@ export PYTHONDONTWRITEBYTECODE=1
 # Project paths
 PROJECT_ROOT="."
 CONFIG_NAME="phase_2/standard"
+to_console=false
 
 
 # Set configuration based on experiment number
@@ -47,7 +48,7 @@ fi
 # Fixed configuration
 DEEPSPEED_CONFIG="scripts/zero2.json"
 LOG_LEVEL="INFO"
-to_console=false
+
 
 # =============================================================================
 # ENVIRONMENT SETUP

@@ -57,6 +57,15 @@ Tokenization → Span Detection → Training → Model Checkpoints
 - **Modular Architecture**: Clean component boundaries, plug-and-play design
 - **Loss Management**: Mode-aware switching between coordinate and LLM loss
 
+### Format modes & variants (standardized)
+- Format modes (exactly one active per run; enforced):
+  - `special_tokens` (default when both toggles are false)
+  - `plain` (when `plain_text_mode_enabled=true`)
+  - `coord_tokens` (when `coordinate_tokens_enabled=true`)
+- Conversation variants:
+  - `dense_caption`, `coords_to_desc`, `desc_to_coords`, `summary`
+- Variant is sampled in the dataset, attached to each sample as `conversation_variant`, propagated by collators, and consumed by the loss path for strict grouping policy.
+
 ## ✅ Coordinate Loss Status
 
 Coordinate tokens map to values 0..max_coord and can be trained with optional auxiliary coordinate losses. See `src_new/losses/coord_aux.py` and `UNIFIED_DOCUMENTATION.md` for details.
@@ -119,6 +128,8 @@ python run_comprehensive_tests.py
 - ✅ **HF config exposure in wrapper**: `DetectionModel.config` now proxies the underlying HuggingFace model config (and keeps the training dataclass on `training_config`). This preserves integrations that call `model.config.to_json_string()` and similar APIs.
 - ✅ **SOLUTION‑1 CE Path**: Single‑pass CE computed once and reused for teacher/student losses; covers all assistant tokens (text + coordinate tokens).
 - ✅ **Aux Coordinate Losses**: Kernelized‑KL + Unlikelihood available via YAML; Laplacian regularizer removed; coordinate components reported separately (`*_kce`, `*_unlike`).
+- ✅ **Standardized format modes & variants**: Enforced single active format mode (special/plain/coord) and propagated `conversation_variant` to loss path for strict grouping.
+- ✅ **Grouping core extraction**: Centralized grouping utilities (`losses/grouping_core.py`); grouping behavior driven by variant.
 
 ---
 

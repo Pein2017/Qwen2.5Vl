@@ -29,11 +29,11 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION VARIABLES - MODIFY THESE AS NEEDED
 # =============================================================================
-INPUT_FILE = "infer_results/8-30-standard_phase_3/train/inference/predictions.jsonl"  # JSONL format: one JSON object per line
-OUTPUT_DIR = "vis_generation/8-30-standard_phase_3-train"
+INPUT_FILE = "infer_results/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens/train/inference/predictions.jsonl"  # JSONL format: one JSON object per line
+OUTPUT_DIR = "vis_generation/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens-train"
 BASE_PATH = "."
 # Data root directory for image files
-DATA_ROOT_DIR = "data/ds_v2_bbu_bbu_shield/images"
+DATA_ROOT_DIR = "data/ds_v2_full/images"
 MAX_SAMPLES = None  # Set to a number to limit samples, or None for all
 SAMPLE_INDICES: Optional[List[int]] = (
     None  # Set to list of indices [0, 1, 2, 5] or None for all

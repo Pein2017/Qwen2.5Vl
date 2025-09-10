@@ -1,24 +1,37 @@
 num_train_epochs: 50
-per_device_train_batch_size: 1
-per_device_eval_batch_size: 1
-gradient_accumulation_steps: 8 
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 4 
 eval_strategy: steps
 eval_steps: 20
 save_strategy: steps
-save_steps: 500
+save_steps: 1000
 save_total_limit: 2 
 learning_rate: 5.0e-5
 vision_lr: 1.0e-7
-merger_lr: 1.0e-4
+merger_lr: 5.0e-4
 llm_lr: 5.0e-6
 lr_top_layers: 1.0e-5
+lr_coord_slice: 1.0e-4  # LR for trainable token rows (embedding + LM head)
 
-model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-max_coord_1024_fourier
+collator_type: standard
+packed_segment_isolation: false  # Enable block-diagonal attention to isolate packed segments
+teacher_ratio: 0.6
 
-run_name: "9-7-7b-full-phase_1-from_original_model"
-output_dir: outputs/7B-full/phase_1
+model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
+
+run_name: "9-9-bs_32-ep_40-teacher_0.6-plain_text"
+output_dir: outputs/7B-full-retrained/teacher-0.6
 
 phase_name: phase_1
+# Restrict training to only these special tokens (embeddings + LM head rows)
+trainable_token_strings:
+  - "<|line_start|>"
+  - "<|line_end|>"
+  - "<|box_start|>"
+  - "<|box_end|>"
+  - "<|quad_start|>"
+  - "<|quad_end|>"
 
 use_aug: false
 augmentation_schedule:
@@ -37,3 +50,7 @@ conversation_variant_ratios:
   dense_caption: 0.5
   coords_to_desc: 0.25
   desc_to_coords: 0.25
+  summary: 0
+
+# Enable global plain text JSON mode
+plain_text_mode_enabled: true

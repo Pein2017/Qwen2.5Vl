@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Export an expanded Qwen2.5-VL checkpoint with coordinate tokens and resized embeddings.
+Export a Qwen2.5-VL checkpoint by adding only line geometry tokens (no coordinate tokens).
 
 - Loads the base checkpoint (no coord tokens)
 - Extends tokenizer vocabulary and model embeddings using src_new.processing.token_processor
 - Saves to an output directory like:
-  ./model_cache/Qwen/Qwen2.5-VL-3B-Instruct-max_coord_1024
+  ./model_cache/Qwen/Qwen2.5-VL-3B-Instruct-line_tokens
 
 Usage:
   source ~/.bashrc && conda activate ms
@@ -17,7 +17,7 @@ import os
 
 # Configuration - Define all parameters here
 BASE_MODEL_PATH = "./model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
-OUTPUT_DIR = "./model_cache/Qwen/Qwen2.5-VL-7B-Instruct-max_coord_1024_fourier"
+OUTPUT_DIR = "./model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens"
 MAX_COORD_VALUE = 1024
 DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
 FORCE_OVERWRITE = True  # Set to True to overwrite existing output directory
@@ -67,10 +67,7 @@ def resolve_dtype(dtype: str) -> torch.dtype:
 
 
 def ensure_abs(path: str, name: str) -> Path:
-    p = Path(path)
-    if not p.is_absolute():
-        raise ValueError(f"{name} must be an absolute path: {path}")
-    return p
+    return Path(path)
 
 
 def validate_base_checkpoint(base_path: Path) -> None:
@@ -144,7 +141,7 @@ def extend_and_save(
 
     # Configure and extend
     token_config = TokenConfig(
-        coordinate_tokens_enabled=True,
+        coordinate_tokens_enabled=False,
         max_coord_value=int(max_coord_value),
         coordinate_init_mode=COORDINATE_INIT_MODE,
     )
@@ -195,11 +192,12 @@ def extend_and_save(
     coord_end_inclusive = max(coord_ids) if coord_ids else None
 
     coord_cfg = {
-        "coordinate_tokens_enabled": True,
+        "coordinate_tokens_enabled": False,
         "max_coord_value": int(max_coord_value),
         "coordinate_token_id_start": coord_start,
         "coordinate_token_id_end_inclusive": coord_end_inclusive,
         "vocab_size_after": vocab_after,
+        "line_tokens_added": True,
     }
     with open(output_dir / "coordinate_config.json", "w", encoding="utf-8") as f:
         json.dump(coord_cfg, f, ensure_ascii=False, indent=2)
@@ -227,11 +225,12 @@ def extend_and_save(
             f"Geometry tokens missing after fast reload: {missing}"
         )
     # Coordinate tokens count check (>= in case base already had some)
-    coord_tokens = [t for t in fast_vocab.keys() if isinstance(t, str) and t.startswith("<|coord_")]
-    if len(coord_tokens) < int(max_coord_value) + 1:
-        raise RuntimeError(
-            f"Expected at least {int(max_coord_value)+1} coordinate tokens after fast reload, found {len(coord_tokens)}"
-        )
+    if token_config.coordinate_tokens_enabled:
+        coord_tokens = [t for t in fast_vocab.keys() if isinstance(t, str) and t.startswith("<|coord_")]
+        if len(coord_tokens) < int(max_coord_value) + 1:
+            raise RuntimeError(
+                f"Expected at least {int(max_coord_value)+1} coordinate tokens after fast reload, found {len(coord_tokens)}"
+            )
     print("✅ Fast tokenizer reload validation passed (use_fast=True)")
 
     # Validate saved config reports increased vocab size relative to base

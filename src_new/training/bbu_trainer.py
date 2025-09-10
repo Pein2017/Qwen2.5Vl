@@ -756,10 +756,10 @@ class BBUTrainer(HFTrainer):
             if k.startswith(f"{metric_key_prefix}_teacher_"):
                 metrics.pop(k, None)
 
-        # If no components were captured, log a warning
-        if not eval_components and self.args.should_save:
-            logger.warning(
-                "⚠️ No evaluation loss components captured - check if model.get_last_loss_components() is working during evaluation"
+        # If no components were captured, fail fast (evaluation must surface loss components)
+        if not eval_components:
+            raise RuntimeError(
+                "No evaluation loss components captured; ensure model.get_last_loss_components() is populated during evaluation and spans/masks are present."
             )
 
         return new_metrics
@@ -914,6 +914,7 @@ class BBUTrainer(HFTrainer):
                         if (clr is not None)
                         else getattr(config, "llm_lr", self.args.learning_rate),
                         "name": "coord_slice",
+                        "weight_decay": 0.0,
                     }
                 )
                 self._param_group_mapping.append("coord_slice")

@@ -10,19 +10,24 @@ Simplified, self-contained implementation that:
 - Supports teacher-student and simple flows; includes inference builder
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Union
+from src_new.types import FormatMode, ConversationVariant
 
 import torch
 from PIL import Image
 from transformers import Qwen2VLProcessor
-from dataclasses import dataclass
-from enum import Enum
 
-from .coordinate_converter import CoordinateTokenConverter
-from .templates import CONSTANTS, get_system_prompt
-from .special_tokens import IMAGE_PAD
-from .variants import create_default_variant_registry
-from ..utils.rank_aware_logging import get_rank_aware_logger
+from src_new.processing.coordinate_converter import CoordinateTokenConverter
+from src_new.processing.templates import CONSTANTS, get_system_prompt
+from src_new.processing.special_tokens import IMAGE_PAD
+from src_new.processing.variants import create_default_variant_registry
+from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 logger = get_rank_aware_logger("processing.conversation")
 
@@ -42,25 +47,27 @@ class ImageTokenMismatchError(ConversationStructureError):
         self.actual_count = actual_count
 
 
-class TeacherStudentValidationError(ConversationStructureError):
+class TeacherStudentValidationError(ConversationError):
+    """Error during teacher-student conversation validation."""
     pass
 
 
-class ConversationTruncationError(ConversationStructureError):
+class ConversationTruncationError(ConversationError):
+    """Error when conversation exceeds maximum length."""
     pass
 
 
 @dataclass
 class ConversationValidationResult:
+    """Result of conversation validation."""
     is_valid: bool
-    errors: List[str]
-    warnings: List[str]
-    image_count: int
-    turn_count: int
-    details: Dict[str, Any]
+    error_message: Optional[str] = None
+    conversation_type: Optional[ConversationType] = None
+    token_count: Optional[int] = None
 
 
 class ConversationType(Enum):
+    """Type of conversation being processed."""
     SIMPLE = "simple"
     TEACHER_STUDENT = "teacher_student"
     INFERENCE = "inference"
@@ -68,6 +75,22 @@ class ConversationType(Enum):
 
 
 class ConversationValidator:
+    """Validator for conversation structure and content."""
+    
+    def __init__(self):
+        pass
+    
+    def validate(self, conversation: Dict[str, Any]) -> ConversationValidationResult:
+        """Validate a conversation structure."""
+        # Basic validation implementation
+        if not isinstance(conversation, dict):
+            return ConversationValidationResult(
+                is_valid=False,
+                error_message="Conversation must be a dictionary"
+            )
+        
+        return ConversationValidationResult(is_valid=True)
+
     @staticmethod
     def validate_conversation_structure(
         messages: List[Dict],
@@ -162,21 +185,17 @@ class ConversationValidator:
 
             return ConversationValidationResult(
                 is_valid=len(errors) == 0,
-                errors=errors,
-                warnings=warnings,
-                image_count=len(images),
-                turn_count=len(messages),
-                details=details,
+                error_message=", ".join(errors),
+                conversation_type=conversation_type,
+                token_count=len(messages),
             )
         except Exception as e:
             errors.append(f"Validation failed with exception: {str(e)}")
             return ConversationValidationResult(
                 is_valid=False,
-                errors=errors,
-                warnings=warnings,
-                image_count=len(images) if isinstance(images, list) else 0,
-                turn_count=len(messages) if isinstance(messages, list) else 0,
-                details=details,
+                error_message=f"Validation failed with exception: {str(e)}",
+                conversation_type=conversation_type,
+                token_count=len(messages) if isinstance(messages, list) else 0,
             )
 
     @staticmethod
@@ -208,6 +227,7 @@ class ConversationProcessor:
         processor: Qwen2VLProcessor,
         max_coord_value: int,
         coordinate_tokens_enabled: bool,
+        plain_text_mode_enabled: bool,
     ) -> None:
         if processor is None:
             raise ValueError("processor cannot be None")
@@ -219,14 +239,35 @@ class ConversationProcessor:
             raise ValueError(
                 f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}"
             )
+        if not isinstance(plain_text_mode_enabled, bool):
+            raise ValueError(
+                f"plain_text_mode_enabled must be a bool, got {type(plain_text_mode_enabled)}"
+            )
         self.processor = processor
         self.coordinate_tokens_enabled = coordinate_tokens_enabled
+        self._plain_text_mode_enabled = plain_text_mode_enabled
+        # Resolve exclusive format mode (special_tokens as the default)
+        if self._plain_text_mode_enabled and self.coordinate_tokens_enabled:
+            raise ValueError(
+                "Conflicting modes: plain_text_mode_enabled=True and coordinate_tokens_enabled=True. Choose one."
+            )
+        self._format_mode: str = (
+            FormatMode.PLAIN.value
+            if self._plain_text_mode_enabled
+            else (FormatMode.COORD_TOKENS.value if self.coordinate_tokens_enabled else FormatMode.SPECIAL_TOKENS.value)
+        )
         self.coordinate_converter = CoordinateTokenConverter(
             max_coord_value=max_coord_value,
             coordinate_tokens_enabled=coordinate_tokens_enabled,
+            plain_text_mode_enabled=plain_text_mode_enabled,
+            format_mode=self._format_mode,
         )
         # Cache system prompt once (stable per instance)
-        self._system_prompt: str = get_system_prompt(self.coordinate_tokens_enabled)
+        self._system_prompt: str = get_system_prompt(
+            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
+            plain_text_mode_enabled=self._plain_text_mode_enabled,
+            format_mode=self._format_mode,
+        )
         # Variant registry
         self._variant_registry = create_default_variant_registry(self.coordinate_converter)
 
@@ -370,9 +411,10 @@ class ConversationProcessor:
     ) -> Dict[str, torch.Tensor]:
         if "objects" not in sample or not sample["objects"]:
             raise ConversationStructureError("Sample missing non-empty 'objects'")
-        assistant_text = self.coordinate_converter.convert_objects_to_tokens(
+        assistant_render = self.coordinate_converter.convert_objects_to_tokens(
             sample["objects"]
         )
+        assistant_text = assistant_render["text"] if isinstance(assistant_render, dict) else assistant_render
         # Dense caption variant: user contains only image(s)
         messages = [
             {"role": "system", "content": self._system_prompt},
@@ -382,7 +424,11 @@ class ConversationProcessor:
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=images, add_generation_prompt=False
         )
-        return self._process_text_and_images(text, oi)
+        out = self._process_text_and_images(text, oi)
+        if isinstance(assistant_render, dict) and assistant_render.get("group_char_spans"):
+            out["assistant_group_char_spans"] = [assistant_render["group_char_spans"]]
+            out["assistant_turn_roles"] = ["student"]
+        return out
 
     def create_teacher_student_conversation(
         self,
@@ -398,12 +444,15 @@ class ConversationProcessor:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
         all_images: List[Image.Image] = []
         # Teacher turns: user with only image; assistant full dense outputs
+        turn_group_spans = []
+        turn_roles = []
         for t_sample, t_images in zip(teacher_samples, teacher_images_list):
             if "objects" not in t_sample or not t_sample["objects"]:
                 continue
-            t_assistant = self.coordinate_converter.convert_objects_to_tokens(
+            t_assistant_render = self.coordinate_converter.convert_objects_to_tokens(
                 t_sample["objects"]
             )
+            t_assistant = t_assistant_render["text"] if isinstance(t_assistant_render, dict) else t_assistant_render
             messages.extend(
                 [
                     {"role": "user", "content": [{"type": "image"}]},
@@ -411,12 +460,16 @@ class ConversationProcessor:
                 ]
             )
             all_images.extend(t_images[:1])
+            if isinstance(t_assistant_render, dict) and t_assistant_render.get("group_char_spans"):
+                turn_group_spans.append(t_assistant_render["group_char_spans"])
+                turn_roles.append("teacher")
         # Student turn: user with only image; assistant full dense outputs (training)
         if "objects" not in student_sample or not student_sample["objects"]:
             raise TeacherStudentValidationError("Student sample missing objects")
-        s_assistant = self.coordinate_converter.convert_objects_to_tokens(
+        s_assistant_render = self.coordinate_converter.convert_objects_to_tokens(
             student_sample["objects"]
         )
+        s_assistant = s_assistant_render["text"] if isinstance(s_assistant_render, dict) else s_assistant_render
         messages.extend(
             [
                 {"role": "user", "content": [{"type": "image"}]},
@@ -427,7 +480,14 @@ class ConversationProcessor:
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=all_images, add_generation_prompt=False
         )
-        return self._process_text_and_images(text, oi)
+        out = self._process_text_and_images(text, oi)
+        if turn_group_spans:
+            out["assistant_group_char_spans"] = turn_group_spans
+            out["assistant_turn_roles"] = turn_roles + (["student"] if isinstance(s_assistant_render, dict) and s_assistant_render.get("group_char_spans") else [])
+        elif isinstance(s_assistant_render, dict) and s_assistant_render.get("group_char_spans"):
+            out["assistant_group_char_spans"] = [s_assistant_render["group_char_spans"]]
+            out["assistant_turn_roles"] = ["student"]
+        return out
 
     def create_inference_conversation(
         self, user_prompt: str, images: List[Image.Image]
@@ -487,39 +547,56 @@ class ConversationProcessor:
         return self._process_text_and_images(text, oi)
 
     # ------------- Unified variant dispatcher -------------
-    def _get_variant_handlers(self, variant: str):
-        handler = self._variant_registry.get(variant)
+    def _get_variant_handlers(self, variant: Union[str, ConversationVariant]):
+        v = getattr(variant, "value", variant)
+        handler = self._variant_registry.get(str(v))
         try:
             handler_name = type(handler).__name__
         except Exception:
             handler_name = str(handler)
-        logger.debug(f"🧩 Variant resolved: '{variant}' -> handler={handler_name}")
+        logger.debug(f"🧩 Variant resolved: '{v}' -> handler={handler_name}")
         return handler.build_user_text, handler.build_assistant_text
 
+    def _get_system_prompt_for_variant(self, variant: Union[str, ConversationVariant]) -> str:
+        v = str(getattr(variant, "value", variant)).strip().lower()
+        if v == ConversationVariant.SUMMARY.value:
+            return CONSTANTS.get("SUMMARY_SYSTEM_PROMPT", "请只输出一行摘要：")
+        return self._system_prompt
+
     def _build_simple_conversation_unified(
-        self, sample: Dict[str, Any], images: List[Image.Image], variant: str
+        self, sample: Dict[str, Any], images: List[Image.Image], variant: Union[str, ConversationVariant]
     ) -> Dict[str, torch.Tensor]:
         if "objects" not in sample or not sample["objects"]:
             raise ConversationStructureError("Sample missing non-empty 'objects'")
         logger.debug(
-            f"🗣️ Building simple conversation (variant='{variant}', images={len(images)})"
+            f"🗣️ Building simple conversation (variant='{getattr(variant, 'value', variant)}', images={len(images)})"
         )
         user_text_fn, assistant_fn = self._get_variant_handlers(variant)
         user_text = user_text_fn(sample["objects"])  # may be None for dense
-        assistant_text = assistant_fn(sample["objects"])  # always a string
+        assistant_render = assistant_fn(sample["objects"])  # may be dict in plain mode
+        assistant_text = (
+            assistant_render["text"]
+            if isinstance(assistant_render, dict) and "text" in assistant_render
+            else assistant_render
+        )
         if user_text is None:
             user_content = ([{"type": "image"}] * len(images))
         else:
             user_content = [{"type": "text", "text": user_text}, {"type": "image"}]
+        sys_prompt = self._get_system_prompt_for_variant(variant)
         messages = [
-            {"role": "system", "content": self._system_prompt},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content},
             {"role": "assistant", "content": assistant_text},
         ]
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=images, add_generation_prompt=False
         )
-        return self._process_text_and_images(text, oi)
+        out = self._process_text_and_images(text, oi)
+        if isinstance(assistant_render, dict) and assistant_render.get("group_char_spans"):
+            out["assistant_group_char_spans"] = [assistant_render["group_char_spans"]]
+            out["assistant_turn_roles"] = ["student"]
+        return out
 
     def _build_teacher_student_conversation_unified(
         self,
@@ -527,41 +604,59 @@ class ConversationProcessor:
         teacher_samples: List[Dict[str, Any]],
         student_images: List[Image.Image],
         teacher_images_list: List[List[Image.Image]],
-        variant: str,
+        variant: Union[str, ConversationVariant],
     ) -> Dict[str, torch.Tensor]:
         if not teacher_samples or not teacher_images_list:
             raise TeacherStudentValidationError("teacher_samples/images cannot be empty")
         if len(teacher_samples) != len(teacher_images_list):
             raise TeacherStudentValidationError("Mismatch teachers vs images lists")
         logger.debug(
-            f"🗣️ Building teacher-student conversation (variant='{variant}', teachers={len(teacher_samples)}, student_images={len(student_images)})"
+            f"🗣️ Building teacher-student conversation (variant='{getattr(variant, 'value', variant)}', teachers={len(teacher_samples)}, student_images={len(student_images)})"
         )
         user_text_fn, assistant_fn = self._get_variant_handlers(variant)
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
+        sys_prompt = self._get_system_prompt_for_variant(variant)
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_prompt}]
         all_images: List[Image.Image] = []
-        # Teachers
-        for t_sample, t_images in zip(teacher_samples, teacher_images_list):
-            objs = t_sample.get("objects", [])
-            if not objs:
+        turn_group_spans: List[Dict[str, Any]] = []
+        turn_roles: List[str] = []
+
+        # Teacher examples first
+        valid_teachers = 0
+        for t_sample, t_images in zip(teacher_samples, teacher_images_list or []):
+            objs = t_sample.get("objects")
+            if not isinstance(objs, list) or not objs:
+                # Skip empty teacher samples rather than failing
+                logger.warning(f"Skipping teacher sample with empty/invalid objects: {type(objs)}")
                 continue
-            u_text = user_text_fn(objs)
-            t_assistant = assistant_fn(objs)
-            if u_text is None:
-                u_content = [{"type": "image"}]
-            else:
-                u_content = [{"type": "text", "text": u_text}, {"type": "image"}]
+            
+            t_render = assistant_fn(objs)
+            t_assistant = (
+                t_render["text"] if isinstance(t_render, dict) and "text" in t_render else t_render
+            )
             messages.extend(
                 [
-                    {"role": "user", "content": u_content},
+                    {"role": "user", "content": [{"type": "image"}]},
                     {"role": "assistant", "content": t_assistant},
                 ]
             )
-            all_images.extend(t_images[:1])
-        # Student
+            all_images.append(t_images[0])
+            if isinstance(t_render, dict) and t_render.get("group_char_spans"):
+                turn_group_spans.append(t_render["group_char_spans"])
+                turn_roles.append("teacher")
+            valid_teachers += 1
+
+        # Ensure we have at least one valid teacher
+        if valid_teachers == 0:
+            raise TeacherStudentValidationError("No valid teacher samples found after filtering")
+
+        # Student turn
         if "objects" not in student_sample or not student_sample["objects"]:
             raise TeacherStudentValidationError("Student sample missing objects")
-        s_u_text = user_text_fn(student_sample["objects"]) 
-        s_assistant = assistant_fn(student_sample["objects"]) 
+        s_u_text = user_text_fn(student_sample["objects"])
+        s_render = assistant_fn(student_sample["objects"])
+        s_assistant = (
+            s_render["text"] if isinstance(s_render, dict) and "text" in s_render else s_render
+        )
         if s_u_text is None:
             s_u_content = [{"type": "image"}]
         else:
@@ -576,13 +671,20 @@ class ConversationProcessor:
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=all_images, add_generation_prompt=False
         )
-        return self._process_text_and_images(text, oi)
+        out = self._process_text_and_images(text, oi)
+        if turn_group_spans or (isinstance(s_render, dict) and s_render.get("group_char_spans")):
+            if isinstance(s_render, dict) and s_render.get("group_char_spans"):
+                turn_group_spans.append(s_render["group_char_spans"])
+                turn_roles.append("student")
+            out["assistant_group_char_spans"] = turn_group_spans
+            out["assistant_turn_roles"] = turn_roles
+        return out
 
     def create_conversation(
         self,
         sample: Dict[str, Any],
         images: List[Image.Image],
-        variant: str,
+        variant: Union[str, ConversationVariant],
         teacher_samples: Optional[List[Dict[str, Any]]] = None,
         teacher_images_list: Optional[List[List[Image.Image]]] = None,
     ) -> Dict[str, torch.Tensor]:
@@ -592,7 +694,7 @@ class ConversationProcessor:
         a teacher-student conversation; otherwise builds a simple conversation.
         """
         logger.debug(
-            f"🧵 create_conversation: variant='{variant}', teachers={bool(teacher_samples and teacher_images_list)}"
+            f"🧵 create_conversation: variant='{getattr(variant, 'value', variant)}', teachers={bool(teacher_samples and teacher_images_list)}"
         )
         if teacher_samples and teacher_images_list:
             return self._build_teacher_student_conversation_unified(

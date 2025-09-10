@@ -315,6 +315,7 @@ class Dataset(TorchDataset):
             processor=hf_processor,
             max_coord_value=max_coord_value,
             coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
+			plain_text_mode_enabled=self.config.plain_text_mode_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")
@@ -438,6 +439,7 @@ class Dataset(TorchDataset):
         # Add teacher examples if conditions are met
         if (
             self.teacher_pool_manager
+            and (not self.is_eval)
             and random.random() < self.teacher_ratio
             and len(self.teacher_pool_manager.teacher_pool) > 0
         ):
@@ -605,11 +607,110 @@ class Dataset(TorchDataset):
             has_teachers=has_teachers,
             conversation_text=inputs.get("conversation_text"),
             offset_mapping=inputs.get("offset_mapping"),
+            num_teachers=len(teacher_samples) if has_teachers else 0,
         )
         inputs["labels"] = labels
         inputs["teacher_assistant_spans"] = teacher_spans
         inputs["student_assistant_spans"] = student_spans
         inputs.pop("assistant_spans", None)
+        # Attach normalized variant for downstream strict grouping
+        try:
+            inputs["conversation_variant"] = str(variant)
+        except Exception:
+            inputs["conversation_variant"] = variant
+
+        # Optional: build grouped masks from plain-text char spans if present
+        try:
+            char_groups = inputs.get("assistant_group_char_spans")
+            turn_roles = inputs.get("assistant_turn_roles")
+            if char_groups and turn_roles:
+                teacher_caption_mask = torch.zeros_like(labels, dtype=torch.bool)
+                teacher_grounding_mask = torch.zeros_like(labels, dtype=torch.bool)
+                student_caption_mask = torch.zeros_like(labels, dtype=torch.bool)
+                student_grounding_mask = torch.zeros_like(labels, dtype=torch.bool)
+                # Build assistant masks for clipping
+                assist_teacher_mask = torch.zeros_like(labels, dtype=torch.bool)
+                for st, ed in teacher_spans:
+                    assist_teacher_mask[st:ed] = True
+                assist_student_mask = torch.zeros_like(labels, dtype=torch.bool)
+                for st, ed in student_spans:
+                    assist_student_mask[st:ed] = True
+
+                # Map chars -> tokens using offset mapping
+                full_text = self.tokenizer.decode(inputs["input_ids"], skip_special_tokens=False)
+                # Compute assistant content char offsets per turn
+                import re as _re
+                pat = _re.compile(ASSISTANT_SPAN_PATTERN, _re.DOTALL)
+                content_offsets: List[tuple[int,int]] = []
+                for m in pat.finditer(full_text):
+                    content_offsets.append((m.start(1), m.end(1)))
+                tok = self.tokenizer(
+                    full_text,
+                    return_offsets_mapping=True,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                )
+                offsets = tok["offset_mapping"][0]
+
+                def _char_span_to_token_mask(spans: List[tuple], clip_mask: torch.Tensor) -> torch.Tensor:
+                    mask = torch.zeros_like(labels, dtype=torch.bool)
+                    for c0, c1 in spans or []:
+                        # find token start/end
+                        # start = first token whose end > c0
+                        # end = first token whose start >= c1
+                        start_tok = None
+                        end_tok = None
+                        for idx, (s, e) in enumerate(offsets.tolist()):
+                            if start_tok is None and e > c0:
+                                start_tok = idx
+                            if end_tok is None and s >= c1:
+                                end_tok = idx
+                                break
+                        if start_tok is None:
+                            start_tok = len(offsets) - 1
+                        if end_tok is None:
+                            end_tok = len(offsets)
+                        # clip to sequence and to assistant mask
+                        start_tok = max(0, min(start_tok, mask.size(0)))
+                        end_tok = max(start_tok, min(end_tok, mask.size(0)))
+                        if end_tok > start_tok:
+                            mask[start_tok:end_tok] = True
+                    return mask & clip_mask
+
+                for idx, (turn_info, role) in enumerate(zip(char_groups, turn_roles)):
+                    cap_spans = (turn_info or {}).get("caption")
+                    grd_spans = (turn_info or {}).get("grounding")
+                    # Adjust to absolute char positions using assistant content start
+                    c_start = content_offsets[idx][0] if idx < len(content_offsets) else 0
+                    cap_abs = [(c_start + s, c_start + e) for (s, e) in (cap_spans or [])]
+                    grd_abs = [(c_start + s, c_start + e) for (s, e) in (grd_spans or [])]
+                    if str(role) == "teacher":
+                        teacher_caption_mask |= _char_span_to_token_mask(cap_abs, assist_teacher_mask)
+                        teacher_grounding_mask |= _char_span_to_token_mask(grd_abs, assist_teacher_mask)
+                    else:
+                        student_caption_mask |= _char_span_to_token_mask(cap_abs, assist_student_mask)
+                        student_grounding_mask |= _char_span_to_token_mask(grd_abs, assist_student_mask)
+
+                # Derive formatting masks as residual inside assistant spans
+                teacher_assist = assist_teacher_mask
+                student_assist = assist_student_mask
+                teacher_formatting_mask = teacher_assist & (~(teacher_caption_mask | teacher_grounding_mask))
+                student_formatting_mask = student_assist & (~(student_caption_mask | student_grounding_mask))
+
+                # Shift by one for CE alignment
+                inputs["teacher_group_masks"] = {
+                    "caption": teacher_caption_mask[1:],
+                    "grounding": teacher_grounding_mask[1:],
+                    "formatting": teacher_formatting_mask[1:],
+                }
+                inputs["student_group_masks"] = {
+                    "caption": student_caption_mask[1:],
+                    "grounding": student_grounding_mask[1:],
+                    "formatting": student_formatting_mask[1:],
+                }
+        except Exception:
+            # If anything goes wrong, we fall back to plugin-based grouping later; do not swallow errors in fail-fast modes elsewhere
+            pass
 
         return inputs
 
@@ -620,6 +721,7 @@ class Dataset(TorchDataset):
         has_teachers: bool = False,
         conversation_text: Optional[str] = None,
         offset_mapping: Optional[torch.Tensor] = None,
+        num_teachers: int = 0,
     ) -> tuple[torch.Tensor, List[tuple[int, int]], List[tuple[int, int]]]:
         """
         Create properly masked labels using OFFSET MAPPING for accurate span detection.
@@ -650,7 +752,10 @@ class Dataset(TorchDataset):
                 0
             ]  # Remove batch dim
 
-            # STEP 3: Find assistant content spans using accurate text-to-token mapping
+            # STEP 3: Set number of teachers (always 1 teacher + 1 student in current setup)
+            num_teachers = 1 if has_teachers else 0
+
+            # STEP 4: Find assistant content spans using accurate text-to-token mapping
             from src_new.processing.span_extraction import find_assistant_spans
             assistant_spans = find_assistant_spans(
                 full_text=full_text,
@@ -659,12 +764,13 @@ class Dataset(TorchDataset):
                 include_eos=bool(getattr(self.config, "span_include_im_end_in_labels", True)),
                 has_teachers=has_teachers,
                 input_ids_1d=input_ids_1d,
+                num_teachers=num_teachers,
             )
 
-            # STEP 4: Mask all tokens initially
+            # STEP 5: Mask all tokens initially
             labels.fill_(-100)
 
-            # STEP 5: Unmask assistant content spans
+            # STEP 6: Unmask assistant content spans
             for span_info in assistant_spans:
                 start_token, end_token, is_teacher = span_info
 
@@ -704,13 +810,13 @@ class Dataset(TorchDataset):
                         f"Invalid span bounds: {start_token}:{end_token} for sequence length {len(labels)}"
                     )
 
-            # STEP 6: Mask image pad tokens
+            # STEP 7: Mask image pad tokens
             image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
             if image_pad_id is not None:
                 image_pad_mask = input_ids_1d == image_pad_id
                 labels[image_pad_mask] = -100
 
-            # STEP 7 (debug): strict invariants for alignment and coverage
+            # STEP 8 (debug): strict invariants for alignment and coverage
             if getattr(self.config, "debug_alignment", False):
                 # Re-decode labels where not -100 and check round-trip equals input_ids
                 # (We check ids equality on unmasked region spans.)

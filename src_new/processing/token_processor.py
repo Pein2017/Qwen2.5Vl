@@ -174,10 +174,11 @@ class TokenProcessor:
         for t in ("<|line_start|>", "<|line_end|>"):
             if t not in final_vocab:
                 missing.append(t)
-        for coord in range(self.config.max_coord_value + 1):
-            tok = f"<|coord_{coord}|>"
-            if tok not in final_vocab:
-                missing.append(tok)
+        if self.config.coordinate_tokens_enabled:
+            for coord in range(self.config.max_coord_value + 1):
+                tok = f"<|coord_{coord}|>"
+                if tok not in final_vocab:
+                    missing.append(tok)
         if missing:
             raise ValueError(
                 f"Missing required tokens after extension: {missing[:5]} ... total={len(missing)}"
@@ -464,26 +465,27 @@ class TokenProcessor:
                     "Geometry token initialization failed: line tokens not copied from quad tokens"
                 )
 
-        # Coordinate tokens range and non-zero init
-        # Derive coordinate range from tokenizer rather than fixed IDs
-        coord_ids = [
-            vocab[t]
-            for t in vocab.keys()
-            if isinstance(t, str) and t.startswith("<|coord_") and t.endswith("|>")
-        ]
-        if not coord_ids:
-            raise AssertionError(
-                "Coordinate tokens not found in tokenizer after extension"
-            )
+        # Coordinate tokens range and non-zero init (only when enabled)
+        if self.config.coordinate_tokens_enabled:
+            # Derive coordinate range from tokenizer rather than fixed IDs
+            coord_ids = [
+                vocab[t]
+                for t in vocab.keys()
+                if isinstance(t, str) and t.startswith("<|coord_") and t.endswith("|>")
+            ]
+            if not coord_ids:
+                raise AssertionError(
+                    "Coordinate tokens not found in tokenizer after extension"
+                )
 
-        with torch.no_grad():
-            zeros = torch.zeros_like(in_w[0])  # type: ignore
-            for cid in coord_ids:
-                vec = in_w[cid]  # type: ignore
-                if torch.allclose(vec, zeros):
-                    raise AssertionError(
-                        f"Coordinate embedding at id={cid} is all zeros"
-                    )
+            with torch.no_grad():
+                zeros = torch.zeros_like(in_w[0])  # type: ignore
+                for cid in coord_ids:
+                    vec = in_w[cid]  # type: ignore
+                    if torch.allclose(vec, zeros):
+                        raise AssertionError(
+                            f"Coordinate embedding at id={cid} is all zeros"
+                        )
 
         # Original rows unchanged (strictly for base pretrained region only).
         # Note: Some official checkpoints ship embedding matrices larger than the

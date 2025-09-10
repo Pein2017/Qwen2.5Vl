@@ -19,7 +19,7 @@ llm_lr: 1.0e-5
 lr_top_layers: 5.0e-6
 lr_coord_slice: 5.0e-6
 
-model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-max_coord_1024_fourier
+model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
 
 run_name: "debug"
 output_dir: outputs-debug

@@ -120,6 +120,13 @@ class FlexibleTaxonomyProcessor:
         description = self._create_hierarchical_description(
             object_type, content_zh, content
         )
+        # Standardize 标签 descriptions
+        try:
+            from data_conversion.utils.sanitizers import standardize_label_description
+
+            description = standardize_label_description(description) or description
+        except Exception as e:
+            raise e
 
         return AnnotationSample(
             object_type=object_type,
@@ -349,12 +356,39 @@ class FlexibleTaxonomyProcessor:
 
             # For special circumstances
             elif attr["name"] == "special_circumstances":
-                if content_mapping in content_zh:
+                # 1) Try Chinese question key(s) directly
+                for question in attr.get("chinese_questions", []):
+                    if question in content_zh:
+                        value = content_zh[question]
+                        if isinstance(value, list) and value:
+                            value = value[0]
+                        if value and str(value).strip():
+                            return str(value).strip()
+
+                # 2) Try mapped key (e.g., special_situation)
+                content_mapping = attr.get("content_mapping")
+                if content_mapping and content_mapping in content_zh:
                     value = content_zh[content_mapping]
                     if isinstance(value, list) and value:
                         value = value[0]
                     if value and str(value).strip():
                         return str(value).strip()
+
+                # 3) Legacy/fallback keys (ex_info) in Chinese and English content
+                for legacy_key in ("ex_info", "exInfo"):
+                    if legacy_key in content_zh:
+                        value = content_zh[legacy_key]
+                        if isinstance(value, list) and value:
+                            value = value[0]
+                        if value and str(value).strip():
+                            return str(value).strip()
+                    if legacy_key in content:
+                        value = content[legacy_key]
+                        if isinstance(value, list) and value:
+                            value = value[0]
+                        if value and str(value).strip():
+                            return str(value).strip()
+                return None
             return None
 
         # Handle structured attributes with defined values

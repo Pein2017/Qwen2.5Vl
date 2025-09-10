@@ -32,6 +32,7 @@ def find_assistant_spans(
     include_eos: bool = True,
     has_teachers: bool = False,
     input_ids_1d: Optional[torch.Tensor] = None,
+    num_teachers: int = 0,
 ) -> List[Tuple[int, int, bool]]:
     """
     Find assistant content spans as token index intervals.
@@ -41,8 +42,9 @@ def find_assistant_spans(
         offset_mapping: Token-to-char offsets of full_text (shape [seq_len, 2])
         tokenizer: Tokenizer to resolve special token ids
         include_eos: If True, extend span end to include immediate <|im_end|>
-        has_teachers: If True, mark the first assistant span as teacher
+        has_teachers: If True, mark the first N assistant spans as teachers
         input_ids_1d: Optional input ids aligned to full_text for EOS extension
+        num_teachers: Number of teacher assistant turns (remaining are student)
 
     Returns:
         List of (start_token, end_token, is_teacher) with end exclusive
@@ -69,7 +71,8 @@ def find_assistant_spans(
                         end_token = pos + 1
                         break
 
-        is_teacher = bool(has_teachers and assistant_index == 0)
+        # Mark as teacher if within the first num_teachers spans
+        is_teacher = bool(has_teachers and assistant_index < num_teachers)
         spans.append((start_token, end_token, is_teacher))
         assistant_index += 1
 

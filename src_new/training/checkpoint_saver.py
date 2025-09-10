@@ -490,6 +490,8 @@ class CheckpointSaver:
         self._maybe_write_coordinate_config(
             checkpoint_dir, unwrapped_model, processing_class
         )
+        # 6) Copy original training config (if provided) for inference auto-load
+        self._maybe_copy_original_config(checkpoint_dir)
 
     def _save_deepspeed_inference_checkpoint(
         self,
@@ -531,6 +533,8 @@ class CheckpointSaver:
             and unwrapped_model.generation_config is not None
         ):
             unwrapped_model.generation_config.save_pretrained(checkpoint_dir)
+        # Copy original training config (if provided) for inference auto-load
+        self._maybe_copy_original_config(checkpoint_dir)
 
     def _maybe_write_coordinate_config(
         self,
@@ -645,3 +649,28 @@ class CheckpointSaver:
                 logger.warning(
                     f"⚠️ Failed to write minimal preprocessor_config.json: {e}"
                 )
+
+        # 3) Ensure original training config copied if available
+        self._maybe_copy_original_config(checkpoint_dir)
+
+    def _maybe_copy_original_config(self, checkpoint_dir: str) -> None:
+        """Copy the original YAML config file into the checkpoint directory once.
+
+        Looks for 'original_config_path' on training args and copies it as
+        'training_config.yaml' if not already present. No rewriting or updates.
+        """
+        try:
+            src = getattr(self.args, "original_config_path", None)
+            if not src or not os.path.isfile(src):
+                return
+            dst = os.path.join(checkpoint_dir, "training_config.yaml")
+            if not os.path.exists(dst):
+                try:
+                    shutil.copyfile(src, dst)
+                    logger.info(
+                        f"✅ [RANK 0] Copied original training config to checkpoint: {dst}"
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to copy original config: {e}")
+        except Exception:
+            pass

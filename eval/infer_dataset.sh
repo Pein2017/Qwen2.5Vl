@@ -7,13 +7,13 @@ set -e
 ###############################################################################
 
 # Experiment name (set manually)
-MODEL_PATH="outputs/8-30-standard_phase_3/8-30-standard_phase_3-ep50-merger_5e-4-top_lr-5e-6-vison_1e-7/checkpoint-1100"  
-EXP_NAME="8-30-standard_phase_3"           
-CONFIG_PATH="configs/phase_3/standard.yaml"
+MODEL_PATH="outputs/7B-full-retrained/teacher-0.6/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens/best-1000-eval_loss0.8189"  
+EXP_NAME="9-9-bs_32-ep_40-teacher_0.6-3_types_tokens"           
+CONFIG_PATH=""  # Optional: leave empty to auto-load from checkpoint
 
 # Dataset to process (single dataset per run)
 DATASET="train"                  # "train" or "val"
-DATA_ROOT="data/ds_v2_bbu_bbu_shield"       # Root directory - centralized data resolver will auto-discover all files
+DATA_ROOT="data/ds_v2_full"       # Root directory - centralized data resolver will auto-discover all files
 OUTPUT_BASE="infer_results" 
 
 
@@ -30,7 +30,7 @@ ENABLE_TORCH_COMPILE=false
 # Force eager attention to avoid Flash Attention triton issues
 FORCE_EAGER_ATTENTION=true
 
-MAX_SAMPLES=40      
+MAX_SAMPLES=10      
 
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
@@ -41,11 +41,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH=.:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=0
 
 # Normalize to absolute paths per repository rules
 ABS_REPO_ROOT="."
-ABS_CONFIG_PATH=$(readlink -f "$ABS_REPO_ROOT/$CONFIG_PATH")
+# Only resolve config if provided; otherwise it will be auto-detected by inference
+if [ -n "$CONFIG_PATH" ]; then
+  ABS_CONFIG_PATH=$(readlink -f "$ABS_REPO_ROOT/$CONFIG_PATH")
+else
+  ABS_CONFIG_PATH=""
+fi
 ABS_MODEL_PATH=$(readlink -f "$ABS_REPO_ROOT/$MODEL_PATH")
 ABS_DATA_ROOT=$(readlink -f "$ABS_REPO_ROOT/$DATA_ROOT")
 
@@ -108,18 +113,24 @@ else
     echo "🚫 No teacher mode"
 fi
 
-# Validate config file exists
-if [ ! -f "$ABS_CONFIG_PATH" ]; then
-    echo "❌ Configuration file not found: $ABS_CONFIG_PATH"
-    echo "Available config files:"
-    ls -1 $ABS_REPO_ROOT/configs/*.yaml 2>/dev/null || echo "  (none found)"
-    exit 1
+# If config is not provided, try to detect in model path for logging
+if [ -z "$ABS_CONFIG_PATH" ]; then
+  if [ -f "$ABS_MODEL_PATH/training_config.yaml" ]; then
+    ABS_CONFIG_PATH="$ABS_MODEL_PATH/training_config.yaml"
+  elif [ -f "$ABS_MODEL_PATH/config.yaml" ]; then
+    ABS_CONFIG_PATH="$ABS_MODEL_PATH/config.yaml"
+  elif [ -f "$ABS_MODEL_PATH/config.yml" ]; then
+    ABS_CONFIG_PATH="$ABS_MODEL_PATH/config.yml"
+  elif [ -f "$ABS_MODEL_PATH/config.json" ]; then
+    ABS_CONFIG_PATH="$ABS_MODEL_PATH/config.json"
+  else
+    ABS_CONFIG_PATH=""
+  fi
 fi
 
 # Build inference command (use ms env's python directly)
 PY_BIN="/root/miniconda3/envs/ms/bin/python"
 INFERENCE_CMD="$PY_BIN $ABS_REPO_ROOT/src_new/inference.py \
-    --config_path \"$ABS_CONFIG_PATH\" \
     --model_path \"$ABS_MODEL_PATH\" \
     --dataset \"$DATASET\" \
     --output_file \"$OUTPUT_FILE\" \
@@ -129,6 +140,11 @@ INFERENCE_CMD="$PY_BIN $ABS_REPO_ROOT/src_new/inference.py \
     --num_workers $NUM_WORKERS \
     --log_level \"$LOG_LEVEL\" \
     $TEACHER_ARGS"
+
+# Include config_path only if available (inference can auto-detect otherwise)
+if [ -n "$ABS_CONFIG_PATH" ]; then
+  INFERENCE_CMD="$INFERENCE_CMD --config_path \"$ABS_CONFIG_PATH\""
+fi
 
 # Add max_samples parameter if set
 if [ -n "$MAX_SAMPLES" ] && [ "$MAX_SAMPLES" != "None" ] && [ "$MAX_SAMPLES" != "null" ]; then
@@ -152,7 +168,7 @@ PY
 
 echo ""
 echo "🔧 Configuration:"
-echo "   Config: $ABS_CONFIG_PATH"
+echo "   Config: ${ABS_CONFIG_PATH:-'(auto-detect in checkpoint)'}"
 echo "   Model: $ABS_MODEL_PATH"
 echo "   Dataset file (derived): $DERIVED_DATASET_FILE"
 echo "   Data root: ${ABS_DATA_ROOT}"

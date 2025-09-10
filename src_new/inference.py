@@ -537,6 +537,7 @@ class InferenceEngine:
             processor=unified_processor,
             max_coord_value=self.config.max_coord_value,
             coordinate_tokens_enabled=bool(self.config.coordinate_tokens_enabled),
+            plain_text_mode_enabled=bool(self.config.plain_text_mode_enabled),
         )
 
         # Set model to evaluation mode
@@ -754,8 +755,9 @@ class InferenceEngine:
             raise RuntimeError(f"Failed to create training-matched conversation: {e}")
 
         # FINAL VALIDATION: Ensure tensor consistency for model generation
+        input_ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
         final_text = self.tokenizer.decode(
-            inputs["input_ids"][0], skip_special_tokens=False
+            input_ids_for_decode, skip_special_tokens=False
         )
         final_image_token_count = final_text.count(IMAGE_PAD)
 
@@ -844,8 +846,9 @@ class InferenceEngine:
             raise RuntimeError(f"ConversationBuilder failed: {e}")
 
         # Validate conversation structure using the processed inputs
+        input_ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
         final_text = self.tokenizer.decode(
-            inputs["input_ids"][0], skip_special_tokens=False
+            input_ids_for_decode, skip_special_tokens=False
         )
         image_token_count = final_text.count(IMAGE_PAD)
 
@@ -897,8 +900,17 @@ class InferenceEngine:
         has_images = all(key in inputs for key in optional_keys)
         logger.debug(f"   Has image inputs: {has_images}")
 
-        # Move inputs to device
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        # Sanitize and move only model-relevant tensors to device
+        allowed_input_keys = {"input_ids", "attention_mask", "pixel_values", "image_grid_thw"}
+        sanitized_inputs: Dict[str, torch.Tensor] = {}
+        for k, v in inputs.items():
+            if k in allowed_input_keys and torch.is_tensor(v):
+                sanitized_inputs[k] = v.to(self.model.device)
+        # Ensure batch dimension on text tensors
+        for key in ("input_ids", "attention_mask"):
+            if key in sanitized_inputs and sanitized_inputs[key].dim() == 1:
+                sanitized_inputs[key] = sanitized_inputs[key].unsqueeze(0)
+        inputs = sanitized_inputs
 
         # Enhanced tensor shape logging
         for k, v in inputs.items():
@@ -908,8 +920,9 @@ class InferenceEngine:
         # CRITICAL VALIDATION: Cross-validate image tokens and tensors before generation
         if has_images:
             # Decode input_ids to check image token alignment
+            ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
             decoded_text = self.tokenizer.decode(
-                inputs["input_ids"][0], skip_special_tokens=False
+                ids_for_decode, skip_special_tokens=False
             )
             image_token_count = decoded_text.count(IMAGE_PAD)
 
@@ -1323,9 +1336,9 @@ class InferenceEngine:
             ):
                 continue
 
-            item: Dict[str, Any] = {"desc": desc_value}
-            item[geometry_key] = coerced_coords
-            normalized.append(item)
+            normalized_item: Dict[str, Any] = {"desc": desc_value}
+            normalized_item[geometry_key] = coerced_coords
+            normalized.append(normalized_item)
 
         return normalized
 
@@ -2053,6 +2066,120 @@ class InferenceEngine:
             logger.warning(f"Failed to parse standard response: {e}")
             return response
 
+    def _parse_plain_json_lines_response(self, text: str) -> List[Dict[str, Any]]:
+        """Parse plain-text JSON Lines response where each line is one object.
+
+        Expected per line object: {GEOM_KEY:[...],"desc":"..."}
+        GEOM_KEY must be one of: bbox_2d, quad, line.
+        """
+        objects: List[Dict[str, Any]] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            # Extract JSON object substring conservatively
+            json_str: Optional[str] = None
+            if line.startswith("{") and line.endswith("}"):
+                json_str = line
+            else:
+                start = line.find("{")
+                end = line.rfind("}")
+                if start != -1 and end != -1 and end > start:
+                    json_str = line[start : end + 1]
+
+            obj: Optional[Dict[str, Any]] = None
+            if json_str:
+                try:
+                    obj = json.loads(json_str)
+                except Exception:
+                    obj = None
+
+            if obj is None:
+                # Fallback: regex extraction to support unquoted coord tokens
+                import re
+
+                # desc
+                desc_match = re.search(r'"desc"\s*:\s*"(.*?)"', line)
+                desc_value = desc_match.group(1) if desc_match else ""
+
+                # geometry
+                geom_match = re.search(
+                    r'"(bbox_2d|quad|line)"\s*:\s*\[(.*?)\]', line
+                )
+                if not geom_match:
+                    logger.debug(f"No geometry/desc found in line: '{line[:120]}'")
+                    continue
+                geometry_key = geom_match.group(1)
+                coords_section = geom_match.group(2)
+
+                # Try coordinate tokens first
+                try:
+                    token_ids = self._extract_coordinate_tokens(coords_section)
+                    coords = [int(t) for t in token_ids]
+                except Exception:
+                    # Fallback to raw numbers
+                    try:
+                        coords = self._extract_raw_numbers(coords_section)
+                    except Exception:
+                        logger.debug(
+                            f"Failed to extract coords from line: '{line[:120]}'"
+                        )
+                        continue
+
+                parsed_line_item: Dict[str, Any] = {"desc": desc_value}
+                parsed_line_item[geometry_key] = coords
+                objects.append(parsed_line_item)
+                continue
+
+            if not isinstance(obj, dict):
+                continue
+
+            # desc (fallback from label if needed)
+            desc_value = obj.get("desc")
+            if not isinstance(desc_value, str) or desc_value == "":
+                label_value = obj.get("label")
+                desc_value = label_value if isinstance(label_value, str) else ""
+
+            # geometry key detection (exact keys only)
+            geometry_key: Optional[str] = None
+            for key in ("bbox_2d", "quad", "line"):
+                if key in obj and isinstance(obj[key], list):
+                    geometry_key = key
+                    break
+
+            if geometry_key is None:
+                logger.debug(f"No geometry key found in line: '{line[:120]}'")
+                continue
+
+            coords_in = obj.get(geometry_key, [])
+
+            # Convert coords: ints when possible; also convert '<|coord_N|>' strings to ints
+            converted: List[Any] = []
+            for val in coords_in:
+                try:
+                    converted.append(int(val))
+                    continue
+                except Exception:
+                    pass
+                if isinstance(val, str):
+                    import re
+
+                    m = re.fullmatch(r"<\|coord_(\d+)\|>", val)
+                    if m:
+                        try:
+                            converted.append(int(m.group(1)))
+                            continue
+                        except Exception:
+                            pass
+                converted.append(val)
+
+            parsed_item: Dict[str, Any] = {"desc": desc_value}
+            parsed_item[geometry_key] = converted
+            objects.append(parsed_item)
+
+        return objects
+
     def _normalize_prediction_to_vis_objects(self, text: str) -> List[Dict[str, Any]]:
         """Normalize raw generated text into a list of visualization objects.
 
@@ -2069,6 +2196,38 @@ class InferenceEngine:
             f"   Response preview: '{text[:200]}{'...' if len(text) > 200 else ''}'"
         )
 
+        # Plain-text JSON Lines mode parsing first
+        if getattr(self.config, "plain_text_mode_enabled", False):
+            logger.info("🧾 Plain-text JSON Lines mode: attempting JSON Lines parsing...")
+            try:
+                jsonl_objects = self._parse_plain_json_lines_response(text)
+                if jsonl_objects:
+                    # Normalize coords to ints where possible for consistency
+                    normalized_from_jsonl: List[Dict[str, Any]] = []
+                    for obj in jsonl_objects:
+                        if not isinstance(obj, dict):
+                            continue
+                        jsonl_norm_item: Dict[str, Any] = {"desc": obj.get("desc", "")}
+                        for key in ("bbox_2d", "quad", "line"):
+                            if key in obj and isinstance(obj[key], list):
+                                try:
+                                    jsonl_norm_item[key] = [int(v) for v in obj[key]]
+                                except Exception:
+                                    jsonl_norm_item[key] = obj[key]
+                                break
+                        if any(k in jsonl_norm_item for k in GEOMETRY_TOKENS.keys()):
+                            normalized_from_jsonl.append(jsonl_norm_item)
+                    logger.info(
+                        f"✅ JSON Lines parsing successful: {len(normalized_from_jsonl)} objects"
+                    )
+                    return normalized_from_jsonl
+                else:
+                    logger.warning(
+                        "❌ JSON Lines parsing returned no objects; falling back to other parsers"
+                    )
+            except Exception as e:
+                logger.warning(f"Plain JSON Lines parsing failed: {e}")
+
         # Coordinate-token strict path (only when enabled)
         if coordinate_tokens_enabled:
             logger.info("🎯 Attempting coordinate token parsing...")
@@ -2078,16 +2237,16 @@ class InferenceEngine:
                 for obj in coord_objects:
                     if not isinstance(obj, dict):
                         continue
-                    norm_item: Dict[str, Any] = {"desc": obj.get("desc", "")}
+                    coords_norm_item: Dict[str, Any] = {"desc": obj.get("desc", "")}
                     for key in GEOMETRY_TOKENS.keys():
                         if key in obj and isinstance(obj[key], list):
                             try:
-                                norm_item[key] = [int(v) for v in obj[key]]
+                                coords_norm_item[key] = [int(v) for v in obj[key]]
                             except Exception:
-                                norm_item[key] = obj[key]
+                                coords_norm_item[key] = obj[key]
                             break
-                    if any(k in norm_item for k in GEOMETRY_TOKENS.keys()):
-                        normalized_from_coords.append(norm_item)
+                    if any(k in coords_norm_item for k in GEOMETRY_TOKENS.keys()):
+                        normalized_from_coords.append(coords_norm_item)
                 logger.info(
                     f"✅ Coordinate token parsing successful: {len(normalized_from_coords)} objects"
                 )
@@ -2210,7 +2369,10 @@ def main():
 
     # Required arguments
     parser.add_argument(
-        "--config_path", type=str, required=True, help="Path to configuration YAML file"
+        "--config_path",
+        type=str,
+        required=False,
+        help="Path to configuration YAML file (optional). If omitted, will auto-load training_config.yaml from model_path if available.",
     )
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to model directory"
@@ -2327,6 +2489,29 @@ def main():
             args.output_file = str(normalize_path_input(args.output_file))
     except Exception as e:
         raise ValueError(f"Failed to normalize CLI paths: {e}")
+
+    # Auto-detect config from model_path if not provided
+    if args.config_path is None or len(str(args.config_path).strip()) == 0:
+        ckpt_dir = args.model_path
+        # Candidates in preference order
+        candidate_files = [
+            os.path.join(ckpt_dir, "training_config.yaml"),
+            os.path.join(ckpt_dir, "config.yaml"),
+            os.path.join(ckpt_dir, "config.yml"),
+            os.path.join(ckpt_dir, "config.json"),
+        ]
+        found_config = None
+        for cand in candidate_files:
+            if os.path.exists(cand):
+                found_config = cand
+                break
+        if found_config is None:
+            raise ValueError(
+                "--config_path not provided and no config file found in model_path. Expected one of training_config.yaml, config.yaml, config.yml, config.json"
+            )
+        # If config.json is found, attempt to convert to YAML-compatible dict load
+        args.config_path = found_config
+        logger.info(f"🧭 Auto-loaded config from checkpoint: {args.config_path}")
 
     # Resolve input_file from dataset if not provided
     if args.input_file is None:

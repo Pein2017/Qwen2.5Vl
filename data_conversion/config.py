@@ -71,6 +71,8 @@ class DataConversionConfig:
 
     # Filtering options - OPTIONAL WITH DEFAULTS
     remove_occlusion_tokens: bool = False  # Drop tokens containing "遮挡" from desc
+    sanitize_text: bool = True  # Apply text normalization/sanitization on descriptions
+    standardize_label_desc: bool = True  # Standardize 标签/* to 标签/无法识别 when empty-like
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -165,6 +167,8 @@ class DataConversionConfig:
             "hierarchy_path": self.hierarchy_path,
             "log_level": self.log_level,
             "remove_occlusion_tokens": self.remove_occlusion_tokens,
+            "sanitize_text": self.sanitize_text,
+            "standardize_label_desc": self.standardize_label_desc,
         }
 
     @classmethod
@@ -186,6 +190,8 @@ class DataConversionConfig:
             "log_level": "log_level",
             "geometry_diversity_weight": "geometry_diversity_weight",
             "strip_occlusion": "remove_occlusion_tokens",
+            "sanitize_text": "sanitize_text",
+            "standardize_label_desc": "standardize_label_desc",
         }
 
         for arg_name, config_field in arg_mapping.items():

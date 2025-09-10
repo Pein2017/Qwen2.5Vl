@@ -1,4 +1,4 @@
-num_train_epochs: 50
+num_train_epochs: 40
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
 gradient_accumulation_steps: 4  
@@ -7,35 +7,58 @@ vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
 lr_top_layers: 1.0e-6
-lr_coord_slice: 5.0e-6
+lr_coord_slice: 1.0e-6
+top_k_layers: 4   
 
-model_path: outputs/7B-full/phase_1/9-5-7b-full-phase_1-merger_1e-4/checkpoint-3150
 
-run_name: "9-6-7b-full-phase_2"
-output_dir: outputs/7B-full/phase_2
+collator_type: standard
+packed_segment_isolation: false  # Enable block-diagonal attention to isolate packed segments
+teacher_ratio: 0.3
+
+model_path: outputs/7B-full-retrained/teacher-0.6/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens/best-2680-eval_loss0.6739
+
+run_name: "9-10-phase_2-bs_32-ep_40-teacher_0.3-3_types_tokens-last_4_layers"
+output_dir: outputs/7B-full-retrained/phase_2
 
 phase_name: phase_2
+# Restrict training to only these special tokens (embeddings + LM head rows)
+trainable_token_strings:
+  - "<|line_start|>"
+  - "<|line_end|>"
+  - "<|box_start|>"
+  - "<|box_end|>"
+  - "<|quad_start|>"
+  - "<|quad_end|>"
 
 # Enable augmentation in phase_2
 use_aug: true
 augmentation_schedule:
   - { start_epoch: 0, preset: "conservative" }
-  - { start_epoch: 20, preset: "moderate" }
+  - { start_epoch: 15, preset: "moderate" }
+
+plain_text_mode_enabled: false
 
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
   rng_seed: 12345
   photometric:
     enabled: true
-    apply_prob: 0.8
+    apply_prob: 0.5
     num_ops: 1
-    magnitude: 0.4
+    magnitude: 0.3
     ocr_safe_pool: true
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
 coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
-caption_loss_weight: 2.0
+caption_loss_weight: 1.0
 grounding_loss_weight: 1.0
 formatting_loss_weight: 0.3
+
+
+conversation_variant_ratios:
+  dense_caption: 0.3
+  coords_to_desc: 0.3
+  desc_to_coords: 0.2
+  summary: 0.2

@@ -26,13 +26,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+import re
+import os
 
 import torch
 
-from src_new.processing.special_tokens import (
-    IM_END,
-    get_coord_token_range,
+from src_new.processing.special_tokens import IM_END
+from .grouping_core import (
+    build_id_sets,
+    build_base_predicates,
+    extract_plain_mode_masks,
+    assign_residual_to_formatting,
 )
+from src_new.utils.rank_aware_logging import get_rank_aware_logger
+
+_dbg_logger = get_rank_aware_logger(__name__)
+_DEBUG_GROUPING: bool = os.getenv("BBU_DEBUG_GROUPING", "0").strip() not in ("", "0", "false", "False")
+_DEBUG_DUMPED: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,88 +72,8 @@ class TokenGroupingPlugin:
             raise ValueError("TokenGroupingPlugin requires a non-None tokenizer")
         self._tok = tokenizer
 
-        # Pre-compute special token ids (missing -> None)
-        self._ids: Dict[str, Optional[int]] = {}
-        self._ids["im_end"] = self._safe_id(IM_END)
-        # Object-ref wrappers are treated as formatting
-        self._ids["obj_ref_start"] = self._safe_id("<|object_ref_start|>")
-        self._ids["obj_ref_end"] = self._safe_id("<|object_ref_end|>")
-        # Geometry wrappers are treated as grounding
-        self._ids["box_start"] = self._safe_id("<|box_start|>")
-        self._ids["box_end"] = self._safe_id("<|box_end|>")
-        self._ids["quad_start"] = self._safe_id("<|quad_start|>")
-        self._ids["quad_end"] = self._safe_id("<|quad_end|>")
-        self._ids["line_start"] = self._safe_id("<|line_start|>")
-        self._ids["line_end"] = self._safe_id("<|line_end|>")
-
-        # Coordinate token range
-        coord_rng = get_coord_token_range(self._tok)
-        self._coord_start: int = int(coord_rng.start_id)
-        self._coord_end_exclusive: int = int(coord_rng.end_exclusive)
-
-        # General punctuation set (formatting)
-        punctuation_chars: Sequence[str] = (
-            "[",
-            "]",
-            "{",
-            "}",
-            "(",
-            ")",
-            ",",
-            ":",
-            '"',
-            "/",
-        )
-        self._punctuation_ids: Dict[int, bool] = {}
-        for ch in punctuation_chars:
-            ids = self._tok.encode(ch, add_special_tokens=False)
-            if not isinstance(ids, list) or len(ids) == 0:
-                raise ValueError(
-                    f"Tokenizer failed to encode punctuation character: {ch!r}"
-                )
-            for tid in ids:
-                if not isinstance(tid, int):
-                    raise ValueError(
-                        f"Tokenizer returned non-int id for punctuation {ch!r}: {tid!r}"
-                    )
-                self._punctuation_ids[int(tid)] = True
-
-        # Geometry separators used inside geometry blocks: only '[', ']', ','
-        geom_sep_chars: Sequence[str] = ("[", "]", ",")
-        self._geom_sep_ids: Dict[int, bool] = {}
-        for ch in geom_sep_chars:
-            ids = self._tok.encode(ch, add_special_tokens=False)
-            if not isinstance(ids, list) or len(ids) == 0:
-                raise ValueError(
-                    f"Tokenizer failed to encode geometry separator: {ch!r}"
-                )
-            for tid in ids:
-                if not isinstance(tid, int):
-                    raise ValueError(
-                        f"Tokenizer returned non-int id for geometry separator {ch!r}: {tid!r}"
-                    )
-                self._geom_sep_ids[int(tid)] = True
-
-        # Geometry wrapper id set
-        self._geom_wrapper_ids: Dict[int, bool] = {}
-        for key in (
-            "box_start",
-            "box_end",
-            "quad_start",
-            "quad_end",
-            "line_start",
-            "line_end",
-        ):
-            tid = self._ids.get(key)
-            if isinstance(tid, int) and tid >= 0:
-                self._geom_wrapper_ids[int(tid)] = True
-
-        # Object-ref wrapper id set (formatting)
-        self._objref_wrapper_ids: Dict[int, bool] = {}
-        for key in ("obj_ref_start", "obj_ref_end"):
-            tid = self._ids.get(key)
-            if isinstance(tid, int) and tid >= 0:
-                self._objref_wrapper_ids[int(tid)] = True
+        # Centralized ID sets for grouping
+        self._ids_core = build_id_sets(self._tok)
 
     def _safe_id(self, token: str) -> Optional[int]:
         tid = self._tok.convert_tokens_to_ids(token)
@@ -156,6 +86,7 @@ class TokenGroupingPlugin:
         labels: torch.Tensor,
         teacher_spans: Optional[List[List[Tuple[int, int]]]],
         student_spans: Optional[List[List[Tuple[int, int]]]],
+        input_ids: Optional[torch.Tensor] = None,
     ) -> GroupMasks:
         """Construct shifted masks for caption/grounding/formatting per group.
 
@@ -170,6 +101,7 @@ class TokenGroupingPlugin:
         Raises:
             ValueError: on invalid shapes or inconsistent span bounds.
         """
+        global _DEBUG_DUMPED
         if labels is None or labels.dim() != 2:
             raise ValueError(
                 f"labels must be 2D [batch, seq_len], got {None if labels is None else tuple(labels.shape)}"
@@ -196,57 +128,68 @@ class TokenGroupingPlugin:
                         )
                     student_mask[i, start:end] = True
 
-        # Base element-wise predicates from labels
-        is_coord = (labels >= self._coord_start) & (labels < self._coord_end_exclusive)
-        is_geom_wrapper = torch.zeros_like(labels, dtype=torch.bool)
-        is_objref_wrapper = torch.zeros_like(labels, dtype=torch.bool)
-        is_punct = torch.zeros_like(labels, dtype=torch.bool)
-        is_geom_sep = torch.zeros_like(labels, dtype=torch.bool)
-
-        if len(self._geom_wrapper_ids) > 0:
-            for tid in self._geom_wrapper_ids.keys():
-                is_geom_wrapper |= labels.eq(int(tid))
-        if len(self._objref_wrapper_ids) > 0:
-            for tid in self._objref_wrapper_ids.keys():
-                is_objref_wrapper |= labels.eq(int(tid))
-        if len(self._punctuation_ids) > 0:
-            for tid in self._punctuation_ids.keys():
-                is_punct |= labels.eq(int(tid))
-        if len(self._geom_sep_ids) > 0:
-            for tid in self._geom_sep_ids.keys():
-                is_geom_sep |= labels.eq(int(tid))
-
-        # Caption scopes: strictly inside object_ref content intervals
-        inside_desc = self._compute_inside_ranges(
-            labels,
-            start_id=self._ids.get("obj_ref_start"),
-            end_id=self._ids.get("obj_ref_end"),
+        # Base predicates & wrapper presence flag from core
+        is_coord, is_geom_wrapper, is_objref_wrapper, is_punct, is_geom_sep, wrappers_present = build_base_predicates(
+            labels=labels, ids=self._ids_core
         )
 
-        # Geometry scopes: strictly inside each geometry wrapper pair
-        inside_box = self._compute_inside_ranges(
-            labels,
-            start_id=self._ids.get("box_start"),
-            end_id=self._ids.get("box_end"),
-        )
-        inside_quad = self._compute_inside_ranges(
-            labels,
-            start_id=self._ids.get("quad_start"),
-            end_id=self._ids.get("quad_end"),
-        )
-        inside_line = self._compute_inside_ranges(
-            labels,
-            start_id=self._ids.get("line_start"),
-            end_id=self._ids.get("line_end"),
-        )
-        inside_any_geom = inside_box | inside_quad | inside_line
+        if not wrappers_present:
+            # Build caption/grounding from decoded JSON using offset mapping (centralized)
+            caption_all, grounding_all = extract_plain_mode_masks(
+                tok=self._tok, input_ids=input_ids, labels=labels
+            )
 
-        # Category unshifted masks (global, not yet intersected with assistant spans)
-        caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
-        # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
-        grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
-        # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
-        formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
+            # Formatting: punctuation/separators; object-ref wrappers absent in plain-mode
+            formatting_all = is_geom_sep | (is_punct & ~is_geom_sep)
+
+            # Fail-fast: in plain JSON mode (wrappers absent), dense_caption should produce both caption and grounding tokens.
+            # If assistant spans exist but either caption or grounding is empty, raise with guidance.
+            # We detect assistant existence later via teacher/student masks, but basic non-emptiness is validated here.
+            if (not caption_all.any()) and (not grounding_all.any()):
+                # Summary fallback: treat all assistant tokens minus punctuation as caption
+                assist_all = (teacher_mask | student_mask)
+                summary_caption_all = assist_all & ~is_punct
+                if summary_caption_all.any():
+                    caption_all = summary_caption_all
+                    # keep grounding_all empty and formatting_all as defined
+                else:
+                    raise ValueError(
+                        "Plain-text JSON grouping produced empty caption and grounding masks, and summary fallback found no assistant tokens. "
+                        "Verify that assistant content uses strict JSON Lines (e.g., {\"line\":[...],\"desc\":\"...\"}) for plain mode, or that summary text is present."
+                    )
+        else:
+            # Wrapper-based path (legacy)
+            # Caption scopes: strictly inside object_ref content intervals
+            inside_desc = self._compute_inside_ranges(
+                labels,
+                start_id=self._safe_id("<|object_ref_start|>"),
+                end_id=self._safe_id("<|object_ref_end|>"),
+            )
+
+            # Geometry scopes: strictly inside each geometry wrapper pair
+            inside_box = self._compute_inside_ranges(
+                labels,
+                start_id=self._safe_id("<|box_start|>"),
+                end_id=self._safe_id("<|box_end|>"),
+            )
+            inside_quad = self._compute_inside_ranges(
+                labels,
+                start_id=self._safe_id("<|quad_start|>"),
+                end_id=self._safe_id("<|quad_end|>"),
+            )
+            inside_line = self._compute_inside_ranges(
+                labels,
+                start_id=self._safe_id("<|line_start|>"),
+                end_id=self._safe_id("<|line_end|>"),
+            )
+            inside_any_geom = inside_box | inside_quad | inside_line
+
+            # Category unshifted masks (global, not yet intersected with assistant spans)
+            caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
+            # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
+            grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
+            # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
+            formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
 
         # Intersect with assistant masks and shift by one for CE alignment
         def _shift_intersect(
@@ -266,26 +209,31 @@ class TokenGroupingPlugin:
         s_ground = _shift_intersect(grounding_all, student_mask)
         s_format = _shift_intersect(formatting_all, student_mask)
 
+        # Optional one-time debug dump (train/eval) controlled by env BBU_DEBUG_GROUPING=1
+        if _DEBUG_GROUPING and not _DEBUG_DUMPED:
+            try:
+                t_assist = teacher_mask[:, 1:]
+                s_assist = student_mask[:, 1:]
+                def _cnt(x: torch.Tensor) -> int:
+                    return int(x.sum().item()) if isinstance(x, torch.Tensor) else 0
+                _dbg_logger.info(
+                    "[GroupingDebug] teacher: assist=%d cap=%d grd=%d fmt=%d | student: assist=%d cap=%d grd=%d fmt=%d",
+                    _cnt(t_assist), _cnt(t_caption), _cnt(t_ground), _cnt(t_format),
+                    _cnt(s_assist), _cnt(s_caption), _cnt(s_ground), _cnt(s_format),
+                )
+            except Exception:
+                pass
+            finally:
+                _DEBUG_DUMPED = True
+
         # Ensure full coverage equals assistant masks (shifted). Assign residual to formatting.
         t_assist = teacher_mask[:, 1:]
         s_assist = student_mask[:, 1:]
 
-        def _assign_residual_to_formatting(
-            m_cap: torch.Tensor,
-            m_grd: torch.Tensor,
-            m_fmt: torch.Tensor,
-            assist: torch.Tensor,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            union = m_cap | m_grd | m_fmt
-            residual = assist & (~union)
-            if residual.any():
-                m_fmt = m_fmt | residual
-            return m_cap, m_grd, m_fmt
-
-        t_caption, t_ground, t_format = _assign_residual_to_formatting(
+        t_caption, t_ground, t_format = assign_residual_to_formatting(
             t_caption, t_ground, t_format, t_assist
         )
-        s_caption, s_ground, s_format = _assign_residual_to_formatting(
+        s_caption, s_ground, s_format = assign_residual_to_formatting(
             s_caption, s_ground, s_format, s_assist
         )
 

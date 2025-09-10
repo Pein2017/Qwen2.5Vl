@@ -109,6 +109,7 @@ class PhaseFreezeManager:
         vision_top_k_blocks: Optional[int] = None,
         coord_slice_only: Optional[bool] = None,
         freeze_patch_embed: Optional[bool] = None,
+        trainable_token_strings: Optional[List[str]] = None,
     ) -> FreezeSummary:
         """Apply per-phase freeze policy with optional overrides.
 
@@ -120,6 +121,7 @@ class PhaseFreezeManager:
             vision_top_k_blocks: Optional override for number of last vision blocks to unfreeze in phase_3.
             coord_slice_only: Optional override for enabling coord-slice masking on embeddings/LM head in phase_1/2.
             freeze_patch_embed: Optional override for freezing `visual.patch_embed` in phase_3.
+            trainable_token_strings: Optional list of exact token strings to restrict training to those embedding/LM-head rows only.
 
         Notes:
             - The aligner (patch-merger MLP) at `model.visual.merger` is always kept trainable in all phases.
@@ -172,12 +174,37 @@ class PhaseFreezeManager:
             if "visual.merger" in name:
                 p.requires_grad = True
 
-        # 3) Optionally unfreeze coord-token slices of embeddings/LM head
-        #    Only when coordinate tokens are present and coord_slice_only is True
+        # 3) Optional: restrict training to specific token IDs (e.g., line_start/line_end)
+        token_slice_enabled = False
+        allowed_token_ids: List[int] = []
+        if trainable_token_strings:
+            try:
+                vocab = tokenizer.get_vocab()
+                missing = [t for t in trainable_token_strings if t not in vocab]
+                if missing:
+                    raise ValueError(
+                        f"Requested trainable tokens not in tokenizer vocab: {missing}"
+                    )
+                allowed_token_ids = [vocab[t] for t in trainable_token_strings]
+                emb, lm_head = self._find_embedding_and_lm_head(model)
+                if emb is not None and lm_head is not None:
+                    emb.requires_grad = True
+                    lm_head.requires_grad = True
+                    self._apply_token_id_grad_masks(emb, lm_head, allowed_token_ids)
+                    token_slice_enabled = True
+                else:
+                    logger.warning(
+                        "[PhaseFreeze] Could not access embeddings/LM head for token-slice masking"
+                    )
+            except Exception as e:
+                logger.warning(f"[PhaseFreeze] trainable_token_strings handling failed: {e}")
+
+        # 3b) Optionally unfreeze coord-token slices of embeddings/LM head in phase_1/2
         if (
             coord_rng is not None
             and eff_coord_slice_only
             and phase in ("phase_1", "phase_2")
+            and not token_slice_enabled
         ):
             emb, lm_head = self._find_embedding_and_lm_head(model)
             if emb is not None and lm_head is not None:
@@ -198,22 +225,56 @@ class PhaseFreezeManager:
             if eff_top_k_layers and eff_top_k_layers > 0:
                 self._unfreeze_last_k_llm_layers(model, eff_top_k_layers)
         elif phase == "phase_3":
-            # Full unfreeze by default
-            for _, p in model.named_parameters():
-                p.requires_grad = True
-            # Optionally keep patch_embed frozen
-            if eff_freeze_patch_embed:
-                for name, p in model.named_parameters():
-                    if "visual.patch_embed" in name:
-                        p.requires_grad = False
-            # Optionally restrict to last K vision blocks
-            if eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0:
-                self._freeze_all_vision_blocks(model)
-                self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
-                # Ensure merger is still unfrozen
+            # If we are restricting to specific tokens, do not unfreeze broader modules
+            if token_slice_enabled:
+                # Keep patch_embed frozen when requested (already frozen by default)
+                if eff_freeze_patch_embed:
+                    for name, p in model.named_parameters():
+                        if "visual.patch_embed" in name:
+                            p.requires_grad = False
+                # Ensure merger remains trainable
                 for name, p in model.named_parameters():
                     if "visual.merger" in name:
                         p.requires_grad = True
+            else:
+                # If overrides are provided for memory control, unfreeze selectively.
+                # Otherwise, default to full unfreeze with optional vision restrictions.
+                if (
+                    (eff_top_k_layers and eff_top_k_layers > 0)
+                    or (eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0)
+                ):
+                    # LLM: unfreeze last-K decoder layers when requested
+                    if eff_top_k_layers and eff_top_k_layers > 0:
+                        self._unfreeze_last_k_llm_layers(model, eff_top_k_layers)
+                    # Vision: unfreeze last-K blocks when requested
+                    if eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0:
+                        self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
+                    # Ensure merger remains trainable
+                    for name, p in model.named_parameters():
+                        if "visual.merger" in name:
+                            p.requires_grad = True
+                    # Keep patch_embed frozen when requested (it is already frozen from the initial freeze step)
+                    if eff_freeze_patch_embed:
+                        for name, p in model.named_parameters():
+                            if "visual.patch_embed" in name:
+                                p.requires_grad = False
+                else:
+                    # Full unfreeze by default
+                    for _, p in model.named_parameters():
+                        p.requires_grad = True
+                    # Optionally keep patch_embed frozen
+                    if eff_freeze_patch_embed:
+                        for name, p in model.named_parameters():
+                            if "visual.patch_embed" in name:
+                                p.requires_grad = False
+                    # Optionally restrict to last K vision blocks
+                    if eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0:
+                        self._freeze_all_vision_blocks(model)
+                        self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
+                        # Ensure merger is still unfrozen
+                        for name, p in model.named_parameters():
+                            if "visual.merger" in name:
+                                p.requires_grad = True
 
         # 5) Summarize
         num_trainable = 0
@@ -340,6 +401,38 @@ class PhaseFreezeManager:
         )
         row_mask = torch.zeros(vocab_rows, dtype=torch.bool, device=device)
         row_mask[coord_start:coord_end_exclusive] = True
+
+        def _mask_embed_grad(g: torch.Tensor) -> torch.Tensor:
+            if g is None:
+                return g
+            return g * row_mask.unsqueeze(1).to(device=g.device, dtype=g.dtype)
+
+        def _mask_lm_head_grad(g: torch.Tensor) -> torch.Tensor:
+            if g is None or g.dim() != 2:
+                return g
+            if lm_head_param.shape[0] == vocab_rows:
+                return g * row_mask.unsqueeze(1).to(device=g.device, dtype=g.dtype)
+            elif lm_head_param.shape[1] == vocab_rows:
+                return g * row_mask.to(device=g.device, dtype=g.dtype)
+            return g
+
+        self._mask_handles.append(embed_param.register_hook(_mask_embed_grad))
+        self._mask_handles.append(lm_head_param.register_hook(_mask_lm_head_grad))
+
+    def _apply_token_id_grad_masks(
+        self,
+        embed_param: torch.nn.Parameter,
+        lm_head_param: torch.nn.Parameter,
+        allowed_token_ids: List[int],
+    ) -> None:
+        device = embed_param.device
+        vocab_rows = (
+            embed_param.shape[0] if embed_param.dim() == 2 else embed_param.shape[1]
+        )
+        row_mask = torch.zeros(vocab_rows, dtype=torch.bool, device=device)
+        for tid in allowed_token_ids:
+            if 0 <= int(tid) < int(vocab_rows):
+                row_mask[int(tid)] = True
 
         def _mask_embed_grad(g: torch.Tensor) -> torch.Tensor:
             if g is None:

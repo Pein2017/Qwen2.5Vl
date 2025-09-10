@@ -18,7 +18,7 @@
 - **Quick run**:
   ```bash
   conda activate ms
-  bash scripts/run_group_qc_rl.sh /abs/path/to/config.yaml
+  bash scripts/run_group_qc_rl.sh
   ```
   Minimal keys in `configs/rl/group_qc_grpo.yaml`:
   ```yaml
@@ -40,10 +40,10 @@
 ```bash
 # From repo root
 conda activate ms
-bash scripts/run_group_qc_rl.sh /abs/path/to/config.yaml
+bash scripts/run_group_qc_rl.sh
 ```
 - The script auto‑detects single vs multi‑GPU and launches with PyTorch DDP when `GPU_DEVICES` has multiple GPUs.
-- Entry: `python -m src_post.runner --config <yaml>`
+- Default config: `configs/rl/group_qc_grpo.yaml`.
 
 Data layout (recommended):
 ```text
@@ -70,7 +70,7 @@ Label normalization: 审核通过|通过|pass → pass；审核不通过|不通�
 2) Stage A summarization (per image, typed chat)
 - File: `src_post/conversation.py` → `GroupQCConversationBuilder.build_stage_a_messages(mission)` builds:
   - system: 限制一行中文摘要；仅 BBU 场景对象；禁止坐标/几何/特殊标记 `<|...|>`；避免引号与重复清单；偏好简洁短语（品牌/挡风板/安装/是否需要/合规/标签可读性/光纤弯曲/电线整齐度等）。
-  - user: typed list `[{"type": "image"}, {"type": "text", "text": "请只输出一行摘要"}]`
+  - user: typed list `[{'type': 'image'}, {'type': 'text', 'text': '请只输出一行摘要'}]`
 - Tokenization: `Qwen2VLProcessor.apply_chat_template(...)` → `processor(text=[...], images=[img], return_tensors='pt')`
 - Generation:
   - Greedy one line per image becomes Stage‑B context.
@@ -78,7 +78,7 @@ Label normalization: 审核通过|通过|pass → pass；审核不通过|不通�
   - Stopping: Stage‑A decoding stops early on newline or `。` if tokenized as a single token.
 
 3) Stage B GRPO (group decision)
-- Entry: `src_post/runner.py` → builds prompt via `build_stage_b_messages(summary_lines, checklist_lines)`.
+- File: `src_post/grpo_runner.py` → builds prompt via `build_stage_b_messages(summary_lines, checklist_lines)`.
 - Sampling: sample `K_B` short replies; parse with `src_post/span_parser.py` to `{label, reason}`.
 - Reward: composed via `src_post/rewards/` (see “Rewards” below).
 - GRPO update: teacher‑forcing on each sampled reply to sum log‑probs over the reply; z‑score rewards → advantages → optimize `-A_k * logp_k` (+ optional KL to reference).
@@ -274,7 +274,7 @@ Notes:
 ---
 
 ## Key files
-- `src_post/runner.py`: entry logic, dataset iteration, Stage‑A/B generation, reward composition, GRPO update loop (no value head).
+- `src_post/grpo_runner.py`: entry logic, dataset iteration, Stage‑A/B generation, reward composition, GRPO update loop (no value head).
 - `src_post/conversation.py`: Stage‑A/B prompt builders and mission hints.
 - `src_post/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
 - `src_post/logits_processors.py`: decode‑time masking for geometry/coordinate tokens.

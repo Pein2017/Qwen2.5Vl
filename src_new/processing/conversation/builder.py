@@ -17,11 +17,16 @@ class ConversationBuilder:
         processor: Any,
         max_coord_value: int,
         coordinate_tokens_enabled: bool,
+        plain_text_mode_enabled: bool,
     ) -> None:
+        # Compute exclusive mode (special_tokens default)
+        if plain_text_mode_enabled and coordinate_tokens_enabled:
+            raise ValueError("Conflicting modes: both plain_text_mode_enabled and coordinate_tokens_enabled are True")
         self._impl = ConversationProcessor(
             processor=processor,
             max_coord_value=max_coord_value,
             coordinate_tokens_enabled=coordinate_tokens_enabled,
+            plain_text_mode_enabled=plain_text_mode_enabled,
         )
 
     # Simple delegations to preserve behavior

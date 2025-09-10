@@ -1,73 +1,134 @@
-# Project (Outline) Rules
+## Global Project Rules (AI Assistant Prompt)
 
-- This document defines non‑negotiable rules for all code and docs in this repository. Keep it short; deep dives live elsewhere.
-- Use this document as the global baseline for every change.
-- For specifics and deeper explanations, consult:
-  - module-specific docs: `module_dir/*.md`
-  - shared documentation: `./docs/`
-- Project outline:
-  - **src_new**: Training/models/processing for the detection‑focused VL pipeline. HF‑first integration (official processors), strict config (`src_new/config/config.py`), conversation and span alignment, coordinate token system, deterministic training, and inference utilities. See `src_new/README.md` and `src_new/UNIFIED_DOCUMENTATION.md`.
-  - **data_conversion**: Unified processor to convert V2 annotations + images into training JSONL with strict object‑type filtering, geometry constraints, and hierarchical descriptions. See `data_conversion/README.md`.
-- Workflow (E2E, concise):
-  1) **Data conversion** → `data_conversion/convert_dataset.sh` (or `UnifiedProcessor`) produces `data/{dataset_name}/train.jsonl`, `val.jsonl`, `teacher.jsonl` (+ processed images).
-  2) **Training** → `scripts/run_new_train.sh` launches the `src_new` pipeline using a YAML config. No in‑code hyperparameter defaults; pass everything explicitly.
-  3) **Inference** → `python -m src_new.inference --config ... --checkpoint ... --image ...` for single‑image runs.
-- Entry Points:
-  - Training:
-    ```bash
-    bash scripts/run_new_train.sh
-    ```
-  - Inference:
-    ```bash
-    source ~/.bashrc && conda activate ms
-    python -m src_new.inference --config /abs/path/to/config.yaml \
-      --checkpoint /abs/path/to/checkpoint \
-      --image /abs/path/to/image.jpg
-    ```
+### What this is
+- Single global prompt for any new AI conversation about this repo; focus on pipeline/flow/processing, not commands.
+- Prefer absolute paths. Read relevant .md first when present.
+- Environment: use conda env `ms` (or `/root/miniconda3/envs/ms/bin/python`).
 
+### Repository components (3)
+- `data_conversion/`: V2 annotations → strict JSONL with native geometry (bbox/quad/line), canonical ordering, and hierarchical Chinese descriptions; teacher pool selection; images EXIF-corrected and smart-resized.
+- `src_new/`: HF-first SFT pipeline (Qwen2.5‑VL) with optional coordinate tokens, strict config, span alignment, grouped losses, and robust multimodal validations.
+- `src_post/`: RL post‑training (GRPO) for group-level QC decisions using an SFT checkpoint; Stage‑A summaries + Stage‑B pass/fail.
 
-# Environment Rules
+## End‑to‑End Flow (conceptual)
+1) Data conversion (strict): raw V2 JSON + images → flat JSONL samples + processed images
+2) SFT training (HF-first): build typed conversations → tokenization → span masking → model wrapper with validations → single‑pass CE (+ optional coord aux) → checkpoints (+ processor)
+3) RL post‑training (optional): Stage‑A summaries → Stage‑B pass/fail GRPO on short text
 
-- Required environment: use the `ms` conda virtual environment for all development and execution.
-  - Activate with: `conda activate ms`
-  - Or use direct Python path: `/root/miniconda3/envs/ms/bin/python`
-- Conda activation for all shell sessions (manual, AI‑assisted, or new):
-  - Standard activation: `conda activate ms`
-  - If conda not initialized: `source ~/.bashrc && conda activate ms`
-  - Direct Python: `/root/miniconda3/envs/ms/bin/python`
-  - Note: Manual terminals auto‑source `~/.bashrc`; AI‑assisted terminals may need explicit sourcing
+---
 
+## Core contracts and invariants (must hold)
+- Conversations (HF-first):
+  - Built via `Qwen2VLProcessor.apply_chat_template(...)` with typed content; user turns inject images as typed `{"type": "image"}` list.
+  - The number of image placeholders in rendered text must equal the number of images; else error.
+- Multimodal token alignment (model‑side checks):
+  - Expected image token count = sum over images of `(t*h*w) // (merge_size**2)` from `image_grid_thw` and model merge size; must equal `<|image_pad|>` count found in `input_ids`.
+  - `pixel_values` rows must equal `sum_i (t_i*h_i*w_i)`; else error.
+- Assistant spans and labels:
+  - Assistant spans are extracted from decoded text via offset mapping (regex over `<|im_start|>assistant ... <|im_end|>`), then converted to token spans.
+  - Labels outside assistant spans are `-100`. The immediate `<|im_end|>` token is included inside each assistant span to teach termination.
+  - Teacher–student: teacher assistant spans (earlier turns) and the last assistant span (student) are separated; only student is the generation target by default.
+- Coordinate tokens (optional feature):
+  - No hard‑coded IDs. The dynamic range is detected by scanning tokenizer for `<|coord_*>`; stored as start‑inclusive, end‑exclusive.
+  - When enabled, geometry is rendered/parsed with `<|coord_N|>` tokens; otherwise raw integers are used.
+- Losses (grouped and optional coord aux):
+  - Single‑pass CE computed once and reused for teacher/student masks; grouped CE components (caption/grounding/formatting) built from label IDs and spans.
+  - Optional coordinate auxiliary losses: kernelized‑KL on a sparse window around the correct bin + unlikelihood on non‑coordinate tokens at coordinate positions.
+  - Total loss equals the sum of weighted components; report disaggregated teacher/student and grouped metrics.
+- Checkpoints & tokenizer:
+  - Save tokenizer/processor with checkpoints; wrapper exposes `model.config` to preserve HF integration expectations.
+- Configuration (strict):
+  - All keys are explicit in YAML; no in‑code hyperparameter defaults. Paths are normalized and validated; `data_root` enables deriving dataset file paths when missing.
 
-# Coding Rules
+---
 
-- Development mode (Fail‑Fast):
-  - Never swallow errors; stop on first failure and fix at the source.
-  - Validate inputs at boundaries; raise with actionable messages (what, where, how to fix).
-  - Avoid silent defaults for hyperparameters/config; require explicit values or validated config objects.
-  - Prefer explicit constructor args + dataclass/pydantic validation over permissive `dict.get`/implicit defaults.
+## Data conversion (strict V2 → training JSONL)
+- Inputs: raw V2 JSON (`dataList` or `markResult.features`) + paired image; require `info.width`, `info.height`.
+- Object type whitelist: `{bbu, bbu_shield, connect_point, label, fiber, wire}`; geometry constraints: `fiber|wire → line`, others → bbox/quad.
+- Geometry & coordinate pipeline (order is mandatory):
+  1) Apply EXIF orientation to geometry
+  2) Rescale if JSON dims ≠ actual image dims
+  3) Smart resize (multiple‑of‑28 within pixel budget)
+- Canonicalization:
+  - BBox: x_min < x_max, y_min < y_max; clamp to bounds
+  - Quad: 8 ints, vertices ordered clockwise starting at top‑left
+  - Line: even number of coords, preserve path; direction canonicalized so the first point is the leftmost endpoint (tie‑break by y); reverse full sequence if needed
+- Text normalization:
+  - Strict hierarchical Chinese descriptions; remove occlusion tokens containing “遮挡”.
+- Ordering & splitting:
+  - Sort objects top‑to‑bottom, then left‑to‑right by first coordinate pair; images processed to match final transform.
+  - Teacher pool via greedy coverage (fixed vocabulary if available, else free‑vocab fallback), then deterministic train/val split.
+- Outputs (flat format everywhere):
+  - `train.jsonl`, `val.jsonl`, `teacher_pool.jsonl`, `all_samples.jsonl`, `label_vocabulary.json`, validation reports, and processed `images/`.
 
-- Configuration:
-  - No silent defaults for core hyperparameters. Require explicit values via YAML/entry scripts and validate early with actionable errors.
-  - Derived values allowed for non‑core path fields when `data_root` is provided (e.g., auto‑resolving `train_data_path`, `val_data_path`, `teacher_pool_file` via `DataResolver`); log the derivation.
-  - Optional feature toggles may have explicit safe defaults that do not change core training semantics (e.g., `prog_unfreeze_coord_slice_only=True`, or deriving `new_geometry_tokens` when `coordinate_tokens_enabled=True`); validate consistency and document behavior.
-  - Use a single schema (`@dataclass(frozen=True)`) with required fields first; optional fields typed as `Optional[...]` and handled explicitly. Provide a dedicated validation function that fails fast.
+---
 
-- Permitted mechanics:
-  - `try/finally` and non‑suppressing context managers are allowed strictly for deterministic cleanup and must re‑raise exceptions. Do not mask or downgrade errors.
-  - Use explicit conditionals with `raise` for validation. Reserve `assert` for internal invariants and tests only (not user input or runtime contracts).
-  - Avoid wildcard imports in library code. Permitted only in vendor reference modules under `src_new/reference/offical_huggingface_qwen2_5_vl` (TYPE_CHECKING only) and in ad‑hoc scripts/notebooks via `src_new.utils.common_imports` (not in production modules).
-  - Also prohibited: implicit re‑exports, magic numbers, hidden global state, `print` in libraries (CLI may print; libraries must use structured logging), silent `pass`, mutation of shared state across module boundaries, dynamic monkey patching in production paths, top‑level I/O/network/GPU initialization at import time.
+## SFT pipeline (src_new, HF‑first)
+- Conversation building:
+  - Use `ConversationProcessor` (HF‑first) which wraps the official processor.
+  - Variants: dense caption (default), coords→desc, desc→coords; teacher–student conversations interleave teacher examples before the student turn.
+- Span detection and labeling:
+  - Decode `input_ids` → compute offset mapping by re‑tokenizing decoded text (no special‑token skipping) → regex spans → map chars→tokens.
+  - Unmask assistant spans into `labels`; include immediate `<|im_end|>`; mask `<|image_pad|>` back to `-100`.
+- Collation & shapes:
+  - Collators emit `input_ids [B,S]`, `attention_mask [B,S]`, `labels [B,S]`; if images: `pixel_values [sum(t*h*w), D]`, `image_grid_thw [num_images,3]`.
+  - Packed rows: optional block‑diagonal attention isolation when `segment_lengths` provided.
+- Model wrapper (`DetectionModel`):
+  - Fail‑fast multimodal validations (shapes, counts, expected `<|image_pad|>`); obtains merge size from model vision config (fallback to training config).
+  - Intelligent checkpoint handling; tokenizer/vocab extension with ms‑swift embedding padding; coordinate token range dynamically detected.
+  - Loss path: bypass base loss when spans provided; compute single‑pass CE once; apply teacher/student masks and grouped masks; optional coord aux enabled via config.
+- Grouped LLM losses (token‑ID based):
+  - caption (inside object‑ref), grounding (coord tokens + geom wrappers + inside geom blocks minus separators), formatting (punctuation + object‑ref wrappers + geom separators); masks aligned to shifted CE.
 
-- Module contracts — `src_new` (Training, Models, Processing):
-  - Processing/vision tokens
-    - Validate vision token expansion exactly: `expected_image_tokens = sum_i (t_i*h_i*w_i) // (merge_size**2)`. Raise on any mismatch; do not coerce or pad silently.
-    - Image grid, merge size, and processor assumptions must be explicit and validated upfront.
-  - Models/config integration
-    - `DetectionModel.config` must proxy the underlying HuggingFace model config. Keep training dataclass on `training_config` only.
-    - All integrations that call `model.config.to_json_string()` or similar must continue to work.
-  - Conversation and labels
-    - Teacher–student conversations must be complete and consistent. Include `<|im_end|>` in assistant span labels during training.
-    - Span detection must rely on explicit offset mapping; raise if alignment is missing or ambiguous.
-  - Training (BBUTrainer and shells)
-    - Fail immediately on non‑finite losses or invalid gradients.
-    - Checkpoint saving must preserve `
+---
+
+## Coordinate token system (optional)
+- Enable via config; set `max_coord_value` and `coordinate_init_mode` (`ms_mean|fourier_ramp`).
+- Token range is derived dynamically (`get_coord_token_range`); never hard‑code.
+- When disabled, emit numeric coordinates; when enabled, emit `<|coord_N|>` and train with grouped CE (always) plus optional coord aux (KCE + unlikelihood).
+
+---
+
+## RL post‑training for group QC (src_post, GRPO)
+- Stage‑A: per‑image one‑line Chinese summary (no coordinates or special tokens); optionally sanitized; greedy lines used as context for Stage‑B.
+- Stage‑B: text‑only prompt aggregates summaries and checklist hints (mission‑specific); sample K_B responses; parse to `{label, reason}`.
+- GRPO update:
+  - Compute rewards via modular registry; z‑score to advantages; optimize `-A * logp(y)` over response tokens (length‑norm optional); optional KL to reference policy.
+  - Conditional Stage‑A GRPO (optional): vary one image’s summary at a time, recompute Stage‑B reward, and update on summary tokens.
+- Decode‑time masking (optional): mask geometry/coord tokens during Stage‑A generation; does not affect gradients.
+
+---
+
+## Health checks (fast)
+- Placeholder count in text equals number of images; otherwise error.
+- `pixel_values` rows == sum over `image_grid_thw` of (t*h*w).
+- `<|image_pad|>` count in `input_ids` equals expected `(t*h*w)//(merge_size**2)` totals.
+- Assistant spans found; `<|im_end|>` included; labels outside spans are `-100`.
+- Coord mode: tokenizer contains `<|coord_*>`; dynamic range detected; if coord aux is enabled but no coord‑labeled targets inside spans, fail fast.
+- Loss: total equals sum of weighted components; diagnostics finite.
+- Checkpoints: Save processor; wrapper exposes HF `model.config`.
+
+---
+
+## Open‑first pointers (code reading order)
+- `src_new/processing/conversation_processor.py` (HF‑first builders, validation)
+- `src_new/processing/coordinate_converter.py` (object→token conversion)
+- `src_new/models/wrapper.py` (DetectionModel, validations, loss path)
+- `src_new/models/loss_manager.py` and `src_new/losses/token_grouping.py` (single‑pass CE, grouped masks, coord aux)
+- `src_new/data/dataset.py` (offset‑based spans, masking, variant dispatch)
+- `data_conversion/unified_processor.py` and `coordinate_manager.py` (EXIF→rescale→smart‑resize; canonical geometry)
+- `src_post/runner.py` and `src_post/conversation.py` (Stage‑A/B flows, GRPO core)
+
+---
+
+## Assistant behavior (how to help effectively)
+- Default to HF‑first reasoning: typed messages → template render → processor tensors; never hand‑craft `<|image_pad|>`.
+- Preserve strict ordering and invariants above; validate shapes/counts explicitly.
+- Do not introduce in‑code defaults; surface missing config keys clearly.
+- When editing, keep geometry tokens and coord ranges dynamic; avoid hard‑coded IDs.
+- Prefer improving processing/validation flows over adding ad‑hoc run scripts.
+
+## References
+- Data conversion deep dive: `data_conversion/README.md`
+- SFT docs hub: `src_new/UNIFIED_DOCUMENTATION.md` and `docs/SRC_NEW_REFERENCE.md`
+- RL post‑training: `src_post/README.md`

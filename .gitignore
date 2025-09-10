@@ -53,6 +53,7 @@
 /.swarm
 /.trae
 /.vscode
+/data
 /data_analysis
 /data_templates
 /demo

@@ -50,10 +50,18 @@ class ObjectAwareAugmentationPipeline:
                 rng=rng,
             )
 
-        # 2) photometric (OCR-safe when label present and enabled)
+        # 2) photometric (OCR/brand/line-safe when applicable)
         ocr_guard = False
         if self.config.ocr is not None and self.config.ocr.label_protect:
-            ocr_guard = any(("标签" in o["desc"]) for o in out_sample["objects"])
+            objs = out_sample["objects"]
+            has_label = any(("标签" in o.get("desc", "")) for o in objs)
+            # Brand text often appears on BBU/shield; guard when vendor tokens or '品牌' are mentioned
+            descs = [o.get("desc", "") for o in objs]
+            brand_tokens = ("华为", "中兴", "爱立信", "品牌")
+            brand_mention = any(any(bt in d for bt in brand_tokens) for d in descs)
+            # Thin-line geometry (fiber/wire) is sensitive to blur/dropout
+            has_thin_lines = any(("line" in o) for o in objs)
+            ocr_guard = has_label or brand_mention or has_thin_lines
         if self.config.photometric is not None and self.config.photometric.enabled:
             out_images = photometric_ops.apply_photometric(
                 images=out_images,

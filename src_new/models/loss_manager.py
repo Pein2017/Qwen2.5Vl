@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import torch
+import os
 
 
 def get_loss_logger() -> logging.Logger:
@@ -235,6 +236,113 @@ class LossManager:
         self._lambda_lap2 = 0.0
         self._embedding_accessor = None
 
+        # Debug controls
+        self._debug_mode: Optional[str] = None  # 'train' | 'eval'
+        self._debug_dumped_train: bool = False
+        self._debug_dumped_eval: bool = False
+        self._debug_detailed: bool = os.getenv("BBU_DEBUG_DETAILED", "0").strip() not in ("", "0", "false", "False")
+
+    def set_debug_mode(self, mode: str) -> None:
+        self._debug_mode = str(mode).lower()
+
+    def _maybe_dump_detailed(self,
+                              labels: torch.Tensor,
+                              teacher_spans: Optional[List[List[Tuple[int, int]]]],
+                              student_spans: Optional[List[List[Tuple[int, int]]]],
+                              gm) -> None:
+        if not self._debug_detailed:
+            return
+        mode = self._debug_mode or "unknown"
+        if mode == "train" and self._debug_dumped_train:
+            return
+        if mode == "eval" and self._debug_dumped_eval:
+            return
+        try:
+            # Only row 0
+            b = 0
+            input_ids = getattr(self, "_last_input_ids", None)
+            if input_ids is None or not isinstance(input_ids, torch.Tensor):
+                logger.info("[DetailedDebug] input_ids unavailable; skipping detailed dump")
+                return
+            row_ids = input_ids[b]
+            ids_list = [int(x) for x in row_ids.tolist()]
+            text = self._tokenizer.decode(ids_list, skip_special_tokens=False)
+            tok = self._tokenizer(
+                text,
+                return_offsets_mapping=True,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )
+            offsets = tok["offset_mapping"][0].tolist()
+            # Build assistant masks (unshifted)
+            seq_len = labels.size(1)
+            tmask = torch.zeros(seq_len, dtype=torch.bool)
+            smask = torch.zeros(seq_len, dtype=torch.bool)
+            if teacher_spans and len(teacher_spans) > b:
+                for st, ed in teacher_spans[b]:
+                    tmask[st:ed] = True
+            if student_spans and len(student_spans) > b:
+                for st, ed in student_spans[b]:
+                    smask[st:ed] = True
+            # Group masks (shifted) row 0
+            def _to_set(mask: torch.Tensor) -> set:
+                return {i for i, v in enumerate(mask[0].tolist()) if v}
+            s_cap = _to_set(gm.student_caption)
+            s_grd = _to_set(gm.student_grounding)
+            s_fmt = _to_set(gm.student_formatting)
+            t_cap = _to_set(gm.teacher_caption)
+            t_grd = _to_set(gm.teacher_grounding)
+            t_fmt = _to_set(gm.teacher_formatting)
+
+            # Dump header
+            logger.info("[DetailedDebug:%s] assistant spans (tokens): teacher=%s student=%s",
+                        mode,
+                        list(teacher_spans[b]) if teacher_spans and len(teacher_spans) > b else [],
+                        list(student_spans[b]) if student_spans and len(student_spans) > b else [])
+            logger.info("[DetailedDebug:%s] decoded (truncated 800): %s", mode, text[:800].replace("\n", " ⏎ "))
+
+            # Iterate tokens in assistant regions only
+            def _tag_for(idx: int, is_teacher: bool) -> str:
+                # idx is unshifted; groups are shifted by 1
+                sidx = idx - 1
+                if sidx < 0:
+                    return "-"
+                if is_teacher:
+                    if sidx in t_cap:
+                        return "caption"
+                    if sidx in t_grd:
+                        return "grounding"
+                    if sidx in t_fmt:
+                        return "formatting"
+                else:
+                    if sidx in s_cap:
+                        return "caption"
+                    if sidx in s_grd:
+                        return "grounding"
+                    if sidx in s_fmt:
+                        return "formatting"
+                return "-"
+
+            for idx in range(min(seq_len, len(offsets))):
+                is_t = bool(tmask[idx])
+                is_s = bool(smask[idx])
+                if not (is_t or is_s):
+                    continue
+                ch0, ch1 = offsets[idx]
+                token_str = self._tokenizer.convert_ids_to_tokens(ids_list[idx])
+                tag = _tag_for(idx, is_t)
+                role = "teacher" if is_t else "student"
+                snippet = text[ch0:ch1].replace("\n", " ⏎ ")
+                logger.info("[DetailedDebug:%s] i=%d [%d:%d] role=%s tag=%s tok=%s text='%s'",
+                            mode, idx, ch0, ch1, role, tag, token_str, snippet)
+
+            if mode == "train":
+                self._debug_dumped_train = True
+            elif mode == "eval":
+                self._debug_dumped_eval = True
+        except Exception as e:
+            logger.info(f"[DetailedDebug] failed: {e}")
+
     def set_token_grouping_plugin(self, plugin) -> None:
         """Set token grouping plugin (internal enablement).
 
@@ -283,6 +391,7 @@ class LossManager:
         """Set a callable that returns the coordinate embedding slice [K+1, d]."""
         self._embedding_accessor = accessor
 
+
     def compute_loss_components(
         self,
         logits: torch.Tensor,
@@ -290,6 +399,7 @@ class LossManager:
         coord_mask: Optional[torch.Tensor] = None,
         teacher_spans: Optional[List[List[Tuple[int, int]]]] = None,
         student_spans: Optional[List[List[Tuple[int, int]]]] = None,
+        conversation_variant: Optional[object] = None,
     ) -> LossComponents:
         """
         Compute final weighted loss components for training.
@@ -315,7 +425,7 @@ class LossManager:
         if has_teacher_spans or has_student_spans:
             # Compute granular teacher-student loss breakdown
             granular_losses = self._compute_granular_teacher_student_loss(
-                logits, labels, coord_mask, teacher_spans, student_spans
+                logits, labels, coord_mask, teacher_spans, student_spans, conversation_variant
             )
 
             # Apply weights to get final loss components
@@ -621,6 +731,7 @@ class LossManager:
         coord_mask: Optional[torch.Tensor],
         teacher_spans: Optional[List[List[Tuple[int, int]]]],
         student_spans: Optional[List[List[Tuple[int, int]]]],
+        conversation_variant: Optional[object] = None,
     ) -> dict:
         """
         PRODUCTION-READY: Compute granular teacher-student loss breakdown with Solution 1 optimization.
@@ -691,11 +802,21 @@ class LossManager:
                 from src_new.losses.token_grouping import TokenGroupingPlugin
 
                 self._token_grouping_plugin = TokenGroupingPlugin(self._tokenizer)
+            # Normalize variant to string key for grouping policy
+            variant_key = None
+            if conversation_variant is not None:
+                variant_key = str(getattr(conversation_variant, "value", conversation_variant)).strip().lower()
             gm = self._token_grouping_plugin.build_group_masks(
                 labels=labels,
                 teacher_spans=teacher_spans,
                 student_spans=student_spans,
+                input_ids=self._last_input_ids if hasattr(self, "_last_input_ids") else None,
             )
+            # Detailed dump once per phase when enabled
+            try:
+                self._maybe_dump_detailed(labels, teacher_spans, student_spans, gm)
+            except Exception:
+                pass
 
             # Per-group sums and counts for proper weighted aggregation
             t_cap_sum, t_cap_cnt = self._masked_sum_and_count(
@@ -750,9 +871,9 @@ class LossManager:
                     + self._weight_grounding * t_grd_cnt_f
                     + self._weight_formatting * t_fmt_cnt_f
                 )
-                # Safe fallback if weighted count is zero (e.g., all tokens fall into a zero-weight group)
+                # Fail-fast: zero weighted denominator indicates a configuration or grouping issue
                 if float(t_den.item()) == 0.0:
-                    t_den = t_total
+                    raise ValueError("Grouped loss denominator is zero for teacher. Check group weights and masks.")
                 teacher_llm_loss = t_weighted_sum / t_den
                 teacher_caption_loss_contrib = (
                     self._weight_caption * t_cap_sum
@@ -776,9 +897,9 @@ class LossManager:
                     + self._weight_grounding * s_grd_cnt_f
                     + self._weight_formatting * s_fmt_cnt_f
                 )
-                # Safe fallback if weighted count is zero
+                # Fail-fast: zero weighted denominator indicates a configuration or grouping issue
                 if float(s_den.item()) == 0.0:
-                    s_den = s_total
+                    raise ValueError("Grouped loss denominator is zero for student. Check group weights and masks.")
                 student_llm_loss = s_weighted_sum / s_den
                 student_caption_loss_contrib = (
                     self._weight_caption * s_cap_sum
@@ -789,6 +910,14 @@ class LossManager:
                 student_formatting_loss_contrib = (
                     self._weight_formatting * s_fmt_sum
                 ) / s_den
+            
+            # Fail-fast: grouped masks produced no tokens while assistant masks exist -> configuration or grouping bug
+            if (
+                teacher_llm_loss is None
+                and student_llm_loss is None
+                and (teacher_llm_mask_shifted.any() or student_llm_mask_shifted.any())
+            ):
+                raise ValueError("Grouped masks are empty but assistant spans exist; plain/wrapper grouping failed.")
         else:
             if teacher_llm_mask_shifted.any():
                 teacher_llm_loss = self._apply_mask_to_per_token_loss(

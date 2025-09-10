@@ -21,6 +21,8 @@ VAL_RATIO="0.1"
 MAX_TEACHERS="10"
 RESIZE="true"
 SEED="17"
+# Text sanitization
+SANITIZE_TEXT="true"              # enables built-in text normalization
 ```
 
 Object types: `bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`
@@ -31,7 +33,16 @@ Python API:
 ```python
 from data_conversion.unified_processor import UnifiedProcessor
 from data_conversion.config import DataConversionConfig
-config = DataConversionConfig(input_dir="ds_v2", output_dir="data", object_types=["bbu","label"], resize=True, val_ratio=0.1, max_teachers=10, seed=17)
+config = DataConversionConfig(
+    input_dir="ds_v2",
+    output_dir="data",
+    object_types=["bbu","label"],
+    resize=True,
+    val_ratio=0.1,
+    max_teachers=10,
+    seed=17,
+    sanitize_text=True,    # enable default normalization
+)
 processor = UnifiedProcessor(config)
 results = processor.process()
 ```

@@ -78,6 +78,7 @@ ordering for stable learning signals.
   - Minimum object size checks (square/bbox)
   - Requires non-empty `desc`
   - Strips occlusion tokens containing “遮挡” by default (configurable). This property is deprecated and shown to be unhelpful for training, so occlusion words like “有遮挡/无遮挡/挡风板有遮挡” are removed from `desc` during conversion and are excluded from teacher‑pool coverage and selection entirely.
+  - Standardizes label descriptions (configurable): any `标签/*` with empty-like or non-informative content (e.g., `空格`, `看不清`, `、`, or missing) is normalized to `标签/无法识别`.
   - Records invalid objects/samples for reporting
 
 - Object ordering and image processing:

@@ -177,6 +177,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         data_seed=int(getattr(config, "seed", 17)),
     )
 
+
     # Add fast checkpoint mode configuration (default: True for inference-ready checkpoints)
     logger.info(
         "🚀 Fast checkpoint mode enabled - inference-ready checkpoints only (30s vs 200-400s)"
@@ -408,6 +409,10 @@ def create_trainer_with_new_architecture(
                     model,
                     tokenizer,
                     phase=phase,
+                    top_k_layers=getattr(config, "top_k_layers", None),
+                    vision_top_k_blocks=getattr(config, "vision_top_k_blocks", None),
+                    freeze_patch_embed=getattr(config, "freeze_patch_embed", None),
+                    trainable_token_strings=getattr(config, "trainable_token_strings", None),
                 )
                 logger.info(
                     f"✅ PhaseFreeze applied: phase={summary.phase}, trainable≈{summary.num_trainable_params}"
@@ -519,7 +524,8 @@ def main():
     logger = get_logger()
 
     # Load configuration
-    config = load_config(f"configs/{args.config}.yaml")
+    config_path = f"configs/{args.config}.yaml"
+    config = load_config(config_path)
 
     # Seed data-related RNGs without forcing deterministic backends (keeps efficiency)
     try:
@@ -540,6 +546,11 @@ def main():
     training_args = create_training_arguments_with_deepspeed(
         config, max_steps=args.max_steps
     )
+    # Record original config path on TrainingArguments for checkpoint copying
+    try:
+        setattr(training_args, "original_config_path", config_path)
+    except Exception:
+        pass
 
     # Create trainer and optionally run tests
     trainer = create_trainer_with_new_architecture(training_args, config)

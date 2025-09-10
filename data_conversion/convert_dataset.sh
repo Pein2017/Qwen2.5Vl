@@ -55,6 +55,9 @@ OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-sep
 # Optional settings
 LOG_LEVEL="INFO"                    # e.g., "INFO", "DEBUG", "WARNING", "ERROR" or leave empty
 SEED="17"                         # e.g., "17" or leave empty
+STRIP_OCCLUSION="true"            # "true" to remove tokens containing '遮挡'; default disabled to preserve data
+SANITIZE_TEXT="true"              # "true" to normalize text (spaces/hyphens/fullwidth/circled numbers)
+STANDARDIZE_LABEL_DESC="true"     # "true" to map empty-like 标签/* to 标签/无法识别
 
 # Validation settings - OPTIONAL (currently hardcoded in unified_processor.py)
 # TODO: These parameters will be configurable in a future update
@@ -128,8 +131,15 @@ if [ "$RESIZE" = "true" ]; then
     ARGS="$ARGS --resize"
 fi
 
-# Occlusion stripping enforced by default due to low training value
-ARGS="$ARGS --strip_occlusion"
+if [ "$STRIP_OCCLUSION" = "true" ]; then
+    ARGS="$ARGS --strip_occlusion"
+fi
+if [ "$SANITIZE_TEXT" = "true" ]; then
+    ARGS="$ARGS --sanitize_text"
+fi
+if [ "$STANDARDIZE_LABEL_DESC" = "true" ]; then
+    ARGS="$ARGS --standardize_label_desc"
+fi
 
 echo "🔄 Processing dataset: $DATASET_NAME ($INPUT_DIR)"
 echo "  └─ Executing: $PYTHON_CMD"

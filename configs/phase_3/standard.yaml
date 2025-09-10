@@ -1,29 +1,34 @@
 num_train_epochs: 50
-per_device_train_batch_size: 2
-per_device_eval_batch_size: 2
-gradient_accumulation_steps: 4  
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8  
 learning_rate: 5.0e-4
-vision_lr: 1.0e-6
-merger_lr: 5.0e-4
-llm_lr: 1.0e-5
+vision_lr: 1.0e-7
+merger_lr: 5.0e-5
+llm_lr: 1.0e-7
 lr_top_layers: 5.0e-6
-lr_coord_slice: 5.0e-6
+lr_coord_slice: 1.0e-5
 
 weight_decay: 1.0e-3
 teacher_ratio: 0.2
 
-model_path: outputs/7B/phase_2/9-2-7b-phase_2/checkpoint-1100
+model_path: outputs/7B-full/phase_2/9-6-7b-full-phase_2/best-1200-eval_loss0.4287
 
-run_name: "9-4-7b-phase_3-ratio_4_3_3-epoch_50"
-output_dir: outputs/7B/phase_3
+run_name: "9-8-7b-full-phase_3"
+output_dir: outputs/7B-full/phase_3
 
 phase_name: phase_3
+# Selective unfreezing to avoid OOM: keep aligner unfrozen; unfreeze only last-K blocks
+# Set K conservatively; tune if memory allows.
+top_k_layers: 6              # unfreeze last 6 LLM blocks
+vision_top_k_blocks: 3       # unfreeze last 2 vision blocks
+freeze_patch_embed: true     # keep patch embedding frozen for stability
 
 # Enable augmentation in phase_2
 use_aug: true
 augmentation_schedule:
   - { start_epoch: 0, preset: "moderate" }
-  - { start_epoch: 20, preset: "aggressive" }
+  - { start_epoch: 25, preset: "aggressive" }
   
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
