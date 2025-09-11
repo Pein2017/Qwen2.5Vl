@@ -1,79 +1,70 @@
-# Claude Code workspace ignore file
-# Ignore everything first
+# Git: track only Python and Markdown (plus essential root metadata); exclude temp/outputs and large binaries
+# 1) Ignore everything
 *
 
-# Allow directory traversal
+# 2) Allow directory traversal (so we can whitelist files inside)
 !*/
 
-# Allow only these specific directories and their contents
-!data_conversion/
-!data_conversion/**
-!docs/
-!docs/**
-!eval/
-!eval/**
-!configs/
-!configs/**
-!data/
-!data/**
-!src/
-!src/**
-!scripts/
-!scripts/**
-!tests/
-!tests/**
-!src_new/
-!src_new/**
-!run_new.log
-!vis_tools/
-!vis_tools/**
-!todo/
-!todo/**
-!.augment-guidelines
-!src_coord_pretrain/**/*.py
-!src_coord_pretrain/**/*.sh
-!src_coord_pretrain/**/*.yaml
-!src_coord_pretrain/**/*.md
-!exp_docs
+# 3) Allow code and docs everywhere
+!**/*.py
+!**/*.md
 
-# Allow essential root files
+# 4) Allow essential root files
 !.gitignore
-!CLAUDE.md
+!.gitattributes
+!pyproject.toml
+!requirements*.txt
+!.cursorignore
+!.cursorindexingignore
 !README.md
+!CLAUDE.md
+!LICENSE
+!pyrightconfig.json
 
-# Ignore all other directories and files at root level except the allowed ones
-/.claude
-**/__pycache__/
-/.cursor
-/.git
-/.kiro
-/.pytest_cache
-/.ruff_cache
-/.serena
-/.swarm
-/.trae
-/.vscode
-/data
-/data_analysis
-/data_templates
-/demo
-/ds_v1
-/ds_v2
-/examples
-/exp_det_coordinates
-/good_results
-/important_demo
-/legacy
-/logs
-/model_cache
-/output*
-/output-*
-/raw_ds
-/tasks
-/tb
-/temporal
-/test_output
-/专利
+
+# 5) Exclude temporary/experimental and large output directories (even if they contain .py/.md)
+temporal/**
+outputs/**
+output-*/**
+output-post/**
+model_cache/**
+data/**
+ds_*/**
+infer_results/**
+tb/**
+logs/**
+tmp/**
+temp/**
+.venv/**
+.env/**
+__pycache__/**
+.cache/**
+.ipynb_checkpoints/**
+tests_back/**
+src_new_bak/**
+patents/**
+mcp/**
+legacy/**
+logs/**
+.claude/**
+test_back/**
+
+# 6) Re-ignore large/binary artifacts
+**/*.pt
+**/*.pth
+**/*.safetensors
+**/*.ckpt
+**/*.bin
+**/*.h5
+**/*.onnx
+**/*.tar
+**/*.zip
+**/*.7z
+**/*.gz
+**/*.bz2
+**/*.xz
 **/*.jpeg
 **/*.jpg
-**/*.pngreference/
+**/*.png
+**/*.webp
+**/*.gif

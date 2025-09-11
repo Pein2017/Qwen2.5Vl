@@ -1,0 +1,25 @@
+{
+    "include": [
+        "data_conversion",
+        "vis_tools",
+        "configs",
+        "src_new",
+        "scripts",
+        "src_coord_pretrain"
+    ],
+    "exclude": [
+        "transformers",
+        "**/reference"
+    ],
+    "typeCheckingMode": "basic",
+    "reportCallIssue": "none",
+    "reportArgumentType": "none",
+    "reportOperatorIssue": "none",
+    "reportReturnType": "none",
+    "reportGeneralTypeIssues": "none",
+    "reportIndexIssue": "none",
+    // "reportOptionalOperand": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalSubscript": "none",
+}

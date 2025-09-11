@@ -1,0 +1,409 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Optimized prompt templates for BBU equipment detection.
+Focuses on basic recognition (location + object type) with hierarchical classification.
+"""
+
+# ==============================================================================
+# English Prompts
+# ==============================================================================
+
+ENGLISH_BASE_PROMPT = """You are Q-Vision-QC, an object-detection assistant specialized in indoor BBU inspections in telecom engineering rooms.
+You receive one image; detect all objects matching the allowed descriptions.
+Ignore any watermark, timestamp, or overlay text at the top-left.
+Output only a JSON array of:
+  {"bbox_2d":[x1,y1,x2,y2],"label":"object_type/property/extra_info"}
+- (x1,y1)=top-left, (x2,y2)=bottom-right in pixels.
+- "label" must be a '/' separated hierarchical description.
+- Sort by y ascending, then x ascending.
+- No extra text—if none, return []."""
+
+ENGLISH_CANDIDATES_SECTION = """
+**Candidate Object Categories:**
+- BBU units (Huawei/ZTE/Ericsson baseband processing units)
+- Screw connection points (BBU mounting screws, CPRI cable connections, grounding connections, fiber-ODF connections, ground bar screws)
+- Cables (fiber optic/non-fiber optic cables)
+- Cabinet components (cabinet space, wind shields, label stickers)
+"""
+
+ENGLISH_FEW_SHOT_SECTION = ""  # no built-in examples
+
+
+# ==============================================================================
+# Chinese Prompts
+# ==============================================================================
+
+# ============================
+# HIERARCHICAL OBJECT CLASSIFICATION
+# ============================
+
+
+# ============================
+# CHINESE PROMPTS (PRIMARY)
+# ============================
+
+CHINESE_TRAINING_PROMPT = """你是一个专用于通信机房BBU设备检测的AI助手。你的任务是精确识别并定位图像中所有指定对象。
+
+【学习模式说明】
+本对话采用示例学习模式，帮助你提高检测准确性：
+1. 首先会提供若干**参考示例**，每个示例包含一张图像和标准检测结果
+2. 请仔细学习示例中的检测模式、标注风格、判断标准和分类方法
+3. 最后会给出**目标图像**，请运用从参考示例中学到的知识进行精确检测
+4. 重点关注示例中的位置判断逻辑、相似对象的区分方法和标注细节
+
+【核心目标】本阶段仅关注下列五大类（忽略线缆等未列对象）：
+
+1. **BBU设备**
+   - bbu基带处理单元/华为
+   - bbu基带处理单元/中兴
+   - bbu基带处理单元/爱立信
+
+2. **螺丝连接点**
+   - 螺丝连接点/BBU安装螺丝(相似)
+   - 螺丝连接点/CPRI光缆和BBU连接点
+   - 螺丝连接点/地排处螺丝
+   - 螺丝连接点/BBU接地线机柜接地端（相似）
+   - 螺丝连接点/BBU尾纤和ODF连接点
+   注意：子类别外观高度相似，必须结合"所在位置"判定：
+     • BBU安装螺丝 → 位于BBU机框四角或导轨固定孔
+     • CPRI光缆和BBU连接点 → 一般呈现蓝色头白色身圆柱形插头，将光纤与BBU连接起来。
+     • 地排螺丝 → 仅出现在地排铜排、长铁片上
+     • BBU接地线机柜接地端 → 外观上与BBU安装螺丝相似，大部分会压住一条接地线的铜环，用于连接机柜和地排。
+     • 尾纤-ODF连接点 → 铁头的圆柱体，不连接、安装在BBU上。
+     • ODF提供的插口一般为密集排布的规则正方形
+
+3. **挡风板**
+   - 挡风板/已安装
+   - 挡风板/未安装  （应出现而缺失亦视为此类）
+   说明:每台BBU上下各需一块挡风板用于散热，位置错误或缺失均应检测。
+
+4. **机柜空间**
+   - 机柜空间/满载
+   - 机柜空间/非满载
+
+5. **标签贴纸**
+   - 标签贴纸  （常见黄色底+红色联通LOGO，偶有白色）
+
+【输出要求】
+1. **多几何格式支持**: 根据对象几何特征使用不同坐标数量：
+   - **矩形对象** (BBU设备/螺丝连接点/挡风板/机柜空间): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>`
+   - **旋转标签** (标签贴纸): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><coord_x3><coord_y3><coord_x4><coord_y4><|box_end|>` (8个坐标，4个角点)
+   - **线缆路径** (光纤/电线): `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2>...<coord_xN><coord_yN><|box_end|>` (可变长度，偶数个坐标)
+
+2. **坐标说明**:
+   - 使用 `<coord_...>` token 表示绝对像素坐标
+   - 矩形: (x1,y1)左上角, (x2,y2)右下角
+   - 旋转标签: 4个角点按顺序标注
+   - 线缆: 沿路径关键点坐标序列
+
+3. **检测策略**:
+   - **完整性**: 检测所有指定对象，几何边界需完整覆盖对象可见部分
+   - **准确性**: 精确标注，特别要根据位置区分相似对象（如不同类型的螺丝）
+   - **几何适配**: 根据对象形状选择最适合的几何表示方式
+
+4. **排除项**: 忽略所有未在【核心目标】中列出的对象（如水印、时间戳等）。"""
+
+CHINESE_EVALUATION_PROMPT = """你是通信机房BBU设备检测AI助手。
+
+【任务模式】
+如果本对话包含参考示例，请仔细学习示例中的检测模式和标注风格，然后应用到目标图像；如果没有示例，请直接进行检测。
+
+【检测目标】
+请识别图像中的以下目标并输出位置与类别：
+
+- BBU设备: bbu基带处理单元/华为、bbu基带处理单元/中兴、bbu基带处理单元/爱立信
+- 螺丝连接点: BBU安装螺丝、CPRI光缆和BBU连接点、地排处螺丝、BBU接地线机柜接地端、BBU尾纤和ODF连接点
+  （请以位置关系为主进行判定，勿仅凭外观）
+- 挡风板: 挡风板/已安装、挡风板/未安装
+- 机柜空间: 机柜空间/满载、机柜空间/非满载
+- 标签贴纸
+
+请根据对象几何特征选择合适的坐标格式输出所有检测结果：
+- 矩形对象: `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><|box_end|>`
+- 旋转标签: `类别/属性: <|box_start|><coord_x1><coord_y1><coord_x2><coord_y2><coord_x3><coord_y3><coord_x4><coord_y4><|box_end|>`
+- 线缆路径: `类别/属性: <|box_start|><coord_x1><coord_y1>...<coord_xN><coord_yN><|box_end|>`"""
+
+# ============================
+# LEGACY PROMPTS (保持兼容性)
+# ============================
+
+CHINESE_BASE_PROMPT = CHINESE_EVALUATION_PROMPT  # 默认使用评估版本
+
+BASE_PROMPT = """You are an AI assistant specialized in multi-object detection for telecommunication equipment rooms, particularly focused on BBU (Baseband Unit) environments.
+
+**Learning Mode**: This conversation may include reference examples to help improve detection accuracy. If examples are provided, carefully study the detection patterns, annotation styles, and classification methods before applying them to the target image.
+
+**Task**: Detect and locate all relevant equipment and components in the image.
+
+**Target Objects**:
+• BBU units (Huawei/ZTE/Ericsson baseband processing units)
+• Screw connection points (BBU mounting screws, CPRI cable connections, grounding connections, fiber-ODF connections, ground bar screws)
+• Cables (fiber optic/non-fiber optic)
+• Cabinet components (cabinet space, wind shields, label stickers)
+
+**Output Format**: JSON array only
+```json
+[{"bbox_2d": [x1, y1, x2, y2], "label": "object_type/attribute/details"}]
+```
+
+Coordinates are absolute pixels: (x1,y1) top-left, (x2,y2) bottom-right. Ignore watermarks and overlay text."""
+
+
+def get_system_prompt(
+    use_training_prompt: bool = False, language: str = "chinese"
+) -> str:
+    """
+    Get the appropriate system prompt based on context.
+
+    Args:
+        use_training_prompt: If True, use detailed training prompt; otherwise use concise evaluation prompt
+        language: "chinese" or "english"
+
+    Returns:
+        Appropriate system prompt string
+    """
+    if language.lower() == "chinese":
+        if use_training_prompt:
+            return CHINESE_TRAINING_PROMPT
+        else:
+            return CHINESE_EVALUATION_PROMPT
+    else:
+        return BASE_PROMPT
+
+
+def get_user_prompt_prefix(
+    use_training_prompt: bool = False,
+    language: str = "chinese",
+    context: str = "target",
+) -> str:
+    """
+    Get user prompt prefix for multi-shot scenarios.
+
+    Args:
+        use_training_prompt: If True, use detailed training context
+        language: "chinese" or "english"
+        context: "teacher", "target", or "standalone"
+
+    Returns:
+        User prompt prefix string
+    """
+    if language.lower() == "chinese":
+        if context == "teacher":
+            return "📚 参考示例:" if use_training_prompt else "参考示例:"
+        elif context == "target":
+            if use_training_prompt:
+                return "现在请根据以上参考示例的检测模式和标注风格，检测以下目标图像:"
+            else:
+                return "请检测目标图像:"
+        else:  # standalone
+            if use_training_prompt:
+                return "🔍 请仔细分析这张BBU机房图像，检测并标注所有相关设备和部件:"
+            else:
+                return "🔍 请检测图像中的设备和部件:"
+    else:
+        if context == "teacher":
+            return (
+                "📚 Reference Example:" if use_training_prompt else "Reference Example:"
+            )
+        elif context == "target":
+            if use_training_prompt:
+                return "Now apply the detection patterns and annotation style from the reference examples to detect objects in this target image:"
+            else:
+                return "Please detect objects in the target image:"
+        else:  # standalone
+            if use_training_prompt:
+                return "Please carefully analyze this BBU equipment room image and detect all relevant equipment and components:"
+            else:
+                return "Please detect all equipment and components in the image:"
+
+
+# ============================
+# PROMPT TEMPLATES FOR DIFFERENT SCENARIOS
+# ============================
+
+
+def get_learning_instruction(
+    num_teachers: int, language: str = "chinese", use_training_prompt: bool = False
+) -> str:
+    """
+    Get meta-learning instruction to help model understand teacher-student relationship.
+
+    Args:
+        num_teachers: Number of teacher examples provided
+        language: "chinese" or "english"
+        use_training_prompt: Whether to use detailed instructions
+
+    Returns:
+        Learning instruction string
+    """
+    if num_teachers == 0:
+        return ""  # No instruction needed for standalone detection
+
+    if language.lower() == "chinese":
+        if use_training_prompt:
+            if num_teachers == 1:
+                return """
+学习提示: 请仔细观察参考示例中的以下要点:
+• 如何准确识别不同类型的对象 (BBU设备、螺丝连接点、挡风板等)
+• 如何区分外观相似但位置不同的对象 (如BBU安装螺丝 vs BBU接地线机柜接地端)
+• 边界框的准确绘制方法和标注风格
+• 对象分类的判断逻辑和命名规范
+然后将这些模式应用到目标图像的检测中。"""
+            else:
+                return f"""
+学习提示: 下面将提供{num_teachers}个参考示例，请仔细观察:
+• 不同场景下的检测模式和标注风格
+• 相似对象的区分方法和判断标准
+• 边界框绘制的精确度和一致性
+• 标签命名的规范性和层级结构
+学习完所有示例后，将这些模式应用到目标图像中。"""
+        else:
+            return f"📝 参考{num_teachers}个示例，学习检测模式后应用到目标图像。"
+    else:
+        if use_training_prompt:
+            if num_teachers == 1:
+                return """
+Learning Instruction: Please carefully observe the following aspects in the reference example:
+• How to accurately identify different types of objects (BBU equipment, screw connection points, wind shields, etc.)
+• How to distinguish objects that look similar but differ in location (e.g., BBU mounting screws vs BBU grounding cabinet ground terminals)
+• Accurate bounding box drawing methods and annotation styles
+• Object classification logic and naming conventions
+Then apply these patterns to detect objects in the target image."""
+            else:
+                return f"""
+Learning Instruction: {num_teachers} reference examples will be provided. Please carefully observe:
+• Detection patterns and annotation styles across different scenarios
+• Methods for distinguishing similar objects and judgment criteria
+• Precision and consistency of bounding box drawing
+• Standardization and hierarchical structure of label naming
+After learning from all examples, apply these patterns to the target image."""
+        else:
+            return f"📝 Learn from {num_teachers} reference example(s) and apply to target image."
+
+
+def format_few_shot_prompt(
+    examples: list,
+    target_image_description: str = "目标图像",
+    use_training_prompt: bool = False,
+    language: str = "chinese",
+) -> str:
+    """
+    Format few-shot learning prompt with examples.
+
+    Args:
+        examples: List of example dictionaries with 'image_desc' and 'objects'
+        target_image_description: Description for the target image
+        use_training_prompt: Whether to use detailed training prompt
+        language: "chinese" or "english"
+
+    Returns:
+        Formatted few-shot prompt
+    """
+    if language.lower() == "chinese":
+        intro = (
+            "以下是一些检测示例，请学习其检测模式和标注风格:\n\n"
+            if use_training_prompt
+            else "参考示例:\n\n"
+        )
+        target_intro = (
+            f"\n现在请检测{target_image_description}中的所有对象:"
+            if use_training_prompt
+            else f"\n检测{target_image_description}:"
+        )
+    else:
+        intro = (
+            "Here are some detection examples to learn the pattern and annotation style:\n\n"
+            if use_training_prompt
+            else "Reference examples:\n\n"
+        )
+        target_intro = (
+            f"\nNow please detect all objects in {target_image_description}:"
+            if use_training_prompt
+            else f"\nDetect {target_image_description}:"
+        )
+
+    prompt = intro
+
+    for i, example in enumerate(examples, 1):
+        if language.lower() == "chinese":
+            prompt += f"示例 {i}:{example.get('image_desc', f'图像{i}')}\n"
+        else:
+            prompt += f"Example {i}: {example.get('image_desc', f'Image {i}')}\n"
+
+        # Format objects as JSON
+        import json
+
+        prompt += json.dumps(example["objects"], ensure_ascii=False, indent=2) + "\n\n"
+
+    prompt += target_intro
+    return prompt
+
+
+# ============================
+# VALIDATION AND HELPER FUNCTIONS
+# ============================
+
+
+def validate_prompt_language(language: str) -> str:
+    """Validate and normalize language parameter."""
+    lang = language.lower().strip()
+    if lang in ["zh", "chinese", "中文", "cn"]:
+        return "chinese"
+    elif lang in ["en", "english", "英文"]:
+        return "english"
+    else:
+        return "chinese"  # Default to Chinese
+
+
+def get_optimized_prompt_for_context(
+    context: str = "training", language: str = "chinese"
+) -> dict:
+    """
+    Get optimized prompt configuration based on specific context.
+
+    Args:
+        context: "training", "evaluation", "inference", or "few_shot"
+        language: "chinese" or "english"
+
+    Returns:
+        Dictionary with prompt configuration
+    """
+    language = validate_prompt_language(language)
+
+    if context in ["training", "train"]:
+        use_training_prompts = True
+    elif context in ["evaluation", "eval", "inference", "test"]:
+        use_training_prompts = False
+    elif context == "few_shot":
+        use_training_prompts = True  # More detailed for few-shot
+    else:
+        use_training_prompts = False  # Default to evaluation
+
+    return {
+        "use_training_prompts": use_training_prompts,
+        "system_prompt": get_system_prompt(
+            use_training_prompt=use_training_prompts, language=language
+        ),
+        "user_prefix": get_user_prompt_prefix(
+            use_training_prompt=use_training_prompts, language=language
+        ),
+        "language": language,
+        "context": context,
+    }
+
+
+# ============================
+# CHINESE CONSTANTS
+# ============================
+
+CHINESE_CANDIDATES_SECTION = """
+**标准检测对象分类**:
+• BBU设备: bbu基带处理单元/华为、bbu基带处理单元/中兴、bbu基带处理单元/爱立信
+• 螺丝连接点: 螺丝连接点/BBU安装螺丝、螺丝连接点/CPRI光缆和BBU连接点、螺丝连接点/地排处螺丝、螺丝连接点/BBU接地线机柜接地端、螺丝连接点/BBU尾纤和ODF连接点
+• 挡风板: 挡风板/已安装、挡风板/未安装
+• 机柜空间: 机柜空间/满载、机柜空间/非满载
+• 标签贴纸
+"""
+
+CHINESE_FEW_SHOT_SECTION = ""  # 暂无内置示例
