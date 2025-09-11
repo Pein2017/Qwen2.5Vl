@@ -410,9 +410,6 @@ class ConversationProcessor:
             messages=messages, images=images, add_generation_prompt=False
         )
         out = self._process_text_and_images(text, oi)
-        if isinstance(assistant_render, dict) and assistant_render.get("group_char_spans"):
-            out["assistant_group_char_spans"] = [assistant_render["group_char_spans"]]
-            out["assistant_turn_roles"] = ["student"]
         return out
 
     def create_teacher_student_conversation(
@@ -466,12 +463,6 @@ class ConversationProcessor:
             messages=messages, images=all_images, add_generation_prompt=False
         )
         out = self._process_text_and_images(text, oi)
-        if turn_group_spans:
-            out["assistant_group_char_spans"] = turn_group_spans
-            out["assistant_turn_roles"] = turn_roles + (["student"] if isinstance(s_assistant_render, dict) and s_assistant_render.get("group_char_spans") else [])
-        elif isinstance(s_assistant_render, dict) and s_assistant_render.get("group_char_spans"):
-            out["assistant_group_char_spans"] = [s_assistant_render["group_char_spans"]]
-            out["assistant_turn_roles"] = ["student"]
         return out
 
     def create_inference_conversation(
@@ -578,9 +569,6 @@ class ConversationProcessor:
             messages=messages, images=images, add_generation_prompt=False
         )
         out = self._process_text_and_images(text, oi)
-        if isinstance(assistant_render, dict) and assistant_render.get("group_char_spans"):
-            out["assistant_group_char_spans"] = [assistant_render["group_char_spans"]]
-            out["assistant_turn_roles"] = ["student"]
         return out
 
     def _build_teacher_student_conversation_unified(
@@ -657,12 +645,6 @@ class ConversationProcessor:
             messages=messages, images=all_images, add_generation_prompt=False
         )
         out = self._process_text_and_images(text, oi)
-        if turn_group_spans or (isinstance(s_render, dict) and s_render.get("group_char_spans")):
-            if isinstance(s_render, dict) and s_render.get("group_char_spans"):
-                turn_group_spans.append(s_render["group_char_spans"])
-                turn_roles.append("student")
-            out["assistant_group_char_spans"] = turn_group_spans
-            out["assistant_turn_roles"] = turn_roles
         return out
 
     def create_conversation(
