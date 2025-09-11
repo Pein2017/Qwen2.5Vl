@@ -304,7 +304,6 @@ class Config:
 
     # Features
     coordinate_tokens_enabled: bool
-    plain_text_mode_enabled: bool
     coordinate_init_mode: Optional[str]
 
     # Vision processing parameters
@@ -542,12 +541,6 @@ class Config:
                     f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
                 )
 
-        # Required: explicit plain text mode toggle
-        if not hasattr(self, "plain_text_mode_enabled"):
-            raise ValueError("plain_text_mode_enabled must be explicitly provided in YAML (true/false)")
-        if not isinstance(self.plain_text_mode_enabled, bool):
-            raise ValueError("plain_text_mode_enabled must be a boolean (true/false)")
-
         # Output/log paths: accept relative; no existence check required here
 
         # Initialize new_geometry_tokens if not provided
@@ -569,15 +562,6 @@ class Config:
                 f"max_coord_value must be positive, got {self.max_coord_value}"
             )
 
-        # Enforce exclusive global formatting mode selection
-        # Only one of: plain_text_mode_enabled, coordinate_tokens_enabled may be True.
-        # If both are False, the system defaults to special_tokens mode.
-        if self.plain_text_mode_enabled and self.coordinate_tokens_enabled:
-            raise ValueError(
-                "plain_text_mode_enabled=True conflicts with coordinate_tokens_enabled=True. "
-                "Choose only one global format mode: set plain_text_mode_enabled=true for plain JSON mode, "
-                "or coordinate_tokens_enabled=true for coordinate-token mode. When both are false, special_tokens mode is used."
-            )
 
         if self.coordinate_loss_weight < 0:
             raise ValueError(

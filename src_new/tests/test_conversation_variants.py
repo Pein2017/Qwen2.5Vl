@@ -86,7 +86,7 @@ class TestConversationVariants(unittest.TestCase):
 
     def _dense_caption_messages(self) -> List[Dict[str, Any]]:
         # Image-only user; system shows the real instruction prompt
-        system_text = get_system_prompt(coordinate_tokens_enabled=False, plain_text_mode_enabled=False)
+        system_text = get_system_prompt(coordinate_tokens_enabled=False)
         return [
             {"role": "system", "content": system_text},
             {"role": "user", "content": [{"type": "image"}]},

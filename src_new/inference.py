@@ -537,7 +537,6 @@ class InferenceEngine:
             processor=unified_processor,
             max_coord_value=self.config.max_coord_value,
             coordinate_tokens_enabled=bool(self.config.coordinate_tokens_enabled),
-            plain_text_mode_enabled=bool(self.config.plain_text_mode_enabled),
         )
 
         # Set model to evaluation mode
@@ -2066,119 +2065,6 @@ class InferenceEngine:
             logger.warning(f"Failed to parse standard response: {e}")
             return response
 
-    def _parse_plain_json_lines_response(self, text: str) -> List[Dict[str, Any]]:
-        """Parse plain-text JSON Lines response where each line is one object.
-
-        Expected per line object: {GEOM_KEY:[...],"desc":"..."}
-        GEOM_KEY must be one of: bbox_2d, quad, line.
-        """
-        objects: List[Dict[str, Any]] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-
-            # Extract JSON object substring conservatively
-            json_str: Optional[str] = None
-            if line.startswith("{") and line.endswith("}"):
-                json_str = line
-            else:
-                start = line.find("{")
-                end = line.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    json_str = line[start : end + 1]
-
-            obj: Optional[Dict[str, Any]] = None
-            if json_str:
-                try:
-                    obj = json.loads(json_str)
-                except Exception:
-                    obj = None
-
-            if obj is None:
-                # Fallback: regex extraction to support unquoted coord tokens
-                import re
-
-                # desc
-                desc_match = re.search(r'"desc"\s*:\s*"(.*?)"', line)
-                desc_value = desc_match.group(1) if desc_match else ""
-
-                # geometry
-                geom_match = re.search(
-                    r'"(bbox_2d|quad|line)"\s*:\s*\[(.*?)\]', line
-                )
-                if not geom_match:
-                    logger.debug(f"No geometry/desc found in line: '{line[:120]}'")
-                    continue
-                geometry_key = geom_match.group(1)
-                coords_section = geom_match.group(2)
-
-                # Try coordinate tokens first
-                try:
-                    token_ids = self._extract_coordinate_tokens(coords_section)
-                    coords = [int(t) for t in token_ids]
-                except Exception:
-                    # Fallback to raw numbers
-                    try:
-                        coords = self._extract_raw_numbers(coords_section)
-                    except Exception:
-                        logger.debug(
-                            f"Failed to extract coords from line: '{line[:120]}'"
-                        )
-                        continue
-
-                parsed_line_item: Dict[str, Any] = {"desc": desc_value}
-                parsed_line_item[geometry_key] = coords
-                objects.append(parsed_line_item)
-                continue
-
-            if not isinstance(obj, dict):
-                continue
-
-            # desc (fallback from label if needed)
-            desc_value = obj.get("desc")
-            if not isinstance(desc_value, str) or desc_value == "":
-                label_value = obj.get("label")
-                desc_value = label_value if isinstance(label_value, str) else ""
-
-            # geometry key detection (exact keys only)
-            geometry_key: Optional[str] = None
-            for key in ("bbox_2d", "quad", "line"):
-                if key in obj and isinstance(obj[key], list):
-                    geometry_key = key
-                    break
-
-            if geometry_key is None:
-                logger.debug(f"No geometry key found in line: '{line[:120]}'")
-                continue
-
-            coords_in = obj.get(geometry_key, [])
-
-            # Convert coords: ints when possible; also convert '<|coord_N|>' strings to ints
-            converted: List[Any] = []
-            for val in coords_in:
-                try:
-                    converted.append(int(val))
-                    continue
-                except Exception:
-                    pass
-                if isinstance(val, str):
-                    import re
-
-                    m = re.fullmatch(r"<\|coord_(\d+)\|>", val)
-                    if m:
-                        try:
-                            converted.append(int(m.group(1)))
-                            continue
-                        except Exception:
-                            pass
-                converted.append(val)
-
-            parsed_item: Dict[str, Any] = {"desc": desc_value}
-            parsed_item[geometry_key] = converted
-            objects.append(parsed_item)
-
-        return objects
 
     def _normalize_prediction_to_vis_objects(self, text: str) -> List[Dict[str, Any]]:
         """Normalize raw generated text into a list of visualization objects.
@@ -2195,38 +2081,6 @@ class InferenceEngine:
         logger.info(
             f"   Response preview: '{text[:200]}{'...' if len(text) > 200 else ''}'"
         )
-
-        # Plain-text JSON Lines mode parsing first
-        if getattr(self.config, "plain_text_mode_enabled", False):
-            logger.info("🧾 Plain-text JSON Lines mode: attempting JSON Lines parsing...")
-            try:
-                jsonl_objects = self._parse_plain_json_lines_response(text)
-                if jsonl_objects:
-                    # Normalize coords to ints where possible for consistency
-                    normalized_from_jsonl: List[Dict[str, Any]] = []
-                    for obj in jsonl_objects:
-                        if not isinstance(obj, dict):
-                            continue
-                        jsonl_norm_item: Dict[str, Any] = {"desc": obj.get("desc", "")}
-                        for key in ("bbox_2d", "quad", "line"):
-                            if key in obj and isinstance(obj[key], list):
-                                try:
-                                    jsonl_norm_item[key] = [int(v) for v in obj[key]]
-                                except Exception:
-                                    jsonl_norm_item[key] = obj[key]
-                                break
-                        if any(k in jsonl_norm_item for k in GEOMETRY_TOKENS.keys()):
-                            normalized_from_jsonl.append(jsonl_norm_item)
-                    logger.info(
-                        f"✅ JSON Lines parsing successful: {len(normalized_from_jsonl)} objects"
-                    )
-                    return normalized_from_jsonl
-                else:
-                    logger.warning(
-                        "❌ JSON Lines parsing returned no objects; falling back to other parsers"
-                    )
-            except Exception as e:
-                logger.warning(f"Plain JSON Lines parsing failed: {e}")
 
         # Coordinate-token strict path (only when enabled)
         if coordinate_tokens_enabled:

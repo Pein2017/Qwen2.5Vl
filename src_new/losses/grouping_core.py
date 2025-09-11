@@ -6,7 +6,6 @@ Foundational utilities for grouped LLM loss (caption/grounding/formatting).
 Centralizes:
 - Special/token ID set construction (wrappers, punctuation, separators, coord range)
 - Base boolean predicates built from label IDs
-- Plain-text JSON mode caption/grounding extraction via char spans
 - Residual assignment to formatting to ensure full assistant coverage
 
 This module reduces duplication in token_grouping and makes future extensions simpler.
@@ -130,93 +129,6 @@ def build_base_predicates(
 	return is_coord, is_geom_wrapper, is_objref_wrapper, is_punct, is_geom_sep, bool(wrappers_present)
 
 
-def extract_plain_mode_masks(
-	*,
-	tok,
-	input_ids: torch.Tensor,
-	labels: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-	"""Extract caption and grounding masks in plain JSON mode via char-span mapping.
-
-	Returns: caption_all, grounding_all (both unshifted, [B,S] booleans)
-	"""
-	if input_ids is None or not isinstance(input_ids, torch.Tensor) or input_ids.dim() != 2:
-		raise ValueError("Plain-mode grouping requires valid 2D input_ids for decoding and offset mapping.")
-	batch, _ = labels.shape
-	caption_all = torch.zeros_like(labels, dtype=torch.bool)
-	grounding_all = torch.zeros_like(labels, dtype=torch.bool)
-
-	for b in range(batch):
-		row_ids = input_ids[b]
-		# Decode conversation and build char offsets
-		row_list = [int(x) for x in row_ids.tolist()]
-		full_text = tok.decode(row_list, skip_special_tokens=False)
-		tokenized = tok(
-			full_text,
-			return_offsets_mapping=True,
-			add_special_tokens=False,
-			return_tensors="pt",
-		)
-		offsets = tokenized["offset_mapping"][0].tolist()
-
-		# Find assistant content spans (char positions)
-		content_spans: List[Tuple[int, int]] = [(m.start(1), m.end(1)) for m in ASSISTANT_SPAN_RE.finditer(full_text)]
-		if not content_spans:
-			continue
-
-		def _mark_char_range(c0: int, c1: int, dst_mask: torch.Tensor) -> None:
-			start_tok = None
-			end_tok = None
-			for idx, (s, e) in enumerate(offsets):
-				if start_tok is None and e > c0:
-					start_tok = idx
-				if end_tok is None and s >= c1:
-					end_tok = idx
-					break
-			if start_tok is None:
-				start_tok = len(offsets) - 1
-			if end_tok is None:
-				end_tok = len(offsets)
-			max_len = int(labels.size(1))
-			start_tok = max(0, min(int(start_tok), max_len))
-			end_tok = max(int(start_tok), min(int(end_tok), max_len))
-			if end_tok > start_tok:
-				dst_mask[b, start_tok:end_tok] = True
-
-		# Scan assistant content block line by line
-		for c_start, c_end in content_spans:
-			sub = full_text[c_start:c_end]
-			base = c_start
-			for ln in sub.split("\n"):
-				ls = ln.strip()
-				if not ls:
-					base += len(ln) + 1
-					continue
-				# desc value
-				m_desc = re.search(r"\"desc\"\s*:\s*\"", ls)
-				if m_desc:
-					v0 = m_desc.end()
-					j = v0
-					while j < len(ls):
-						if ls[j] == '"' and ls[j - 1] != "\\":
-							break
-						j += 1
-					v1 = j
-					if v1 > v0:
-						_mark_char_range(base + v0, base + v1, caption_all)
-				# geometry key and array
-				for gk in ('"bbox_2d"', '"quad"', '"line"'):
-					kpos = ls.find(gk)
-					if kpos >= 0:
-						_mark_char_range(base + kpos, base + kpos + len(gk), grounding_all)
-						sb = ls.find("[", kpos)
-						eb = ls.find("]", sb + 1) if sb >= 0 else -1
-						if sb >= 0 and eb > sb:
-							_mark_char_range(base + sb + 1, base + eb, grounding_all)
-						break
-				base += len(ln) + 1
-
-	return caption_all, grounding_all
 
 
 def assign_residual_to_formatting(

@@ -315,7 +315,6 @@ class Dataset(TorchDataset):
             processor=hf_processor,
             max_coord_value=max_coord_value,
             coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
-			plain_text_mode_enabled=self.config.plain_text_mode_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")

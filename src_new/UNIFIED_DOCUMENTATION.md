@@ -90,11 +90,9 @@
 - Dataloader: `dataloader_num_workers`, `pin_memory`, `prefetch_factor`, `remove_unused_columns`.
 - LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_top_layers`, `lr_full_model`.
 - Variants: `conversation_variant_ratios` and/or `conversation_variant_schedule`.
-- Format modes (global, mutually exclusive):
-  - `plain_text_mode_enabled: true` → plain JSON mode
+- Format mode:
   - `coordinate_tokens_enabled: true` → coord_tokens mode
-  - both false → special_tokens mode (default)
-  - both true → invalid (fails fast in config validation)
+  - `coordinate_tokens_enabled: false` → special_tokens mode (default)
 
 ---
 

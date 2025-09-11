@@ -58,9 +58,8 @@ Tokenization → Span Detection → Training → Model Checkpoints
 - **Loss Management**: Mode-aware switching between coordinate and LLM loss
 
 ### Format modes & variants (standardized)
-- Format modes (exactly one active per run; enforced):
-  - `special_tokens` (default when both toggles are false)
-  - `plain` (when `plain_text_mode_enabled=true`)
+- Format mode (exclusive):
+  - `special_tokens` (default when `coordinate_tokens_enabled=false`)
   - `coord_tokens` (when `coordinate_tokens_enabled=true`)
 - Conversation variants:
   - `dense_caption`, `coords_to_desc`, `desc_to_coords`, `summary`

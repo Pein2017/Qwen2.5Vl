@@ -227,7 +227,6 @@ class ConversationProcessor:
         processor: Qwen2VLProcessor,
         max_coord_value: int,
         coordinate_tokens_enabled: bool,
-        plain_text_mode_enabled: bool,
     ) -> None:
         if processor is None:
             raise ValueError("processor cannot be None")
@@ -239,33 +238,19 @@ class ConversationProcessor:
             raise ValueError(
                 f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}"
             )
-        if not isinstance(plain_text_mode_enabled, bool):
-            raise ValueError(
-                f"plain_text_mode_enabled must be a bool, got {type(plain_text_mode_enabled)}"
-            )
         self.processor = processor
         self.coordinate_tokens_enabled = coordinate_tokens_enabled
-        self._plain_text_mode_enabled = plain_text_mode_enabled
-        # Resolve exclusive format mode (special_tokens as the default)
-        if self._plain_text_mode_enabled and self.coordinate_tokens_enabled:
-            raise ValueError(
-                "Conflicting modes: plain_text_mode_enabled=True and coordinate_tokens_enabled=True. Choose one."
-            )
         self._format_mode: str = (
-            FormatMode.PLAIN.value
-            if self._plain_text_mode_enabled
-            else (FormatMode.COORD_TOKENS.value if self.coordinate_tokens_enabled else FormatMode.SPECIAL_TOKENS.value)
+            FormatMode.COORD_TOKENS.value if self.coordinate_tokens_enabled else FormatMode.SPECIAL_TOKENS.value
         )
         self.coordinate_converter = CoordinateTokenConverter(
             max_coord_value=max_coord_value,
             coordinate_tokens_enabled=coordinate_tokens_enabled,
-            plain_text_mode_enabled=plain_text_mode_enabled,
             format_mode=self._format_mode,
         )
         # Cache system prompt once (stable per instance)
         self._system_prompt: str = get_system_prompt(
             coordinate_tokens_enabled=self.coordinate_tokens_enabled,
-            plain_text_mode_enabled=self._plain_text_mode_enabled,
             format_mode=self._format_mode,
         )
         # Variant registry

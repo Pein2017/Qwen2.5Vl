@@ -126,30 +126,25 @@ def _to_coord_token(match: re.Match) -> str:
 
 def get_system_prompt(
     coordinate_tokens_enabled: bool = False,
-    plain_text_mode_enabled: bool = False,
     format_mode: object | None = None,
 ) -> str:
     """Return a system prompt from a single numeric base, differing only in formatting.
 
     - Always start from SYSTEM_PROMPT_BASE so background/business rules are identical.
     - Mode selection (exclusive):
-      - format_mode = 'special_tokens' | 'plain' | 'coord_tokens'
-      - If format_mode is None, derive from booleans for backward compatibility:
-        plain -> plain_text_mode_enabled; coord_tokens -> coordinate_tokens_enabled; else special_tokens.
+      - format_mode = 'special_tokens' | 'coord_tokens'
     - For coord_tokens, tweak wording for counts and convert example digits to coord tokens.
-    - For plain, remove wrapper-token formatting and present JSON-line examples while keeping business rules.
     """
     text = SYSTEM_PROMPT_BASE
 
-    # Resolve exclusive mode (backward compatible with legacy booleans)
+    # Resolve mode (accept enum-like or raw strings); default to special_tokens
     if format_mode is not None:
-        # Accept enum-like objects with .value, or raw strings
         fm = getattr(format_mode, "value", format_mode)
         mode = str(fm).strip().lower()
-        if mode not in {"special_tokens", "plain", "coord_tokens"}:
+        if mode not in {"special_tokens", "coord_tokens"}:
             raise ValueError(f"Unsupported format_mode: {format_mode}")
     else:
-        mode = "plain" if plain_text_mode_enabled else ("coord_tokens" if coordinate_tokens_enabled else "special_tokens")
+        mode = "coord_tokens" if coordinate_tokens_enabled else "special_tokens"
 
     # Coordinate-token mode: wording tweaks + convert numeric examples in wrapper-based lines
     if mode == "coord_tokens":
@@ -166,52 +161,6 @@ def get_system_prompt(
             new_lines.append(line)
         text = "\n".join(new_lines)
 
-    # Plain-text formatting mode: remove wrapper tokens and show plain examples
-    if mode == "plain":
-        # Replace the geometry wrappers block with plain-bracket instructions and explicit ban on wrappers
-        wrappers_block = (
-            "- 仅使用以下几何标记对包裹“坐标列表”：\n"
-            "  - <|box_start|> … <|box_end|>\n"
-            "  - <|quad_start|> … <|quad_end|>\n"
-            "  - <|line_start|> … <|line_end|>\n"
-        )
-        plain_geometry = (
-            "- 不使用任何几何标记；直接使用英文方括号 [ ] 包裹坐标列表。\n"
-            "- 禁止出现任何 <|object_ref_start|>、<|object_ref_end|>、<|box_start|>、<|box_end|>、<|quad_start|>、<|quad_end|>、<|line_start|>、<|line_end|>、<|coord_*|> 等特殊标记。\n"
-        )
-        text = text.replace(wrappers_block, plain_geometry)
-
-        # Also adjust numeric-vs-token wording to forbid coord tokens in plain mode
-        token_choice_line = (
-            "- 使用原始数字坐标（整数）；或在“坐标令牌模式”下使用 <|coord_N|> 令牌（由配置 coordinate_tokens_enabled 控制）。"
-        )
-        plain_choice_line = (
-            "- 仅使用原始数字坐标（整数），不得使用任何坐标令牌。"
-        )
-        text = text.replace(token_choice_line, plain_choice_line)
-
-        # Replace the output structure examples with plain equivalents
-        output_wrapped = (
-            "- dense_caption（描述+几何）：\n"
-            "  - <|object_ref_start|>描述<|object_ref_end|><|box_start|>[...]<|box_end|>\n"
-            "  - <|object_ref_start|>描述<|object_ref_end|><|quad_start|>[...]<|quad_end|>\n"
-            "  - <|object_ref_start|>描述<|object_ref_end|><|line_start|>[...]<|line_end|>\n"
-            "- coords_to_desc（仅描述）：\n"
-            "  - <|object_ref_start|>描述<|object_ref_end|>\n"
-            "- desc_to_coords（仅几何）：\n"
-            "  - <|box_start|>[...]<|box_end|> 或 <|quad_start|>[...]<|quad_end|> 或 <|line_start|>[...]<|line_end|>\n"
-        )
-        output_plain = (
-            "- dense_caption（描述+几何）：\n"
-            "  - {\"bbox_2d\":[x1,y1,x2,y2],\"desc\":\"描述\"}\n"
-            "  - {\"quad\":[x1,y1,x2,y2,x3,y3,x4,y4],\"desc\":\"描述\"}\n"
-            "  - {\"line\":[x1,y1,x2,y2,…],\"desc\":\"描述\"}\n"
-            "- coords_to_desc（仅描述）：\n"
-            "  - {\"desc\":\"描述\"}\n"
-            "- desc_to_coords（仅几何）：\n"
-            "  - {\"bbox_2d\":[x1,y1,x2,y2]} 或 {\"quad\":[x1,y1,x2,y2,x3,y3,x4,y4]} 或 {\"line\":[x1,y1,x2,y2,…]}\n"
-        )
-        text = text.replace(output_wrapped, output_plain)
 
     # Fail-fast sanity: in coord-token mode, examples must contain coord tokens after conversion
     if mode == "coord_tokens" and "<|coord_" not in text:

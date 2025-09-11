@@ -35,7 +35,6 @@ from src_new.processing.special_tokens import IM_END
 from .grouping_core import (
     build_id_sets,
     build_base_predicates,
-    extract_plain_mode_masks,
     assign_residual_to_formatting,
 )
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
@@ -133,63 +132,38 @@ class TokenGroupingPlugin:
             labels=labels, ids=self._ids_core
         )
 
-        if not wrappers_present:
-            # Build caption/grounding from decoded JSON using offset mapping (centralized)
-            caption_all, grounding_all = extract_plain_mode_masks(
-                tok=self._tok, input_ids=input_ids, labels=labels
-            )
+        # Wrapper-based path only (plain-text mode removed)
+        # Caption scopes: strictly inside object_ref content intervals
+        inside_desc = self._compute_inside_ranges(
+            labels,
+            start_id=self._safe_id("<|object_ref_start|>"),
+            end_id=self._safe_id("<|object_ref_end|>"),
+        )
 
-            # Formatting: punctuation/separators; object-ref wrappers absent in plain-mode
-            formatting_all = is_geom_sep | (is_punct & ~is_geom_sep)
+        # Geometry scopes: strictly inside each geometry wrapper pair
+        inside_box = self._compute_inside_ranges(
+            labels,
+            start_id=self._safe_id("<|box_start|>"),
+            end_id=self._safe_id("<|box_end|>"),
+        )
+        inside_quad = self._compute_inside_ranges(
+            labels,
+            start_id=self._safe_id("<|quad_start|>"),
+            end_id=self._safe_id("<|quad_end|>"),
+        )
+        inside_line = self._compute_inside_ranges(
+            labels,
+            start_id=self._safe_id("<|line_start|>"),
+            end_id=self._safe_id("<|line_end|>"),
+        )
+        inside_any_geom = inside_box | inside_quad | inside_line
 
-            # Fail-fast: in plain JSON mode (wrappers absent), dense_caption should produce both caption and grounding tokens.
-            # If assistant spans exist but either caption or grounding is empty, raise with guidance.
-            # We detect assistant existence later via teacher/student masks, but basic non-emptiness is validated here.
-            if (not caption_all.any()) and (not grounding_all.any()):
-                # Summary fallback: treat all assistant tokens minus punctuation as caption
-                assist_all = (teacher_mask | student_mask)
-                summary_caption_all = assist_all & ~is_punct
-                if summary_caption_all.any():
-                    caption_all = summary_caption_all
-                    # keep grounding_all empty and formatting_all as defined
-                else:
-                    raise ValueError(
-                        "Plain-text JSON grouping produced empty caption and grounding masks, and summary fallback found no assistant tokens. "
-                        "Verify that assistant content uses strict JSON Lines (e.g., {\"line\":[...],\"desc\":\"...\"}) for plain mode, or that summary text is present."
-                    )
-        else:
-            # Wrapper-based path (legacy)
-            # Caption scopes: strictly inside object_ref content intervals
-            inside_desc = self._compute_inside_ranges(
-                labels,
-                start_id=self._safe_id("<|object_ref_start|>"),
-                end_id=self._safe_id("<|object_ref_end|>"),
-            )
-
-            # Geometry scopes: strictly inside each geometry wrapper pair
-            inside_box = self._compute_inside_ranges(
-                labels,
-                start_id=self._safe_id("<|box_start|>"),
-                end_id=self._safe_id("<|box_end|>"),
-            )
-            inside_quad = self._compute_inside_ranges(
-                labels,
-                start_id=self._safe_id("<|quad_start|>"),
-                end_id=self._safe_id("<|quad_end|>"),
-            )
-            inside_line = self._compute_inside_ranges(
-                labels,
-                start_id=self._safe_id("<|line_start|>"),
-                end_id=self._safe_id("<|line_end|>"),
-            )
-            inside_any_geom = inside_box | inside_quad | inside_line
-
-            # Category unshifted masks (global, not yet intersected with assistant spans)
-            caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
-            # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
-            grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
-            # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
-            formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
+        # Category unshifted masks (global, not yet intersected with assistant spans)
+        caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
+        # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
+        grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
+        # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
+        formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
 
         # Intersect with assistant masks and shift by one for CE alignment
         def _shift_intersect(
