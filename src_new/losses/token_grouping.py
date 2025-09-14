@@ -86,6 +86,7 @@ class TokenGroupingPlugin:
         teacher_spans: Optional[List[List[Tuple[int, int]]]],
         student_spans: Optional[List[List[Tuple[int, int]]]],
         input_ids: Optional[torch.Tensor] = None,
+        variant_key: Optional[str] = None,
     ) -> GroupMasks:
         """Construct shifted masks for caption/grounding/formatting per group.
 
@@ -159,11 +160,18 @@ class TokenGroupingPlugin:
         inside_any_geom = inside_box | inside_quad | inside_line
 
         # Category unshifted masks (global, not yet intersected with assistant spans)
-        caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
-        # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
-        grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
-        # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
-        formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
+        if isinstance(variant_key, str) and variant_key.strip().lower() == "summary":
+            # Summary variant: treat all assistant tokens as caption except punctuation-only which is formatting.
+            # No grounding content in summary.
+            caption_all = (~is_punct) & (~is_geom_wrapper) & (~is_coord)
+            grounding_all = torch.zeros_like(labels, dtype=torch.bool)
+            formatting_all = is_punct
+        else:
+            caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
+            # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
+            grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
+            # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
+            formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
 
         # Intersect with assistant masks and shift by one for CE alignment
         def _shift_intersect(

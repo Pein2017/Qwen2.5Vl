@@ -409,8 +409,8 @@ def create_trainer_with_new_architecture(
                     model,
                     tokenizer,
                     phase=phase,
-                    top_k_layers=getattr(config, "top_k_layers", None),
-                    vision_top_k_blocks=getattr(config, "vision_top_k_blocks", None),
+                    llm_top_k_block=getattr(config, "llm_top_k_block", None),
+                    vision_top_k_block=getattr(config, "vision_top_k_block", None),
                     freeze_patch_embed=getattr(config, "freeze_patch_embed", None),
                     trainable_token_strings=getattr(config, "trainable_token_strings", None),
                 )

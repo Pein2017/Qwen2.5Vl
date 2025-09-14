@@ -142,27 +142,32 @@ def apply_freeze_and_param_groups(policy: DetectionModel, tokenizer, cfg) -> Lis
         model=policy,
         tokenizer=tokenizer,
         phase="phase_3",
-        top_k_layers=int(cfg.top_k_llm_layers or 0),
-        vision_top_k_blocks=int(cfg.top_k_vision_blocks or 0),
-        freeze_patch_embed=bool(cfg.freeze_vision_patch_embed),
+        llm_top_k_block=int(getattr(cfg, "llm_top_k_block", 0) or 0),
+        vision_top_k_block=int(getattr(cfg, "vision_top_k_block", 0) or 0),
+        freeze_patch_embed=bool(getattr(cfg, "freeze_patch_embed", True)),
     )
     params_groups: List[Dict[str, Any]] = []
     # Aligner group
     aligner_module = _discover_aligner_module(policy)
     if aligner_module is not None:
-        aligner_params = [p for p in aligner_module.parameters() if p.requires_grad]
-        if aligner_params:
-            params_groups.append({
-                "params": aligner_params,
-                "lr": (cfg.aligner_lr or cfg.learning_rate),
-                "name": "aligner",
-            })
+        # Respect explicit toggle; freeze aligner if disabled
+        if not bool(getattr(cfg, "train_aligner", True)):
+            for p in aligner_module.parameters():
+                p.requires_grad = False
+        else:
+            aligner_params = [p for p in aligner_module.parameters() if p.requires_grad]
+            if aligner_params:
+                params_groups.append({
+                    "params": aligner_params,
+                    "lr": (cfg.aligner_lr or cfg.learning_rate),
+                    "name": "aligner",
+                })
     # LLM top-K group
     llm_params: List[torch.nn.Parameter] = []
-    if cfg.top_k_llm_layers and int(cfg.top_k_llm_layers) > 0:
+    if getattr(cfg, "llm_top_k_block", 0) and int(getattr(cfg, "llm_top_k_block", 0)) > 0:
         layers = _get_lang_layers(policy.base_model)
         if layers is not None and hasattr(layers, "__len__"):
-            for layer in list(layers)[-int(cfg.top_k_llm_layers):]:
+            for layer in list(layers)[-int(getattr(cfg, "llm_top_k_block", 0)):]:
                 for p in layer.parameters():
                     if p.requires_grad:
                         llm_params.append(p)
@@ -174,10 +179,10 @@ def apply_freeze_and_param_groups(policy: DetectionModel, tokenizer, cfg) -> Lis
         })
     # Vision top-K group
     vision_params: List[torch.nn.Parameter] = []
-    if cfg.top_k_vision_blocks and int(cfg.top_k_vision_blocks) > 0:
+    if getattr(cfg, "vision_top_k_block", 0) and int(getattr(cfg, "vision_top_k_block", 0)) > 0:
         vblocks = _get_vision_blocks(policy.base_model)
         if vblocks is not None and hasattr(vblocks, "__len__"):
-            for block in list(vblocks)[-int(cfg.top_k_vision_blocks):]:
+            for block in list(vblocks)[-int(getattr(cfg, "vision_top_k_block", 0)):]:
                 for p in block.parameters():
                     if p.requires_grad:
                         vision_params.append(p)

@@ -1,23 +1,23 @@
 num_train_epochs: 40
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 4  
+gradient_accumulation_steps: 2  
 learning_rate: 5.0e-5
 vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
-lr_top_layers: 1.0e-6
-lr_coord_slice: 1.0e-6
-top_k_layers: 4   
+lr_top_layers: 1.0e-5
+lr_coord_slice: 5.0e-6
+llm_top_k_block: 6   
 
 
 collator_type: standard
 packed_segment_isolation: false  # Enable block-diagonal attention to isolate packed segments
-teacher_ratio: 0.3
+teacher_ratio: 0.0
 
-model_path: outputs/7B-full-retrained/teacher-0.6/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens/best-2680-eval_loss0.6739
+model_path: outputs/7B-full-retrained/phase_2/9-10-phase_2-bs_32-ep_40-teacher_0.3-3_types_tokens-last_4_layers/best-2000-eval_loss0.4499
 
-run_name: "9-10-phase_2-bs_32-ep_40-teacher_0.3-3_types_tokens-last_4_layers"
+run_name: "9-11-phase_2-bs_16-ep_40-teacher_0-3_types_tokens-last_6_layers-resume"
 output_dir: outputs/7B-full-retrained/phase_2
 
 phase_name: phase_2
@@ -36,13 +36,12 @@ augmentation_schedule:
   - { start_epoch: 0, preset: "conservative" }
   - { start_epoch: 15, preset: "moderate" }
 
-plain_text_mode_enabled: false
 
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
   rng_seed: 12345
   photometric:
-    enabled: true
+    enabled: false
     apply_prob: 0.5
     num_ops: 1
     magnitude: 0.3
@@ -62,3 +61,4 @@ conversation_variant_ratios:
   coords_to_desc: 0.3
   desc_to_coords: 0.2
   summary: 0.2
+

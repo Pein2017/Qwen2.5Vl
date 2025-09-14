@@ -1,387 +1,160 @@
-## 群组质检后训练（GRPO）从零到一教程
+## 群组质检后训练（GRPO）原理与实现指南（与当前重构对齐）
 
-本教程面向熟悉 SFT（有监督微调）但对 RL 尤其是 GRPO 不熟悉的同学，详细讲解 `src_post/` 模块如何把一个已经在 `src_new/` 里做过 SFT 的 Qwen2.5‑VL 继续做“群组级（工单级）质检”的强化学习后训练。
-
-- 两个阶段：
-  - Stage‑A（单图摘要）：对每张图生成一行简洁中文摘要（用于 Stage‑B 的上下文）。
-  - Stage‑B（群组决策）：汇总所有摘要，输出“总评: 通过/不通过”，不通过时给出简短“原因”。
-- 方法：GRPO（Group Relative Policy Optimization）。不需要价值头（value head），只靠同一提示下采样多条回答的相对排名信号来更新策略。
+本指南强调方法学与算法细节，聚焦“以群组级监督为主”的两阶段训练范式与 GRPO 的实现要点。避免接口与运行指引，帮助你理解为什么这么做、这样做会带来什么学习行为与风险边界。
 
 ---
 
-## 0. 快速开始（5 分钟）
+## 1. 任务与两阶段结构（Stage‑A / Stage‑B）
 
-```bash
-# 从仓库根目录
-conda activate ms
-bash scripts/run_group_qc_rl.sh
-```
-
-配置文件（默认 `configs/rl/group_qc_grpo.yaml`）的关键字段：
-```yaml
-checkpoint: /abs/path/to/sft_checkpoint
-processor:  /abs/path/to/processor
-train_data_dir: /abs/path/to/train_groups
-output_dir: /abs/path/to/output_post/grpo
-
-# 采样与生成
-K_B: 4          # Stage‑B 每个群组采样条数
-K_A: 3          # Stage‑A（若开启）每个图的候选摘要数
-train_stage_a_mode: conditional   # 可选 off/conditional/joint
-stage_a_weight: 1.0
-
-# KL 正则
-use_ref_kl: true
-lambda_kl_stage_b: 0.02
-lambda_kl_stage_a: 0.02
-
-# 奖励组合（含惩罚）
-reward_fns: label_match,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.5,0.7,-0.7,-0.4,-1.0
-```
-
-数据目录（推荐）：
-```text
-/abs/path/to/data/
-  审核通过/
-    <group_id>/image_*.jpg
-  审核不通过/
-    <group_id>/image_*.jpg
-```
-标签会被正则化为 `pass|fail`。
+- **任务目标（单一监督）**：仅用群组级标签 pass|fail 来优化策略。训练希望模型学会“为群组决策服务的”图像摘要风格与最终判定逻辑。
+- **两阶段分工**：
+  - **Stage‑A（单图摘要）**：每张图生成一行中文摘要。原则上不直接给出几何/坐标/特殊标记，只产出“有助于群组决策”的关键信息。
+  - **Stage‑B（群组决策）**：汇总全部摘要，输出“总评: 通过|不通过”（不通过附简短“原因”）。这是唯一监督源。
+- **设计哲学**：摘要不是“真相复述器”，而是“为最终决策服务的证据提取器”。因此 Stage‑A 的优化信号来自 Stage‑B 的奖励（信用分配），而非独立打分。
 
 ---
 
-## 1. 总览与与 SFT 的差异
+## 2. 方法学总览：GRPO（无价值头、相对优势）
 
-- SFT：用参考文本最小化交叉熵；训练时 teacher‑forcing，目标是“拟合参考”。
-- 本模块（RL, GRPO）：
-  - 仍然 teacher‑forcing，但监督信号来自“同一提示的多条采样回答之间的相对好坏”（z‑score 优势），而不是固定参考答案。
-  - 不需要价值头；无需估计每个 token 的回报，适合短文本决策、主观噪声较大的场景。
-  - 通常只微调 LM 头 + 若干顶层语言层（vision 侧保持不变）。
-
-训练目标（概念）：
-- Stage‑B：对同一群组的 K_B 条回答，奖励越高的回答，其 log 概率被“推高”；反之被“压低”。
-- Stage‑A（可选）：用群组决策的奖励对“哪种单图摘要更有用”进行条件信用分配，让摘要风格也逐渐贴近任务偏好。
-
----
-
-## 2. 目录与关键文件
-
-- `src_post/grpo_runner.py`：主入口（数据迭代、对话构造、生成、奖励、GRPO 更新、KL 正则、优化器等）。
-- `src_post/conversation.py`：Stage‑A/Stage‑B 提示构造与任务提示（mission hints）。
-- `src_post/dataset_group_qc.py`：群组级数据集（目录或 JSONL）。
-- `src_post/rewards/`：奖励函数注册与具体实现（匹配、格式、洁净度、重复惩罚、引号惩罚、特殊标记惩罚、任务一致性、taxonomy）。
-- `src_post/span_parser.py`：Stage‑B 输出解析器（正则提取“总评/原因”）。
-- `src_post/logits_processors.py`：推理期的几何/坐标 token 掩蔽（可选）。
-- `src_post/utils/text.py`：格式/提示覆盖度等评分工具。
+- **思想**：对同一提示采样多条回答，按任务奖励排序，计算相对优势（z‑score），鼓励更好的样本，抑制较差的样本。
+- **无价值头**：不训练价值网络，直接以“同分布样本的相对名次”替代绝对回报估计，适合短文本决策与高噪声奖励。
+- **Teacher‑forcing 的角色**：
+  - 策略更新所需的对数似然都通过 TF 前向获得（在“回答位置”聚合）。
+  - Stage‑B: 在相同群组提示下，对 K_B 个回答的 log 概率加权更新。
+  - Stage‑A: 在候选摘要 token 位置上累积 log 概率，并由群组奖励提供优势信号。
+- **优势计算（标准化）**：给定同一提示的奖励 \(r_1,\dots,r_K\)，优势
+  \[ A_k = \mathrm{clip}\big((r_k - \overline{r})/(\mathrm{std}(r)+\varepsilon),\,-a,\,a\big), \]
+  当 \(\mathrm{std}\approx 0\) 时跳过该头的更新（稳定性与“无差别样本”的识别）。
 
 ---
 
-## 3. 数据与加载
+## 3. 决策概率与对数边际（group_margin：核心稠密信号）
 
-数据两种来源：
-- 目录树：`train_data_dir/审核通过|审核不通过/<group_id>/*.jpg`（`dataset_group_qc.py` 自动正则化为 `pass|fail`）。
-- JSONL：每行形如 `{ "images": [..], "label": "pass|fail", "meta": {...} }`。
-
-返回样本字典：
-```python
-{
-  "image_paths": List[str],
-  "images": List[PIL.Image],
-  "label": "pass" | "fail",
-  "meta": Dict[str, Any],
-  "num_images": int,
-}
-```
+- **定义**：用短模板在 Stage‑B 提示上做一次 TF，得到“总评: 通过/不通过”的概率 \(p_{\text{pass}}, p_{\text{fail}}\)。
+- **对数边际（dense reward）**：
+  \[ m = \log\big(p_{\text{pass}} + \epsilon\big) - \log\big(p_{\text{fail}} + \epsilon\big), \quad \epsilon=10^{-9}. \]
+  - 稠密、方向明确：比“命中/不命中”更可微、更稳定，能在“接近临界”时给出细腻梯度。
+  - 与 length‑norm 对齐：若对回答对数似然采用长度归一化，则 TF 概率与 margin 的刻度也需保持一致性（实现已对齐）。
+- **奖励模式（group_reward_mode）**：
+  - `margin_only`：只用对数边际（最好地刻画置信与方向）。
+  - `label_match`：只用二值匹配（粗信号、抗噪弱）。
+  - `combined`：加权组合（兼顾可解释塑形与密集信号）。
+- **数值健壮性**：强制 \(p\in[0,1]\)，缺失或越界直接失败；以 \(\epsilon\) 保证数值稳定性，防止 \(\log 0\)。
 
 ---
 
-## 4. 对话与编码（Stage‑A/Stage‑B）
+## 4. 奖励体系与“轻规则”塑形
 
-- 使用官方 `Qwen2VLProcessor` 的 `apply_chat_template`。Stage‑A 的 user 消息包含 typed 内容 `[{'type':'image'}, {'type':'text', ...}]`。
-- 我们沿用 SFT 阶段的视觉预处理（`smart_resize + EXIF 校正`）以保持视觉 token 对齐一致性。
-- Stage‑A 采用“贪心”生成一行摘要作为 Stage‑B 的上下文；如果训练 Stage‑A，则另行“采样”候选摘要用于 GRPO。
-- Stage‑A 生成有自定义停止条件：遇到换行或 `。`（若是单 token 编码）即停止。
-
-伪代码（对话与编码）：
-```python
-# Stage‑A（单图）
-messages_a = build_stage_a_messages(mission)
-text_a = processor.apply_chat_template(messages_a, tokenize=False, add_generation_prompt=True)
-enc_a = processor(text=[text_a], images=[img_proc], return_tensors="pt")
-
-# Stage‑B（纯文本）
-messages_b = build_stage_b_messages(summary_lines=context_lines, checklist_lines=checklist)
-text_b = processor.apply_chat_template(messages_b, tokenize=False, add_generation_prompt=True)
-enc_b = processor(text=[text_b], images=None, return_tensors="pt")
-```
+- **原则**：以“最小规则 + 稠密信号”为主，避免硬编码业务逻辑。奖励用于塑形风格而非替代监督。
+- **组合**：在 `REGISTRY` 中以名称注册，最终按权重线性组合并做权重绝对值归一化。常见维度：
+  - **任务对齐**：`label_match`（粗）、`group_margin`（密集主信号）。
+  - **风格塑形**：`formatting`,`cleanliness` 等（惩罚 `<|...|>`、过度引号、冗余重复等）。
+  - **一致性/覆盖**：在“摘要↔原因↔检查项”间做字符集重叠与覆盖度估计（轻约束，不当成规则）。
+- **为何“轻规则”**：若训练中施加强约束，模型将“记规则”而非“学判断”。我们希望模型在真实场景下仍有泛化的“证据‑决策”链条。
 
 ---
 
-## 5. 前向与目标（数学与细节）
+## 5. 信用分配（Stage‑A 摘要如何被归因）
 
-记：
-- 提示 token 序列为 \(x\)（含系统与用户 prompt，Stage‑B 不带图像）。
-- 采样得到的回答为 \(y^{(k)} = (y^{(k)}_1, \dots, y^{(k)}_{T_k})\)。
-- 模型策略为 \(\pi_\theta\)，参考模型为 \(\pi_{\mathrm{ref}}\)（可与初始策略相同并冻结）。
+### 5.1 条件式（conditional）
+- **做法**：固定除第 \(i\) 张图外的摘要，采样第 \(i\) 张的 \(K_A\) 个候选，把它们分别替换入 Stage‑B 提示，重新计算群组奖励，做 z‑score，并仅在“该摘要 token”上更新。
+- **直觉**：回答“若只改变第 \(i\) 张的表达，群组决策 margin 变了多少？”这能诱导摘要学会“贡献最大的事实”。
 
-### 5.1 Teacher‑Forcing 对数似然
+### 5.2 配对回退（pairwise fallback）
+- **触发**：单图条件式的最优改变量 \(\max_i \Delta_i\) 低于阈值、且群组判定错误时，认为“错误可能由多图互动造成”。
+- **策略**：从近零 \(\Delta\) 的图中抽取 1–2 对，分别替换两张图的候选摘要，重新计算 margin，并将优势在两者之间平分或按 token 数加权。
+- **意义**：当错误由“摘要间互作”引起时，单图微调无效；配对让“协同证据”获得学习信号。
 
-我们在“提示+回答”的拼接上做一次前向，构造“只在回答位置”的 mask，取这些位置的逐 token 对数概率并求和：
-$$
-\log p_\theta\big(y^{(k)}\mid x\big)
-= \sum_{t=1}^{T_k} \log \pi_\theta\big( y^{(k)}_t\,\big|\, x, y^{(k)}_{<t} \big).
-$$
+### 5.3 不确定性门控（uncertainty gate，可选）
+- **度量**：对候选摘要在其 token 位置计算平均熵（TF‑logits 上的分布熵）。
+- **门控**：仅当“候选提升 margin 且熵高于阈值”时给与优势（或放大）；以此鼓励“谨慎而有效”的改写，抑制“自信但胡说”。
 
-代码要点：
-- 将 `full_ids = [prompt_ids, resp_ids]` 拼接；`logits[:, :-1, :]` 与 `targets = full_ids[:, 1:]` 对齐。
-- 用 `mask[:, prompt_len-1:] = True` 仅选择“回答对应的 next‑token 目标位置”。
-- 若 `length_norm=True`，则再除以回答 token 数，抑制长回答优势。
+### 5.4 集合式（joint，可选）
+- **做法**：一次采样整组摘要集合，按集合评估 Stage‑B 奖励并做 z‑score；将集合优势施加到“该集合内所有摘要 token 的 log 概率之和”。
+- **场景**：当样本量小或强交互显著时，集合式能更直接地捕捉组合最优。
 
-### 5.2 GRPO 优势（z‑score）
-
-对同一提示采样 \(K\) 条回答，得到奖励 \(r_1, \dots, r_K\)。
-$$
-A_k = \mathrm{clip}\Bigg( \frac{r_k - \overline{r}}{\mathrm{std}(r)+\varepsilon},\; -a,\; a \Bigg),
-$$
-其中 \(\overline{r}\) 是均值，`std` 为无偏差或有偏差方差的标准差（实现中用总体标准差），其中 \(a\) 为 `adv_clip`。若 \(\mathrm{std}\approx 0\) 则令 \(A_k=0\)（跳过更新）。
-
-### 5.3 Stage‑B 目标（群组决策）
-
-$$
-\mathcal{L}_\text{B} 
-:= \sum_{k=1}^{K_B} \Big( -\,\operatorname{sg}(A_k)\cdot \log p_\theta(y^{(k)}\mid x) \Big)
-\; + \; \lambda^{B}_{\mathrm{KL}}\,\mathrm{KL}_\text{resp}(\pi_\theta\,\Vert\,\pi_{\text{ref}}),
-$$
-其中响应段 KL 的实现是在“回答位置”取平均：
-$$
-\mathrm{KL}_\text{resp} = \frac{1}{T}\sum_{t\in \mathrm{resp}} \sum_{v} p_\theta(v\mid z_t)\,\Big(\log p_\theta(v\mid z_t) - \log p_{\mathrm{ref}}(v\mid z_t)\Big).
-$$
-
-### 5.4 Stage‑A 目标（可选）
-
-- 条件式（conditional）：对第 \(i\) 张图固定其他摘要，采样 \(K_A\) 个候选摘要 \(s_i^{(k)}\)。把 \(s_i^{(k)}\) 填入上下文，重建 Stage‑B 提示，得到群组奖励 \(r_i^{(k)}\) 并做 z‑score：
-  $$
-  \mathcal{L}^{(i)}_\text{A} 
-  = \sum_{k=1}^{K_A} \Big( -\,\operatorname{sg}(A_i^{(k)})\cdot \log p_\theta\big(s_i^{(k)}\mid x_i\big) \Big)
-  + \lambda^{A}_{\mathrm{KL}}\,\mathrm{KL}_{\mathrm{resp}}(\pi_\theta\,\Vert\,\pi_{\text{ref}}).
-  $$
-  这里 \(x_i\) 是单图 Stage‑A 的提示；`log p` 只在该摘要的 token 上求和。
-
-- 联合式（joint）：一次性为整组图采样 \(K_{\text{set}}\) 组摘要集合 \(S^{(s)}=\{s_1^{(s)},...,s_n^{(s)}\}\)，对每组集合跑一次 Stage‑B 奖励并 z‑score，loss 为“该组内所有摘要的 log 概率之和”乘以对应优势：
-  $$
-  \mathcal{L}_\text{A} = \sum_{s=1}^{K_{\mathrm{set}}} \Big( -\,\operatorname{sg}(A^{(s)}) \cdot \sum_{i=1}^{n} \log p_\theta\big(s_i^{(s)}\mid x_i\big) \Big) + \mathrm{KL}\,\text{项}.
-  $$
-
-### 5.5 总损失
-
-$$
-\mathcal{L} = \mathcal{L}_\text{B} + \omega_\text{A}\,\mathcal{L}_\text{A},\quad \omega_\text{A}=\mathrm{stage\_a\_weight}.
-$$
-优化器使用 AdamW，分组设置对 LM 头、最后若干层、可选 projector/aligner 使用不同学习率，梯度裁剪 `max_grad_norm`。
+### 5.5 预算与稳定性
+- **小 K 原则**：保持 \(K_B, K_A\in\{2,3\}\) 以控制方差与算力。
+- **std≈0 保护**：当奖励方差接近 0 时跳过该头更新，记录计数，避免噪声梯度。
 
 ---
 
-## 6. 奖励函数（`src_post/rewards/`）
+## 6. 目标函数与优化（含 KL 与日程）
 
-- `label_match`：二值匹配（预测 `pass|fail` 与 GT 是否一致）。
-- `formatting`：`utils/text.compute_formatting_score`，衡量摘要对“任务提示（hints）”的覆盖与简洁性，范围 [0,1]。
-- `cleanliness`：非法标记/坐标/过多拉丁字符等的洁净度惩罚（越干净分越高）。
-- 负向惩罚（需配负权重）：
-  - `rep_penalty`：重复词/跑字惩罚 ∈[0,1]；
-  - `quote_penalty`：出现引号记 1；
-  - `special_penalty`：出现 `<|...|>` 记 1。
-- `consistency`：Stage‑B `原因` 与摘要/检查项的字符集合重叠一致性，归一化 [0,1]。
-- `taxonomy`：可选，基于外部词汇表的命中评分（若文件缺失，默认为 0）。
-
-最终奖励按权重加权后再做“绝对权重和归一化”：
-$$
-R = \frac{\sum_j w_j r_j}{\sum_j |w_j| + \epsilon}.
-$$
+- **Stage‑B（群组决策）**：
+  \[ L_B = \sum_{k=1}^{K_B} -\operatorname{sg}(A_k)\,\log p_\theta\big(y^{(k)}\mid x\big)\; +\; \lambda^B_{\mathrm{KL}}\,\mathrm{KL}_{\text{resp}}(\pi_\theta\Vert\pi_{\text{ref}}). \]
+  KL 仅在回答位置计算，限制策略漂移并减小训练噪声。
+- **Stage‑A（信用分配头）**：条件式/集合式同构，优势与 log 概率仅在对应摘要 token 上聚合，并可加 \(\lambda^A_{\mathrm{KL}}\) 正则。
+- **总损失与权重**：
+  \[ \mathcal{L} = \omega_B L_B + \omega_A L_A,\quad \omega_B=\mathrm{stage\_b\_weight},\; \omega_A=\mathrm{stage\_a\_weight}. \]
+- **冻结与日程**：可在前若干步冻结 Stage‑B（或完全关闭训练），但仍计算 TF‑margin 以驱动 Stage‑A 学习（“先把证据讲清楚”）。
+- **稳定化细节**：梯度裁剪、优势裁剪、长度归一化与数值健壮性检查共同作用。
 
 ---
 
-## 7. 前向过程（端到端伪代码）
+## 7. 提示偏置控制（Prompt Bias）
 
-```python
-# 输入：一条群组样本（多张图，标签 pass|fail）
-# 输出：一次更新（或仅评估）
-
-# 1) Stage‑A 构造上下文（贪心，每图一行）
-context_lines = []
-for img in images:
-    enc_a = encode_stage_a(img, mission)
-    line = generate_one_line(enc_a, greedy=True, stop_on_newline=True)
-    line = sanitize(line) if sanitize_stage_a else line
-    context_lines.append(line)
-
-# 2) Stage‑B 采样 K_B 条回答并打分 → 优势
-enc_b = encode_stage_b(context_lines, checklist)
-replies, rewards = [], []
-for _ in range(K_B):
-    y = sample_response(enc_b, cfg_b)
-    replies.append(y)
-    parsed = parse_decision(y)
-    r = compose_reward(gt_label, parsed.label, context_lines, parsed.reason)
-    rewards.append(r)
-A = zscore_and_clip(rewards, adv_clip)
-
-# 3) Stage‑B teacher‑forcing 求和 logp + 可选 KL
-loss_b = 0.0
-for k in range(K_B):
-    logp_k = tf_sum_logprob_over_response(model, enc_b, replies[k], length_norm)
-    loss_b += -(stop_grad(A[k]) * logp_k)
-if use_ref_kl and lambda_kl_b > 0:
-    loss_b += lambda_kl_b * mean_kl_to_ref_over_response(model, ref_model, enc_b, replies)
-
-# 4) Stage‑A GRPO（可选 conditional 或 joint）
-loss_a = 0.0
-if train_stage_a_mode == 'conditional':
-    for i, img in enumerate(images):
-        cand, rewards_i = [], []
-        enc_ai = encode_stage_a(img, mission)
-        for _ in range(K_A):
-            s = sample_one_line(enc_ai, cfg_a, stop_on_newline=True)
-            variant = context_lines.copy(); variant[i] = sanitize(s) if sanitize_stage_a else s
-            r = eval_stage_b_reward(variant, checklist, gt_label)
-            cand.append(s); rewards_i.append(r)
-        A_i = zscore_and_clip(rewards_i, adv_clip)
-        for k, s in enumerate(cand):
-            logp = tf_sum_logprob_over_response(model, enc_ai, s, length_norm)
-            loss_a += -(stop_grad(A_i[k]) * logp)
-    if use_ref_kl and lambda_kl_a > 0:
-        loss_a += lambda_kl_a * mean_kl_stage_a_over_candidates(...)
-elif train_stage_a_mode == 'joint':
-    sets, set_rewards = [], []
-    for s in range(K_set):
-        set_lines, set_tok_ids = [], []
-        for img in images:
-            enc_ai = encode_stage_a(img, mission)
-            s_i = sample_one_line(enc_ai, cfg_a, stop_on_newline=True)
-            set_lines.append(s_i); set_tok_ids.append(tokens(s_i))
-        r_set = eval_stage_b_reward(set_lines, checklist, gt_label)
-        sets.append(set_tok_ids); set_rewards.append(r_set)
-    A_set = zscore_and_clip(set_rewards, adv_clip)
-    for s, tok_ids_per_img in enumerate(sets):
-        logp_sum = 0.0
-        for i, img in enumerate(images):
-            enc_ai = encode_stage_a(img, mission)
-            logp_sum += tf_sum_logprob_over_response(model, enc_ai, tok_ids_per_img[i], length_norm)
-        loss_a += -(stop_grad(A_set[s]) * logp_sum)
-    if use_ref_kl and lambda_kl_a > 0:
-        loss_a += lambda_kl_a * mean_kl_stage_a_over_sets(...)
-
-# 5) 合并与更新
-loss = loss_b + stage_a_weight * loss_a
-optimizer.zero_grad(); loss.backward()
-clip_grad_norm_(model.parameters(), max_grad_norm)
-optimizer.step()
-```
+- **最小偏置的 Stage‑B**：提供“无检查单”的极简系统提示，仅依据摘要做判断，可抑制模型对“固定 checklist 模板”的依赖，凸显“证据→结论”的泛化能力。
+- **稳健的 Stage‑A**：系统提示强调“如无法确认请如实表述”，避免臆断与编造；这与不确定性门控相呼应，鼓励在不确定场景下输出更审慎的摘要。
 
 ---
 
-## 8. 生成与解码细节
+## 8. Fail‑Fast 不变量与边界检查
 
-- 生成配置：
-  - Stage‑A 默认 `repetition_penalty=1.6, no_repeat_ngram_size=24, max_new_tokens<=64`；
-  - Stage‑B 默认 `repetition_penalty=1.3, no_repeat_ngram_size=16, max_new_tokens<=200`；
-  - 均支持 `temperature, top_p`。
-- 停止条件（Stage‑A）：若换行或 `。` 被编码为单个 token，会在首次生成到这些 token 时停止。
-- 可选掩蔽：`mask_geometry_tokens / mask_coordinate_tokens` 在推理期屏蔽对应 token。
-- 文本清洗（可选）：`sanitize_stage_a=true` 会去除 `<|...|>`、坐标样式、引号等，去重分隔片段并做长度裁剪（80 字）。
+- **对话‑图像位占位检查**：渲染后的文本中图像占位数必须与图像数一致；不一致直接失败并给出修复提示。
+- **概率与奖励**：`group_margin` 依赖的 \(p_{\text{pass}}, p_{\text{fail}}\) 必须存在且落在 \([0,1]\)；奖励名与权重长度必须一致；未知奖励名列出合法集合并失败。
+- **模式枚举**：`group_reward_mode ∈ {margin_only,label_match,combined}`，`train_stage_a_mode ∈ {off,conditional,joint}`；越界即失败。
+- **数值与分布式**：非有限损失/优势立即失败；多卡前向前需确保参数同步与通信环境正确；Step 粒度记录 std≈0 跳过计数。
 
 ---
 
-## 9. 可训练参数与优化器
+## 9. 分布式训练与方差控制（DDP 视角）
 
-- 冻结全模型 → 解冻 LM 头（`train_lm_head`）与“最后 N 层语言层”（`train_last_n_layers`）。
-- 可选额外解冻 aligner/merger/projector（`train_aligner`），自动在常见路径下探测模块并单独设置学习率。
-- 优化器 AdamW：按 param group 设置 `lr_lm_head / lr_last_layers / lr_aligner`。未配置则回退到 `learning_rate`。
-
----
-
-## 10. 多卡与结果输出
-
-- 多卡通过环境变量 `RANK/WORLD_SIZE/LOCAL_RANK` 自动分片：只取 `idx % world_size == rank` 的样本。
-- 每个 rank 写 `results.rank{RANK}.jsonl`：包含 `group_index, gt_label, pred_label, reward, images[captions], stage_b_raw`。
-- 训练结束保存权重到 `output_dir/checkpoints/grpo_final/`（同目录下尝试保存 processor）。
+- **采样独立性**：各 rank 在相同群组上独立采样回答；优势标准化在“同一提示的样本内”进行，而非跨 rank 聚合（避免混合不同随机链）。
+- **缩放语义**：DDP 仅放大 TF/KL 的 batch 规模；采样多样性由 \(K_B, K_A\) 控制，与卡数正交。
+- **日志与归约**：标量在 rank‑0 汇报；跳过计数、配对触发率、不确定性均值等在全局向量上做安全归约。
 
 ---
 
-## 11. 配置项一览（与实现对齐）
+## 10. 选择性解冻与学习率分组
 
-- 采样与优势：`K_B, K_A, K_set, adv_clip, length_norm`。
-- KL：`use_ref_kl, ref_checkpoint, lambda_kl_stage_b, lambda_kl_stage_a`。
-- 生成：`temperature, top_p, max_new_tokens_stage_a, max_new_tokens_stage_b`。
-- 掩蔽与清洗：`mask_geometry_tokens, mask_coordinate_tokens, sanitize_stage_a`。
-- 训练：`num_updates, batch_size, learning_rate, weight_decay, max_grad_norm, train_lm_head, train_last_n_layers, train_aligner, lr_*`。
-- Stage‑A 模式：`train_stage_a_mode in {off, conditional, joint}, stage_a_weight`。
-- 奖励：`reward_fns, reward_weights`（长度会自动对齐，多余截断，不足补 1.0）。
+- **默认冻结**：视觉侧与早期语言层保持冻结以稳定训练。
+- **解冻策略**：优先解冻 aligner/merger 桥接与最后 \(K\) 层语言/视觉块；为三类参数（aligner/LLM‑topK/vision‑topK）设置分组学习率。
+- **动机**：避免对感知层造成过早扰动，让 RL 信号主要塑形“表达与决策边界”。
 
 ---
 
-## 12. GRPO vs PPO（直觉与取舍）
+## 11. 风险图谱与应对策略
 
-- PPO：需要价值头、clip 比例、优势估计等，工程开销与对尺度敏感度更高；样本效率更好。
-- GRPO：取消价值头，依赖同一提示的“相对排序”信号（z‑score）。特别适合短回答、主观噪声场景（只关心相对好坏）。
-- 本任务中：Stage‑B 短文本决策非常适配 GRPO；Stage‑A 用条件式/集合式进一步把群组信号下沉到单图摘要上。
-
----
-
-## 13. 常见问题与调参建议
-
-- 摘要重复/口水：
-  - 提高 Stage‑A `repetition_penalty` 或 `no_repeat_ngram_size`；
-  - 提高 `rep_penalty` 的负权重（如 `-0.7 → -1.0`）。
-- 出现 `<|...|>` 或坐标痕迹：
-  - 开启 `sanitize_stage_a` 与 `special_penalty` 负权重；
-  - 评测时可启用 `logits_processors` 层面的掩蔽。
-- 优势方差过小（std≈0）：
-  - 跳过该步（实现已处理），或适度增大 `K_B/K_A`。
-- 模型漂移：
-  - 适当提高 KL 系数、调小学习率、先只训练少量顶层。
-- 标签识别错误：
-  - 强化 `label_match` 权重，并检查 `span_parser.py` 的正则是否覆盖你的格式变体。
+- **稀疏或噪声奖励**：采用对数边际作为主信号；使用 KL 稳定；必要时增加 \(K\) 或启用配对回退。
+- **“借口话术”泛滥**：以洁净度/格式化轻惩罚，只在“边际提升”时给予正优势；不对“借口”本身作硬规则。
+- **算力膨胀**：限制 `max_images_tf`、`pairwise_pairs_per_group` 与 \(K\)；在 std≈0 时即时跳过更新。
+- **漂移与过拟合**：提高 KL 权重、降低学习率、收紧解冻范围；保持最小偏置提示，观察“最小提示下”的泛化表现。
 
 ---
 
-## 14. 扩展与二次开发
+## 12. 评估准则与“完成定义”
 
-- 自定义奖励：在 `src_post/rewards/` 新增函数，并注册到 `REGISTRY`（`rewards/__init__.py`）。
-- 自定义任务提示：在 `conversation.py` 的 `MISSION_STAGE_A_HINTS` 中增改条目，或动态构造 checklist。
-- 数据格式：可从目录树切到 JSONL 以携带更丰富的 `meta`。
-- 解码约束：`logits_processors.py` 可扩展更多“推理期”约束，不影响训练梯度。
-
----
-
-## 15. 与代码实现的关键对齐点
-
-- Teacher‑forcing 仅在“回答位置”累计 log 概率（`prompt_len-1:`）。
-- Stage‑A 上下文用于构造 Stage‑B 提示，默认用“贪心最佳”摘要；训练 Stage‑A 时另行“采样候选摘要”。
-- KL 仅在回答位置计算；Stage‑A/Stage‑B 分别有各自的 `lambda_kl`。
-- 参数组解冻顺序：全冻结 → LM 头 → 最后 N 层 → 可选 aligner/projector。
+- **功能性**：
+  - 可切换 `group_reward_mode`，语义如设计。
+  - Stage‑B 冻结/权重/日程生效；冻结期 Stage‑A 仍获有效边际信号。
+  - 配对回退仅在触发条件下运行，并记录触发率。
+- **稳定性**：
+  - 无 NaN/Inf；std≈0 路径被统计且不会产生虚假梯度。
+  - 日志含必要诊断：最佳边际、翻转命中、配对触发率、std≈0 跳过、不确定性均值（若启用门控）。
+- **可复现实验性**：
+  - 小 \(K\) 与固定随机种子下结果稳定；多卡无死锁。
 
 ---
 
-## 16. 参考入口与运行方式
+## 13. 进一步研究与可拓展方向
 
-- 入口：
-  - 训练/评测：`python -m src_post.grpo_runner --config /abs/path/to/group_qc_grpo.yaml`
-  - 脚本：`bash scripts/run_group_qc_rl.sh`
-- 环境：
-  - 使用 `ms` conda 环境：`conda activate ms`；
-  - 直连 Python：`/root/miniconda3/envs/ms/bin/python`。
-
----
-
-## 17. 迷你算例（直觉演示）
-
-- 同一群组采样 3 条决策：`r = [0.2, 1.0, 0.8]` → z‑score 约 `A ≈ [-1.1, +0.8, +0.3]`；
-  - Loss：`L_B = -A1*logp(y1) - A2*logp(y2) - A3*logp(y3) + λ KL`，因此推高 y2,y3、压低 y1。
-- 某图的 3 条摘要候选：`r_i = [0.9, 0.1, 0.7]` → `A_i ≈ [+0.8, -1.0, +0.2]`；
-  - `L_A` 在该图的摘要 token 上做相同加权。
+- **边际校准**：研究不同长度归一化/温度下 TF 概率与边际的关系与鲁棒性。
+- **信用分配结构**：从配对扩展到三元/集合交互，但需严格预算；或学习化地估计“归因分布”。
+- **门控策略**：将不确定性与改变量联立，探索适配性更强的门控函数或自适应阈值。
+- **解码约束**：保持训练端“轻规则”，将强约束压到解码期 logits 处理以保证梯度自由度。
+- **多任务共训**：在保持“群组监督单一”的前提下，引入弱标签的协同任务作为正则，观察对泛化与稳健性的影响。
 
 ---
 
-若你已熟悉 SFT，本教程给出的前向/目标及伪代码足以复刻 `src_post/` 的关键路径。推荐结合源码文件名搜索对应实现以加深理解。祝训练顺利！
+若你已理解 SFT，本指南的要点是：将“群组决策”抽象为可微的密集信号（对数边际），再以 GRPO 的相对优势把该信号分解到“最终回答”和“证据摘要”的 token 上；保持提示与奖励的“轻规则”属性、以 fail‑fast 约束边界，才能在真实业务噪声下获得稳健且可泛化的行为。

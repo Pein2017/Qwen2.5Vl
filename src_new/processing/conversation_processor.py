@@ -534,9 +534,6 @@ class ConversationProcessor:
         return handler.build_user_text, handler.build_assistant_text
 
     def _get_system_prompt_for_variant(self, variant: Union[str, ConversationVariant]) -> str:
-        v = str(getattr(variant, "value", variant)).strip().lower()
-        if v == ConversationVariant.SUMMARY.value:
-            return CONSTANTS.get("SUMMARY_SYSTEM_PROMPT", "请只输出一行摘要：")
         return self._system_prompt
 
     def _build_simple_conversation_unified(

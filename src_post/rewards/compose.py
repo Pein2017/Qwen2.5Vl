@@ -18,6 +18,8 @@ def compose_reward(
     reward_weights: List[float],
     tf_p_pass: float,
     tf_p_fail: float,
+    stage_b_text: Optional[str] = None,
+    mission: Optional[str] = None,
 ) -> float:
     if len(reward_names) != len(reward_weights):
         raise ValueError(
@@ -34,6 +36,10 @@ def compose_reward(
         "checklist_lines": list(checklist_lines),
         "tf_p_pass": float(tf_p_pass),
         "tf_p_fail": float(tf_p_fail),
+        # Optional for strict_decision_format
+        "stage_b_text": (str(stage_b_text) if stage_b_text is not None else None),
+        # Mission for mission-aware rewards (coverage/taxonomy etc.)
+        "mission": (str(mission) if mission is not None else None),
     }
     composed = 0.0
     denom = 0.0

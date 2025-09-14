@@ -1,28 +1,37 @@
 num_train_epochs: 50
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 8  
+gradient_accumulation_steps: 4  
 learning_rate: 5.0e-4
-vision_lr: 1.0e-7
-merger_lr: 5.0e-5
-llm_lr: 1.0e-7
+vision_lr: 5.0e-7
+merger_lr: 1.0e-5
+llm_lr: 1.0e-6
 lr_top_layers: 5.0e-6
-lr_coord_slice: 1.0e-5
+lr_coord_slice: 1.0e-6
 
 weight_decay: 1.0e-3
-teacher_ratio: 0.2
+teacher_ratio: 0
 
-model_path: outputs/7B-full/phase_2/9-6-7b-full-phase_2/best-1200-eval_loss0.4287
+model_path: outputs/7B-full-retrained/phase_2/9-11-phase_2-bs_16-ep_40-teacher_0-3_types_tokens-last_6_layers-resume/best-3000-eval_loss0.4312
 
-run_name: "9-8-7b-full-phase_3"
-output_dir: outputs/7B-full/phase_3
+run_name: "9-12-phase_3-train_all"
+output_dir: outputs/7B-full-retrained/phase_3
 
 phase_name: phase_3
 # Selective unfreezing to avoid OOM: keep aligner unfrozen; unfreeze only last-K blocks
 # Set K conservatively; tune if memory allows.
-top_k_layers: 6              # unfreeze last 6 LLM blocks
-vision_top_k_blocks: 3       # unfreeze last 2 vision blocks
+llm_top_k_block: 0           # unfreeze last 8 LLM blocks
+vision_top_k_block: 0        # unfreeze last 6 vision blocks
 freeze_patch_embed: true     # keep patch embedding frozen for stability
+
+
+trainable_token_strings:
+  - "<|line_start|>"
+  - "<|line_end|>"
+  - "<|box_start|>"
+  - "<|box_end|>"
+  - "<|quad_start|>"
+  - "<|quad_end|>"
 
 # Enable augmentation in phase_2
 use_aug: true
@@ -49,6 +58,7 @@ grounding_loss_weight: 1.5
 formatting_loss_weight: 0.3
 
 conversation_variant_ratios:
-  dense_caption: 0.4
+  dense_caption: 0.3
   coords_to_desc: 0.3
-  desc_to_coords: 0.3
+  desc_to_coords: 0.2
+  summary: 0.2

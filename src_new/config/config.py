@@ -369,9 +369,9 @@ class Config:
     augmentation_schedule: Optional[List[Dict[str, Any]]] = None
     phase_name: str = "off"
 
-    # Optional phase-freeze overrides (phase_3 selective unfreeze)
-    top_k_layers: Optional[int] = None
-    vision_top_k_blocks: Optional[int] = None
+    # Optional phase-freeze overrides (phase_3 selective unfreeze; unified keys)
+    llm_top_k_block: Optional[int] = None
+    vision_top_k_block: Optional[int] = None
     freeze_patch_embed: Optional[bool] = None
     trainable_token_strings: Optional[List[str]] = None
 
@@ -720,7 +720,7 @@ class Config:
         if pn not in allowed:
             raise ValueError(f"phase_name must be one of {sorted(allowed)}, got {pn!r}")
         # Light validation for selective unfreeze overrides
-        for k in ("top_k_layers", "vision_top_k_blocks"):
+        for k in ("llm_top_k_block", "vision_top_k_block"):
             v = getattr(self, k, None)
             if v is not None and (not isinstance(v, int) or v < 0):
                 raise ValueError(f"{k} must be a non-negative int when provided, got {v!r}")

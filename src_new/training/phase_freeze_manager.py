@@ -18,10 +18,10 @@ logger = get_rank_aware_logger(__name__)
 # - Aligner (patch-merger MLP): `model.visual.merger` (bridge from vision to LLM)
 # - Language model (LLM): `model.language_model.embed_tokens`, `model.language_model.layers.*`, `lm_head`
 #
-# Keys:
-# - top_k_layers: number of last LLM decoder blocks to unfreeze (affects `model.language_model.layers.*`).
+# Keys (unified):
+# - llm_top_k_block: number of last LLM decoder blocks to unfreeze (affects `model.language_model.layers.*`).
 #   * 0 means keep all LLM blocks frozen.
-# - vision_top_k_blocks: in phase_3 only, restrict vision unfreeze to the last K vision blocks.
+# - vision_top_k_block: in phase_3 only, restrict vision unfreeze to the last K vision blocks.
 #   * 0 means default vision behavior (no block restriction; combined with `freeze_patch_embed`).
 # - coord_slice_only: when True and coord-token range is available, apply grad masks to only the coordinate-token
 #   rows of embeddings (`embed_tokens.weight`) and output head (`lm_head.weight`) during phase_1/phase_2.
@@ -33,20 +33,20 @@ logger = get_rank_aware_logger(__name__)
 # - phase_3: unfreeze all by default; keep `visual.patch_embed` frozen unless overridden; optionally limit to last K vision blocks.
 PHASE_DEFAULTS = {
     "phase_1": {
-        "top_k_layers": 0,
-        "vision_top_k_blocks": 0,
+        "llm_top_k_block": 0,
+        "vision_top_k_block": 0,
         "coord_slice_only": True,
         "freeze_patch_embed": True,
     },
     "phase_2": {
-        "top_k_layers": 6,
-        "vision_top_k_blocks": 0,
+        "llm_top_k_block": 6,
+        "vision_top_k_block": 0,
         "coord_slice_only": True,
         "freeze_patch_embed": True,
     },
     "phase_3": {
-        "top_k_layers": 0,
-        "vision_top_k_blocks": 0,
+        "llm_top_k_block": 0,
+        "vision_top_k_block": 0,
         "coord_slice_only": True,
         "freeze_patch_embed": True,
     },
@@ -71,10 +71,10 @@ class PhaseFreezeManager:
       - phase1: unfreeze visual.merger and (if available) only coordinate-token rows of
                 embed_tokens.weight and lm_head.weight (via grad masks). LLM layers and
                 vision backbone stay frozen.
-      - phase2: phase1 plus unfreeze the last K LLM decoder layers (top_k_layers).
+      - phase2: phase1 plus unfreeze the last K LLM decoder layers (llm_top_k_block).
                 Vision backbone remains frozen except visual.merger.
       - phase3: unfreeze all parameters by default. Optionally, unfreeze only the last
-                K vision blocks first (vision_top_k_blocks > 0) while keeping patch_embed
+                K vision blocks first (vision_top_k_block > 0) while keeping patch_embed
                 frozen if freeze_patch_embed is True.
 
     This manager supports both standard-LLM mode (no coordinate tokens present) and
@@ -105,8 +105,8 @@ class PhaseFreezeManager:
         tokenizer: Any,
         phase: str,
         *,
-        top_k_layers: Optional[int] = None,
-        vision_top_k_blocks: Optional[int] = None,
+        llm_top_k_block: Optional[int] = None,
+        vision_top_k_block: Optional[int] = None,
         coord_slice_only: Optional[bool] = None,
         freeze_patch_embed: Optional[bool] = None,
         trainable_token_strings: Optional[List[str]] = None,
@@ -117,8 +117,8 @@ class PhaseFreezeManager:
             model: The Qwen2.5-VL conditional generation model (or wrapper exposing the same parameter names).
             tokenizer: Tokenizer for detecting coordinate-token range (if present).
             phase: One of {"phase_1", "phase_2", "phase_3"}.
-            top_k_layers: Optional override for number of last LLM blocks to unfreeze (default derives from PHASE_DEFAULTS).
-            vision_top_k_blocks: Optional override for number of last vision blocks to unfreeze in phase_3.
+            llm_top_k_block: Optional override for number of last LLM blocks to unfreeze (default derives from PHASE_DEFAULTS).
+            vision_top_k_block: Optional override for number of last vision blocks to unfreeze in phase_3.
             coord_slice_only: Optional override for enabling coord-slice masking on embeddings/LM head in phase_1/2.
             freeze_patch_embed: Optional override for freezing `visual.patch_embed` in phase_3.
             trainable_token_strings: Optional list of exact token strings to restrict training to those embedding/LM-head rows only.
@@ -133,14 +133,17 @@ class PhaseFreezeManager:
 
         # Resolve effective settings from per-phase defaults when not explicitly provided
         defaults = PHASE_DEFAULTS.get(phase, {})
-        eff_top_k_layers = (
-            defaults.get("top_k_layers") if top_k_layers is None else int(top_k_layers)
+        eff_llm_top_k_block = (
+            defaults.get("llm_top_k_block") if llm_top_k_block is None else int(llm_top_k_block)
         )
-        eff_vision_top_k_blocks = (
-            defaults.get("vision_top_k_blocks")
-            if vision_top_k_blocks is None
-            else int(vision_top_k_blocks)
+        eff_vision_top_k_block = (
+            defaults.get("vision_top_k_block")
+            if vision_top_k_block is None
+            else int(vision_top_k_block)
         )
+        # Alias to existing internal variable names for minimal downstream changes
+        eff_top_k_layers = eff_llm_top_k_block
+        eff_vision_top_k_blocks = eff_vision_top_k_block
         eff_coord_slice_only = (
             defaults.get("coord_slice_only")
             if coord_slice_only is None

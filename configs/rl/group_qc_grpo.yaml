@@ -1,30 +1,35 @@
-checkpoint: outputs/7B-full/phase_3/9-8-7b-full-phase_3/best-1000-eval_loss0.4698
-processor: outputs/7B-full/phase_3/9-8-7b-full-phase_3/best-1000-eval_loss0.4698
-train_data_dir: /data3/Qwen2.5-VL-main/group_data/bbu_scene_2.0_order/BBU安装方式检查（正装）
+checkpoint: outputs/7B-full-retrained/phase_3/9-12-phase_3-tok_k_8-vis_k_6/best-1000-eval_loss0.4479
+processor: outputs/7B-full-retrained/phase_3/9-12-phase_3-tok_k_8-vis_k_6/best-1000-eval_loss0.4479
+train_data_dir: group_data/bbu_scene_2.0_order/BBU接地线检查
 eval_data_dir: ''
 output_dir: output-post/grpo-bbu_install
-mission: bbu安装方式检查
+mission: bbu接地线检查
 device: cuda
 seed: 17
 
 # Generation
-temperature: 0.01
+temperature: 0.5
 top_p: 0.5
-max_new_tokens_stage_a: 64
-max_new_tokens_stage_b: 128
+temperature_stage_a: 0.3
+top_p_stage_a: 0.7
+temperature_stage_b: 0.5
+top_p_stage_b: 0.7
+max_new_tokens_stage_a: 32
+max_new_tokens_stage_b: 64
 mask_geometry_tokens: true
 mask_coordinate_tokens: true
-sanitize_stage_a: false
+sanitize_stage_a: true
 
 # Sampling (GRPO)
-K_B: 2
+K_B: 3
 K_A: 3
+K_set: 1
 adv_clip: 1.5
 length_norm: true
 
 # Training
 train: true
-epochs: 1
+epochs: 5
 batch_size: 1
 drop_last: true
 learning_rate: 1.0e-05
@@ -33,40 +38,64 @@ max_grad_norm: 0.5
 
 # Selective unfreeze (src_new-like)
 # Unfreeze only the last top-K layers/blocks and the aligner; keep patch_embed frozen for stability
-top_k_llm_layers: 1
-top_k_vision_blocks: 0
-freeze_vision_patch_embed: true
+llm_top_k_block: 2
+vision_top_k_block: 1
+freeze_patch_embed: true
 train_aligner: true
 
 # Differential learning rates
-aligner_lr: 1.5e-05
+aligner_lr: 1e-05
 llm_lr: 8.0e-06
-vision_lr: 1.0e-06
+vision_lr: 1.0e-07
 
 # LR scheduler
 lr_scheduler_type: cosine
 warmup_ratio: 0.1
 
+# Optimizer extras
+grad_accum_steps: 8
+# EMA of decision CE (0<beta<1)
+decision_ce_ema_beta: 0.9
+
 # TensorBoard logging
 tb_log_dir: tb_post
-run_name: debug
+run_name: full_bbu_install
 
 # KL regularization
 use_ref_kl: true
-ref_checkpoint: outputs/7B-full/phase_3/9-8-7b-full-phase_3/best-1000-eval_loss0.4698
-lambda_kl_stage_b: 0.0
-lambda_kl_stage_a: 0.02
+ref_checkpoint: outputs/7B-full-retrained/phase_3/9-12-phase_3-tok_k_8-vis_k_6/best-1000-eval_loss0.4479
+lambda_kl_stage_b: 0.03
+lambda_kl_stage_a: 0.03
 
 # Stage-A mode
 train_stage_a_mode: conditional
-stage_a_weight: 2.0
-K_set: 1
+stage_a_weight: 1.2
+
+# Stage-B controls and prompt bias
+train_stage_b: true
+stage_b_weight: 1.0
+freeze_stage_b_steps: 200
+use_mission_checklist: true
+
+# Group reward mode
+group_reward_mode: combined  # {margin_only|label_match|combined}
 
 # Rewards
-reward_fns: label_match,decision_prob,violations,coverage,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty,consistency
-reward_weights: 1.0,0.7,0.5,0.2,0.1,0.2,-0.7,-0.4,-1.0,0.2
+# Make label correctness and margin dominant; encourage y_k-sensitive differences via consistency and minimality; keep lenient prior small
+reward_fns: group_margin,decision_strict,label_match,coverage,consistency,violations,cleanliness,rep_penalty,quote_penalty,special_penalty,pass_prior
+reward_weights: 2.0,0.5,3.0,0.2,1.0,0.05,0.2,-0.5,-0.3,-0.5,0.05
 
-# Misc
-limit_groups: 3
-results_jsonl: output-post/results.jsonl
-max_images_tf: 1
+# Diagnostics / budgets
+enable_phase_a_diagnostics: true
+max_images_tf: 999
+limit_groups: -1
+
+
+# Pairwise fallback (optional)
+pairwise_credit_enabled: true
+pairwise_pairs_per_group: 1
+pairwise_delta_threshold: 0.02
+
+# Uncertainty gate (optional)
+use_uncertainty_gate: true
+uncertainty_gate_min_entropy: 0.5

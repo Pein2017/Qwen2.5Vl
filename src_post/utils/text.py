@@ -6,13 +6,6 @@ import re
 from typing import List, Optional, Set
 
 
-ALLOWED_BRANDS = {"华为", "中兴", "爱立信"}
-ALLOWED_VISIBILITY = {"显示完整", "只显示部分"}
-ALLOWED_SHIELD_REQUIREMENT = {"无需挡风板", "需要挡风板"}
-ALLOWED_SHIELD_DIRECTION = {"安装方向正确", "安装方向错误"}
-ALLOWED_GENERAL_TOKENS = {"BBU", "挡风板", "螺丝", "光纤", "电线", "标签"}
-
-
 _CJK_TOKEN_RE = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
 
 
@@ -118,3 +111,22 @@ def compute_formatting_score(lines: List[str], checklist: Optional[List[str]] = 
     # Combine: prioritize hint coverage, retain some formatting pressure
     score = (0.75 * cov_ratio) + (0.25 * simp_avg)
     return float(max(0.0, min(1.0, score)))
+
+
+# ---- Shared token parsing helpers ----
+
+def split_candidates(s: str) -> List[str]:
+    parts = re.split(r"[|/、，,；;]\s*", s or "")
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def extract_parenthesized_tokens(text: str) -> Set[str]:
+    """Extract tokens inside Chinese/ASCII parentheses, split by candidate separators.
+
+    Example: "by: (未拧紧/露铜)" -> {"未拧紧","露铜"}
+    """
+    tokens: Set[str] = set()
+    for m in re.findall(r"[（(]([^（）()]+)[)）]", str(text) or ""):
+        for t in split_candidates(m):
+            tokens.add(t)
+    return tokens

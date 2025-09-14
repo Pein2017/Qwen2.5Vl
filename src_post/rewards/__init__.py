@@ -13,11 +13,16 @@ from .repetition import repetition_penalty, quote_penalty, special_token_penalty
 from .coverage import coverage_reward
 from .decision_prob import decision_prob_reward
 from .violations import violation_alignment_reward
+from .group_margin import group_margin
+from .strict import strict_decision_format, pass_prior
+from .lexicon import NEGATIVE_TOKENS, FORBIDDEN_DECISION_WORDS, CANONICAL_SLOTS
 
 
 RewardFn = Callable[[Dict[str, Any]], float]
 
 
+# Note: mission-aware rewards (coverage, taxonomy) expect `mission` and
+# `checklist_lines` when available. The runner passes these via compose_reward.
 REGISTRY: Dict[str, RewardFn] = {
     "label_match": exact_label_match_reward,
     "formatting": formatting_reward,
@@ -29,10 +34,15 @@ REGISTRY: Dict[str, RewardFn] = {
     "decision_prob": decision_prob_reward,
     # Violation alignment (positive for GT=fail mentions, negative for GT=pass mentions)
     "violations": violation_alignment_reward,
+    # Pair for margin-only dense signal
+    "group_margin": group_margin,
     # Penalties (use negative weights in config)
     "rep_penalty": repetition_penalty,
     "quote_penalty": quote_penalty,
     "special_penalty": special_token_penalty,
+    # New shaping
+    "decision_strict": strict_decision_format,
+    "pass_prior": pass_prior,
 }
 
 

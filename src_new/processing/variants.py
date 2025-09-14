@@ -98,22 +98,49 @@ class SummaryHandler:
         self._header = CONSTANTS.get("SUMMARY_USER_PROMPT", "请只输出一行摘要：")
 
     def _extract_summary(self, objects: List[Dict[str, Any]]) -> str:
-        bad_screw: List[str] = []
-        bad_fiber = False
-        bad_wire = False
-        shield_need_bad = False
-        shield_dir_bad = False
-        bbu_partial = False
+        # Allowed canonical tokens (from hierarchical_attribute_mapping.json)
+        BBU_REQ_NEED = "机柜空间充足需要安装"
+        BBU_REQ_NONEED = "无需安装"
+        BBU_CONF_OK = "这个BBU设备按要求配备了挡风板"
+        BBU_CONF_BAD = "这个BBU设备未按要求配备挡风板"
+
+        SHIELD_DIR_OK = "安装方向正确"
+        SHIELD_DIR_BAD = "安装方向错误"
+
+        CP_COMPLY_OK = "符合要求"
+        CP_COMPLY_BAD = "不符合要求"
+        CP_ISSUES = {"未拧紧", "露铜", "复接", "生锈"}
+
+        FIB_PROTECT_NONE = "无保护措施"
+        FIB_PROTECT_HAVE = "有保护措施"
+        FIB_PROTECT_DETAILS = {"蛇形管", "铠装", "同时有蛇形管和铠装"}
+        FIB_BEND_OK = "弯曲半径合理"
+        FIB_BEND_BAD = "弯曲半径不合理（弯曲半径<4cm或者成环）"
+
+        WIRE_NEAT = "捆扎整齐"
+        WIRE_MESS = "分布散乱"
+
+        # Aggregated outputs (deduplicated, order by importance)
+        out_tokens: List[str] = []
+        seen: set[str] = set()
+
+        # Local collectors
+        cp_issues: List[str] = []
+        cp_noncompliant = False
+        fib_protection: Optional[str] = None
+        fib_details: Optional[str] = None
+        fib_bend: Optional[str] = None
+        wire_org: Optional[str] = None
+        bbu_req: Optional[str] = None
+        bbu_conf: Optional[str] = None
+        shield_dir: Optional[str] = None
         label_clear: Optional[bool] = None
-        remarks_pool: List[str] = []
 
         def split_commas(seg: str) -> List[str]:
             seg = seg.strip()
             if not seg:
                 return []
-            # support both Chinese '，' and ASCII ','
-            parts = [p.strip() for p in seg.replace("，", ",").split(",")]
-            return [p for p in parts if p]
+            return [p.strip() for p in seg.replace("，", ",").split(",") if p.strip()]
 
         for o in objects:
             desc = str(o.get("desc", "")).strip()
@@ -124,109 +151,119 @@ class SummaryHandler:
                 continue
             kind = parts[0]
 
-            # BBU设备: [kind, lvl1(brand,visibility,windshield_requirement), [windshield_conformity], [remarks]]
+            # BBU设备: [kind, lvl1(brand,completeness,windshield_requirement), [windshield_conformity], [special_text]]
             if kind == "BBU设备" and len(parts) >= 2:
                 lvl1 = split_commas(parts[1])
-                if "只显示部分" in lvl1:
-                    bbu_partial = True
-                need_wshield = any(x.endswith("需要安装") for x in lvl1)
-                # Determine conformity segment index if required
-                base_count = 2 + (1 if need_wshield else 0)
-                if need_wshield:
-                    # if conformity present and indicates missing/nonconformant, mark violation
+                # Extract requirement (ignore brand/completeness)
+                if BBU_REQ_NONEED in lvl1:
+                    bbu_req = BBU_REQ_NONEED
+                    # '无需安装' → ignore any downstream conformity and remarks
+                    bbu_conf = None
+                elif BBU_REQ_NEED in lvl1:
+                    bbu_req = BBU_REQ_NEED
+                    # Try conformity if present
                     if len(parts) >= 3:
-                        conformity = parts[2].strip()
-                        if conformity and ("未按要求配备" in conformity):
-                            shield_need_bad = True
-                    else:
-                        # required but no conformity segment present → treat as missing
-                        shield_need_bad = True
-                # Remarks if extra segment exists
-                if len(parts) > base_count:
-                    candidate = parts[-1].strip()
-                    if candidate:
-                        remarks_pool.append(candidate)
+                        conf = parts[2].strip()
+                        if conf == BBU_CONF_OK:
+                            bbu_conf = BBU_CONF_OK
+                        elif conf == BBU_CONF_BAD:
+                            bbu_conf = BBU_CONF_BAD
+                        else:
+                            # Missing or unknown → treat as non‑conformant conservatively
+                            bbu_conf = BBU_CONF_BAD
 
-            # 挡风板: [kind, lvl1(brand,visibility,obstruction,install_direction), [remarks]]
+            # 挡风板: [kind, lvl1(brand,completeness,obstruction,install_direction), [special_text]]
             elif kind == "挡风板" and len(parts) >= 2:
                 lvl1 = split_commas(parts[1])
-                if any(x.endswith("安装方向错误") or x == "安装方向错误" for x in lvl1):
-                    shield_dir_bad = True
-                if len(parts) > 2:
-                    candidate = parts[-1].strip()
-                    if candidate:
-                        remarks_pool.append(candidate)
+                if SHIELD_DIR_BAD in lvl1:
+                    shield_dir = SHIELD_DIR_BAD
+                elif SHIELD_DIR_OK in lvl1:
+                    shield_dir = SHIELD_DIR_OK if shield_dir is None else shield_dir
 
-            # 螺丝、光纤插头: [kind, lvl1(type,visibility,compliance), [specific_issues], [remarks]]
+            # 螺丝、光纤插头: [kind, lvl1(type,completeness,compliance), [specific_issues], [special_text]]
             elif kind == "螺丝、光纤插头" and len(parts) >= 2:
                 lvl1 = split_commas(parts[1])
-                noncompliant = any(x == "不符合要求" for x in lvl1)
-                base_count = 2 + (1 if noncompliant else 0)
-                if noncompliant and len(parts) >= 3:
-                    issues_seg = parts[2].strip() if len(parts) >= 3 else ""
-                    issues = split_commas(issues_seg)
-                    for it in issues:
-                        if it in ("未拧紧", "露铜", "复接", "生锈"):
-                            bad_screw.append(it)
-                # remarks
-                if len(parts) > base_count:
-                    candidate = parts[-1].strip()
-                    if candidate:
-                        remarks_pool.append(candidate)
+                if CP_COMPLY_BAD in lvl1:
+                    cp_noncompliant = True
+                    if len(parts) >= 3:
+                        issues = split_commas(parts[2])
+                        for it in issues:
+                            if it in CP_ISSUES:
+                                cp_issues.append(it)
 
-            # 光纤: [kind, lvl1(obstruction,protection,bend_radius), [protection_details], [remarks]]
+            # 光纤: [kind, lvl1(obstruction,protection,bend_radius), [protection_details], [special_text]]
             elif kind == "光纤" and len(parts) >= 2:
                 lvl1 = split_commas(parts[1])
-                if any("弯曲半径不合理" in x for x in lvl1):
-                    bad_fiber = True
-                protected = any(x == "有保护措施" or x.startswith("有保护措施") for x in lvl1)
-                base_count = 2 + (1 if protected else 0)
-                if len(parts) > base_count:
-                    candidate = parts[-1].strip()
-                    if candidate:
-                        remarks_pool.append(candidate)
+                if FIB_PROTECT_NONE in lvl1:
+                    fib_protection = FIB_PROTECT_NONE
+                    fib_details = None
+                elif FIB_PROTECT_HAVE in lvl1:
+                    fib_protection = FIB_PROTECT_HAVE
+                    if len(parts) >= 3:
+                        det = parts[2].strip()
+                        if det in FIB_PROTECT_DETAILS:
+                            fib_details = det
+                if FIB_BEND_BAD in lvl1:
+                    fib_bend = FIB_BEND_BAD
+                elif FIB_BEND_OK in lvl1 and fib_bend is None:
+                    fib_bend = FIB_BEND_OK
 
-            # 电线: [kind, lvl1(obstruction,organization), [remarks]]
+            # 电线: [kind, lvl1(obstruction,organization), [special_text]]
             elif kind == "电线" and len(parts) >= 2:
                 lvl1 = split_commas(parts[1])
-                if any(x == "分布散乱" for x in lvl1):
-                    bad_wire = True
-                if len(parts) > 2:
-                    candidate = parts[-1].strip()
-                    if candidate:
-                        remarks_pool.append(candidate)
+                if WIRE_MESS in lvl1:
+                    wire_org = WIRE_MESS
+                elif WIRE_NEAT in lvl1 and wire_org is None:
+                    wire_org = WIRE_NEAT
 
-            # 标签: [kind, [text]]
+            # 标签: [kind, [text_content]] → clarity only
             elif kind == "标签":
                 text = parts[1].strip() if len(parts) >= 2 else ""
                 label_clear = bool(text)
 
-        parts_out: List[str] = []
-        if bad_screw:
-            parts_out.append("、".join(sorted(set(bad_screw))))
-        if bad_fiber:
-            parts_out.append("光纤弯曲半径不合理")
-        if bad_wire:
-            parts_out.append("电线分布散乱")
-        if shield_need_bad:
-            parts_out.append("需安装挡风板未按要求配备")
-        if shield_dir_bad:
-            parts_out.append("挡风板安装方向错误")
-        if bbu_partial:
-            parts_out.append("BBU只显示部分")
-        if label_clear is not None:
-            parts_out.append("标签清晰" if label_clear else "标签不清晰")
+        # Compose output by priority
+        def add(tok: Optional[str]) -> None:
+            if tok and tok not in seen:
+                out_tokens.append(tok)
+                seen.add(tok)
 
-        if not parts_out:
-            parts_out = ["关键项正常", "光纤弯曲合理", "电线捆扎整齐", "标签清晰"]
+        # 1) BBU 挡风板需求/符合性（核心决策链）
+        if bbu_req == BBU_REQ_NONEED:
+            add(BBU_REQ_NONEED)
+        elif bbu_req == BBU_REQ_NEED:
+            add(BBU_REQ_NEED)
+            add(bbu_conf or BBU_CONF_BAD)
 
-        if remarks_pool:
-            # Prefer the shortest remark to preserve brevity
-            parts_out.append(min(remarks_pool, key=len))
+        # 2) 挡风板安装方向（任务相关）
+        add(shield_dir)
 
-        summary = "，".join(parts_out)
+        # 3) 连接点合规与细项
+        if cp_noncompliant:
+            add(CP_COMPLY_BAD)
+            if cp_issues:
+                for it in sorted(set(cp_issues)):
+                    add(it)
+        # 4) 光纤保护/弯曲半径（与任务强相关）
+        add(fib_protection)
+        if fib_protection == FIB_PROTECT_HAVE:
+            add(fib_details)
+        add(fib_bend)
+
+        # 5) 电线整齐度
+        add(wire_org)
+
+        # 6) 标签（仅输出无法识别）
+        if label_clear is False:
+            add("标签/无法识别")
+
+        # Fallback minimal positive phrasing when nothing extracted
+        if not out_tokens:
+            out_tokens = [WIRE_NEAT, FIB_BEND_OK, "标签清晰"]
+
+        summary = "，".join(out_tokens)
         summary = summary.replace("<", "").replace(">", "").replace("[", "").replace("]", "")
-        return summary[:40]
+        # Keep a reasonable cap to ensure one-line brevity
+        return summary
 
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[str]:
         return self._header

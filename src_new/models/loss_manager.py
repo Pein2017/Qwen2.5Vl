@@ -811,6 +811,7 @@ class LossManager:
                 teacher_spans=teacher_spans,
                 student_spans=student_spans,
                 input_ids=self._last_input_ids if hasattr(self, "_last_input_ids") else None,
+                variant_key=variant_key,
             )
             # Detailed dump once per phase when enabled
             try:

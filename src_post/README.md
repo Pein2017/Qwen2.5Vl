@@ -36,6 +36,27 @@
 
 ---
 
+## Rewards (mission‑aware overview)
+- Registry: `src_post/rewards/` with name→fn in `rewards/__init__.py`.
+- Inputs to reward functions: `{ gt_label, pred_label, summary_lines, stage_b_reason, checklist_lines, tf_p_pass, tf_p_fail, mission }`（按需使用）。
+- Mission‑aware behavior:
+  - `coverage`: 解析 `MISSION_CHECKS_COVERAGE`（见 `prompting/conversation.py`）并按规范短语计算覆盖度；当摘要含“无需安装”时自动满足挡风板符合性；缺省回退为规范槽位覆盖。
+  - `taxonomy`: 词汇表来自 `data_conversion/hierarchical_attribute_mapping.json`，并与 `MISSION_CHECKS_COVERAGE` 的 token 取交集（若提供 mission）。
+  - `violations`: 负面词表对齐 SFT 摘要规范，集中于 `rewards/lexicon.py`。
+  - `decision_strict`: 仅校验“总评/原因”的严格格式（含禁用词，见 `lexicon.py`）。
+- 推荐组合（示例）：
+  ```yaml
+  reward_fns: group_margin,decision_strict,label_match,coverage,consistency,violations,cleanliness,taxonomy,rep_penalty,quote_penalty,special_penalty,pass_prior
+  reward_weights: 1.0,3.0,0.5,0.8,0.3,0.3,0.2,0.2,-0.2,-0.1,-0.2,0.05
+  ```
+
+### Shared lexicon & helpers
+- `rewards/lexicon.py`: 统一维护 `NEGATIVE_TOKENS`, `FORBIDDEN_DECISION_WORDS`, `CANONICAL_SLOTS`。
+- `prompting/schema.py`: 解析 `MISSION_CHECKS_COVERAGE` 为 mission→check→token 集（带缓存）。
+- `generation/generation.py::build_decision_prefix_constraint(...)`: 统一的 Stage‑B 决策前缀约束构建。
+
+---
+
 ## How to run
 ```bash
 # From repo root
@@ -64,11 +85,11 @@ Label normalization: 审核通过|通过|pass → pass；审核不通过|不通�
 ## Process workflow (components)
 
 1) Data loading (group level)
-- File: `src_post/dataset_group_qc.py` (`RLGroupQCDataset`)
+- File: `src_post/data/dataset_group_qc.py` (`RLGroupQCDataset`)
 - Yields `{ image_paths, images, label, meta, num_images }` from the directory layout above or JSONL.
 
 2) Stage A summarization (per image, typed chat)
-- File: `src_post/conversation.py` → `GroupQCConversationBuilder.build_stage_a_messages(mission)` builds:
+- File: `src_post/prompting/conversation.py` → `GroupQCConversationBuilder.build_stage_a_messages(mission)` builds:
   - system: 限制一行中文摘要；仅 BBU 场景对象；禁止坐标/几何/特殊标记 `<|...|>`；避免引号与重复清单；偏好简洁短语（品牌/挡风板/安装/是否需要/合规/标签可读性/光纤弯曲/电线整齐度等）。
   - user: typed list `[{"type": "image"}, {"type": "text", "text": "请只输出一行摘要"}]`
 - Tokenization: `Qwen2VLProcessor.apply_chat_template(...)` → `processor(text=[...], images=[img], return_tensors='pt')`
@@ -79,7 +100,7 @@ Label normalization: 审核通过|通过|pass → pass；审核不通过|不通�
 
 3) Stage B GRPO (group decision)
 - Entry: `src_post/runner.py` → builds prompt via `build_stage_b_messages(summary_lines, checklist_lines)`.
-- Sampling: sample `K_B` short replies; parse with `src_post/span_parser.py` to `{label, reason}`.
+- Sampling: sample `K_B` short replies; parse with `src_post/prompting/span_parser.py` to `{label, reason}`.
 - Reward: composed via `src_post/rewards/` (see “Rewards” below).
 - GRPO update: teacher‑forcing on each sampled reply to sum log‑probs over the reply; z‑score rewards → advantages → optimize `-A_k * logp_k` (+ optional KL to reference).
 
@@ -114,32 +135,6 @@ Label normalization: 审核通过|通过|pass → pass；审核不通过|不通�
 
 ---
 
-## Rewards (modular registry)
-
-- File: `src_post/rewards/`, registry at `rewards/__init__.py`.
-- Inputs to reward functions: `{ gt_label, pred_label, summary_lines, stage_b_reason, checklist_lines, tf_p_pass, tf_p_fail }` (each fn uses the fields it needs).
-- Available rewards (names for `reward_fns`):
-  - `label_match`: 1.0 if `pred_label == gt_label` else 0.0.
-  - `decision_prob`: dense alignment from TF probabilities of "总评: 通过" vs "总评: 不通过".
-  - `violations`: aligns violation mentions with GT (reward for fail mentions when GT=fail; penalty if GT=pass).
-  - `coverage`: slot coverage in summaries (brand/shield/connection/fiber/wire/label) + optional mission checklist coverage.
-  - `formatting`: promotes clean, concise, on‑domain lines (with hint coverage factor).
-  - `cleanliness`: penalizes illegal tokens: `<|...|>`, bracketed coordinates, excessive ASCII, etc.
-  - `taxonomy`: rewards mission‑relevant vocabulary (if taxonomy JSON is present).
-  - `consistency`: overlaps between Stage‑A lines, Stage‑B reason, and checklist.
-  - Penalties (use negative weights): `rep_penalty`, `quote_penalty`, `special_penalty`.
-
-Example config:
-```yaml
-reward_fns: label_match,decision_prob,violations,coverage,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.7,0.5,0.2,0.1,0.2,-0.7,-0.4,-1.0
-```
-Notes:
-- Prefer shaping via rewards over hard masking during training so the model learns to produce clean outputs.
-- Optional decode‑time masking for geometry/coordinate tokens is available via `src_post/logits_processors.py` (see config below).
-
----
-
 ## Multi‑GPU with PyTorch DDP (supported)
 
 - When launched with multiple GPUs via `torch.distributed.run` (script handles this), the runner initializes PyTorch DDP and wraps the trainable policy.
@@ -161,9 +156,9 @@ Notes:
 - YAML keys:
   ```yaml
   # Selective unfreeze
-  top_k_llm_layers: 2          # unfreeze last-K LLM layers
-  top_k_vision_blocks: 1       # unfreeze last-K vision blocks
-  freeze_vision_patch_embed: true
+  llm_top_k_block: 2           # unfreeze last-K LLM layers
+  vision_top_k_block: 1        # unfreeze last-K vision blocks
+  freeze_patch_embed: true
 
   # Differential learning rates (three groups)
   aligner_lr: 1.5e-5
@@ -241,9 +236,9 @@ lambda_kl_stage_b: 0.02
 lambda_kl_stage_a: 0.02
 
 # Selective unfreeze + per‑group LRs
-top_k_llm_layers: 1
-top_k_vision_blocks: 0
-freeze_vision_patch_embed: true
+llm_top_k_block: 1
+vision_top_k_block: 0
+freeze_patch_embed: true
 aligner_lr: 1.5e-5
 llm_lr: 8.0e-6
 vision_lr: 1.0e-6
@@ -275,11 +270,14 @@ Notes:
 
 ## Key files
 - `src_post/runner.py`: entry logic, dataset iteration, Stage‑A/B generation, reward composition, GRPO update loop (no value head).
-- `src_post/conversation.py`: Stage‑A/B prompt builders and mission hints.
-- `src_post/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
-- `src_post/logits_processors.py`: decode‑time masking for geometry/coordinate tokens.
+- `src_post/prompting/conversation.py`: Stage‑A/B prompt builders and mission hints.
+- `src_post/prompting/schema.py`: mission check/token parsing from `MISSION_CHECKS_COVERAGE` (cached).
+- `src_post/rewards/lexicon.py`: shared canonical tokens (negatives/slots/forbidden words).
+- `src_post/generation/generation.py`: generators and `build_decision_prefix_constraint` for strict Stage‑B headers.
+- `src_post/data/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
+- `src_post/generation/logits_processors.py`: decode‑time masking for geometry/coordinate tokens.
 - `src_post/rewards/`: modular rewards and penalties.
-- `src_post/span_parser.py`: robust parsing of Stage‑B decision text.
+- `src_post/prompting/span_parser.py`: robust parsing of Stage‑B decision text.
 
 ---
 
@@ -297,3 +295,101 @@ Notes:
 - **Quotes or long rambles**: penalize with `quote_penalty`; you may also shorten Stage‑A `max_new_tokens_stage_a`.
 - **Advantage variance issues (std≈0)**: skip update (A=0) or increase `K_B`/`K_A` moderately.
 - **Instability/drift**: increase KL weight(s) slightly; reduce learning rate; keep most layers frozen initially.
+
+## New knobs (refactor additions)
+
+- Stage‑B training control
+  - `train_stage_b: bool` (freeze Stage‑B updates when false)
+  - `stage_b_weight: float` (weight of Stage‑B loss)
+  - `freeze_stage_b_steps: int` (freeze Stage‑B for the first N updates)
+- Prompt bias toggle
+  - `use_mission_checklist: bool` (include checklist when true; use minimal Stage‑B prompt when false)
+- Group reward mode
+  - `group_reward_mode: {margin_only|label_match|combined}`
+    - `margin_only` uses TF log‑margin only via `group_margin`
+    - `label_match` uses binary only
+    - `combined` uses configured reward names/weights
+- Stage‑A credit assignment
+  - `train_stage_a_mode: {off|conditional|joint}`
+  - `pairwise_credit_enabled: bool` (enable pairwise fallback)
+  - `pairwise_pairs_per_group: int` (budget ≤ 1 by default)
+  - `pairwise_delta_threshold: float` (trigger only if best single‑image Δ < threshold)
+- Uncertainty gate (optional)
+  - `use_uncertainty_gate: bool`
+  - `uncertainty_gate_min_entropy: float` (per‑line entropy threshold)
+
+### Examples
+
+Warm‑up (Stage‑A only; minimal prompt; margin‑only):
+```yaml
+checkpoint: /abs/sft_ckpt
+processor:  /abs/sft_processor
+output_dir: /abs/out/grpo_warmup
+train_data_dir: /abs/data/groups
+mission: bbu安装方式检查
+
+train_stage_b: false
+stage_b_weight: 1.0
+freeze_stage_b_steps: 1000
+use_mission_checklist: false
+
+group_reward_mode: margin_only
+reward_fns: group_margin,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.3,0.3,-0.7,-0.4,-1.0
+
+train_stage_a_mode: conditional
+pairwise_credit_enabled: true
+pairwise_pairs_per_group: 1
+pairwise_delta_threshold: 0.02
+
+use_ref_kl: true
+ref_checkpoint: /abs/sft_ckpt
+lambda_kl_stage_b: 0.02
+lambda_kl_stage_a: 0.02
+
+K_B: 3
+K_A: 3
+max_new_tokens_stage_a: 48
+max_new_tokens_stage_b: 128
+
+device: cuda
+epochs: 1
+batch_size: 1
+```
+
+End‑to‑end (both stages; checklist; combined reward):
+```yaml
+checkpoint: /abs/sft_ckpt
+processor:  /abs/sft_processor
+output_dir: /abs/out/grpo_e2e
+train_data_dir: /abs/data/groups
+mission: bbu安装方式检查
+
+train_stage_b: true
+stage_b_weight: 1.0
+freeze_stage_b_steps: 0
+use_mission_checklist: true
+
+group_reward_mode: combined
+reward_fns: group_margin,label_match,formatting,cleanliness,rep_penalty
+reward_weights: 1.0,0.3,0.3,0.2,-0.7
+
+train_stage_a_mode: conditional
+pairwise_credit_enabled: false
+pairwise_pairs_per_group: 0
+pairwise_delta_threshold: 0.00
+
+use_ref_kl: true
+ref_checkpoint: /abs/sft_ckpt
+lambda_kl_stage_b: 0.02
+lambda_kl_stage_a: 0.02
+
+K_B: 3
+K_A: 3
+max_new_tokens_stage_a: 48
+max_new_tokens_stage_b: 128
+
+device: cuda
+epochs: 1
+batch_size: 1
+```

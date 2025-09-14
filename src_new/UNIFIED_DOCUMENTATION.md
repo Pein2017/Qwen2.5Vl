@@ -114,8 +114,8 @@
 ## Freezing Phases (separate runs)
 
 - `phase_1`: Train `visual.merger`; if coord tokens present, enable coord‑slice grad masks on `embed_tokens.weight` and `lm_head.weight`; freeze LLM & vision.
-- `phase_2`: Phase 1 + unfreeze last‑K LLM decoder blocks (`top_k_layers`, default 6); vision remains frozen; merger trainable.
-- `phase_3`: Unfreeze all by default (keep `visual.patch_embed` frozen). For memory‑constrained runs, selectively unfreeze last‑K LLM blocks via `top_k_layers` and last‑K vision blocks via `vision_top_k_blocks`; merger always trainable.
+- `phase_2`: Phase 1 + unfreeze last‑K LLM decoder blocks (use `llm_top_k_block` in configs); vision remains frozen; merger trainable.
+- `phase_3`: Unfreeze all by default (keep `visual.patch_embed` frozen). For memory‑constrained runs, selectively unfreeze last‑K LLM blocks via `llm_top_k_block` and last‑K vision blocks via `vision_top_k_block`; merger always trainable.
 
 ---
 

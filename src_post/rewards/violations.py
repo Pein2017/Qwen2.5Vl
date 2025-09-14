@@ -2,22 +2,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
-
-# Minimal violation lexicon; extend as needed
-VIOLATION_LEXICON: Set[str] = set([
-    "未拧紧",
-    "松动",
-    "露铜",
-    "复接",
-    "生锈",
-    "遮挡",
-    "无遮挡被破坏",  # in case of negations you can expand logic later
-    "弯曲半径违规",
-    "弯曲半径不合理",
-    "不合规",
-])
+from src_post.rewards.lexicon import NEGATIVE_TOKENS as VIOLATION_LEXICON
 
 
 def _count_violations(lines: List[str]) -> int:

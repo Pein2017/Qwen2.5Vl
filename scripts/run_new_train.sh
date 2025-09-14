@@ -11,7 +11,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
 PROJECT_ROOT="."
-CONFIG_NAME="phase_2/standard"
+# CONFIG_NAME="phase_2/standard"
+CONFIG_NAME="phase_3/standard"
 to_console=false
 
 
