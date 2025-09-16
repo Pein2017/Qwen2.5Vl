@@ -1,5 +1,31 @@
 ### JSON-based Geometry Refactor Plan (src_new_json)
 
+Progress log
+- [x] Added `types/json_schema.py` with `JsonSchema` dataclass (compact/expanded)
+- [x] Added `processing/json_formatter.py` with `JsonGeometryFormatter` (dense, coords->desc user, desc->coords user)
+- [x] Simplified `processing/variants.py` to JSON-only (4 variants) with `JsonGeometryFormatter`
+- [x] Switched default JSON schema to expanded with explicit keys: `box_points`, `quadrilateral_points`, `line_points`; kept compact mode optional
+- [x] Renamed schema field to `quadrilateral_points_key` for clarity
+- [x] Replace `bbox_2d` with `box_points` across formatter, docs, and inference comments
+- [x] Update `processing/conversation_processor.py` to build registry using JSON formatter
+- [x] Prompts: removed per-line coordinate requirement; JSON arrays may be compact on one line
+- [x] Update `processing/templates.py` prompts to JSON-only instructions
+- [x] Remove wrapper/geometry tokens and coord token paths:
+  - `processing/special_tokens.py`: removed `GEOMETRY_TOKENS`, `OBJECT_REF_SYNONYMS`, `OBJECT_REF_SYNONYMS_END`; `get_coord_token_range` now returns (0,0); `validate_geometry_tokens` no-op
+  - `processing/__init__.py`: stopped exporting `CoordinateTokenConverter`
+  - `processing/coordinate_converter.py`: legacy; slated for deletion (no references remain)
+  - `data/dataset.py`: removed `GEOMETRY_TOKENS` usage; validation now accepts `box_points|quadrilateral_points|line_points` and legacy keys
+  - `inference.py`: removed all `GEOMETRY_TOKENS` references and wrapper/coord parsing branches; JSON-only normalization
+  - `processing/token_processor.py`: error messaging no longer imports `GEOMETRY_TOKENS`; allowed keys listed explicitly
+- [x] Implement JSON-based grouping engine and integrate into `losses/token_grouping.py`
+- [x] Replace inference geometry parsers with JSON parser
+- [x] Formatter now reads training inputs `bbox_2d|quad|line` and emits chat JSON with `box_points|quadrilateral_points|line_points` (added `convert_objects_to_tokens`)
+- [x] Dataset validation is now strict for inputs (only `bbox_2d|quad|line` accepted)
+- [x] Inference vis conversion cleaned of legacy geometry token set checks (JSON-only)
+- [ ] Clean config: remove coord fields; add `json_geometry` block
+- [ ] Remove coord-aux and wrapper/coord token code paths
+- [ ] Update tests and docs
+
 Goal: remove coordinate tokens and special wrapper tokens; unify geometry I/O as strict JSON. Maintain teacher–student flows, HF-first pipeline, span alignment, and grouped CE losses using JSON-aware grouping.
 
 ---
@@ -8,8 +34,8 @@ Goal: remove coordinate tokens and special wrapper tokens; unify geometry I/O as
 - Assistant response (dense caption): a single JSON array, one object per instance.
 ```json
 [
-  {"box": [[x1, y1], [x2, y2]], "label": "..."},
-  {"quad": [[x1, y1], [x2, y2], [x3, y3], [x4, y4]], "label": "..."},
+  {"box_points": [[x1, y1], [x2, y2]], "label": "..."},
+  {"quadrilateral_points": [[x1, y1], [x2, y2], [x3, y3], [x4, y4]], "label": "..."},
   {"line_points": [[x1, y1], [x2, y2], [x3, y3]], "label": "..."}
 ]
 ```
@@ -19,7 +45,7 @@ Goal: remove coordinate tokens and special wrapper tokens; unify geometry I/O as
   - desc_to_coords: user provides array items with only "label"; assistant fills geometry
   - summary: unchanged (single-line Chinese summary, no JSON)
 - Strict validation:
-  - Keys allowed: "label", "box", "quad", "line_points"
+  - Keys allowed: "label", "box_points", "quadrilateral_points", "line_points"
   - Exactly one geometry field per object; integer absolute coordinates
   - No extra keys; fail-fast with actionable messages
 
@@ -261,7 +287,7 @@ This pass ensures we don’t miss any downstream references and guides decoupled
   - Pure; no tokenizer-vocab assumptions beyond offset mapping
 
 - JsonSchema (types/json_schema.py)
-  - Dataclass with `label_key`, `box_key`, `quad_key`, `line_key`
+  - Dataclass with `label_key`, `box_points_key`, `quadrilateral_points_key`, `line_points_key` (expanded default), and optional compact `type_coordinate_key`
   - Default values match plan; configurable via config
 
 - JsonParser/Validator (utils/json_utils.py)

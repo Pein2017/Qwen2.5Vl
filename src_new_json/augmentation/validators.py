@@ -42,7 +42,7 @@ def apply_occlusion_criterion(
     OCCLUDER_TYPES = {"bbu_shield", "fiber", "wire", "connect_point"}
 
     for o in sample["objects"]:
-        typ = resolve_object_type(o.get("desc")) or "unknown"
+        typ = resolve_object_type(o["desc"]) if (isinstance(o, dict) and ("desc" in o)) else "unknown"
         geom = "other"
         m = Image.new("L", (w_low, h_low), 0)
         if "quad" in o:
@@ -99,7 +99,7 @@ def apply_occlusion_criterion(
         return base
 
     for i, o in enumerate(objs):
-        typ_i = resolve_object_type(o.get("desc")) or "unknown"
+        typ_i = resolve_object_type(o["desc"]) if (isinstance(o, dict) and ("desc" in o)) else "unknown"
         geom_i, mask_i, _typ_meta, _is_occ = masks[i]
         if geom_i not in ("area", "line"):
             updated.append(o)

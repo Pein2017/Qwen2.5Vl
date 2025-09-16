@@ -302,9 +302,7 @@ class Config:
     grounding_loss_weight: float
     formatting_loss_weight: float
 
-    # Features
-    coordinate_tokens_enabled: bool
-    coordinate_init_mode: Optional[str]
+    # Features (coordinate tokens removed in JSON mode)
 
     # Vision processing parameters
     merge_size: int
@@ -315,11 +313,9 @@ class Config:
     run_name: str  # tensorboard event name
     tb_dir: str
 
-    # Coordinate/token limits
-    max_coord_value: int
+    # Coordinate/token limits (removed in JSON mode)
 
     # Loss settings
-    coordinate_loss_weight: float
     teacher_ratio: float
 
     # Collator
@@ -350,7 +346,6 @@ class Config:
 
     # Optimizer/learning rate groups (optional overrides)
     lr_merger: Optional[float] = None
-    lr_coord_slice: Optional[float] = None
     lr_top_layers: Optional[float] = None
     lr_full_model: Optional[float] = None
 
@@ -360,7 +355,6 @@ class Config:
 
     # === OPTIONAL FIELDS WITH DEFAULTS (compatibility) ===
     seed: int = 17
-    new_geometry_tokens: Optional[List[str]] = None
 
     # Augmentation controls
     augmentation: Optional[AugmentationConfigType] = None
@@ -375,6 +369,22 @@ class Config:
     freeze_patch_embed: Optional[bool] = None
     trainable_token_strings: Optional[List[str]] = None
 
+    # Dynamic contrastive pairing (JSON mode—parity with src_new)
+    dynamic_pairing_enabled: bool = True
+    dynamic_pair_target_assignment: str = "current"  # {random,current,opposite}
+    # Deprecated/compat-only: dynamic_pair_candidate_pool_size is superseded by pool_fraction/pool_max (upper cap only)
+    dynamic_pair_candidate_pool_size: int = 128
+    dynamic_pair_max_teacher_uses_per_epoch: int = 5
+    dynamic_pair_temperature: float = 1.2
+    dynamic_pair_cross_bucket_explore_prob: float = 0.0
+    # Large-pool controls for sampling (explicit; used by BucketedSamplingEngine)
+    pool_fraction: float = 0.2
+    pool_max: int = 1024
+
+    # Overlap-pool and hardness controls (JSON dynamic pairing)
+    hardness_alpha: float = 0.1
+    hardness_warmup_epochs: int = 1
+
     # Coordinate auxiliary losses (compatibility; only used when coord_aux_enabled: true)
     coord_aux_enabled: bool = False
     coord_aux_tau: Optional[float] = None
@@ -388,6 +398,12 @@ class Config:
     span_include_im_end_in_labels: bool = True
     # Debug: enable strict alignment assertions (decode↔re-tokenize, span/mask invariants)
     debug_alignment: bool = False
+
+    # Best-checkpoint interval control (optional)
+    # If best_checkpoint_min_interval_steps is provided, it takes precedence.
+    # Otherwise the interval is computed as eval_steps * best_checkpoint_interval_multiplier.
+    best_checkpoint_min_interval_steps: Optional[int] = None
+    best_checkpoint_interval_multiplier: int = 5
     
     # Removed: packed segment isolation no longer supported
 
@@ -422,7 +438,6 @@ class Config:
         self._validate_model_settings()
         self._validate_training_settings()
         self._validate_data_settings()
-        self._validate_coordinate_settings()
         self._validate_augmentation_settings()
         self._validate_phase_name()
         self._validate_learning_rate_groups()
@@ -486,14 +501,30 @@ class Config:
         if not self.val_data_path:
             raise ValueError("val_data_path cannot be empty")
 
+        # Teacher pool file validation based on dynamic pairing mode
         if not self.teacher_pool_file:
-            raise ValueError("teacher_pool_file cannot be empty")
+            if self.dynamic_pairing_enabled:
+                logger.info("teacher_pool_file not provided; using dynamic pairing from train set")
+            else:
+                logger.warning("teacher_pool_file not provided and dynamic_pairing_enabled=False; teacher-student training may be limited")
+        elif self.dynamic_pairing_enabled:
+            logger.info("teacher_pool_file provided but dynamic_pairing_enabled=True; dynamic pairing will be used instead")
 
         # Validate existence using centralized validator (accept relative or aliases)
         try:
             PathValidator.validate_file_exists(self.train_data_path)
             PathValidator.validate_file_exists(self.val_data_path)
-            PathValidator.validate_file_exists(self.teacher_pool_file)
+            # Only validate teacher_pool_file if provided and dynamic pairing is disabled
+            if self.teacher_pool_file and not self.dynamic_pairing_enabled:
+                PathValidator.validate_file_exists(self.teacher_pool_file)
+            elif self.teacher_pool_file and self.dynamic_pairing_enabled:
+                # If file exists, validate it, but don't require it
+                try:
+                    PathValidator.validate_file_exists(self.teacher_pool_file)
+                except (ValueError, PathValidationError):
+                    logger.info("teacher_pool_file specified but not found; will use dynamic pairing instead")
+                    # Clear the teacher_pool_file since it's not needed for dynamic pairing
+                    object.__setattr__(self, 'teacher_pool_file', "")
             PathValidator.validate_directory_exists(self.data_root)
         except (ValueError, PathValidationError) as e:
             raise ValueError(f"Invalid data paths: {e}")
@@ -506,6 +537,49 @@ class Config:
 
         if self.collator_type not in ["standard"]:
             raise ValueError(f"Invalid collator_type: {self.collator_type}")
+
+        # Dynamic pairing strict validation (JSON mode)
+        if not isinstance(self.dynamic_pairing_enabled, bool):
+            raise ValueError("dynamic_pairing_enabled must be a boolean")
+        if self.dynamic_pair_target_assignment not in {"random", "current", "opposite"}:
+            raise ValueError(
+                "dynamic_pair_target_assignment must be one of {'random','current','opposite'}"
+            )
+        # dynamic_pair_candidate_pool_size kept for backward-compat; not used by JSON sampler.
+        if self.dynamic_pair_candidate_pool_size <= 0:
+            raise ValueError(
+                f"dynamic_pair_candidate_pool_size must be > 0, got {self.dynamic_pair_candidate_pool_size}"
+            )
+        if self.dynamic_pair_max_teacher_uses_per_epoch <= 0:
+            raise ValueError(
+                f"dynamic_pair_max_teacher_uses_per_epoch must be > 0, got {self.dynamic_pair_max_teacher_uses_per_epoch}"
+            )
+        if self.dynamic_pair_temperature <= 0:
+            raise ValueError(
+                f"dynamic_pair_temperature must be > 0, got {self.dynamic_pair_temperature}"
+            )
+        if not (0.0 <= float(self.dynamic_pair_cross_bucket_explore_prob) <= 1.0):
+            raise ValueError(
+                f"dynamic_pair_cross_bucket_explore_prob must be in [0,1], got {self.dynamic_pair_cross_bucket_explore_prob}"
+            )
+
+        # Sampling large-pool controls
+        if not (0.0 <= float(self.pool_fraction) <= 1.0):
+            raise ValueError(
+                f"pool_fraction must be in [0,1], got {self.pool_fraction}"
+            )
+        if not isinstance(self.pool_max, int) or self.pool_max < 1:
+            raise ValueError(
+                f"pool_max must be a positive int, got pool_max={self.pool_max}"
+            )
+
+        # Overlap-pool and hardness validation (strict)
+        if not (0.0 < float(self.hardness_alpha) <= 1.0):
+            raise ValueError(f"hardness_alpha must be in (0,1], got {self.hardness_alpha}")
+        if not (isinstance(self.hardness_warmup_epochs, int) and self.hardness_warmup_epochs >= 0):
+            raise ValueError(
+                f"hardness_warmup_epochs must be a non-negative int, got {self.hardness_warmup_epochs}"
+            )
 
         # Conversation variant ratios (optional)
         sampling = getattr(self, "conversation_variant_ratios", None)
@@ -528,119 +602,16 @@ class Config:
             if total <= 0:
                 raise ValueError("Sum of conversation_variant_ratios must be > 0")
 
-        # Required: validate coordinate init mode
-        if self.coordinate_tokens_enabled:
-            if self.coordinate_init_mode is None:
-                raise ValueError(
-                    "coordinate_init_mode is required when coordinate_tokens_enabled=True"
-                )
-            allowed = {"ms_mean", "fourier_ramp"}
-            if self.coordinate_init_mode not in allowed:
-                raise ValueError(
-                    f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
-                )
-
         # Output/log paths: accept relative; no existence check required here
-
-        # Initialize new_geometry_tokens if not provided
-        if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
-            # Only add line tokens - quad tokens already exist in Qwen2.5-VL
-            object.__setattr__(
-                self,
-                "new_geometry_tokens",
-                [
-                    "<|line_start|>",
-                    "<|line_end|>",
-                ],
-            )
 
     def _validate_coordinate_settings(self) -> None:
-        """Validate coordinate token settings."""
-        if self.max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be positive, got {self.max_coord_value}"
-            )
-
-
-        if self.coordinate_loss_weight < 0:
-            raise ValueError(
-                f"coordinate_loss_weight cannot be negative, got {self.coordinate_loss_weight}"
-            )
-
-        # Coordinate auxiliary losses validation
-        if self.coord_aux_enabled:
-            missing: list[str] = []
-            if self.coord_aux_tau is None:
-                missing.append("coord_aux_tau")
-            if self.coord_aux_sigma_bins is None:
-                missing.append("coord_aux_sigma_bins")
-            if self.coord_aux_window_bins is None:
-                missing.append("coord_aux_window_bins")
-            if self.coord_aux_topk is None:
-                missing.append("coord_aux_topk")
-            if self.coord_aux_lambda_kce is None:
-                missing.append("coord_aux_lambda_kce")
-            if self.coord_aux_lambda_unlike is None:
-                missing.append("coord_aux_lambda_unlike")
-            if missing:
-                raise ValueError(
-                    "coord_aux_enabled=True but missing required fields: "
-                    + ", ".join(missing)
-                )
-            if self.coord_aux_tau is not None and self.coord_aux_tau <= 0:
-                raise ValueError(f"coord_aux_tau must be > 0, got {self.coord_aux_tau}")
-            if self.coord_aux_sigma_bins is not None and self.coord_aux_sigma_bins <= 0:
-                raise ValueError(
-                    f"coord_aux_sigma_bins must be > 0, got {self.coord_aux_sigma_bins}"
-                )
-            if (
-                self.coord_aux_window_bins is not None
-                and self.coord_aux_window_bins < 1
-            ):
-                raise ValueError(
-                    f"coord_aux_window_bins must be >= 1, got {self.coord_aux_window_bins}"
-                )
-            if self.coord_aux_topk is not None and self.coord_aux_topk < 1:
-                raise ValueError(
-                    f"coord_aux_topk must be >= 1, got {self.coord_aux_topk}"
-                )
-            if (
-                self.coord_aux_lambda_kce is not None
-                and self.coord_aux_lambda_unlike is not None
-                and (self.coord_aux_lambda_kce < 0 or self.coord_aux_lambda_unlike < 0)
-            ):
-                raise ValueError("coord_aux_lambda_kce/unlike must be non-negative")
-        # Required: validate coordinate init mode
-        if self.coordinate_tokens_enabled:
-            if self.coordinate_init_mode is None:
-                raise ValueError(
-                    "coordinate_init_mode is required when coordinate_tokens_enabled=True"
-                )
-            allowed = {"ms_mean", "fourier_ramp"}
-            if self.coordinate_init_mode not in allowed:
-                raise ValueError(
-                    f"coordinate_init_mode must be one of {sorted(allowed)}, got {self.coordinate_init_mode!r}"
-                )
-
-        # Output/log paths: accept relative; no existence check required here
-
-        # Initialize new_geometry_tokens if not provided
-        if self.coordinate_tokens_enabled and self.new_geometry_tokens is None:
-            # Only add line tokens - quad tokens already exist in Qwen2.5-VL
-            object.__setattr__(
-                self,
-                "new_geometry_tokens",
-                [
-                    "<|line_start|>",
-                    "<|line_end|>",
-                ],
-            )
+        """Coordinate-token validation removed in JSON mode."""
+        return
 
     def _validate_learning_rate_groups(self) -> None:
         # Learning rates (if provided) must be positive
         for lr_name in (
             "lr_merger",
-            "lr_coord_slice",
             "lr_top_layers",
             "lr_full_model",
         ):
@@ -761,6 +732,17 @@ class Config:
             )
         if not isinstance(self.debug_alignment, bool):
             raise ValueError("debug_alignment must be a boolean (true/false)")
+        # Validate best-checkpoint interval settings
+        bmin = getattr(self, "best_checkpoint_min_interval_steps", None)
+        if bmin is not None and (not isinstance(bmin, int) or bmin < 0):
+            raise ValueError(
+                f"best_checkpoint_min_interval_steps must be a non-negative int when provided, got {bmin!r}"
+            )
+        mult = getattr(self, "best_checkpoint_interval_multiplier", 5)
+        if not isinstance(mult, int) or mult < 1:
+            raise ValueError(
+                f"best_checkpoint_interval_multiplier must be a positive int, got {mult!r}"
+            )
 
 
 def load_config(override_config_path: str) -> Config:
@@ -836,7 +818,17 @@ def load_config(override_config_path: str) -> Config:
         pass
 
     # === Dataset path resolution (auto-derive from data_root when missing) ===
-    required_paths = ["train_data_path", "val_data_path", "teacher_pool_file"]
+    # Check if dynamic pairing is enabled to determine if teacher_pool_file is required
+    if "dynamic_pairing_enabled" not in data:
+        raise ValueError("dynamic_pairing_enabled must be explicitly set in YAML (true/false)")
+    dynamic_pairing_enabled = bool(data["dynamic_pairing_enabled"])
+    
+    # Base required paths (always needed)
+    required_paths = ["train_data_path", "val_data_path"]
+    # Only require teacher_pool_file if dynamic pairing is disabled
+    if not dynamic_pairing_enabled:
+        required_paths.append("teacher_pool_file")
+    
     missing_paths = [k for k in required_paths if k not in data or not data[k]]
     if missing_paths:
         if "data_root" not in data or not data["data_root"]:
@@ -846,13 +838,18 @@ def load_config(override_config_path: str) -> Config:
                 + " and data_root is not provided to derive them"
             )
         try:
-            ds_paths = DataResolver.resolve_dataset_paths(data["data_root"])
+            # Don't require teacher pool when dynamic pairing is enabled
+            ds_paths = DataResolver.resolve_dataset_paths(
+                data["data_root"], 
+                require_teacher_pool=not dynamic_pairing_enabled
+            )
         except Exception as e:
             raise ValueError(
                 f"Failed to derive dataset paths from data_root={data['data_root']}: {e}"
             )
         data["train_data_path"] = str(ds_paths.train_data_path)
         data["val_data_path"] = str(ds_paths.val_data_path)
+        # Set teacher_pool_file regardless (it will be ignored if dynamic pairing is enabled)
         data["teacher_pool_file"] = str(ds_paths.teacher_pool_file)
 
     # Normalize path-like fields; preserve relativity (no forced absolute)
@@ -860,29 +857,32 @@ def load_config(override_config_path: str) -> Config:
     if "data_root" not in data or not data["data_root"]:
         raise ValueError("data_root is required and must be non-empty")
     try:
-        data["data_root"] = str(normalize_path_input(data["data_root"]))
+        data_root_val = data["data_root"]
+        data["data_root"] = str(normalize_path_input(data_root_val))
     except Exception as e:
         raise ValueError(
-            f"Failed to normalize path for 'data_root': {data.get('data_root')}; {e}"
+            f"Failed to normalize path for 'data_root': {data_root_val}; {e}"
         )
 
     # Normalize model_path
     if "model_path" not in data or not data["model_path"]:
         raise ValueError("model_path is required and must be non-empty")
     try:
-        data["model_path"] = str(normalize_path_input(data["model_path"]))
+        model_path_val = data["model_path"]
+        data["model_path"] = str(normalize_path_input(model_path_val))
     except Exception as e:
         raise ValueError(
-            f"Failed to normalize path for 'model_path': {data.get('model_path')}; {e}"
+            f"Failed to normalize path for 'model_path': {model_path_val}; {e}"
         )
 
     # Normalize dataset file paths relative to dataset_base
     for key in ("train_data_path", "val_data_path", "teacher_pool_file"):
         try:
-            data[key] = str(normalize_path_input(data[key]))
+            val = data[key]
+            data[key] = str(normalize_path_input(val))
         except Exception as e:
             raise ValueError(
-                f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+                f"Failed to normalize path for '{key}': {val}; {e}"
             )
 
     # Normalize output/log directories relative to config_dir
@@ -894,10 +894,11 @@ def load_config(override_config_path: str) -> Config:
             else:
                 raise ValueError(f"Missing required output/log path: {key}")
         try:
-            data[key] = str(normalize_path_input(data[key]))
+            val = data[key]
+            data[key] = str(normalize_path_input(val))
         except Exception as e:
             raise ValueError(
-                f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+                f"Failed to normalize path for '{key}': {val}; {e}"
             )
 
     # Gate augmentation by use_aug flag (no external files)
@@ -949,24 +950,18 @@ def load_config(override_config_path: str) -> Config:
                         "augmentation.preset cannot be null; choose off|conservative|moderate|aggressive"
                     )
                 # Minimal options allowed alongside preset
-                rng_seed = (
-                    int(aug_dict["rng_seed"]) if "rng_seed" in aug_dict else 12345
-                )
-                apply_to_teachers = (
-                    bool(aug_dict["apply_to_teachers"])
-                    if "apply_to_teachers" in aug_dict
-                    else False
-                )
-                lines_policy = (
-                    str(aug_dict["lines_policy"])
-                    if "lines_policy" in aug_dict
-                    else "transform"
-                )
-                debug_visualization = (
-                    bool(aug_dict["debug_visualization"])
-                    if "debug_visualization" in aug_dict
-                    else False
-                )
+                if "rng_seed" not in aug_dict:
+                    raise ValueError("augmentation.rng_seed must be explicitly provided when using 'preset'")
+                rng_seed = int(aug_dict["rng_seed"]) 
+                if "apply_to_teachers" not in aug_dict:
+                    raise ValueError("augmentation.apply_to_teachers must be explicitly provided (true/false)")
+                apply_to_teachers = bool(aug_dict["apply_to_teachers"]) 
+                if "lines_policy" not in aug_dict:
+                    raise ValueError("augmentation.lines_policy must be explicitly provided")
+                lines_policy = str(aug_dict["lines_policy"]) 
+                if "debug_visualization" not in aug_dict:
+                    raise ValueError("augmentation.debug_visualization must be explicitly provided (true/false)")
+                debug_visualization = bool(aug_dict["debug_visualization"]) 
                 debug_output_dir = (
                     aug_dict["debug_output_dir"]
                     if "debug_output_dir" in aug_dict
@@ -1078,7 +1073,7 @@ def load_config(override_config_path: str) -> Config:
                             occ_grid_downscale=v.get("occ_grid_downscale"),
                             occ_margin_px=v.get("occ_margin_px"),
                             same_plane_constraint=bool(
-                                v.get("same_plane_constraint", True)
+                                v["same_plane_constraint"]
                             ),
                             copy_paste_attempts=v.get("copy_paste_attempts"),
                             alpha_feather_px=v.get("alpha_feather_px"),
@@ -1144,8 +1139,10 @@ def load_config(override_config_path: str) -> Config:
                 PhotometricConfig as _TPH,
             )
 
-            # rng_seed optional; default 12345
-            t_rng_seed = int(taug_dict.get("rng_seed", 12345))
+            # rng_seed must be explicit
+            if "rng_seed" not in taug_dict:
+                raise ValueError("teacher_augmentation.rng_seed must be explicitly provided")
+            t_rng_seed = int(taug_dict["rng_seed"])
             # photometric block required
             if "photometric" not in taug_dict or taug_dict["photometric"] is None:
                 raise ValueError(
@@ -1186,6 +1183,21 @@ def load_config(override_config_path: str) -> Config:
     except Exception as e:
         raise ValueError(f"Failed to parse augmentation configuration: {e}")
 
+    # Drop legacy fields from older configs that are irrelevant in JSON mode
+    LEGACY_IGNORED_FIELDS = {
+        "coordinate_init_mode",
+        "coordinate_loss_weight",
+        "coordinate_tokens_enabled",
+        "max_coord_value",
+        "packed_segment_isolation",
+        "plain_text_mode_enabled",
+    }
+    ignored_present = sorted([k for k in list(data.keys()) if k in LEGACY_IGNORED_FIELDS])
+    for k in ignored_present:
+        data.pop(k, None)
+    if ignored_present:
+        logger.info("Ignoring legacy config fields (JSON mode): " + ", ".join(ignored_present))
+
     # Aggregate schema issues before constructing the dataclass
     schema_issues = _collect_schema_issues(data)
     if schema_issues:
@@ -1210,9 +1222,6 @@ def load_config(override_config_path: str) -> Config:
     logger.info(f"✅ Configuration loaded successfully from {override_config_path}")
     logger.info(f"📋 Model path: {config.model_path}")
     logger.info(f"📋 Data: train={config.train_data_path}, val={config.val_data_path}")
-    logger.info(
-        f"📋 Coordinate tokens: {'enabled' if config.coordinate_tokens_enabled else 'disabled'}"
-    )
     logger.info(f"📋 Teacher ratio: {config.teacher_ratio}")
 
     return config

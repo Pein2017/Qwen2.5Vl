@@ -238,7 +238,7 @@ class LossTracker:
 
 
 class AugmentationScheduleCallback(TrainerCallback):
-    """Switch dataset augmentation preset by epoch using Dataset.set_epoch."""
+    """Switch dataset augmentation preset and rebuild dynamic pairing by epoch via Dataset.set_epoch."""
 
     def on_epoch_begin(
         self, args, state: TrainerState, control: TrainerControl, **kwargs

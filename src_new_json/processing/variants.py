@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Variant handler registry for conversation building.
-
-This registry provides pluggable handlers for the three core variants:
+Variant handler registry for conversation building (JSON-first, four variants):
 - dense_caption
 - coords_to_desc
 - desc_to_coords
+- summary
 
 Handlers return two callables:
 - build_user_text(objects) -> Optional[str]
 - build_assistant_text(objects) -> str
+
+The JSON output schema is governed by JsonGeometryFormatter (compact by default).
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
-from .geometry_text import format_geometry_for_user, format_object_ref
 from src_new_json.types import ConversationVariant
-from .coordinate_converter import CoordinateTokenConverter
 from .templates import CONSTANTS
+from .json_formatter import JsonGeometryFormatter
+import re
 
 
 class VariantHandler(Protocol):
@@ -31,74 +32,90 @@ class VariantHandler(Protocol):
 
 
 class DenseCaptionHandler:
-    def __init__(self, converter: CoordinateTokenConverter) -> None:
-        self.converter = converter
+    def __init__(self, formatter: JsonGeometryFormatter) -> None:
+        self.formatter = formatter
 
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[str]:
         return None  # image-only user
 
     def build_assistant_text(self, objects: List[Dict[str, Any]]) -> str:
-        return self.converter.convert_objects_to_tokens(objects)
+        # Dense caption is the only variant that returns geometry + desc together
+        return self.formatter.build_dense_caption(objects)
 
 
 class CoordToDescHandler:
-    def __init__(self, converter: CoordinateTokenConverter) -> None:
-        self.converter = converter
-        self._header = CONSTANTS.get("COORD_TO_DESC_USER_PROMPT", "请描述以下坐标中的物体")
+    def __init__(self, formatter: JsonGeometryFormatter) -> None:
+        self.formatter = formatter
+        self._header = CONSTANTS["COORD_TO_DESC_USER_PROMPT"] if "COORD_TO_DESC_USER_PROMPT" in CONSTANTS else "请描述以下坐标中的物体"
 
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[str]:
-        # Use converter to format geometry for user when in plain mode
-        try:
-            fmt = []
-            for o in objects:
-                if hasattr(self.converter, "format_geometry_for_user"):
-                    fmt.append(self.converter.format_geometry_for_user(o))
-                else:
-                    fmt.append(format_geometry_for_user(o))
-            body = "\n".join(fmt)
-            return f"{self._header}\n{body}" if body else self._header
-        except Exception:
-            lines = [format_geometry_for_user(o) for o in objects]
-            body = "\n".join(lines)
-            return f"{self._header}\n{body}" if body else self._header
+        # User: geometry only
+        body = self.formatter.build_coords_to_desc_user(objects)
+        return f"{self._header}\n{body}" if body else self._header
 
     def build_assistant_text(self, objects: List[Dict[str, Any]]) -> str:
-        res = self.converter.convert_objects_to_desc_only(objects)
-        return res["text"] if isinstance(res, dict) else res
+        # Assistant: desc only (matching src_new logic)
+        return self.formatter.build_desc_only(objects)
 
 
 class DescToCoordHandler:
-    def __init__(self, converter: CoordinateTokenConverter) -> None:
-        self.converter = converter
-        self._header = CONSTANTS.get("DESC_TO_COORD_USER_PROMPT", "请返回以下描述的物体的坐标")
+    def __init__(self, formatter: JsonGeometryFormatter) -> None:
+        self.formatter = formatter
+        self._header = CONSTANTS["DESC_TO_COORD_USER_PROMPT"] if "DESC_TO_COORD_USER_PROMPT" in CONSTANTS else "请返回以下描述的物体的坐标"
 
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[str]:
-        try:
-            fmt = []
-            for o in objects:
-                desc = o.get("desc", "")
-                if hasattr(self.converter, "format_object_ref_for_user"):
-                    fmt.append(self.converter.format_object_ref_for_user(desc))
-                else:
-                    fmt.append(format_object_ref(desc))
-            body = "\n".join(fmt)
-            return f"{self._header}\n{body}" if body else self._header
-        except Exception:
-            lines = [format_object_ref(o.get("desc", "")) for o in objects]
-            body = "\n".join(lines)
-            return f"{self._header}\n{body}" if body else self._header
+        # User: desc only
+        body = self.formatter.build_desc_to_coords_user(objects)
+        return f"{self._header}\n{body}" if body else self._header
 
     def build_assistant_text(self, objects: List[Dict[str, Any]]) -> str:
-        res = self.converter.convert_objects_to_geometry_only(objects)
-        return res["text"] if isinstance(res, dict) else res
+        # Assistant: coords only (matching src_new logic)
+        return self.formatter.build_coords_only(objects)
 
 
 class SummaryHandler:
     def __init__(self) -> None:
-        self._header = CONSTANTS.get("SUMMARY_USER_PROMPT", "请只输出一行摘要：")
+        self._header = CONSTANTS["SUMMARY_USER_PROMPT"] if "SUMMARY_USER_PROMPT" in CONSTANTS else "请只输出一行摘要："
+
+    @staticmethod
+    def _split_commas(text: str) -> List[str]:
+        text = (text or "").strip()
+        if not text:
+            return []
+        return [p.strip() for p in text.replace("，", ",").split(",") if p.strip()]
+
+    @staticmethod
+    def _collect_remarks(objects: List[Dict[str, Any]]) -> List[str]:
+        remarks: List[str] = []
+        seen: set[str] = set()
+        pattern = re.compile(r"备注[:：]\s*(.+)$")
+        for obj in objects:
+            desc = str(obj["desc"]).strip() if (isinstance(obj, dict) and "desc" in obj) else ""
+            if not desc:
+                continue
+            for seg in desc.split("/"):
+                m = pattern.search(seg)
+                if not m:
+                    continue
+                content = m.group(1).strip()
+                if not content:
+                    continue
+                # normalize ending punctuation
+                content = content.strip("；，。;,")
+                if content and content not in seen:
+                    seen.add(content)
+                    remarks.append(content)
+        return remarks
 
     def _extract_summary(self, objects: List[Dict[str, Any]]) -> str:
-        # Allowed canonical tokens (from hierarchical_attribute_mapping.json)
+        # Canonical tokens
+        BBU = "BBU设备"
+        SHIELD = "挡风板"
+        CP = "螺丝、光纤插头"
+        FIB = "光纤"
+        WIRE = "电线"
+        LABEL = "标签"
+
         BBU_REQ_NEED = "机柜空间充足需要安装"
         BBU_REQ_NONEED = "无需安装"
         BBU_CONF_OK = "这个BBU设备按要求配备了挡风板"
@@ -115,35 +132,25 @@ class SummaryHandler:
         FIB_PROTECT_HAVE = "有保护措施"
         FIB_PROTECT_DETAILS = {"蛇形管", "铠装", "同时有蛇形管和铠装"}
         FIB_BEND_OK = "弯曲半径合理"
-        FIB_BEND_BAD = "弯曲半径不合理（弯曲半径<4cm或者成环）"
+        FIB_BEND_BAD = "弯曲半径不合理(弯曲半径<4cm或者成环)"
 
         WIRE_NEAT = "捆扎整齐"
         WIRE_MESS = "分布散乱"
 
-        # Aggregated outputs (deduplicated, order by importance)
-        out_tokens: List[str] = []
-        seen: set[str] = set()
+        # Aggregators (group key -> count)
+        counts: Dict[Tuple[str, ...], int] = {}
+        def inc(key: Tuple[str, ...]) -> None:
+            counts[key] = (counts[key] + 1) if key in counts else 1
 
-        # Local collectors
-        cp_issues: List[str] = []
-        cp_noncompliant = False
-        fib_protection: Optional[str] = None
-        fib_details: Optional[str] = None
-        fib_bend: Optional[str] = None
-        wire_org: Optional[str] = None
-        bbu_req: Optional[str] = None
-        bbu_conf: Optional[str] = None
-        shield_dir: Optional[str] = None
-        label_clear: Optional[bool] = None
+        # Presence flags (for summarization emphasis)
+        bbu_present = 0
+        shield_need = 0
+        shield_ok = 0
+        shield_bad = 0
 
-        def split_commas(seg: str) -> List[str]:
-            seg = seg.strip()
-            if not seg:
-                return []
-            return [p.strip() for p in seg.replace("，", ",").split(",") if p.strip()]
-
+        # Parse
         for o in objects:
-            desc = str(o.get("desc", "")).strip()
+            desc = str(o["desc"]).strip() if (isinstance(o, dict) and "desc" in o) else ""
             if not desc:
                 continue
             parts = [p.strip() for p in desc.split("/")]
@@ -151,118 +158,153 @@ class SummaryHandler:
                 continue
             kind = parts[0]
 
-            # BBU设备: [kind, lvl1(brand,completeness,windshield_requirement), [windshield_conformity], [special_text]]
-            if kind == "BBU设备" and len(parts) >= 2:
-                lvl1 = split_commas(parts[1])
-                # Extract requirement (ignore brand/completeness)
-                if BBU_REQ_NONEED in lvl1:
-                    bbu_req = BBU_REQ_NONEED
-                    # '无需安装' → ignore any downstream conformity and remarks
-                    bbu_conf = None
-                elif BBU_REQ_NEED in lvl1:
-                    bbu_req = BBU_REQ_NEED
-                    # Try conformity if present
+            if kind == BBU and len(parts) >= 2:
+                bbu_present += 1
+                lvl1 = self._split_commas(parts[1])
+                if BBU_REQ_NEED in lvl1:
+                    shield_need += 1
                     if len(parts) >= 3:
                         conf = parts[2].strip()
                         if conf == BBU_CONF_OK:
-                            bbu_conf = BBU_CONF_OK
+                            inc((SHIELD, "按要求配备"))
+                            shield_ok += 1
                         elif conf == BBU_CONF_BAD:
-                            bbu_conf = BBU_CONF_BAD
+                            inc((SHIELD, "未按要求配备"))
+                            shield_bad += 1
                         else:
-                            # Missing or unknown → treat as non‑conformant conservatively
-                            bbu_conf = BBU_CONF_BAD
+                            # 未明确给出配备性，保守计入未按要求
+                            inc((SHIELD, "未按要求配备"))
+                            shield_bad += 1
+                elif BBU_REQ_NONEED in lvl1:
+                    inc((BBU, "无需挡风板"))
 
-            # 挡风板: [kind, lvl1(brand,completeness,obstruction,install_direction), [special_text]]
-            elif kind == "挡风板" and len(parts) >= 2:
-                lvl1 = split_commas(parts[1])
+            elif kind == SHIELD and len(parts) >= 2:
+                lvl1 = self._split_commas(parts[1])
                 if SHIELD_DIR_BAD in lvl1:
-                    shield_dir = SHIELD_DIR_BAD
+                    inc((SHIELD, SHIELD_DIR_BAD))
                 elif SHIELD_DIR_OK in lvl1:
-                    shield_dir = SHIELD_DIR_OK if shield_dir is None else shield_dir
+                    inc((SHIELD, SHIELD_DIR_OK))
 
-            # 螺丝、光纤插头: [kind, lvl1(type,completeness,compliance), [specific_issues], [special_text]]
-            elif kind == "螺丝、光纤插头" and len(parts) >= 2:
-                lvl1 = split_commas(parts[1])
+            elif kind == CP and len(parts) >= 2:
+                lvl1 = self._split_commas(parts[1])
                 if CP_COMPLY_BAD in lvl1:
-                    cp_noncompliant = True
+                    issues: List[str] = []
                     if len(parts) >= 3:
-                        issues = split_commas(parts[2])
-                        for it in issues:
-                            if it in CP_ISSUES:
-                                cp_issues.append(it)
+                        issues = [it for it in self._split_commas(parts[2]) if it in CP_ISSUES]
+                    if issues:
+                        # 细项分组计数
+                        for it in sorted(set(issues)):
+                            inc((CP, CP_COMPLY_BAD, it))
+                    else:
+                        inc((CP, CP_COMPLY_BAD))
+                elif CP_COMPLY_OK in lvl1:
+                    inc((CP, CP_COMPLY_OK))
 
-            # 光纤: [kind, lvl1(obstruction,protection,bend_radius), [protection_details], [special_text]]
-            elif kind == "光纤" and len(parts) >= 2:
-                lvl1 = split_commas(parts[1])
+            elif kind == FIB and len(parts) >= 2:
+                lvl1 = self._split_commas(parts[1])
+                # 保护
                 if FIB_PROTECT_NONE in lvl1:
-                    fib_protection = FIB_PROTECT_NONE
-                    fib_details = None
+                    inc((FIB, FIB_PROTECT_NONE))
                 elif FIB_PROTECT_HAVE in lvl1:
-                    fib_protection = FIB_PROTECT_HAVE
-                    if len(parts) >= 3:
-                        det = parts[2].strip()
-                        if det in FIB_PROTECT_DETAILS:
-                            fib_details = det
+                    # 细分保护类型
+                    det = parts[2].strip() if len(parts) >= 3 else ""
+                    if det in FIB_PROTECT_DETAILS:
+                        inc((FIB, FIB_PROTECT_HAVE, det))
+                    else:
+                        inc((FIB, FIB_PROTECT_HAVE))
+                # 弯曲半径
                 if FIB_BEND_BAD in lvl1:
-                    fib_bend = FIB_BEND_BAD
-                elif FIB_BEND_OK in lvl1 and fib_bend is None:
-                    fib_bend = FIB_BEND_OK
+                    inc((FIB, FIB_BEND_BAD))
+                elif FIB_BEND_OK in lvl1:
+                    inc((FIB, FIB_BEND_OK))
 
-            # 电线: [kind, lvl1(obstruction,organization), [special_text]]
-            elif kind == "电线" and len(parts) >= 2:
-                lvl1 = split_commas(parts[1])
+            elif kind == WIRE and len(parts) >= 2:
+                lvl1 = self._split_commas(parts[1])
                 if WIRE_MESS in lvl1:
-                    wire_org = WIRE_MESS
-                elif WIRE_NEAT in lvl1 and wire_org is None:
-                    wire_org = WIRE_NEAT
+                    inc((WIRE, WIRE_MESS))
+                elif WIRE_NEAT in lvl1:
+                    inc((WIRE, WIRE_NEAT))
 
-            # 标签: [kind, [text_content]] → clarity only
-            elif kind == "标签":
+            elif kind == LABEL:
                 text = parts[1].strip() if len(parts) >= 2 else ""
-                label_clear = bool(text)
+                if not text:
+                    inc((LABEL, "无法识别"))
+                else:
+                    inc((LABEL, "清晰"))
 
-        # Compose output by priority
-        def add(tok: Optional[str]) -> None:
-            if tok and tok not in seen:
-                out_tokens.append(tok)
-                seen.add(tok)
+        # Compose one-line summary with grouping and ×N
+        segments: List[str] = []
 
-        # 1) BBU 挡风板需求/符合性（核心决策链）
-        if bbu_req == BBU_REQ_NONEED:
-            add(BBU_REQ_NONEED)
-        elif bbu_req == BBU_REQ_NEED:
-            add(BBU_REQ_NEED)
-            add(bbu_conf or BBU_CONF_BAD)
+        # 先给出 BBU 存在与挡风板链路的关键提示
+        if bbu_present > 0:
+            segments.append(f"BBU×{bbu_present}")
+        if shield_need > 0 and shield_bad > 0:
+            segments.append(f"挡风板未按要求配备×{shield_bad}")
+        if shield_need > 0 and shield_ok > 0:
+            segments.append(f"挡风板按要求配备×{shield_ok}")
 
-        # 2) 挡风板安装方向（任务相关）
-        add(shield_dir)
+        # 连接点（不合规优先，其次合规）
+        # 排序保证稳定输出
+        for key in sorted(counts.keys()):
+            cnt = counts[key]
+            if cnt <= 0:
+                continue
+            # 优先输出负向项
+            if key[:2] == (CP, CP_COMPLY_BAD):
+                if len(key) == 3:  # 带细项
+                    segments.append(f"连接点不合规-{key[2]}×{cnt}")
+                else:
+                    segments.append(f"连接点不合规×{cnt}")
+        # 合规数放后
+        if (CP, CP_COMPLY_OK) in counts:
+            segments.append(f"连接点合规×{counts[(CP, CP_COMPLY_OK)]}")
 
-        # 3) 连接点合规与细项
-        if cp_noncompliant:
-            add(CP_COMPLY_BAD)
-            if cp_issues:
-                for it in sorted(set(cp_issues)):
-                    add(it)
-        # 4) 光纤保护/弯曲半径（与任务强相关）
-        add(fib_protection)
-        if fib_protection == FIB_PROTECT_HAVE:
-            add(fib_details)
-        add(fib_bend)
+        # 光纤保护/弯曲（负向优先）
+        if (FIB, FIB_PROTECT_NONE) in counts:
+            segments.append(f"光纤无保护×{counts[(FIB, FIB_PROTECT_NONE)]}")
+        for det in sorted(FIB_PROTECT_DETAILS):
+            k = (FIB, FIB_PROTECT_HAVE, det)
+            if k in counts:
+                segments.append(f"光纤{det}×{counts[k]}")
+        if (FIB, FIB_PROTECT_HAVE) in counts and all((FIB, FIB_PROTECT_HAVE, d) not in counts for d in FIB_PROTECT_DETAILS):
+            segments.append(f"光纤有保护×{counts[(FIB, FIB_PROTECT_HAVE)]}")
+        if (FIB, FIB_BEND_BAD) in counts:
+            segments.append(f"光纤弯曲不合理×{counts[(FIB, FIB_BEND_BAD)]}")
+        if (FIB, FIB_BEND_OK) in counts:
+            segments.append(f"光纤弯曲合理×{counts[(FIB, FIB_BEND_OK)]}")
 
-        # 5) 电线整齐度
-        add(wire_org)
+        # 电线
+        if (WIRE, WIRE_MESS) in counts:
+            segments.append(f"电线分布散乱×{counts[(WIRE, WIRE_MESS)]}")
+        if (WIRE, WIRE_NEAT) in counts:
+            segments.append(f"电线捆扎整齐×{counts[(WIRE, WIRE_NEAT)]}")
 
-        # 6) 标签（仅输出无法识别）
-        if label_clear is False:
-            add("标签/无法识别")
+        # 标签
+        if (LABEL, "无法识别") in counts:
+            segments.append(f"标签无法识别×{counts[(LABEL, '无法识别')]}")
+        if (LABEL, "清晰") in counts:
+            segments.append(f"标签清晰×{counts[(LABEL, '清晰')]}")
 
-        # Fallback minimal positive phrasing when nothing extracted
-        if not out_tokens:
-            out_tokens = [WIRE_NEAT, FIB_BEND_OK, "标签清晰"]
+        # 挡风板安装方向
+        if (SHIELD, SHIELD_DIR_BAD) in counts:
+            segments.append(f"挡风板安装方向错误×{counts[(SHIELD, SHIELD_DIR_BAD)]}")
+        if (SHIELD, SHIELD_DIR_OK) in counts:
+            segments.append(f"挡风板安装方向正确×{counts[(SHIELD, SHIELD_DIR_OK)]}")
 
-        summary = "，".join(out_tokens)
+        # 若仍为空，构造最小肯定表达
+        if not segments:
+            segments = ["电线捆扎整齐", "光纤弯曲合理", "标签清晰"]
+
+        summary = "，".join(segments)
+
+        # 合并备注（末尾一次性追加）
+        remarks = self._collect_remarks(objects)
+        if remarks:
+            remark_str = "；".join(remarks)
+            summary = f"{summary}，备注: {remark_str}" if summary else f"备注: {remark_str}"
+
+        # 清理潜在特殊字符
         summary = summary.replace("<", "").replace(">", "").replace("[", "").replace("]", "")
-        # Keep a reasonable cap to ensure one-line brevity
         return summary
 
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[str]:
@@ -289,11 +331,15 @@ class VariantRegistry:
         return self._handlers[k]
 
 
-def create_default_variant_registry(converter: CoordinateTokenConverter) -> VariantRegistry:
+def create_default_variant_registry(formatter: Optional[JsonGeometryFormatter] = None) -> VariantRegistry:
+    """Create registry with JSON-first handlers (default schema via formatter).
+
+    If formatter is None, a default JsonGeometryFormatter() is created.
+    """
+    fmt = formatter or JsonGeometryFormatter()
     reg = VariantRegistry()
-    reg.register(ConversationVariant.DENSE_CAPTION, DenseCaptionHandler(converter))
-    reg.register(ConversationVariant.COORDS_TO_DESC, CoordToDescHandler(converter))
-    reg.register(ConversationVariant.DESC_TO_COORDS, DescToCoordHandler(converter))
-    # New summary variant: image -> one-line summary (assistant-only; user carries fixed header)
+    reg.register(ConversationVariant.DENSE_CAPTION, DenseCaptionHandler(fmt))
+    reg.register(ConversationVariant.COORDS_TO_DESC, CoordToDescHandler(fmt))
+    reg.register(ConversationVariant.DESC_TO_COORDS, DescToCoordHandler(fmt))
     reg.register(ConversationVariant.SUMMARY, SummaryHandler())
     return reg

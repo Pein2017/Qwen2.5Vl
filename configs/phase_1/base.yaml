@@ -68,9 +68,15 @@ data_root: data/ds_v2_full
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
-collator_type: packed
-packed_segment_isolation: true  # Enable block-diagonal attention to isolate packed segments
+collator_type: standard
 teacher_ratio: 0
+# Dynamic contrastive pairing (JSON mode)
+dynamic_pairing_enabled: true
+dynamic_pair_target_assignment: current
+dynamic_pair_cross_bucket_explore_prob: 0.0
+dynamic_pair_candidate_pool_size: 128
+dynamic_pair_max_teacher_uses_per_epoch: 5
+dynamic_pair_temperature: 0.7
 
 bf16: true
 fp16: false
@@ -95,9 +101,9 @@ disable_tqdm: true
 # - prefetch_factor:        Number of batches to prefetch.
 # - remove_unused_columns:  Remove columns not used by the model.
 # --------------------------------------------------------------------------------------
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 pin_memory: true
-prefetch_factor: 2
+prefetch_factor: 4
 remove_unused_columns: false
 
 # --------------------------------------------------------------------------------------
@@ -107,11 +113,9 @@ remove_unused_columns: false
 # - merge_size:               Patch merge size for vision tower.
 # - max_pixels:               Maximum number of pixels for image processing.
 # --------------------------------------------------------------------------------------
-coordinate_tokens_enabled: false
+# JSON mode: no coordinate token training toggles required here
 merge_size: 2
 max_pixels: 401408
-max_coord_value: 1024
-coordinate_init_mode: "fourier_ramp" # "ms_mean" or "fourier_ramp"
 
 # --------------------------------------------------------------------------------------
 # Loss Weights
@@ -123,7 +127,8 @@ coordinate_init_mode: "fourier_ramp" # "ms_mean" or "fourier_ramp"
 # --------------------------------------------------------------------------------------
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-coordinate_loss_weight: 0.0 # Disabled by default
+# JSON mode: no coordinate loss weight
+
 
 # --------------------------------------------------------------------------------------
 # Augmentation Settings
@@ -144,16 +149,5 @@ augmentation:
   photometric_strength: "light"
   blur_strength: "off"
 
-# --------------------------------------------------------------------------------------
-# Coordinate Auxiliary Loss Settings (Disabled by default)
-#
-# - To enable, set coord_aux_enabled: true and provide all sub-parameters.
-# --------------------------------------------------------------------------------------
-coord_aux_enabled: false
-coord_aux_tau: null
-coord_aux_sigma_bins: null
-coord_aux_window_bins: null
-coord_aux_topk: null
-coord_aux_lambda_kce: null
-coord_aux_lambda_unlike: null
+# JSON mode: coordinate auxiliary losses removed
 

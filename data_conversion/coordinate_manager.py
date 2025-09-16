@@ -1580,7 +1580,10 @@ class StructureValidator:
 
     @staticmethod
     def validate_pipeline_output(
-        train_samples: List[Dict], val_samples: List[Dict], teacher_samples: List[Dict]
+        train_samples: List[Dict], 
+        val_samples: List[Dict], 
+        teacher_samples: List[Dict],
+        max_teachers: int = None
     ) -> bool:
         """Validate complete pipeline output."""
         if not train_samples:
@@ -1592,11 +1595,19 @@ class StructureValidator:
                 "Validation samples cannot be empty when multiple training samples exist"
             )
 
-        # For very small datasets, teacher samples can be empty
-        if not teacher_samples and len(train_samples) + len(val_samples) > 2:
-            raise ValueError(
-                "Teacher samples cannot be empty when sufficient samples exist"
-            )
+        # Check teacher samples:
+        # - Allow empty teachers if max_teachers=0 (dynamic teacher-sampling)
+        # - For very small datasets, teacher samples can be empty
+        # - Otherwise, require teacher samples when sufficient samples exist
+        if not teacher_samples:
+            if max_teachers == 0:
+                # Explicitly disabled teacher samples for dynamic teacher-sampling
+                pass
+            elif len(train_samples) + len(val_samples) > 2:
+                raise ValueError(
+                    "Teacher samples cannot be empty when sufficient samples exist "
+                    "(unless max_teachers=0 for dynamic teacher-sampling)"
+                )
 
         # Validate sample structures
         for i, sample in enumerate(train_samples):

@@ -3,18 +3,18 @@
   "total_invalid_samples": 0,
   "validation_manager_stats": {
     "validation_summary": {
-      "total_samples_processed": 30819,
-      "total_objects_processed": 30819,
-      "valid_samples": 30819,
+      "total_samples_processed": 31407,
+      "total_objects_processed": 31407,
+      "valid_samples": 31407,
       "invalid_samples": 0,
       "validation_success_rate": 1.0,
-      "total_errors": 331,
+      "total_errors": 338,
       "error_type_counts": {
-        "object_too_small": 331
+        "object_too_small": 338
       },
       "severity_counts": {
         "critical": 0,
-        "warning": 331,
+        "warning": 338,
         "info": 0
       }
     },
@@ -25,8 +25,8 @@
       "require_non_empty_description": true,
       "check_coordinate_bounds": true
     },
-    "timestamp": "2025-09-09T08:24:01.117816"
+    "timestamp": "2025-09-16T03:07:59.817792"
   },
   "invalid_sample_reasons": {},
-  "timestamp": "2025-09-09T08:24:01.117830"
+  "timestamp": "2025-09-16T03:07:59.817814"
 }

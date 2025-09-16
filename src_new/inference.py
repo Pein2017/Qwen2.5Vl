@@ -112,7 +112,10 @@ class InferenceEngine:
         self.num_workers = num_workers
         self.use_torch_compile = use_torch_compile
         self.teacher_pool_file = teacher_pool_file
-        self.num_teachers = num_teachers
+        # Force-disable teacher pairing for inference
+        if num_teachers and int(num_teachers) > 0:
+            logger.warning(f"Teacher pairing is disabled in inference; ignoring num_teachers={num_teachers}")
+        self.num_teachers = 0
         self.force_eager_attention = force_eager_attention
         # Optional data root for resolving relative image paths
         self.data_root = data_root
@@ -151,92 +154,75 @@ class InferenceEngine:
         self._coord_range = (int(rng.start_id), int(rng.end_exclusive))
         logger.info(f"🎯 Cached coordinate token range: {self._coord_range}")
 
-        # CRITICAL FIX: Load teacher pool manager for dynamic pairing (matches training pipeline)
-        # During training, teacher examples are dynamically assigned based on student content
-        # We need to replicate this behavior during inference
+        # Load teacher pool manager only when teacher guidance is requested
         self.teacher_pool_manager = None
-        teacher_pool_path: Optional[str] = None
+        if self.num_teachers > 0:
+            teacher_pool_path: Optional[str] = None
 
-        # Resolve teacher pool path using DataResolver first (authoritative to data_root)
-        if self.data_root is None:
-            raise ValueError("data_root must be provided for teacher pool resolution")
-        try:
-            resolved_dataset_paths = DataResolver.resolve_dataset_paths(
-                str(self.data_root)
-            )
-            default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to resolve dataset paths from data_root for teacher pool: {e}"
-            )
+            # Resolve teacher pool path using DataResolver first (authoritative to data_root)
+            if self.data_root is None:
+                raise ValueError("data_root must be provided for teacher pool resolution when num_teachers>0")
+            try:
+                resolved_dataset_paths = DataResolver.resolve_dataset_paths(
+                    str(self.data_root)
+                )
+                default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to resolve dataset paths from data_root for teacher pool: {e}"
+                )
 
-        candidate_path = self.teacher_pool_file or default_teacher_pool
+            candidate_path = self.teacher_pool_file or default_teacher_pool
 
-        path_manager = create_path_manager(self.data_root)
-        try:
-            resolved_path = str(path_manager.resolve_path(candidate_path))
-            teacher_pool_path = resolved_path
-        except (FileNotFoundError, ValueError, PathValidationError) as e:
-            # If explicit teacher path was provided but failed, try the data_root-derived default once
-            if (
-                self.teacher_pool_file
-                and default_teacher_pool
-                and self.teacher_pool_file != default_teacher_pool
-            ):
-                try:
-                    resolved_path = str(path_manager.resolve_path(default_teacher_pool))
-                    teacher_pool_path = resolved_path
-                    logger.info(
-                        f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
-                    )
-                except Exception as e2:
+            path_manager = create_path_manager(self.data_root)
+            try:
+                resolved_path = str(path_manager.resolve_path(candidate_path))
+                teacher_pool_path = resolved_path
+            except (FileNotFoundError, ValueError, PathValidationError) as e:
+                # If explicit teacher path was provided but failed, try the data_root-derived default once
+                if (
+                    self.teacher_pool_file
+                    and default_teacher_pool
+                    and self.teacher_pool_file != default_teacher_pool
+                ):
+                    try:
+                        resolved_path = str(path_manager.resolve_path(default_teacher_pool))
+                        teacher_pool_path = resolved_path
+                        logger.info(
+                            f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
+                        )
+                    except Exception as e2:
+                        raise RuntimeError(
+                            f"Teacher pool path could not be resolved: {candidate_path} - {e}; secondary resolution failed: {e2}"
+                        )
+                else:
                     raise RuntimeError(
-                        f"Teacher pool path could not be resolved: {candidate_path} - {e}; secondary resolution failed: {e2}"
+                        f"Teacher pool path could not be resolved: {candidate_path} - {e}"
+                    )
+
+            if teacher_pool_path and os.path.exists(teacher_pool_path):
+                try:
+                    # Load teacher pool manager for dynamic pairing (same as training)
+                    from src_new.data.teacher_pool import TeacherPoolManager
+
+                    self.teacher_pool_manager = TeacherPoolManager(
+                        teacher_pool_file=teacher_pool_path, config=self.config
+                    )
+                    logger.info(
+                        f"✅ Teacher pool manager loaded with {len(self.teacher_pool_manager.teacher_pool)} examples for dynamic pairing"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load teacher pool manager from {teacher_pool_path}: {e}"
                     )
             else:
                 raise RuntimeError(
-                    f"Teacher pool path could not be resolved: {candidate_path} - {e}"
+                    f"Teacher pool file not found or unreadable: {candidate_path}"
                 )
 
-        if teacher_pool_path and os.path.exists(teacher_pool_path):
-            try:
-                # Load teacher pool manager for dynamic pairing (same as training)
-                from src_new.data.teacher_pool import TeacherPoolManager
-
-                self.teacher_pool_manager = TeacherPoolManager(
-                    teacher_pool_file=teacher_pool_path, config=self.config
-                )
-                logger.info(
-                    f"✅ Teacher pool manager loaded with {len(self.teacher_pool_manager.teacher_pool)} examples for dynamic pairing"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load teacher pool manager from {teacher_pool_path}: {e}"
-                )
-                self.teacher_samples = []
-        else:
-            raise RuntimeError(
-                f"Teacher pool file not found or unreadable: {candidate_path}"
-            )
-
-        # Use teacher guidance only when explicitly requested via num_teachers > 0
-        if self.teacher_pool_manager and self.num_teachers > 0:
-            logger.info(
-                f"🎯 Dynamic teacher pairing enabled: {self.num_teachers} teacher(s) per sample"
-            )
-            logger.info(
-                f"📚 Teacher samples serve as context input only (no teacher loss computation during inference)"
-            )
-            # Force batch_size=1 for teacher guidance
-            if self.batch_size > 1:
-                logger.warning(
-                    f"Teacher guidance requires batch_size=1. Changing from {self.batch_size} to 1."
-                )
-                self.batch_size = 1
-        elif self.num_teachers > 0 and not self.teacher_pool_manager:
-            logger.warning(
-                f"Teacher guidance requested ({self.num_teachers} teachers) but no teacher pool manager available"
-            )
+            # Use teacher guidance only when explicitly requested via num_teachers > 0
+                    # Always skip teacher guidance in inference
+        logger.info("ℹ️ Inference: teacher-student pairing is disabled; using single-turn prompts only")
 
         logger.info("✅ InferenceEngine initialized successfully")
 

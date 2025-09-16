@@ -392,6 +392,17 @@ class Config:
     # Packed segment isolation (experimental)
     packed_segment_isolation: bool = False  # Enable block-diagonal attention to isolate packed segments
 
+    # Dynamic contrastive pairing (training-time feature; eval/inference force disabled)
+    dynamic_pairing_enabled: bool = True
+    dynamic_pair_target_assignment: str = "random"  # {random,current,opposite}
+    dynamic_pair_candidate_pool_size: int = 128
+    dynamic_pair_max_teacher_uses_per_epoch: int = 5
+    dynamic_pair_temperature: float = 0.7
+    # Cross-bucket exploration (small probability to sample teacher from all samples)
+    dynamic_pair_cross_bucket_explore_prob: float = 0.0
+
+    # Plain text JSON mode toggle (kept for compatibility; not used in src_new core)
+    plain_text_mode_enabled: bool = False
 
     # === COMPUTED PROPERTIES ===
     @property
@@ -488,13 +499,16 @@ class Config:
             raise ValueError("val_data_path cannot be empty")
 
         if not self.teacher_pool_file:
-            raise ValueError("teacher_pool_file cannot be empty")
-
+            # Teacher pool is optional in dynamic pairing mode (training); inference may still require it.
+            logger.info("teacher_pool_file not provided; training may use dynamic pairing from train set")
+        
         # Validate existence using centralized validator (accept relative or aliases)
         try:
             PathValidator.validate_file_exists(self.train_data_path)
             PathValidator.validate_file_exists(self.val_data_path)
-            PathValidator.validate_file_exists(self.teacher_pool_file)
+            # Only validate teacher_pool_file when provided (keep optional under dynamic pairing)
+            if self.teacher_pool_file:
+                PathValidator.validate_file_exists(self.teacher_pool_file)
             PathValidator.validate_directory_exists(self.data_root)
         except (ValueError, PathValidationError) as e:
             raise ValueError(f"Invalid data paths: {e}")
@@ -505,8 +519,10 @@ class Config:
             )
 
 
-        if self.collator_type not in ["packed", "standard"]:
-            raise ValueError(f"Invalid collator_type: {self.collator_type}")
+        if self.collator_type not in ["standard"]:
+            raise ValueError(
+                f"Invalid collator_type: {self.collator_type}. Only 'standard' is supported (packed is disabled)."
+            )
 
         # Conversation variant ratios (optional)
         sampling = getattr(self, "conversation_variant_ratios", None)
@@ -553,6 +569,30 @@ class Config:
                     "<|line_start|>",
                     "<|line_end|>",
                 ],
+            )
+
+        # Dynamic pairing validation
+        if not isinstance(self.dynamic_pairing_enabled, bool):
+            raise ValueError("dynamic_pairing_enabled must be a boolean")
+        if self.dynamic_pair_target_assignment not in {"random", "current", "opposite"}:
+            raise ValueError(
+                "dynamic_pair_target_assignment must be one of {'random','current','opposite'}"
+            )
+        if self.dynamic_pair_candidate_pool_size <= 0:
+            raise ValueError(
+                f"dynamic_pair_candidate_pool_size must be > 0, got {self.dynamic_pair_candidate_pool_size}"
+            )
+        if self.dynamic_pair_max_teacher_uses_per_epoch <= 0:
+            raise ValueError(
+                f"dynamic_pair_max_teacher_uses_per_epoch must be > 0, got {self.dynamic_pair_max_teacher_uses_per_epoch}"
+            )
+        if self.dynamic_pair_temperature <= 0:
+            raise ValueError(
+                f"dynamic_pair_temperature must be > 0, got {self.dynamic_pair_temperature}"
+            )
+        if not (0.0 <= float(self.dynamic_pair_cross_bucket_explore_prob) <= 1.0):
+            raise ValueError(
+                f"dynamic_pair_cross_bucket_explore_prob must be in [0,1], got {self.dynamic_pair_cross_bucket_explore_prob}"
             )
 
     def _validate_coordinate_settings(self) -> None:
@@ -837,7 +877,7 @@ def load_config(override_config_path: str) -> Config:
         pass
 
     # === Dataset path resolution (auto-derive from data_root when missing) ===
-    required_paths = ["train_data_path", "val_data_path", "teacher_pool_file"]
+    required_paths = ["train_data_path", "val_data_path"]
     missing_paths = [k for k in required_paths if k not in data or not data[k]]
     if missing_paths:
         if "data_root" not in data or not data["data_root"]:
@@ -854,7 +894,9 @@ def load_config(override_config_path: str) -> Config:
             )
         data["train_data_path"] = str(ds_paths.train_data_path)
         data["val_data_path"] = str(ds_paths.val_data_path)
-        data["teacher_pool_file"] = str(ds_paths.teacher_pool_file)
+    # teacher_pool_file is optional; default to empty string if not provided
+    if "teacher_pool_file" not in data or not data["teacher_pool_file"]:
+        data["teacher_pool_file"] = ""
 
     # Normalize path-like fields; preserve relativity (no forced absolute)
     # Normalize data_root first
@@ -878,12 +920,20 @@ def load_config(override_config_path: str) -> Config:
         )
 
     # Normalize dataset file paths relative to dataset_base
-    for key in ("train_data_path", "val_data_path", "teacher_pool_file"):
+    for key in ("train_data_path", "val_data_path"):
         try:
             data[key] = str(normalize_path_input(data[key]))
         except Exception as e:
             raise ValueError(
                 f"Failed to normalize path for '{key}': {data.get(key)}; {e}"
+            )
+    # teacher_pool_file is optional; normalize only when non-empty
+    if data.get("teacher_pool_file"):
+        try:
+            data["teacher_pool_file"] = str(normalize_path_input(data["teacher_pool_file"]))
+        except Exception as e:
+            raise ValueError(
+                f"Failed to normalize path for 'teacher_pool_file': {data.get('teacher_pool_file')}; {e}"
             )
 
     # Normalize output/log directories relative to config_dir

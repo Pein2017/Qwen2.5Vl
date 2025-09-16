@@ -17,7 +17,7 @@ vision_lr: 1.0e-6
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
 lr_top_layers: 5.0e-6
-lr_coord_slice: 5.0e-6
+# JSON mode: remove coord-slice lr
 
 model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
 
@@ -44,7 +44,7 @@ teacher_augmentation:
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# JSON mode: no coordinate loss weight
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.0
 grounding_loss_weight: 1.0

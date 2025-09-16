@@ -31,7 +31,7 @@ data_root: data/ds_v2_full
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
-collator_type: packed
+collator_type: standard
 teacher_ratio: 0.2
 
 bf16: true
@@ -54,14 +54,13 @@ pin_memory: true
 prefetch_factor: 2
 remove_unused_columns: false
 
-coordinate_tokens_enabled: false
+# JSON mode: no coordinate token toggles
 merge_size: 2
 max_pixels: 401408
-max_coord_value: 1024
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# JSON mode: no coordinate loss weight
 
 use_aug: true
 augmentation:

@@ -2,6 +2,6 @@
 try:
     from ..templates import get_system_prompt as _get_system_prompt  # type: ignore
 
-    SYSTEM_PROMPT = _get_system_prompt(True)
+    SYSTEM_PROMPT = _get_system_prompt()
 except Exception:
     SYSTEM_PROMPT = None  # Fallback placeholder

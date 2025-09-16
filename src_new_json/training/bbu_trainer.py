@@ -104,7 +104,6 @@ class BBUTrainer(HFTrainer):
         self.processor = None
 
         # Initialize training state manager for local loss aggregation
-        # Use training_config (contains coordinate_tokens_enabled) instead of model.config (HF model config)
         training_config = model.training_config
         self.training_state_manager = TrainingStateManager(
             config=training_config,
@@ -257,6 +256,22 @@ class BBUTrainer(HFTrainer):
                 # Accumulate loss components locally (no distributed operations)
                 self.training_state_manager.accumulate_loss_components(loss_components)
 
+                # Optional: update dataset hardness EMA using per-sample student losses
+                try:
+                    diagnostics = getattr(loss_components, "diagnostics", None)
+                    if diagnostics and isinstance(diagnostics, dict):
+                        per_sample = diagnostics["per_sample"] if ("per_sample" in diagnostics and isinstance(diagnostics["per_sample"], dict)) else None
+                        if per_sample and "student_llm_loss" in per_sample and "sample_indices" in inputs:
+                            idx_tensor = inputs["sample_indices"]
+                            loss_vec = per_sample["student_llm_loss"]
+                            if hasattr(self.train_dataset, "update_hardness_ema"):
+                                # Ensure 1D CPU lists
+                                idx_list = [int(x) for x in (idx_tensor.detach().cpu().tolist() if hasattr(idx_tensor, "detach") else list(idx_tensor))]
+                                loss_list = [float(x) for x in (loss_vec.detach().cpu().tolist() if hasattr(loss_vec, "detach") else list(loss_vec))]
+                                self.train_dataset.update_hardness_ema(idx_list, loss_list)
+                except Exception:
+                    pass
+
         # Increment micro batch count
         self._micro_batch_count += 1
 
@@ -312,7 +327,7 @@ class BBUTrainer(HFTrainer):
             # Augment with adapted group losses if diagnostics present
             try:
                 if isinstance(final_logs, dict) and "diagnostics" in final_logs:
-                    diag = final_logs.get("diagnostics")
+                    diag = final_logs["diagnostics"]
                     extra = adapt_group_losses("train", diag)
                     final_logs.update(extra)
             except Exception:
@@ -325,22 +340,7 @@ class BBUTrainer(HFTrainer):
             # Format logs for better readability before logging
             formatted_logs = self._format_logs_for_display(final_logs)
 
-            # INFO: concise diagnostics summary (only known diagnostic metrics)
-            from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
-
-            if logger.isEnabledFor(logging.INFO):
-                diag_items = []
-                for k, v in formatted_logs.items():
-                    if not isinstance(v, (int, float)):
-                        continue
-                    if k.startswith("teacher_"):
-                        base = k[len("teacher_") :]
-                    elif k.startswith("student_"):
-                        base = k[len("student_") :]
-                    else:
-                        continue
-                    if base in DIAGNOSTIC_METRIC_NAMES:
-                        diag_items.append(f"{k}={v:.4f}")
+            # JSON mode: no coordinate diagnostics
 
             # Use standard HuggingFace logging only (no custom distributed operations)
             super(BBUTrainer, self).log(formatted_logs)
@@ -355,13 +355,15 @@ class BBUTrainer(HFTrainer):
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
 
-        # Handle checkpoint saving if needed
+        # Handle checkpoint saving: regular schedule or best-at-eval (independent)
+        current_metrics = self._extract_current_metrics()
         if self.control.should_save:
-            # Do not recompute training metrics here; reuse eval metrics if available
-            current_metrics = self._extract_current_metrics()
-
-            # Pass metrics to unified checkpoint saving
+            # Regular save (step checkpoint), then best copy handled inside saver
             self._save_checkpoint(model, trial, current_metrics)
+        else:
+            # Best checkpoint independent: if new best at eval, save step then copy as best
+            if current_metrics and self.checkpoint_manager.is_new_best(current_metrics):
+                self._save_checkpoint(model, trial, current_metrics)
 
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
@@ -371,7 +373,7 @@ class BBUTrainer(HFTrainer):
         standard HuggingFace logging mechanisms only.
         """
         # Flatten nested diagnostics dict if present
-        if isinstance(logs, dict) and isinstance(logs.get("diagnostics"), dict):
+        if isinstance(logs, dict) and ("diagnostics" in logs) and isinstance(logs["diagnostics"], dict):
             diag = logs.pop("diagnostics")
             for dkey, dval in diag.items():
                 logs[dkey] = dval
@@ -385,7 +387,7 @@ class BBUTrainer(HFTrainer):
         # Augment with adapted group losses for eval logs
         try:
             if isinstance(final_logs, dict) and "diagnostics" in final_logs:
-                diag = final_logs.get("diagnostics")
+                diag = final_logs["diagnostics"]
                 extra = adapt_group_losses("eval", diag)
                 final_logs.update(extra)
         except Exception:
@@ -393,22 +395,7 @@ class BBUTrainer(HFTrainer):
         # Format logs for better readability before logging
         formatted_logs = self._format_logs_for_display(final_logs)
 
-        # INFO: concise diagnostics summary (only known diagnostic metrics)
-        from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
-
-        if logger.isEnabledFor(logging.INFO):
-            diag_items = []
-            for k, v in formatted_logs.items():
-                if not isinstance(v, (int, float)):
-                    continue
-                if k.startswith("teacher_"):
-                    base = k[len("teacher_") :]
-                elif k.startswith("student_"):
-                    base = k[len("student_") :]
-                else:
-                    continue
-                if base in DIAGNOSTIC_METRIC_NAMES:
-                    diag_items.append(f"{k}={v:.4f}")
+        # JSON mode: no coordinate diagnostics
 
         # Use standard HuggingFace logging only
         super(BBUTrainer, self).log(formatted_logs, start_time)
@@ -727,9 +714,9 @@ class BBUTrainer(HFTrainer):
         new_metrics: Dict[str, float] = {}
 
         # Only surface student grouped losses; skip teacher_* keys entirely
-        student_caption = eval_components.get("student_caption_loss")
-        student_grounding = eval_components.get("student_grounding_loss")
-        student_formatting = eval_components.get("student_formatting_loss")
+        student_caption = eval_components["student_caption_loss"] if "student_caption_loss" in eval_components else None
+        student_grounding = eval_components["student_grounding_loss"] if "student_grounding_loss" in eval_components else None
+        student_formatting = eval_components["student_formatting_loss"] if "student_formatting_loss" in eval_components else None
 
         # Duplicate eval_loss under eval/loss for TensorBoard grouping
         if "eval_loss" in metrics:
@@ -994,8 +981,11 @@ class BBUTrainer(HFTrainer):
             return
 
         # Extract input_ids from the batch
-        input_ids = inputs.get("input_ids")
-        labels = inputs.get("labels")
+        if "input_ids" not in inputs:
+            logger.warning("No input_ids found in inputs for debug logging")
+            return
+        input_ids = inputs["input_ids"]
+        labels = inputs["labels"] if "labels" in inputs else None
 
         if input_ids is None:
             logger.warning("No input_ids found in inputs for debug logging")

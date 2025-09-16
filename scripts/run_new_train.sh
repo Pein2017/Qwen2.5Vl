@@ -12,38 +12,48 @@ export PYTHONDONTWRITEBYTECODE=1
 # Project paths
 PROJECT_ROOT="."
 # CONFIG_NAME="phase_2/standard"
-CONFIG_NAME="phase_3/standard"
-to_console=false
+CONFIG_NAME="phase_1/debug"
+ARCH="json"   # json | legacy
+MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
+to_console=true
+
+# Python interpreter - use ms environment directly
+PY="/root/miniconda3/envs/ms/bin/python"
 
 
-# Set configuration based on experiment number
-if [[ $# -eq 0 ]]; then
-    # Default configuration when no arguments provided
-    GPU_DEVICES="0,1,2,3,4,5,6,7"
-    LOG_NAME="run.log"
-    echo "🚀 Default run: GPUs 0,1,2,3,4,5,6,7 → run.log"
+# Set configuration based on experiment number (skipped if GPU_DEVICES provided via env)
+if [[ -z "${GPU_DEVICES:-}" ]]; then
+    if [[ $# -eq 0 ]]; then
+        # Default configuration when no arguments provided
+        GPU_DEVICES="0,1"
+        LOG_NAME="${LOG_NAME:-run.log}"
+        echo "🚀 Default run: GPUs 0,1,2,3,4,5,6,7 → ${LOG_NAME}"
+    else
+        EXP_NUM="$1"
+        case "$EXP_NUM" in
+            1)
+                GPU_DEVICES="0,1,2,3"
+                LOG_NAME="${LOG_NAME:-run_exp_1.log}"
+                echo "🚀 Experiment 1: GPUs 0,1,2,3 → ${LOG_NAME}"
+                ;;
+            2)
+                GPU_DEVICES="4,5,6,7"
+                LOG_NAME="${LOG_NAME:-run_exp_2.log}"
+                echo "🚀 Experiment 2: GPUs 4,5,6,7 → ${LOG_NAME}"
+                ;;
+            *)
+                echo "❌ Invalid experiment number: $EXP_NUM"
+                echo "💡 Usage: $0 [1|2]"
+                echo "  Default: GPUs 1,2,3,4 → run.log"
+                echo "  1: GPUs 0,1,2,3 → run_exp_1.log"
+                echo "  2: GPUs 4,5,6,7 → run_exp_2.log"
+                exit 1
+                ;;
+        esac
+    fi
 else
-    EXP_NUM="$1"
-    case "$EXP_NUM" in
-        1)
-            GPU_DEVICES="0,1,2,3"
-            LOG_NAME="run_exp_1.log"
-            echo "🚀 Experiment 1: GPUs 0,1,2,3 → run_exp_1.log"
-            ;;
-        2)
-            GPU_DEVICES="4,5,6,7"
-            LOG_NAME="run_exp_2.log"
-            echo "🚀 Experiment 2: GPUs 4,5,6,7 → run_exp_2.log"
-            ;;
-        *)
-            echo "❌ Invalid experiment number: $EXP_NUM"
-            echo "💡 Usage: $0 [1|2]"
-            echo "  Default: GPUs 1,2,3,4 → run.log"
-            echo "  1: GPUs 0,1,2,3 → run_exp_1.log"
-            echo "  2: GPUs 4,5,6,7 → run_exp_2.log"
-            exit 1
-            ;;
-    esac
+    echo "🧰 Using GPU devices from environment: $GPU_DEVICES"
+    LOG_NAME="${LOG_NAME:-run.log}"
 fi
 
 # Fixed configuration
@@ -58,9 +68,12 @@ LOG_LEVEL="INFO"
 setup_environment() {
     echo "🌍 Setting up environment for new architecture..."
 
-    # Activate conda environment
-    eval "$(conda shell.bash hook)"
-    conda activate ms
+    # Ensure Python path is available
+    if [[ ! -x "$PY" ]]; then
+        echo "❌ Python interpreter not found at: $PY"
+        echo "💡 Please ensure the 'ms' conda environment is installed"
+        exit 1
+    fi
 
     # Core environment variables
     export HF_MODULES_CACHE="${PROJECT_ROOT}/model_cache"
@@ -74,6 +87,9 @@ setup_environment() {
     # Distributed training coordination
     export MASTER_ADDR="127.0.0.1"
     export MASTER_PORT=$(generate_random_port)
+    
+    # NCCL: enable async error handling to avoid hang on multi-GPU failures
+    export NCCL_ASYNC_ERROR_HANDLING=1
 
     # Memory optimization
     export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
@@ -103,12 +119,18 @@ setup_environment() {
     export PYTHONUNBUFFERED=1                  # Immediate stdout/stderr (already set)
     export MALLOC_TRIM_THRESHOLD_=100000       # Aggressive memory trimming
 
+    # Quieter framework logs (reduce overhead from verbose shutdown warnings)
+    export TORCH_CPP_LOG_LEVEL=${TORCH_CPP_LOG_LEVEL:-ERROR}
+    export TORCH_DISTRIBUTED_DEBUG=${TORCH_DISTRIBUTED_DEBUG:-OFF}
+    # Keep NCCL_DEBUG at WARN by default to avoid massive logs; set INFO only when debugging
+    export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+
     # Create Triton cache directory if it doesn't exist
     mkdir -p "$TRITON_CACHE_DIR"
 
     cd "$PROJECT_ROOT"
 
-    echo "✅ Environment configured for new architecture (Python: $(which python))"
+    echo "✅ Environment configured for new architecture (Python: $PY)"
     echo "🚀 Optimized setup - removed performance-limiting environment variables"
 }
 
@@ -156,20 +178,34 @@ validate_config() {
         exit 1
     fi
     
-    # Test config loading with new architecture
-    echo "🧪 Testing config loading with src_new..."
-    python -c "
+    # Test config loading with selected architecture
+    if [[ "$ARCH" == "json" ]]; then
+        echo "🧪 Testing config loading with src_new_json..."
+        "$PY" - <<EOF
+from src_new_json.config.config import load_config
+try:
+    config = load_config('configs/${CONFIG_NAME}.yaml')
+    print('✅ Config loading successful (src_new_json)')
+    print(f'   Model path: {config.model_path}')
+    print(f'   Teacher ratio: {config.teacher_ratio}')
+except Exception as e:
+    print(f'❌ Config loading failed (src_new_json): {e}')
+    raise
+EOF
+    else
+        echo "🧪 Testing config loading with src_new..."
+        "$PY" - <<EOF
 from src_new.config.config import load_config
 try:
     config = load_config('configs/${CONFIG_NAME}.yaml')
-    print('✅ Config loading successful with new architecture')
+    print('✅ Config loading successful (src_new)')
     print(f'   Model path: {config.model_path}')
-    print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
 except Exception as e:
-    print(f'❌ Config loading failed: {e}')
-    exit(1)
-"
+    print(f'❌ Config loading failed (src_new): {e}')
+    raise
+EOF
+    fi
     
     # Check if DeepSpeed config exists (if enabled)
     if [[ $DEEPSPEED_ENABLED == true ]]; then
@@ -193,9 +229,22 @@ except Exception as e:
 launch_single_gpu() {
     echo "🖥️  Single GPU Training with New Architecture (GPU: ${GPU_DEVICES%%,*})"
     
-    python "${PROJECT_ROOT}/scripts/train_new.py" \
-        --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL"
+    if [[ "$ARCH" == "json" ]]; then
+        if [[ -n "$MAX_STEPS" ]]; then
+            "$PY" "${PROJECT_ROOT}/scripts/train_new_json.py" \
+                --config "$CONFIG_NAME" \
+                --log_level "$LOG_LEVEL" \
+                --max_steps "$MAX_STEPS"
+        else
+            "$PY" "${PROJECT_ROOT}/scripts/train_new_json.py" \
+                --config "$CONFIG_NAME" \
+                --log_level "$LOG_LEVEL"
+        fi
+    else
+        "$PY" "${PROJECT_ROOT}/scripts/train_new.py" \
+            --config "$CONFIG_NAME" \
+            --log_level "$LOG_LEVEL"
+    fi
 }
 
 launch_deepspeed() {
@@ -203,20 +252,29 @@ launch_deepspeed() {
     IFS=',' read -ra GPU_ARRAY <<< "$GPU_DEVICES"
     NUM_GPUS=${#GPU_ARRAY[@]}
     
-    echo "🚀 Multi-GPU Training with New Architecture + DeepSpeed"
+    echo " Multi-GPU Training with New Architecture + DeepSpeed"
     echo "   🖥️  GPUs: $NUM_GPUS devices ($GPU_DEVICES)"
     echo "   ⚙️  DeepSpeed Config: $DEEPSPEED_CONFIG"
     echo "   📄 Training Config: $CONFIG_NAME"
     echo "   📊 Log Level: $LOG_LEVEL"
     echo "   🔗 Master Port: $MASTER_PORT"
     
+    # Select script based on ARCH
+    local TRAIN_SCRIPT
+    if [[ "$ARCH" == "json" ]]; then
+        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new_json.py"
+    else
+        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new.py"
+    fi
+    
     # Launch with torchrun
     torchrun \
         --master_port="$MASTER_PORT" \
         --nproc_per_node="$NUM_GPUS" \
-        "${PROJECT_ROOT}/scripts/train_new.py" \
+        "$TRAIN_SCRIPT" \
         --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL"
+        --log_level "$LOG_LEVEL" \
+        ${MAX_STEPS:+--max_steps "$MAX_STEPS"}
 }
 
 # =============================================================================
@@ -234,7 +292,14 @@ main() {
     echo "   🖥️  GPUs: $GPU_DEVICES"
     echo "   📄 Log file: $LOG_NAME"
     echo "   📊 Log level: $LOG_LEVEL"
-    echo "   🏗️  Architecture: src_new (simplified, modular design)"
+    if [[ "$ARCH" == "json" ]]; then
+        echo "   🏗️  Architecture: src_new_json (pure JSON geometry)"
+    else
+        echo "   🏗️  Architecture: src_new (legacy)"
+    fi
+    if [[ -n "$MAX_STEPS" ]]; then
+        echo "   ⏱️  Max steps override: $MAX_STEPS"
+    fi
     if [[ "$to_console" == "true" ]]; then
         echo "   🐛 Console output enabled"
     else
@@ -247,14 +312,17 @@ main() {
     validate_config
     
     # After validation, decide whether to keep FlashAttention/Triton-specific env
-    FLASH_ATTENTION_ENABLED=$(python - <<'PY'
-from src_new.config.config import load_config
+    FLASH_ATTENTION_ENABLED=$("$PY" - <<EOF
+try:
+    from src_new_json.config.config import load_config
+except Exception:
+    from src_new.config.config import load_config
 try:
     cfg = load_config(f"configs/${CONFIG_NAME}.yaml")
     print('1' if getattr(cfg, 'attn_implementation', 'eager') == 'flash_attention_2' else '0')
 except Exception:
     print('0')
-PY
+EOF
 )
     if [[ "$FLASH_ATTENTION_ENABLED" == "1" ]]; then
         echo "✓ Using flash_attention_2 per config — keeping Triton/FlashAttention env"
@@ -265,7 +333,6 @@ PY
         unset FLASH_ATTENTION_FORCE_CUDNN
         unset TRITON_CACHE_DIR
     fi
-
 
     
     # Launch training

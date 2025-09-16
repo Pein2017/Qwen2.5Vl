@@ -220,7 +220,7 @@ def build_occupancy_mask(
 	sample: Dict[str, Any], width: int, height: int, down: int, margin: int
 ) -> Image.Image:
 	quads: List[List[Tuple[int, int]]] = []
-	for o in sample.get("objects", []):
+	for o in (sample["objects"] if (isinstance(sample, dict) and ("objects" in sample) and isinstance(sample["objects"], list)) else []):
 		if "quad" in o:
 			q = o["quad"]
 			quads.append([(q[0], q[1]), (q[2], q[3]), (q[4], q[5]), (q[6], q[7])])

@@ -49,7 +49,7 @@ data_root: data/ds_v2_bbu_bbu_shield
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
-collator_type: packed
+collator_type: standard
 teacher_ratio: 0.1
 
 bf16: true
@@ -95,7 +95,7 @@ max_coord_value: 1024
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# JSON mode: no coordinate loss weight
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.0
 grounding_loss_weight: 1.0

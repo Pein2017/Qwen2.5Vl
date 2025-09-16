@@ -69,11 +69,10 @@ def _detect_distributed_info() -> tuple[int, int, bool]:
         pass
 
     # Method 2: Check environment variables (set by torchrun/deepspeed)
-    rank_env = os.environ.get("RANK")
-    if rank_env is None:
-        rank_env = os.environ.get("LOCAL_RANK", "0")
+    rank_env = os.environ["RANK"] if ("RANK" in os.environ) else (os.environ["LOCAL_RANK"] if ("LOCAL_RANK" in os.environ) else "0")
     rank = int(rank_env)
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    world_size_env = os.environ["WORLD_SIZE"] if ("WORLD_SIZE" in os.environ) else "1"
+    world_size = int(world_size_env)
 
     # For single GPU training, both should be 0 and 1 respectively
     is_main = rank == 0

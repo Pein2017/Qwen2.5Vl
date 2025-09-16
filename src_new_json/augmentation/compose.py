@@ -13,7 +13,6 @@ from src_new_json.config.augmentation_config import (
 
 from . import image_ops, line_ops
 from . import photometric as photometric_ops
-from .validators import apply_occlusion_criterion
 
 
 @dataclass(frozen=True)
@@ -54,9 +53,9 @@ class ObjectAwareAugmentationPipeline:
         ocr_guard = False
         if self.config.ocr is not None and self.config.ocr.label_protect:
             objs = out_sample["objects"]
-            has_label = any(("标签" in o.get("desc", "")) for o in objs)
+            has_label = any((("desc" in o) and isinstance(o["desc"], str) and ("标签" in o["desc"])) for o in objs)
             # Brand text often appears on BBU/shield; guard when vendor tokens or '品牌' are mentioned
-            descs = [o.get("desc", "") for o in objs]
+            descs = [o["desc"] for o in objs if (isinstance(o, dict) and ("desc" in o) and isinstance(o["desc"], str))]
             brand_tokens = ("华为", "中兴", "爱立信", "品牌")
             brand_mention = any(any(bt in d for bt in brand_tokens) for d in descs)
             # Thin-line geometry (fiber/wire) is sensitive to blur/dropout
@@ -79,11 +78,5 @@ class ObjectAwareAugmentationPipeline:
         # Skipping object-level move/copy/blur in this initial commit.
         # TODO: implement object_ops.move/copy_paste/blur with per-type policies.
 
-        # 4) occlusion criteria (monitoring only; no desc mutation)
-        if (
-            self.config.criteria is not None
-            and self.config.criteria.occlusion is not None
-        ):
-            out_sample = apply_occlusion_criterion(out_sample, self.config.criteria)
-
+        # 4) occlusion criteria removed (no-op)
         return out_images, out_sample

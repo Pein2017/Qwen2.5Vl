@@ -33,7 +33,7 @@ class PresetOptions:
 _DEF_TYPE_POLICIES: Dict[str, TypePolicyConfig] = {
     "label": TypePolicyConfig(
         allow_move=True,
-        allow_copy_paste=True,
+        allow_copy_paste=False,
         allow_blur=False,
         occluder_prob=0.2,
         inpaint_source=True,
@@ -48,7 +48,7 @@ _DEF_TYPE_POLICIES: Dict[str, TypePolicyConfig] = {
     ),
     "connect_point": TypePolicyConfig(
         allow_move=True,
-        allow_copy_paste=True,
+        allow_copy_paste=False,
         allow_blur=True,
         occluder_prob=0.2,
         inpaint_source=True,
@@ -100,6 +100,28 @@ _DEF_TYPE_POLICIES: Dict[str, TypePolicyConfig] = {
 }
 
 
+def _disable_moves(tp: Dict[str, TypePolicyConfig]) -> Dict[str, TypePolicyConfig]:
+    """Return a copy of type policies with allow_move set to False for all types."""
+    out: Dict[str, TypePolicyConfig] = {}
+    for k, p in tp.items():
+        out[k] = TypePolicyConfig(
+            allow_move=False,
+            allow_copy_paste=p.allow_copy_paste,
+            allow_blur=p.allow_blur,
+            occluder_prob=p.occluder_prob,
+            inpaint_source=p.inpaint_source,
+            max_iou_with_existing=p.max_iou_with_existing,
+            max_occ_fraction=p.max_occ_fraction,
+            occ_grid_downscale=p.occ_grid_downscale,
+            occ_margin_px=p.occ_margin_px,
+            same_plane_constraint=p.same_plane_constraint,
+            copy_paste_attempts=p.copy_paste_attempts,
+            alpha_feather_px=p.alpha_feather_px,
+            allowed_copy_types=p.allowed_copy_types,
+        )
+    return out
+
+
 def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationConfig:
     preset = opts.preset
     if preset == "off":
@@ -112,34 +134,17 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
             debug_output_dir=opts.debug_output_dir,
             image_geom=None,
             photometric=None,
-            lines=None,
-            type_policies=_DEF_TYPE_POLICIES,
+            lines=None,  # keep line objects unchanged
+            type_policies=_disable_moves(_DEF_TYPE_POLICIES),
             ocr=OCRPolicyConfig(
                 label_protect=True, force_unreadable_on_strong_distortion=True
             ),
-            criteria=CriteriaConfig(
-                occlusion=OcclusionCriterionConfig(
-                    enabled=True,
-                    min_overlap_fraction_bbox=0.2,
-                    min_overlap_fraction_line=0.2,
-                    mask_downscale=8,
-                    line_width_px=2,
-                )
-            ),
+            criteria=None,  # occlusion removed
         )
 
-    # Shared OCR + criteria for all non-off presets
+    # Shared OCR for all non-off presets (criteria removed)
     ocr = OCRPolicyConfig(
         label_protect=True, force_unreadable_on_strong_distortion=True
-    )
-    crit = CriteriaConfig(
-        occlusion=OcclusionCriterionConfig(
-            enabled=True,
-            min_overlap_fraction_bbox=0.2,
-            min_overlap_fraction_line=0.2,
-            mask_downscale=8,
-            line_width_px=2,
-        )
     )
 
     if preset == "conservative":
@@ -165,15 +170,10 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
                 magnitude=0.4,
                 ocr_safe_pool=True,
             ),
-            lines=LineAugConfig(
-                enabled=True,
-                jitter_px_minmax=(2, 4),
-                resample_points=32,
-                min_length_px=24,
-            ),
-            type_policies=_DEF_TYPE_POLICIES,
+            lines=None,  # keep line objects unchanged
+            type_policies=_disable_moves(_DEF_TYPE_POLICIES),
             ocr=ocr,
-            criteria=crit,
+            criteria=None,
         )
 
     if preset == "moderate":
@@ -199,15 +199,10 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
                 magnitude=0.5,
                 ocr_safe_pool=True,
             ),
-            lines=LineAugConfig(
-                enabled=True,
-                jitter_px_minmax=(2, 6),
-                resample_points=32,
-                min_length_px=24,
-            ),
-            type_policies=_DEF_TYPE_POLICIES,
+            lines=None,  # keep line objects unchanged
+            type_policies=_disable_moves(_DEF_TYPE_POLICIES),
             ocr=ocr,
-            criteria=crit,
+            criteria=None,
         )
 
     # aggressive
@@ -229,10 +224,8 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
         photometric=PhotometricConfig(
             enabled=True, apply_prob=0.8, num_ops=3, magnitude=0.7, ocr_safe_pool=True
         ),
-        lines=LineAugConfig(
-            enabled=True, jitter_px_minmax=(3, 7), resample_points=32, min_length_px=24
-        ),
-        type_policies=_DEF_TYPE_POLICIES,
+        lines=None,  # keep line objects unchanged
+        type_policies=_disable_moves(_DEF_TYPE_POLICIES),
         ocr=ocr,
-        criteria=crit,
+        criteria=None,
     )

@@ -1,47 +1,69 @@
-run_name: "debug_run_phase_1"
-output_dir: outputs/debug_phase_1
-
-# Separate-run phase control
-phase_name: phase_1
-
-# --------------------------------------------------------------------------------------
-# Model
-# --------------------------------------------------------------------------------------
-model_path: src_coord_pretrain/output_back/checkpoint-3120
-
-# --------------------------------------------------------------------------------------
-# Training Settings
-# --------------------------------------------------------------------------------------
-num_train_epochs: 6
-per_device_train_batch_size: 1
-per_device_eval_batch_size: 1
-learning_rate: 5.0e-6
-vision_lr: 5.0e-7
-llm_lr: 5.0e-6
-gradient_checkpointing: false # Disable for easier debugging
-
-max_dataset_size: 10 # Use a tiny subset for speed
-teacher_ratio: 1.0 # Use only teacher samples for stable debugging
-
-eval_steps: 2
-save_steps: 4
+num_train_epochs: 2
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 1 
 logging_steps: 1
+eval_strategy: steps
+eval_steps: 2
+save_strategy: steps
+save_steps: 1000
+save_total_limit: 1 
+learning_rate: 5.0e-5
+vision_lr: 1.0e-7
+merger_lr: 5.0e-4
+llm_lr: 5.0e-6
+lr_top_layers: 1.0e-5
+# JSON mode: remove coord-slice lr; keep llm/vision/merger lrs only
 
-coordinate_tokens_enabled: false
-coordinate_loss_weight: 1.0
+collator_type: standard
+teacher_ratio: 1
+max_dataset_size: 10
 
-coord_aux_enabled: false
-coord_aux_tau: 1.2
-coord_aux_sigma_bins: 8
-coord_aux_window_bins: 32
-coord_aux_topk: 100
-coord_aux_lambda_kce: 1.0
-coord_aux_lambda_unlike: 1.0
+# --- Dynamic pairing (bucketed random, no teacher_pool) ---
+dynamic_pairing_enabled: true
+# Always keep current sample as student (target) in the last turn
+dynamic_pair_target_assignment: current
+# Small probability to sample teacher from all samples (cross-bucket exploration)
+dynamic_pair_cross_bucket_explore_prob: 0.02
+# Overlap-pool sampling + hardness controls (JSON)
+pool_fraction: 0.2
+pool_min: 128
+pool_max: 512
+hardness_alpha: 0.1
+hardness_warmup_epochs: 1
+# Unused by the minimal engine but kept for compatibility
+dynamic_pair_candidate_pool_size: 128
+dynamic_pair_max_teacher_uses_per_epoch: 5
+dynamic_pair_temperature: 1.2
 
-use_aug: true
+model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
+
+run_name: "debug"
+output_dir: outputs/debug
+
+phase_name: phase_1
+# Restrict training to only these special tokens (embeddings + LM head rows)
+
+use_aug: false
 augmentation_schedule:
-  - { start_epoch: 0, preset: "conservative" }
-  - { start_epoch: 4, preset: "moderate" }
+  - { start_epoch: 0, preset: "off" }
+  - { start_epoch: 10, preset: "off" }
+
+teacher_loss_weight: 0.6
+student_loss_weight: 1
+# JSON mode: no coordinate loss weight
+# Group Loss Weights (caption/grounding/formatting)
+caption_loss_weight: 1.2
+grounding_loss_weight: 1.5
+formatting_loss_weight: 0.3
+
+conversation_variant_ratios:
+  dense_caption: 0.5
+  coords_to_desc: 0.25
+  desc_to_coords: 0.25
+  summary: 0
+
 
 debug_alignment: true
-
+# Enable global plain text JSON mode
+# JSON mode uses JSON conversation by default; no plain_text_mode toggle needed

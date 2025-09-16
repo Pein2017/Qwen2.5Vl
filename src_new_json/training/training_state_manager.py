@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
+# JSON mode: no coord metrics imports
 from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
@@ -79,14 +79,18 @@ class TrainingStateManager:
             # Handle dictionary
             loss_dict = loss_components
         else:
-            # Handle other types by trying to extract attributes
+            # Handle other types by trying to extract attributes (minimal set)
             loss_dict = {}
             for attr_name in [
                 "loss",
                 "teacher_llm_loss",
-                "teacher_l1_loss",
                 "student_llm_loss",
-                "student_l1_loss",
+                "teacher_caption_loss",
+                "teacher_grounding_loss",
+                "teacher_formatting_loss",
+                "student_caption_loss",
+                "student_grounding_loss",
+                "student_formatting_loss",
             ]:
                 value = getattr(loss_components, attr_name, None)
                 if value is not None:
@@ -97,12 +101,12 @@ class TrainingStateManager:
             "loss",
             "teacher_llm_loss",
             "student_llm_loss",
-            "teacher_l1_loss",
-            "student_l1_loss",
-            "teacher_kce_loss",
-            "teacher_unlike_loss",
-            "student_kce_loss",
-            "student_unlike_loss",
+            "teacher_caption_loss",
+            "teacher_grounding_loss",
+            "teacher_formatting_loss",
+            "student_caption_loss",
+            "student_grounding_loss",
+            "student_formatting_loss",
         }
 
         # Pull diagnostics bag if present and merge into dict (DRY)
@@ -131,9 +135,8 @@ class TrainingStateManager:
                         value_float = float(value)
                     except Exception:
                         continue
-                self._loss_components_accumulator[key] = (
-                    self._loss_components_accumulator.get(key, 0.0) + value_float
-                )
+                prev = self._loss_components_accumulator[key] if (key in self._loss_components_accumulator) else 0.0
+                self._loss_components_accumulator[key] = prev + value_float
 
         self._loss_components_count += 1
 
@@ -203,19 +206,7 @@ class TrainingStateManager:
         # Add loss components (only meaningful ones)
         logs.update(component_logs)
 
-        # Ensure diagnostic metrics handling respects strict mode
-        if self.config.coord_aux_enabled and self.config.coordinate_tokens_enabled:
-            missing = []
-            for group in ("teacher", "student"):
-                for name in DIAGNOSTIC_METRIC_NAMES:
-                    key = f"{group}_{name}"
-                    if key not in logs:
-                        missing.append(key)
-            if missing:
-                raise ValueError(
-                    "Missing coordinate diagnostics while coord_aux is enabled. "
-                    f"Absent keys: {missing}. This indicates an upstream computation issue (spans, labels, or tokenizer ranges)."
-                )
+        # JSON mode: no coordinate auxiliary diagnostics enforcement
         # Verify loss decomposition if we have component losses
         self._verify_loss_decomposition(logs)
 
@@ -402,7 +393,6 @@ class TrainingStateManager:
         """Get comprehensive training statistics."""
         return {
             "step_count": self._step_count,
-            "coordinate_tokens_enabled": bool(self.config.coordinate_tokens_enabled),
             "accumulated_components": len(self._loss_components_accumulator),
             "components_count": self._loss_components_count,
         }

@@ -48,7 +48,7 @@ HIERARCHY_FILE=""               # e.g., "data_conversion/label_hierarchy.json" o
 
 # Processing parameters - YOU MUST SET THESE
 VAL_RATIO="0.2"                    # e.g., "0.1" for 10% validation split
-MAX_TEACHERS="50"                 # e.g., "10" for max teacher samples
+MAX_TEACHERS="0"                 # e.g., "10" for max teacher samples, or "0" to disable teacher-pool (for dynamic teacher-sampling)
 RESIZE="true"                       # "true" or "false" for image resizing
 OBJECT_TYPES="full"               # e.g., "bbu label" or "fiber wire" (space-separated, arbitrary combinations), or "full" for all types
 
@@ -99,7 +99,11 @@ echo "   Dataset Name: $DATASET_NAME"
 echo "   Language: Chinese (default)"
 echo "   Hierarchy File: ${HIERARCHY_FILE:-'(not set)'}"
 echo "   Val Ratio: $VAL_RATIO"
-echo "   Max Teachers: $MAX_TEACHERS"
+if [ "$MAX_TEACHERS" = "0" ]; then
+    echo "   Max Teachers: $MAX_TEACHERS (teacher-pool disabled for dynamic sampling)"
+else
+    echo "   Max Teachers: $MAX_TEACHERS"
+fi
 echo "   Smart Resize: $RESIZE"
 echo "   Object Types: $OBJECT_TYPES"
 echo "   Log Level: $LOG_LEVEL"

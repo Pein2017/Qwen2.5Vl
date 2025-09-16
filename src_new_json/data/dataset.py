@@ -29,7 +29,6 @@ from src_new_json.data.teacher_pool import TeacherPoolManager
 from src_new_json.processing.conversation import ConversationBuilder
 from src_new_json.processing.special_tokens import (
     ASSISTANT_SPAN_PATTERN,
-    GEOMETRY_TOKENS,
     IM_END,
     IMAGE_PAD,
 )
@@ -152,10 +151,28 @@ class Dataset(TorchDataset):
         # Load and validate data
         self.raw_data = self._load_data()
         self.samples = self._validate_and_filter_samples(self.raw_data)
+        # Size hardness EMA to dataset length
+        try:
+            self._hardness_ema = [0.0 for _ in range(len(self.samples))]
+        except Exception:
+            self._hardness_ema = []
 
         # Initialize teacher assignment tracking
         self.teacher_assignments = {}
         self.teacher_assignment_counts = {}
+        
+        # Hardness EMA cache (student loss per sample)
+        self._hardness_ema_alpha = float(self.config.hardness_alpha)
+        self._hardness_warmup_epochs = int(self.config.hardness_warmup_epochs)
+        self._hardness_ema = [0.0 for _ in range(0)]  # will size after samples loaded
+        self._hardness_weights = None
+
+        # Initialize dynamic pairing structures and build epoch-0 map
+        try:
+            self._episode_map = None  # target_idx -> {"context_idx": int|None}
+            self.set_epoch(0)
+        except Exception as e:
+            logger.warning(f"⚠️ set_epoch(0) during dataset init failed: {e}")
 
         logger.info(
             f"✅ HuggingFace-first dataset initialized with {len(self.samples)} samples"
@@ -165,7 +182,8 @@ class Dataset(TorchDataset):
         """Initialize HuggingFace-first processing components."""
         # Data processing settings
         self.data_root = self.config.data_root
-        self.teacher_ratio = self.config.teacher_ratio
+        # Eval split must be single-turn; force teacher_ratio=0.0
+        self.teacher_ratio = 0.0 if self.is_eval else self.config.teacher_ratio
         self.num_teacher_samples = self.config.num_teacher_samples
 
         # HuggingFace processor will be set by trainer
@@ -179,9 +197,7 @@ class Dataset(TorchDataset):
             )
 
         self.augmentation_pipeline = None
-        self._augmentation_schedule = getattr(
-            self.config, "augmentation_schedule", None
-        )
+        self._augmentation_schedule = self.config.augmentation_schedule
 
         if bool(self.config.use_aug):
             # If a schedule is provided, set initial preset at epoch 0; else require augmentation block
@@ -231,39 +247,41 @@ class Dataset(TorchDataset):
         logger.info("🎯 HuggingFace-first processing components initialized")
 
     def set_epoch(self, epoch_index: int) -> None:
-        """Optional hook for trainer: update augmentation preset by epoch.
+        """Optional hook for trainer: update augmentation preset and dynamic pairing by epoch.
 
-        If config.augmentation_schedule = [{start_epoch, preset}, ...] is defined,
-        the first entry with start_epoch <= epoch_index and highest start_epoch wins.
+        - Applies augmentation schedule when provided
+        - Builds dynamic contrastive pairing episode mapping per epoch when enabled
         """
-        if not self._augmentation_schedule:
-            return
-        from src_new_json.augmentation import ObjectAwareAugmentationPipeline
-        from src_new_json.augmentation.wrappers import get_preset_config
+        # Augmentation schedule
+        if self._augmentation_schedule:
+            from src_new_json.augmentation import ObjectAwareAugmentationPipeline
+            from src_new_json.augmentation.wrappers import get_preset_config
 
-        active = None
-        for entry in sorted(
-            self._augmentation_schedule, key=lambda e: int(e["start_epoch"])
-        ):
-            if epoch_index >= int(entry["start_epoch"]):
-                active = entry
-        if active is None:
-            return
-        cfg = get_preset_config(
-            active["preset"], rng_seed=getattr(self.config, "seed", 12345)
-        )
-        self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
-        logger.info(
-            f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
-        )
+            active = None
+            for entry in sorted(
+                self._augmentation_schedule, key=lambda e: int(e["start_epoch"])
+            ):
+                if epoch_index >= int(entry["start_epoch"]):
+                    active = entry
+            if active is not None:
+                cfg = get_preset_config(
+                    active["preset"], rng_seed=self.config.seed
+                )
+                self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
+                logger.info(
+                    f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
+                )
+
         # Variant schedule (optional)
         schedule = getattr(self.config, "conversation_variant_schedule", None)
         if isinstance(schedule, list) and schedule:
             chosen = None
-            for entry in sorted(schedule, key=lambda e: int(e.get("start_epoch", 0))):
-                if epoch_index >= int(entry.get("start_epoch", 0)):
+            for entry in sorted(schedule, key=lambda e: int(e["start_epoch"])):
+                if epoch_index >= int(entry["start_epoch"]):
                     chosen = entry
-            if chosen and isinstance(chosen.get("ratios"), dict):
+            if chosen is not None:
+                if ("ratios" not in chosen) or (not isinstance(chosen["ratios"], dict)):
+                    raise ValueError("conversation_variant_schedule entry is missing required 'ratios' dict")
                 self._active_variant_ratios = {
                     ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
                     for k, v in chosen["ratios"].items()
@@ -271,6 +289,68 @@ class Dataset(TorchDataset):
                 logger.info(
                     f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
                 )
+
+        # Dynamic contrastive pairing mapping (training only)
+        try:
+            if (
+                not self.is_eval
+                and self.config.dynamic_pairing_enabled
+                and hasattr(self, "samples")
+                and isinstance(self.samples, list)
+                and len(self.samples) > 0
+            ):
+                from src_new_json.sampling import BucketedSamplingEngine, SamplingConfig as _SampCfg
+                base_seed = int(self.config.seed)
+                engine = BucketedSamplingEngine()
+                pair_cfg = _SampCfg(
+                    candidate_pool_size=int(self.config.dynamic_pair_candidate_pool_size),
+                    max_teacher_uses_per_epoch=int(self.config.dynamic_pair_max_teacher_uses_per_epoch),
+                    temperature=float(self.config.dynamic_pair_temperature),
+                    target_assignment=str(self.config.dynamic_pair_target_assignment),
+                    cross_bucket_explore_prob=float(self.config.dynamic_pair_cross_bucket_explore_prob),
+                    pool_fraction=float(self.config.pool_fraction),
+                    pool_max=int(self.config.pool_max),
+                )
+                # Normalize hardness EMA to weights per epoch (after warmup only)
+                sample_weights = None
+                try:
+                    if epoch_index >= self._hardness_warmup_epochs and len(self._hardness_ema) == len(self.samples):
+                        arr = torch.tensor(self._hardness_ema, dtype=torch.float32)
+                        if torch.isfinite(arr).any():
+                            # Robust scaling via clipped percentiles
+                            p10 = torch.quantile(arr, 0.10)
+                            p90 = torch.quantile(arr, 0.90)
+                            denom = max(1e-6, float((p90 - p10).item()))
+                            norm = torch.clamp((arr - p10) / denom, 0.0, 1.0)
+                            sample_weights = [float(x) for x in norm.tolist()]
+                except Exception as e:
+                    logger.debug(f"hardness normalization skipped: {e}")
+
+                # Force eval split single-turn by zeroing teacher_ratio in build
+                teacher_ratio = 0.0 if self.is_eval else float(self.teacher_ratio)
+                episode_map, metrics = engine.build_epoch_map(
+                    samples=self.samples,
+                    cfg=pair_cfg,
+                    base_seed=base_seed,
+                    epoch_idx=int(epoch_index),
+                    teacher_ratio=teacher_ratio,
+                    is_eval=bool(self.is_eval),
+                    sample_weights=sample_weights,
+                )
+                # Materialize: target_idx -> {context_idx}
+                self._episode_map = {spec.target_idx: {"context_idx": spec.context_idx} for spec in episode_map.values()}
+                logger.info(
+                    f"🎯 Dynamic pairing @epoch {epoch_index}: pair_episodes={metrics.pair_episodes}, single_episodes~={metrics.single_episodes}, target_is_current_pct={metrics.target_is_current_pct:.1f}%"
+                )
+                logger.info(
+                    f"📊 Context coverage≈{metrics.coverage_context_unique_pct:.1f}% hist={metrics.context_usage_histogram}"
+                )
+            elif self.is_eval:
+                # Eval split: enforce single-turn
+                self._episode_map = {}
+                logger.info("🔒 Eval split: forced single-turn episodes (no context)")
+        except Exception as e:
+            logger.warning(f"⚠️ Dynamic pairing set_epoch failed: {e}")
 
     def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
         """
@@ -291,30 +371,8 @@ class Dataset(TorchDataset):
 
         from src_new_json.processing.conversation import ConversationBuilder
 
-        # Fail-fast: max_coord_value must come from YAML (no defaults allowed)
-        if not hasattr(self.config, "max_coord_value"):
-            raise ValueError(
-                "max_coord_value is required in configuration (YAML) but was not found on Config."
-            )
-        max_coord_value = self.config.max_coord_value
-        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
-            )
-
-        if not hasattr(self.config, "coordinate_tokens_enabled"):
-            raise ValueError(
-                "coordinate_tokens_enabled must be explicitly set in configuration (True/False)"
-            )
-        if not isinstance(self.config.coordinate_tokens_enabled, bool):
-            raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(self.config.coordinate_tokens_enabled)}: {self.config.coordinate_tokens_enabled!r}"
-            )
-
         self.conversation_processor = ConversationBuilder(
             processor=hf_processor,
-            max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")
@@ -377,22 +435,29 @@ class Dataset(TorchDataset):
             is_valid_quad_coords,
         )
 
-        geometry_types = list(GEOMETRY_TOKENS.keys())
+        # Strict: training input uses bbox_2d | quad | line only
+        legacy_keys = ("bbox_2d", "quad", "line")
+
         for obj in sample["objects"]:
             if "desc" not in obj:
                 return False
 
-            present = [gt for gt in geometry_types if gt in obj]
+            present = [k for k in legacy_keys if k in obj]
             if len(present) != 1:
                 return False
 
             g = present[0]
             coords = obj[g]
-            if g == "bbox_2d" and not is_valid_box_coords(coords):
-                return False
-            if g == "quad" and not is_valid_quad_coords(coords):
-                return False
-            if g == "line" and not is_valid_line_coords(coords):
+            if g == "bbox_2d":
+                if not (isinstance(coords, list) and len(coords) == 4 and is_valid_box_coords(coords)):
+                    return False
+            elif g == "quad":
+                if not (isinstance(coords, list) and len(coords) == 8 and is_valid_quad_coords(coords)):
+                    return False
+            elif g == "line":
+                if not (isinstance(coords, list) and len(coords) >= 4 and is_valid_line_coords(coords)):
+                    return False
+            else:
                 return False
 
         return True
@@ -434,29 +499,22 @@ class Dataset(TorchDataset):
     ) -> Dict[str, Any]:
         """Create structured sample with teacher assignments."""
         structured_sample = raw_sample.copy()
+        # Attach index for downstream hardness updates
+        structured_sample["sample_index"] = int(idx)
 
-        # Add teacher examples if conditions are met
-        if (
-            self.teacher_pool_manager
-            and (not self.is_eval)
-            and random.random() < self.teacher_ratio
-            and len(self.teacher_pool_manager.teacher_pool) > 0
-        ):
-            # Select teachers dynamically based on current student sample
-            # Note: Teacher samples serve as context input only during evaluation
-            # (no teacher loss computation - only student response is trained)
-            num_teachers = min(
-                random.randint(1, self.num_teacher_samples),
-                len(self.teacher_pool_manager.teacher_pool),
-            )
-
-            selected_teachers = self.teacher_pool_manager.select_teachers_for_student(
-                structured_sample, num_samples=num_teachers
-            )
-
-            structured_sample["teacher_samples"] = selected_teachers
+        # Prefer dynamic episode map when available (training split)
+        teacher_samples: List[Dict[str, Any]] = []
+        spec = getattr(self, "_episode_map", None)
+        if (not self.is_eval) and isinstance(spec, dict):
+            ep = spec[int(idx)] if int(idx) in spec else None
+            if isinstance(ep, dict) and ("context_idx" in ep) and (ep["context_idx"] is not None):
+                c_idx = int(ep["context_idx"])  # type: ignore[index]
+                if 0 <= c_idx < len(self.samples):
+                    teacher_samples = [self.samples[c_idx]]
+        if teacher_samples:
+            structured_sample["teacher_samples"] = teacher_samples
             logger.debug(
-                f"Assigned {len(selected_teachers)} dynamic teacher(s) to sample {idx}"
+                f"Assigned {len(teacher_samples)} teacher(s) to sample {idx}"
             )
 
         return structured_sample
@@ -465,11 +523,10 @@ class Dataset(TorchDataset):
     def _sample_variant(self) -> str:
         if self.is_eval:
             return "dense_caption"
-        ratios = getattr(self, "_active_variant_ratios", None) or getattr(self.config, "conversation_variant_ratios", None) or {
-            "dense_caption": 1.0,
-            "coords_to_desc": 0.0,
-            "desc_to_coords": 0.0,
-        }
+        ratios = getattr(self, "_active_variant_ratios", None)
+        if ratios is None:
+            # No ratios configured => deterministic dense_caption
+            return "dense_caption"
         keys = list(ratios.keys())
         weights = [float(ratios[k]) for k in keys]
         total = sum(weights)
@@ -511,7 +568,7 @@ class Dataset(TorchDataset):
         variant = self._sample_variant()
 
         # Teacher presence
-        teacher_samples = structured_sample.get("teacher_samples", [])
+        teacher_samples = structured_sample["teacher_samples"] if "teacher_samples" in structured_sample else []
         has_teachers = len(teacher_samples) > 0
         logger.debug(
             f"🧪 Sample idx={idx}: variant='{variant}', has_teachers={has_teachers}"
@@ -521,15 +578,19 @@ class Dataset(TorchDataset):
         if has_teachers:
             teacher_images_list: List[List[Image.Image]] = []
             for t_sample in teacher_samples:
-                t_paths = t_sample.get("images", [])
-                if not t_paths:
+                if "images" not in t_sample or not isinstance(t_sample["images"], list) or len(t_sample["images"]) == 0:
                     raise ValueError("Teacher sample missing required 'images' list")
+                t_paths = t_sample["images"]
                 t_images = self._load_images(t_paths)
                 teacher_images_list.append(t_images)
-            student_images = self._load_images(structured_sample.get("images", []))
+            if "images" not in structured_sample or not isinstance(structured_sample["images"], list) or len(structured_sample["images"]) == 0:
+                raise ValueError("Student sample missing required 'images' list")
+            student_images = self._load_images(structured_sample["images"])
         else:
             teacher_images_list = []
-            student_images = self._load_images(structured_sample.get("images", []))
+            if "images" not in structured_sample or not isinstance(structured_sample["images"], list) or len(structured_sample["images"]) == 0:
+                raise ValueError("Student sample missing required 'images' list")
+            student_images = self._load_images(structured_sample["images"])
 
         # Optional augmentation
         if self.augmentation_pipeline is not None:
@@ -604,8 +665,8 @@ class Dataset(TorchDataset):
             input_ids=inputs["input_ids"],
             tokenizer=self.tokenizer,
             has_teachers=has_teachers,
-            conversation_text=inputs.get("conversation_text"),
-            offset_mapping=inputs.get("offset_mapping"),
+            conversation_text=(inputs["conversation_text"] if "conversation_text" in inputs else None),
+            offset_mapping=(inputs["offset_mapping"] if "offset_mapping" in inputs else None),
             num_teachers=len(teacher_samples) if has_teachers else 0,
         )
         inputs["labels"] = labels
@@ -618,7 +679,7 @@ class Dataset(TorchDataset):
         except Exception:
             inputs["conversation_variant"] = variant
 
-        # Removed: plain-text char-span grouping path (deprecated). Grouping now always relies on wrapper tokens.
+        # JSON mode: grouping is JSON-structure-based; wrapper tokens are not used.
 
         return inputs
 
@@ -660,8 +721,16 @@ class Dataset(TorchDataset):
                 0
             ]  # Remove batch dim
 
-            # STEP 3: Set number of teachers (always 1 teacher + 1 student in current setup)
-            num_teachers = 1 if has_teachers else 0
+            # STEP 3: Use provided num_teachers exactly (do not override)
+            if not has_teachers:
+                num_teachers = 0
+            else:
+                try:
+                    num_teachers = int(num_teachers)
+                except Exception:
+                    raise RuntimeError(f"Invalid num_teachers value: {num_teachers}")
+                if num_teachers < 0:
+                    raise RuntimeError(f"num_teachers must be non-negative, got {num_teachers}")
 
             # STEP 4: Find assistant content spans using accurate text-to-token mapping
             from src_new_json.processing.span_extraction import find_assistant_spans
@@ -669,9 +738,8 @@ class Dataset(TorchDataset):
                 full_text=full_text,
                 offset_mapping=offset_mapping,
                 tokenizer=tokenizer,
-                include_eos=bool(getattr(self.config, "span_include_im_end_in_labels", True)),
+                include_eos=bool(self.config.span_include_im_end_in_labels),
                 has_teachers=has_teachers,
-                input_ids_1d=input_ids_1d,
                 num_teachers=num_teachers,
             )
 
@@ -725,7 +793,7 @@ class Dataset(TorchDataset):
                 labels[image_pad_mask] = -100
 
             # STEP 8 (debug): strict invariants for alignment and coverage
-            if getattr(self.config, "debug_alignment", False):
+            if self.config.debug_alignment:
                 # Re-decode labels where not -100 and check round-trip equals input_ids
                 # (We check ids equality on unmasked region spans.)
                 all_spans = teacher_spans + student_spans
@@ -783,10 +851,9 @@ class Dataset(TorchDataset):
 
         return labels, teacher_spans, student_spans
 
-
     def _char_to_token_position(
         self, char_pos: int, offset_mapping: torch.Tensor
-    ) -> Optional[int]:
+    ):
         """
         Convert character position to token position using offset mapping.
 
@@ -826,6 +893,30 @@ class Dataset(TorchDataset):
                 raise
 
         return images
+
+    def update_hardness_ema(self, sample_indices: List[int], student_losses: List[float]) -> None:
+        """Update per-sample EMA hardness from student loss values.
+
+        Fail-fast on mismatched lengths or invalid indices; ignores updates if EMA not initialized.
+        """
+        if not isinstance(sample_indices, list) or not isinstance(student_losses, list):
+            raise ValueError("update_hardness_ema expects lists for indices and losses")
+        if len(sample_indices) != len(student_losses):
+            raise ValueError(f"update_hardness_ema length mismatch: indices={len(sample_indices)} losses={len(student_losses)}")
+        if not self._hardness_ema or len(self._hardness_ema) != len(self.samples):
+            return
+        a = float(self._hardness_ema_alpha)
+        if a <= 0 or a > 1:
+            raise ValueError(f"hardness_alpha must be in (0,1], got {a}")
+        for idx, loss in zip(sample_indices, student_losses):
+            if not (isinstance(idx, int) and 0 <= idx < len(self._hardness_ema)):
+                continue
+            try:
+                loss_val = float(loss)
+            except Exception:
+                continue
+            prev = float(self._hardness_ema[idx])
+            self._hardness_ema[idx] = (1.0 - a) * prev + a * loss_val
 
 
 # Export classes

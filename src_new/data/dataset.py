@@ -105,6 +105,11 @@ class Dataset(TorchDataset):
     # Split flag
     is_eval: bool = False
 
+    # Dynamic pairing state (per-epoch)
+    _episode_map: Optional[Dict[int, Dict[str, Optional[int]]]] = None  # target_idx -> {context_idx:int|None}
+    _context_use_count: Optional[Dict[int, int]] = None
+    _type_to_indices: Optional[Dict[str, List[int]]] = None
+
     def __init__(
         self,
         data_path: str,
@@ -157,6 +162,17 @@ class Dataset(TorchDataset):
         self.teacher_assignments = {}
         self.teacher_assignment_counts = {}
 
+        # Initialize dynamic pairing structures
+        self._episode_map = None
+        self._context_use_count = None
+        self._type_to_indices = None
+
+        # Build initial epoch-0 mapping (aug preset and/or dynamic pairing)
+        try:
+            self.set_epoch(0)
+        except Exception as e:
+            logger.warning(f"⚠️ set_epoch(0) during dataset init failed: {e}")
+
         logger.info(
             f"✅ HuggingFace-first dataset initialized with {len(self.samples)} samples"
         )
@@ -165,7 +181,8 @@ class Dataset(TorchDataset):
         """Initialize HuggingFace-first processing components."""
         # Data processing settings
         self.data_root = self.config.data_root
-        self.teacher_ratio = self.config.teacher_ratio
+        # Eval split must be single-turn; force teacher_ratio=0.0
+        self.teacher_ratio = 0.0 if self.is_eval else self.config.teacher_ratio
         self.num_teacher_samples = self.config.num_teacher_samples
 
         # HuggingFace processor will be set by trainer
@@ -235,42 +252,89 @@ class Dataset(TorchDataset):
 
         If config.augmentation_schedule = [{start_epoch, preset}, ...] is defined,
         the first entry with start_epoch <= epoch_index and highest start_epoch wins.
+        Also builds dynamic contrastive pairing episode mapping per epoch when enabled.
         """
-        if not self._augmentation_schedule:
-            return
-        from src_new.augmentation import ObjectAwareAugmentationPipeline
-        from src_new.augmentation.wrappers import get_preset_config
+        if not self._augmentation_schedule and not getattr(self.config, "dynamic_pairing_enabled", False):
+            # Nothing to do
+            pass
 
-        active = None
-        for entry in sorted(
-            self._augmentation_schedule, key=lambda e: int(e["start_epoch"])
-        ):
-            if epoch_index >= int(entry["start_epoch"]):
-                active = entry
-        if active is None:
-            return
-        cfg = get_preset_config(
-            active["preset"], rng_seed=getattr(self.config, "seed", 12345)
-        )
-        self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
-        logger.info(
-            f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
-        )
-        # Variant schedule (optional)
-        schedule = getattr(self.config, "conversation_variant_schedule", None)
-        if isinstance(schedule, list) and schedule:
-            chosen = None
-            for entry in sorted(schedule, key=lambda e: int(e.get("start_epoch", 0))):
-                if epoch_index >= int(entry.get("start_epoch", 0)):
-                    chosen = entry
-            if chosen and isinstance(chosen.get("ratios"), dict):
-                self._active_variant_ratios = {
-                    ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
-                    for k, v in chosen["ratios"].items()
-                }
-                logger.info(
-                    f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
+        # Augmentation schedule handling (existing)
+        if self._augmentation_schedule:
+            from src_new.augmentation import ObjectAwareAugmentationPipeline
+            from src_new.augmentation.wrappers import get_preset_config
+
+            active = None
+            for entry in sorted(
+                self._augmentation_schedule, key=lambda e: int(e["start_epoch"])
+            ):
+                if epoch_index >= int(entry["start_epoch"]):
+                    active = entry
+            if active is not None:
+                cfg = get_preset_config(
+                    active["preset"], rng_seed=getattr(self.config, "seed", 12345)
                 )
+                self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
+                logger.info(
+                    f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
+                )
+
+            # Variant schedule (optional)
+            schedule = getattr(self.config, "conversation_variant_schedule", None)
+            if isinstance(schedule, list) and schedule:
+                chosen = None
+                for entry in sorted(schedule, key=lambda e: int(e.get("start_epoch", 0))):
+                    if epoch_index >= int(entry.get("start_epoch", 0)):
+                        chosen = entry
+                if chosen and isinstance(chosen.get("ratios"), dict):
+                    self._active_variant_ratios = {
+                        ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
+                        for k, v in chosen["ratios"].items()
+                    }
+                    logger.info(
+                        f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
+                    )
+
+        # Dynamic contrastive pairing mapping (training only)
+        if getattr(self.config, "dynamic_pairing_enabled", False) and not self.is_eval:
+            # Use modular pairing engine
+            # Delayed import to avoid heavy dependencies at module import time
+            from src_new.pairing import ContrastivePairingEngine, PairingConfig as _PairCfg
+
+            base_seed = int(getattr(self.config, "seed", 12345))
+
+            engine = ContrastivePairingEngine()
+            pair_cfg = _PairCfg(
+                candidate_pool_size=int(getattr(self.config, "dynamic_pair_candidate_pool_size", 128)),
+                max_teacher_uses_per_epoch=int(getattr(self.config, "dynamic_pair_max_teacher_uses_per_epoch", 5)),
+                temperature=float(getattr(self.config, "dynamic_pair_temperature", 0.7)),
+                target_assignment=str(getattr(self.config, "dynamic_pair_target_assignment", "current")),
+                cross_bucket_explore_prob=float(getattr(self.config, "dynamic_pair_cross_bucket_explore_prob", 0.0)),
+            )
+
+            episode_map, metrics = engine.build_epoch_map(
+                samples=self.samples,
+                cfg=pair_cfg,
+                base_seed=base_seed,
+                epoch_idx=int(epoch_index),
+                teacher_ratio=float(self.teacher_ratio),
+                is_eval=bool(self.is_eval),
+            )
+
+            # Materialize map and a simple usage count (hist only)
+            self._episode_map = {spec.target_idx: {"context_idx": spec.context_idx} for spec in episode_map.values()}
+
+            logger.info(
+                f"🎯 Dynamic pairing @epoch {epoch_index}: pair_episodes={metrics.pair_episodes}, single_episodes~={metrics.single_episodes}, target_is_current_pct={metrics.target_is_current_pct:.1f}%"
+            )
+            logger.info(
+                f"📊 Context coverage: unique_context_used≈{int(metrics.coverage_context_unique_pct * len(self.samples) / 100.0)} ({metrics.coverage_context_unique_pct:.1f}%), avg_contrast_score={metrics.avg_contrast_score:.3f}"
+            )
+            logger.info(f"📈 context_usage_histogram={metrics.context_usage_histogram}")
+
+        # For validation/eval split, enforce single-turn behavior
+        if self.is_eval:
+            self._episode_map = {}
+            logger.info("🔒 Eval split: forced single-turn episodes (no context)")
 
     def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
         """
@@ -423,7 +487,7 @@ class Dataset(TorchDataset):
         # Get raw sample
         raw_sample = self.samples[idx]
 
-        # Create structured sample with teacher assignments
+        # Create structured sample with teacher assignments (dynamic per-epoch mapping first)
         structured_sample = self._create_structured_sample(raw_sample, idx)
 
         # Process the sample through HuggingFace-first pipeline
@@ -435,28 +499,24 @@ class Dataset(TorchDataset):
         """Create structured sample with teacher assignments."""
         structured_sample = raw_sample.copy()
 
-        # Add teacher examples if conditions are met
-        if (
-            self.teacher_pool_manager
-            and (not self.is_eval)
-            and random.random() < self.teacher_ratio
-            and len(self.teacher_pool_manager.teacher_pool) > 0
-        ):
-            # Select teachers dynamically based on current student sample
-            # Note: Teacher samples serve as context input only during evaluation
-            # (no teacher loss computation - only student response is trained)
-            num_teachers = min(
-                random.randint(1, self.num_teacher_samples),
-                len(self.teacher_pool_manager.teacher_pool),
-            )
+        # Prefer dynamic episode map if available and training split
+        teacher_samples: List[Dict[str, Any]] = []
+        if (not self.is_eval) and isinstance(self._episode_map, dict):
+            spec = self._episode_map.get(int(idx)) if self._episode_map is not None else None
+            if spec and spec.get("context_idx") is not None:
+                c_idx = int(spec["context_idx"])  # type: ignore[index]
+                if 0 <= c_idx < len(self.samples):
+                    teacher_samples = [self.samples[c_idx]]
 
-            selected_teachers = self.teacher_pool_manager.select_teachers_for_student(
-                structured_sample, num_samples=num_teachers
-            )
+        # Fallback to legacy teacher_pool_manager when no dynamic mapping
+        if not teacher_samples:
+            # No teacher fallback: simplified random pairing uses only episode_map
+            pass
 
-            structured_sample["teacher_samples"] = selected_teachers
+        if teacher_samples:
+            structured_sample["teacher_samples"] = teacher_samples
             logger.debug(
-                f"Assigned {len(selected_teachers)} dynamic teacher(s) to sample {idx}"
+                f"Assigned {len(teacher_samples)} teacher(s) to sample {idx}"
             )
 
         return structured_sample
@@ -660,8 +720,8 @@ class Dataset(TorchDataset):
                 0
             ]  # Remove batch dim
 
-            # STEP 3: Set number of teachers (always 1 teacher + 1 student in current setup)
-            num_teachers = 1 if has_teachers else 0
+            # STEP 3: Respect provided num_teachers (dataset-level mapping)
+            num_teachers = int(num_teachers) if has_teachers else 0
 
             # STEP 4: Find assistant content spans using accurate text-to-token mapping
             from src_new.processing.span_extraction import find_assistant_spans

@@ -1,6 +1,6 @@
 # Augmentation Module (src_new_json/augmentation)
 
-This module provides training‑ready data augmentation for our detection‑focused VL pipeline with type‑aware safeguards. The current implementation focuses on robust, deterministic image/line augmentations with OCR protection and occlusion detection (monitoring only).
+This module provides training‑ready data augmentation for our detection‑focused VL pipeline with type‑aware safeguards. The current implementation focuses on robust, deterministic image/line augmentations with OCR protection. Occlusion detection has been removed.
 
 - Unified geometry invariants: quads are canonicalized to start at top‑left and proceed clockwise; coordinates are in bounds and non‑degenerate.
 - Pixel–coordinate consistency: geometry changes happen only when pixels are transformed accordingly.
@@ -30,7 +30,7 @@ bash scripts/run_new_train.sh
 - ImageGeom: rotation about the image center (pixels + coordinates)
 - Photometric: Albumentations image‑only pool; OCR‑safe when labels are present
 - Line ops: jitter and equidistant resample for fiber/wire
-- Criteria: occlusion detection (monitoring only)
+- Criteria: occlusion detection (removed)
 
 Tip: keep validation clean by disabling augmentation for val runs (separate config or toggle off).
 
@@ -64,7 +64,7 @@ Advanced users can still supply the explicit block (see Configuration) for fine�
   - Minimum length gate avoids perturbing tiny segments.
 
 - Criteria
-  - Occlusion detection: low‑res mask intersection flags overlaps for monitoring only; no desc modification.
+  - Occlusion detection: removed.
 
 - Type policies (placeholders for future object‑level ops)
   - Per‑type policy table is included and validated. It’s used for policy checks and forward‑compatibility, but object‑level move/copy/blur are not executed in v1.
@@ -119,14 +119,7 @@ augmentation:
     label_protect: true
     force_unreadable_on_strong_distortion: true
 
-  # Criteria (occlusion detection - monitoring only)
-  criteria:
-    occlusion:
-      enabled: true
-      min_overlap_fraction_bbox: 0.2
-      min_overlap_fraction_line: 0.2
-      mask_downscale: 8
-      line_width_px: 2
+  # Criteria (occlusion detection removed)
 ```
 
 Notes:
@@ -144,8 +137,7 @@ Augmentations run inside `src_new_json/data/dataset.py` before conversation asse
 2) Image‑level rotation (image + coordinates)
 3) Albumentations photometric (image‑only) with OCR guard
 4) Line ops (fiber/wire) jitter + resample
-5) Occlusion criteria detection (monitoring only)
-6) Conversation building and tokenization
+5) Conversation building and tokenization
 
 Teacher samples are not augmented by default (`apply_to_teachers: false`).
 Seeding is deterministic per worker and per sample (`rng_seed` mixed with worker id and sample index).
@@ -165,7 +157,7 @@ Seeding is deterministic per worker and per sample (`rng_seed` mixed with worker
   - Jitter amplitude sampled in `[jitter_px_minmax]`, then equidistant resample to `resample_points`.
 
 - Criteria
-  - Low‑res masks for efficiency; overlaps measured for monitoring only (no `desc` changes).
+  - Occlusion detection: removed.
 
 ---
 
@@ -196,7 +188,7 @@ These are installed in the `ms` conda environment in our debug setup. Adjust ver
 ## Extending
 
 - Image geometry: enable translate/scale/perspective/crop/multiscale in `image_ops`.
-- Type‑aware object‑level ops (planned): cut/move with inpaint, copy‑paste with alpha feather, masked object blur — see `src_new_json/augmentation/bbu_specialized_plan.md`.
+- Type‑aware object‑level ops (planned): cut/move with inpaint (copy‑paste disabled), masked object blur — see `src_new_json/augmentation/bbu_specialized_plan.md`.
 - Photometric pool: add safe ops (e.g., CLAHE, tone curve) and tune ranges in `photometric.py`.
 
 ---
@@ -237,11 +229,11 @@ Example object (abbrev):
 - Line ops (fiber/wire):
   - Your `光纤`/`电线` are provided as `line`; jitter + equidistant resample are applied when `lines.enabled` is true and length ≥ `min_length_px`.
 - Criteria (occlusion detection):
-  - Overlaps are computed and can be logged/monitored; `desc` is not modified.
+  - Removed.
 - Type policies:
   - Prefixes in your `desc` map to canonical types (`bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`) for policy checks.
 - Dimensions:
-  - Your samples include `width`/`height` which are required by rotation and criteria steps.
+  - Your samples include `width`/`height` which are required by rotation steps.
 - Note:
   - Quad canonicalization occurs during the geometry transform. If you disable `image_geom`, ensure upstream quads are canonicalized.
 

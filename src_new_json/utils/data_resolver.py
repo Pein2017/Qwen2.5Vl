@@ -34,6 +34,7 @@ class DatasetPaths:
     val_data_path: Path
     teacher_pool_file: Path
     images_dir: Path
+    teacher_pool_required: bool = True  # Whether teacher pool is required
 
     def __post_init__(self):
         """Validate all paths exist after initialization (using centralized validation)."""
@@ -45,6 +46,12 @@ class DatasetPaths:
             )
         if not self.images_dir.is_dir():
             raise ValueError(f"Images path is not a directory: {self.images_dir}")
+        
+        # Teacher pool file is optional when teacher_pool_required=False
+        if self.teacher_pool_required and not self.teacher_pool_file.exists():
+            raise FileNotFoundError(
+                f"Teacher pool file does not exist: {self.teacher_pool_file}"
+            )
 
 
 class DataResolver:
@@ -61,12 +68,13 @@ class DataResolver:
     IMAGES_DIR = "images"
 
     @classmethod
-    def resolve_dataset_paths(cls, data_root: str) -> DatasetPaths:
+    def resolve_dataset_paths(cls, data_root: str, require_teacher_pool: bool = True) -> DatasetPaths:
         """
         Resolve and validate all dataset file paths from data_root.
 
         Args:
             data_root: Root directory containing dataset files
+            require_teacher_pool: Whether teacher_pool.jsonl is required (False for max_teachers=0)
 
         Returns:
             DatasetPaths object with resolved paths (relative preserved if input is relative)
@@ -76,18 +84,23 @@ class DataResolver:
             FileNotFoundError: If any required files are missing
             TypeError: If data_root is not a string or Path-like object
         """
+        # Build required files list based on teacher pool requirement
+        required_files = [cls.TRAIN_FILE, cls.VAL_FILE]
+        if require_teacher_pool:
+            required_files.append(cls.TEACHER_POOL_FILE)
+        
         # Validate input parameter and directory structure using centralized validation
         try:
             data_root_path, _ = PathValidator.validate_directory_structure(
                 root_path=data_root,
-                required_files=[cls.TRAIN_FILE, cls.VAL_FILE, cls.TEACHER_POOL_FILE],
+                required_files=required_files,
                 required_dirs=[cls.IMAGES_DIR],
             )
         except DirectoryValidationError as e:
             # Re-raise with enhanced error message for debugging
             raise FileNotFoundError(str(e)) from e
 
-        # Resolve all required file paths
+        # Resolve all file paths
         train_path = data_root_path / cls.TRAIN_FILE
         val_path = data_root_path / cls.VAL_FILE
         teacher_pool_path = data_root_path / cls.TEACHER_POOL_FILE
@@ -97,7 +110,7 @@ class DataResolver:
         logger.debug(f"🔍 Data resolver scanning: {data_root_path}")
         logger.debug(f"   Expected train file: {train_path}")
         logger.debug(f"   Expected val file: {val_path}")
-        logger.debug(f"   Expected teacher pool: {teacher_pool_path}")
+        logger.debug(f"   Expected teacher pool: {teacher_pool_path} (required: {require_teacher_pool})")
         logger.debug(f"   Expected images dir: {images_path}")
 
         # Create DatasetPaths object (validation happens in __post_init__)
@@ -108,6 +121,7 @@ class DataResolver:
                 val_data_path=val_path,
                 teacher_pool_file=teacher_pool_path,
                 images_dir=images_path,
+                teacher_pool_required=require_teacher_pool,
             )
         except (FileNotFoundError, ValueError) as e:
             # Enhance error message with available files for debugging
@@ -133,7 +147,10 @@ class DataResolver:
         logger.info(f"✅ Dataset paths resolved successfully from: {data_root_path}")
         logger.info(f"📁 Train: {dataset_paths.train_data_path}")
         logger.info(f"📁 Val: {dataset_paths.val_data_path}")
-        logger.info(f"📁 Teacher pool: {dataset_paths.teacher_pool_file}")
+        if require_teacher_pool:
+            logger.info(f"📁 Teacher pool: {dataset_paths.teacher_pool_file}")
+        else:
+            logger.info(f"📁 Teacher pool: {dataset_paths.teacher_pool_file} (optional, max_teachers=0)")
         logger.info(f"📁 Images: {dataset_paths.images_dir}")
 
         return dataset_paths
@@ -156,27 +173,32 @@ class DataResolver:
             return False
 
     @classmethod
-    def get_missing_files(cls, data_root: str) -> list[str]:
+    def get_missing_files(cls, data_root: str, require_teacher_pool: bool = True) -> list[str]:
         """
         Get list of missing required files in data_root.
 
         Args:
             data_root: Root directory to check
+            require_teacher_pool: Whether teacher_pool.jsonl is required
 
         Returns:
             List of missing file names (empty if all files exist)
         """
+        required_files = [cls.TRAIN_FILE, cls.VAL_FILE]
+        if require_teacher_pool:
+            required_files.append(cls.TEACHER_POOL_FILE)
+            
         return PathValidator.get_missing_items(
             root_path=data_root,
-            required_files=[cls.TRAIN_FILE, cls.VAL_FILE, cls.TEACHER_POOL_FILE],
+            required_files=required_files,
             required_dirs=[cls.IMAGES_DIR],
         )
 
 
 # Convenience function for backward compatibility
-def resolve_dataset_paths(data_root: str) -> DatasetPaths:
+def resolve_dataset_paths(data_root: str, require_teacher_pool: bool = True) -> DatasetPaths:
     """Convenience function that delegates to DataResolver.resolve_dataset_paths."""
-    return DataResolver.resolve_dataset_paths(data_root)
+    return DataResolver.resolve_dataset_paths(data_root, require_teacher_pool=require_teacher_pool)
 
 
 # Export public API

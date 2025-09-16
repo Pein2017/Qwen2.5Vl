@@ -27,7 +27,7 @@ class BestCheckpointManager:
     current_best_dir: Optional[str] = None
 
     def is_new_best(self, current_metrics: Dict[str, float]) -> bool:
-        value = current_metrics.get(self.metric_name)
+        value = current_metrics[self.metric_name] if self.metric_name in current_metrics else None
         if value is None:
             return False
         if self.current_best_value is None:
@@ -37,14 +37,14 @@ class BestCheckpointManager:
         return value < self.current_best_value
 
     def create_best_checkpoint_name(self, metrics: Dict[str, float], step: int) -> str:
-        val = metrics.get(self.metric_name)
+        val = metrics[self.metric_name] if self.metric_name in metrics else None
         suffix = (
             f"{self.metric_name}{val:.4f}" if isinstance(val, (int, float)) else "best"
         )
         return f"best-{step}-{suffix}"
 
     def update_best_checkpoint(self, metrics: Dict[str, float], best_dir: str) -> None:
-        self.current_best_value = metrics.get(self.metric_name)
+        self.current_best_value = metrics[self.metric_name] if self.metric_name in metrics else None
         self.current_best_dir = best_dir
 
 
@@ -298,10 +298,29 @@ class CheckpointSaver:
     def _maybe_update_best_and_rotate(
         self, checkpoint_dir: str, current_metrics: Dict[str, float], step: int
     ) -> None:
-        should_log = bool(getattr(self.args, "should_save", False))
+        # Enforce a minimum interval between best checkpoint saves
+        min_interval = 0
+        try:
+            cfg = getattr(getattr(self, "args", None), "training_config", None)
+            # In JSON mode, training_config lives on the model; TrainingArguments won't carry it
+            # So fallback: look for attributes on args directly (passed from config)
+            eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
+            interval_multiplier = int(getattr(cfg or self.args, "best_checkpoint_interval_multiplier", 5))
+            explicit_min = getattr(cfg or self.args, "best_checkpoint_min_interval_steps", None)
+            computed = (eval_steps * interval_multiplier) if eval_steps and interval_multiplier else 0
+            min_interval = int(explicit_min) if explicit_min is not None else int(computed)
+        except Exception:
+            min_interval = 0
+
+        # Track last best save step on the manager for gating
+        last_best_step = getattr(self.checkpoint_manager, "_last_best_save_step", None)
+        if last_best_step is not None and min_interval > 0:
+            if int(step) - int(last_best_step) < min_interval:
+                # Skip creating another best checkpoint due to interval gating
+                return
+
         if (
-            should_log
-            and current_metrics
+            current_metrics
             and self.checkpoint_manager.is_new_best(current_metrics)
         ):
             logger.info("🏆 Creating best checkpoint by direct folder copy")
@@ -315,14 +334,21 @@ class CheckpointSaver:
             # Remember previous best before updating
             old_best_path = getattr(self.checkpoint_manager, "current_best_dir", None)
 
-            # Replace existing best directory using robust atomic copy
+            # Replace existing best directory using robust atomic copy (no symlinks)
             try:
-                if os.path.exists(best_checkpoint_path):
-                    shutil.rmtree(best_checkpoint_path)
-            except Exception as e:
-                logger.warning(
-                    f"⚠️ Could not remove existing best checkpoint dir '{best_checkpoint_path}': {e}"
-                )
+                if os.path.islink(best_checkpoint_path) or os.path.exists(best_checkpoint_path):
+                    try:
+                        if os.path.islink(best_checkpoint_path):
+                            os.remove(best_checkpoint_path)
+                        else:
+                            shutil.rmtree(best_checkpoint_path)
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ Could not remove existing best checkpoint path '{best_checkpoint_path}': {e}"
+                        )
+            except Exception:
+                pass
+
             try:
                 self._copytree_atomic(checkpoint_dir, best_checkpoint_path)
             except Exception as e:
@@ -333,6 +359,11 @@ class CheckpointSaver:
                 self.checkpoint_manager.update_best_checkpoint(
                     current_metrics, best_checkpoint_path
                 )
+                # Record the step for interval gating
+                try:
+                    setattr(self.checkpoint_manager, "_last_best_save_step", int(step))
+                except Exception:
+                    pass
 
                 # Remove old best if different
                 if (
@@ -341,7 +372,10 @@ class CheckpointSaver:
                     and os.path.exists(old_best_path)
                 ):
                     try:
-                        shutil.rmtree(old_best_path)
+                        if os.path.islink(old_best_path):
+                            os.remove(old_best_path)
+                        else:
+                            shutil.rmtree(old_best_path)
                         logger.info(
                             f"🗑️ Removed old best: {os.path.basename(old_best_path)}"
                         )
@@ -542,40 +576,8 @@ class CheckpointSaver:
         unwrapped_model: torch.nn.Module,
         processing_class: Optional[Any],
     ) -> None:
-        try:
-            if hasattr(unwrapped_model, "training_config") and getattr(
-                unwrapped_model.training_config, "coordinate_tokens_enabled", False
-            ):
-                # Try to derive coordinate token range from tokenizer
-                coord_range = [None, None]
-                try:
-                    from src_new_json.processing.special_tokens import get_coord_token_range
-
-                    if processing_class is not None:
-                        rng = get_coord_token_range(processing_class)
-                        if rng is not None and rng.end_exclusive > rng.start_id:
-                            coord_range = [rng.start_id, rng.end_exclusive]
-                except Exception:
-                    coord_range = [None, None]
-
-                coord_config = {
-                    "coordinate_tokens_enabled": True,
-                    "max_coord_value": getattr(
-                        unwrapped_model.training_config, "max_coord_value", None
-                    ),
-                    "vocab_size_extended": len(processing_class.get_vocab())
-                    if processing_class is not None
-                    and hasattr(processing_class, "get_vocab")
-                    else None,
-                    "coordinate_token_range": coord_range,
-                }
-                with open(
-                    os.path.join(checkpoint_dir, "coordinate_config.json"), "w"
-                ) as f:
-                    json.dump(coord_config, f, indent=2)
-                logger.info("✅ [RANK 0] Coordinate config saved")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to write coordinate_config.json: {e}")
+        # JSON mode: no coordinate config file
+        return
 
     def _ensure_auxiliary_files(
         self,

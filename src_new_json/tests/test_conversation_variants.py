@@ -9,7 +9,6 @@ import logging
 from PIL import Image
 from transformers import Qwen2VLProcessor
 from src_new_json.processing.templates import COORD_TO_DESC_USER_PROMPT, DESC_TO_COORD_USER_PROMPT, BASE_USER_PROMPT, get_system_prompt
-from src_new_json.processing.coordinate_converter import CoordinateTokenConverter
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -44,7 +43,7 @@ def _geom_to_token_str(obj: Dict[str, Any]) -> str:
 class TestConversationVariants(unittest.TestCase):
     processor: Qwen2VLProcessor | None = None
     logger: logging.Logger | None = None
-    converter: CoordinateTokenConverter | None = None
+    converter: object | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -56,8 +55,7 @@ class TestConversationVariants(unittest.TestCase):
                 f"Model not found at default path: {model_path}. Please place the model there."
             )
         cls.processor = Qwen2VLProcessor.from_pretrained(str(model_path))
-        # Build a converter matching production defaults (tokens disabled in this test)
-        cls.converter = CoordinateTokenConverter(max_coord_value=1024, coordinate_tokens_enabled=False)
+        cls.converter = None
 
         # Set up file logger at repo root
         log_path = repo_root / "conversation_variants.log"
@@ -86,7 +84,7 @@ class TestConversationVariants(unittest.TestCase):
 
     def _dense_caption_messages(self) -> List[Dict[str, Any]]:
         # Image-only user; system shows the real instruction prompt
-        system_text = get_system_prompt(coordinate_tokens_enabled=False)
+        system_text = get_system_prompt()
         return [
             {"role": "system", "content": system_text},
             {"role": "user", "content": [{"type": "image"}]},
@@ -94,8 +92,8 @@ class TestConversationVariants(unittest.TestCase):
 
     def _coord_to_desc_messages(self, objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         header = COORD_TO_DESC_USER_PROMPT
-        body_lines = [_geom_to_token_str(o) for o in objects]
-        user_text = header + "\n" + "\n".join(body_lines)
+        # In JSON mode, the user body is a JSON array with geometry-only objects; keep placeholder
+        user_text = header + "\n" + "[]"
         return [
             {"role": "system", "content": ""},
             {
@@ -109,8 +107,8 @@ class TestConversationVariants(unittest.TestCase):
 
     def _desc_to_coord_messages(self, objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         header = DESC_TO_COORD_USER_PROMPT
-        body_lines = [f"<|object_ref_start|>{o.get('desc', '')}<|object_ref_end|>" for o in objects]
-        user_text = header + "\n" + "\n".join(body_lines)
+        # In JSON mode, the user body is a JSON array with label-only objects; keep placeholder
+        user_text = header + "\n" + "[]"
         return [
             {"role": "system", "content": ""},
             {
@@ -137,35 +135,24 @@ class TestConversationVariants(unittest.TestCase):
         # Dense caption
         dense_msgs = self._dense_caption_messages()
         dense_text = self._apply_template(dense_msgs, img)
-        assert self.converter is not None
-        dense_assistant = self.converter.convert_objects_to_tokens(objects)
+        expected_dense_suffix = "]"  # JSON array closes
         self._log(
-            "DENSE_CAPTION (user-only image) — EXPECTED <|im_start|>assistant content",
-            dense_assistant,
+            "DENSE_CAPTION (raw chat template)", dense_text
         )
-        self._log("DENSE_CAPTION (raw chat template)", dense_text)
+        self.assertIn("<|im_start|>system", dense_text)
+        self.assertIn("<|im_start|>user", dense_text)
 
         # coord_to_desc
         c2d_msgs = self._coord_to_desc_messages(objects)
         c2d_text = self._apply_template(c2d_msgs, img)
-        assert self.converter is not None
-        c2d_assistant = self.converter.convert_objects_to_desc_only(objects)
-        self._log(
-            "COORD_TO_DESC — EXPECTED <|im_start|>assistant content (desc-only)",
-            c2d_assistant,
-        )
         self._log("COORD_TO_DESC (raw chat template)", c2d_text)
+        self.assertIn(COORD_TO_DESC_USER_PROMPT.split("\n")[0], c2d_text)
 
         # desc_to_coord
         d2c_msgs = self._desc_to_coord_messages(objects)
         d2c_text = self._apply_template(d2c_msgs, img)
-        assert self.converter is not None
-        d2c_assistant = self.converter.convert_objects_to_geometry_only(objects)
-        self._log(
-            "DESC_TO_COORD — EXPECTED <|im_start|>assistant content (geom-only)",
-            d2c_assistant,
-        )
         self._log("DESC_TO_COORD (raw chat template)", d2c_text)
+        self.assertIn(DESC_TO_COORD_USER_PROMPT.split("\n")[0], d2c_text)
 
 
 if __name__ == "__main__":

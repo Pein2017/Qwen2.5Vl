@@ -66,36 +66,53 @@ class TeacherPoolManager:
 
     def __init__(
         self,
-        teacher_pool_file: str,
+        teacher_pool_file: Optional[str] = None,
         config: Optional["Config"] = None,
     ):
         """
         Initialize teacher pool manager.
 
         Args:
-            teacher_pool_file: Path to teacher pool file
+            teacher_pool_file: Path to teacher pool file (optional when dynamic_pairing_enabled=True)
             config: Configuration object with teacher settings
 
         Raises:
-            FileNotFoundError: If teacher_pool_file doesn't exist
-            ValueError: If teacher pool is empty or invalid
+            FileNotFoundError: If teacher_pool_file doesn't exist and dynamic pairing is disabled
+            ValueError: If teacher pool is empty when required
         """
         self.teacher_pool_file = teacher_pool_file
         self.config = config
 
-        # Load teacher pool
-        self.teacher_pool = self._load_teacher_pool()
-        self.image_to_teachers = self._build_image_index()
+        # Check if dynamic pairing is enabled
+        self.dynamic_pairing_enabled = getattr(config, 'dynamic_pairing_enabled', True) if config else False
 
-        # Dynamic pairing indices
-        self._teacher_metadata: List[Dict[str, Any]] = self._build_metadata_index()
-        self._median_object_count: float = self._compute_median_object_count()
-
-        logger.info(f"✅ Teacher pool loaded with {len(self.teacher_pool)} examples")
-        logger.info(f"✅ Image index built with {len(self.image_to_teachers)} images")
-        logger.info(
-            f"✅ Teacher metadata indexed: tokens/geometry/brand for {len(self._teacher_metadata)} teachers"
-        )
+        # Load teacher pool only if file is provided or dynamic pairing is disabled
+        if teacher_pool_file or not self.dynamic_pairing_enabled:
+            self.teacher_pool = self._load_teacher_pool()
+        else:
+            # No teacher pool file and dynamic pairing enabled - use empty pool
+            logger.info("No teacher pool file provided; using dynamic pairing from training data")
+            self.teacher_pool = []
+        
+        # Only build indices if teacher pool is not empty
+        if self.teacher_pool:
+            self.image_to_teachers = self._build_image_index()
+            # Dynamic pairing indices
+            self._teacher_metadata: List[Dict[str, Any]] = self._build_metadata_index()
+            self._median_object_count: float = self._compute_median_object_count()
+            
+            logger.info(f"✅ Teacher pool loaded with {len(self.teacher_pool)} examples")
+            logger.info(f"✅ Image index built with {len(self.image_to_teachers)} images")
+            logger.info(
+                f"✅ Teacher metadata indexed: tokens/geometry/brand for {len(self._teacher_metadata)} teachers"
+            )
+        else:
+            # Empty teacher pool - initialize empty structures
+            self.image_to_teachers = {}
+            self._teacher_metadata = []
+            self._median_object_count = 0.0
+            
+            logger.info("✅ Teacher pool initialized as empty (max_teachers=0 mode)")
 
     def _load_teacher_pool(self) -> List[Dict[str, Any]]:
         """
@@ -108,15 +125,23 @@ class TeacherPoolManager:
             FileNotFoundError: If teacher pool file doesn't exist
             ValueError: If teacher pool is empty or invalid
         """
-        # FAIL-FAST: Validate teacher pool file
+        # Handle case where no teacher pool file is provided (dynamic pairing mode)
         if not self.teacher_pool_file:
-            raise ValueError("teacher_pool_file cannot be empty")
+            if self.dynamic_pairing_enabled:
+                logger.info("No teacher pool file provided; dynamic pairing will use training data")
+                return []  # Empty teacher pool for dynamic pairing
+            else:
+                raise ValueError("teacher_pool_file cannot be empty when dynamic_pairing_enabled=False")
 
         pool_file = Path(self.teacher_pool_file)
         if not pool_file.exists():
-            raise FileNotFoundError(
-                f"Teacher pool file not found: {self.teacher_pool_file}"
-            )
+            if self.dynamic_pairing_enabled:
+                logger.info(f"Teacher pool file not found: {self.teacher_pool_file}; using dynamic pairing instead")
+                return []  # Empty teacher pool for dynamic pairing
+            else:
+                raise FileNotFoundError(
+                    f"Teacher pool file not found: {self.teacher_pool_file}"
+                )
 
         # Load teacher pool with error handling (JSONL format)
         teacher_pool = []
@@ -142,9 +167,10 @@ class TeacherPoolManager:
                 f"❌ CRITICAL: Failed to read teacher pool file: {e}"
             ) from e
 
-        # FAIL-FAST: Validate teacher pool
+        # FAIL-FAST: Validate teacher pool (allow empty for max_teachers=0 scenarios)
         if not teacher_pool:
-            raise ValueError("Teacher pool is empty")
+            logger.warning("Teacher pool is empty - this is expected when max_teachers=0 for dynamic teacher-sampling")
+            # Return empty list instead of failing
 
         if not isinstance(teacher_pool, list):
             raise ValueError(f"Teacher pool must be a list, got {type(teacher_pool)}")
@@ -210,11 +236,11 @@ class TeacherPoolManager:
         """
         metadata_list: List[Dict[str, Any]] = []
         for idx, teacher in enumerate(self.teacher_pool):
-            objects = teacher.get("objects", []) or []
+            objects = teacher["objects"] if (isinstance(teacher, dict) and ("objects" in teacher) and isinstance(teacher["objects"], list)) else []
             tokens: set[str] = set()
             geometry_set: set[str] = set()
             for obj in objects:
-                desc = obj.get("desc", "")
+                desc = obj["desc"] if (isinstance(obj, dict) and ("desc" in obj)) else ""
                 if isinstance(desc, str) and desc:
                     tokens.update(self._extract_tokens_from_desc(desc))
                 for g in ("bbox_2d", "quad", "line"):
@@ -223,9 +249,12 @@ class TeacherPoolManager:
                         break
             brand = self._detect_brand(tokens)
             object_count = int(len(objects))
-            images = teacher.get("images", []) or (
-                [] if teacher.get("image") is None else [teacher.get("image")]
-            )
+            if ("images" in teacher) and isinstance(teacher["images"], list):
+                images = teacher["images"]
+            elif ("image" in teacher) and (teacher["image"] is not None):
+                images = [teacher["image"]]
+            else:
+                images = []
             image_basename = (
                 self._normalize_path(images[0])
                 if isinstance(images, list) and images
@@ -286,11 +315,11 @@ class TeacherPoolManager:
     def _compute_student_features(
         self, student_sample: Dict[str, Any]
     ) -> Dict[str, Any]:
-        objects = student_sample.get("objects", []) or []
+        objects = student_sample["objects"] if (isinstance(student_sample, dict) and ("objects" in student_sample) and isinstance(student_sample["objects"], list)) else []
         tokens: set[str] = set()
         geometry_set: set[str] = set()
         for obj in objects:
-            desc = obj.get("desc", "")
+            desc = obj["desc"] if (isinstance(obj, dict) and ("desc" in obj)) else ""
             if isinstance(desc, str) and desc:
                 tokens.update(self._extract_tokens_from_desc(desc))
             for g in ("bbox_2d", "quad", "line"):
@@ -299,9 +328,12 @@ class TeacherPoolManager:
                     break
         brand = self._detect_brand(tokens)
         object_count = int(len(objects))
-        images = student_sample.get("images", []) or (
-            [] if student_sample.get("image") is None else [student_sample.get("image")]
-        )
+        if ("images" in student_sample) and isinstance(student_sample["images"], list):
+            images = student_sample["images"]
+        elif ("image" in student_sample) and (student_sample["image"] is not None):
+            images = [student_sample["image"]]
+        else:
+            images = []
         image_basename = (
             self._normalize_path(images[0])
             if isinstance(images, list) and images

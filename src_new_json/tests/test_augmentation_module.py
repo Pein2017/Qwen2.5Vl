@@ -203,7 +203,8 @@ class TestObjectAwareAug(unittest.TestCase):
         pipe = ObjectAwareAugmentationPipeline.from_config(cfg)
         _, out_sample = pipe.apply(copy.deepcopy(sample), [img], sample_index=0)
         descs = [o["desc"] for o in out_sample["objects"]]
-        self.assertTrue(any("有遮挡" in d for d in descs))
+        # Occlusion is monitoring-only in JSON mode; desc should not be mutated
+        self.assertFalse(any("有遮挡" in d for d in descs))
 
 
 if __name__ == "__main__":

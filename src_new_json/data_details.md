@@ -27,16 +27,16 @@
 
 ## Geometry & Object Types
 - Geometry formats
-  - bbox_2d: axis-aligned rectangle
+  - box_points: axis-aligned rectangle (two [x,y] pairs: top-left and bottom-right)
   - quad: 4-point polygon
   - line: polyline (fibers/wires)
 - Allowed geometry per object type
-  - bbu: quad, bbox_2d
-  - bbu_shield: quad, bbox_2d
-  - connect_point (screws, fiber connectors): quad, bbox_2d
+  - bbu: quad, box_points
+  - bbu_shield: quad, box_points
+  - connect_point (screws, fiber connectors): quad, box_points
   - fiber: line
   - wire: line
-  - label: quad, bbox_2d
+  - label: quad, box_points
 
 ## Attributes by Object Type
 All values in data are canonical (defined in the taxonomy). Below are their meanings in English.

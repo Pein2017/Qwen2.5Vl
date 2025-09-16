@@ -306,10 +306,18 @@ def create_trainer_with_new_architecture(
         image_processor.max_pixels = int(config.max_pixels)
         logger.info(f"🔧 Set image_processor.max_pixels={image_processor.max_pixels}")
 
-    # Create teacher pool manager (lazy loading of teachers)
-    teacher_pool_manager = TeacherPoolManager(
-        teacher_pool_file=config.teacher_pool_file
-    )
+    # Create teacher pool manager (optional; dynamic pairing can avoid fixed pool)
+    teacher_pool_manager = None
+    try:
+        if getattr(config, "teacher_pool_file", None):
+            teacher_pool_manager = TeacherPoolManager(
+                teacher_pool_file=config.teacher_pool_file
+            )
+            logger.info("✅ Teacher pool manager loaded (will be used as fallback to dynamic pairing)")
+        else:
+            logger.info("ℹ️ No teacher_pool_file provided; training will use dynamic pairing only")
+    except Exception as e:
+        logger.warning(f"⚠️ Teacher pool manager unavailable ({e}); proceeding with dynamic pairing only")
 
     # Create datasets
     logger.info("Creating datasets...")
@@ -459,13 +467,12 @@ def create_trainer_with_new_architecture(
     # Progressive unfreeze callback is deprecated in favor of phase_name/PhaseFreezeManager
     logger.info("⏭ ProgressiveUnfreezeCallback deprecated; skipping registration")
 
-    # Register augmentation schedule callback when provided via YAML
+    # Register epoch callback for augmentation schedule and dynamic pairing (always enabled)
     try:
-        if getattr(config, "augmentation_schedule", None):
-            from src_new.training.callbacks import AugmentationScheduleCallback
+        from src_new.training.callbacks import AugmentationScheduleCallback
 
-            trainer.add_callback(AugmentationScheduleCallback())
-            logger.info("✅ Registered AugmentationScheduleCallback")
+        trainer.add_callback(AugmentationScheduleCallback())
+        logger.info("✅ Registered AugmentationScheduleCallback")
     except Exception as e:
         logger.warning(f"⚠️ Could not register AugmentationScheduleCallback: {e}")
 

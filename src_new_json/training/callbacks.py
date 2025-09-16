@@ -52,41 +52,46 @@ def get_rank_info() -> tuple[int, int]:
 @dataclass
 class LossTracker:
     """
-    Track and compute moving averages for multi-component loss.
+    Track and compute moving averages for grouped loss.
 
     This class maintains rolling averages of different loss components
     to provide smooth metrics for monitoring training progress.
     """
 
     # Configuration
+    
     window_size: int = 100
 
     # Loss component history
     loss_history: Optional[List[float]] = None
-    llm_loss_history: Optional[List[float]] = None
-    coordinate_loss_history: Optional[List[float]] = None
     teacher_loss_history: Optional[List[float]] = None
     student_loss_history: Optional[List[float]] = None
 
-    # Granular teacher-student loss component history
+    # Granular teacher-student grouped loss component history
     teacher_llm_loss_history: Optional[List[float]] = None
-    teacher_l1_loss_history: Optional[List[float]] = None
     student_llm_loss_history: Optional[List[float]] = None
-    student_l1_loss_history: Optional[List[float]] = None
+    teacher_caption_loss_history: Optional[List[float]] = None
+    teacher_grounding_loss_history: Optional[List[float]] = None
+    teacher_formatting_loss_history: Optional[List[float]] = None
+    student_caption_loss_history: Optional[List[float]] = None
+    student_grounding_loss_history: Optional[List[float]] = None
+    student_formatting_loss_history: Optional[List[float]] = None
 
     def __post_init__(self):
         """Initialize loss history lists."""
         self.loss_history = []
-        self.llm_loss_history = []
-        self.coordinate_loss_history = []
         self.teacher_loss_history = []
         self.student_loss_history = []
 
-        # Initialize granular teacher-student loss histories
+        # Initialize granular histories
         self.teacher_llm_loss_history = []
-        self.teacher_l1_loss_history = []
         self.student_llm_loss_history = []
-        self.student_l1_loss_history = []
+        self.teacher_caption_loss_history = []
+        self.teacher_grounding_loss_history = []
+        self.teacher_formatting_loss_history = []
+        self.student_caption_loss_history = []
+        self.student_grounding_loss_history = []
+        self.student_formatting_loss_history = []
 
     def update(self, loss_components: Any) -> None:
         """
@@ -99,59 +104,44 @@ class LossTracker:
         main_loss = self._extract_loss_value(
             loss_components.loss if hasattr(loss_components, "loss") else None
         )
-        llm_loss = self._extract_loss_value(
-            loss_components.llm_loss if hasattr(loss_components, "llm_loss") else None
-        )
-        coordinate_loss = self._extract_loss_value(
-            loss_components.coordinate_loss
-            if hasattr(loss_components, "coordinate_loss")
-            else None
-        )
-        teacher_loss = self._extract_loss_value(
-            loss_components.teacher_loss
-            if hasattr(loss_components, "teacher_loss")
-            else None
-        )
-        student_loss = self._extract_loss_value(
-            loss_components.student_loss
-            if hasattr(loss_components, "student_loss")
-            else None
-        )
-
-        # Extract granular teacher-student loss components
         teacher_llm_loss = self._extract_loss_value(
-            loss_components.teacher_llm_loss
-            if hasattr(loss_components, "teacher_llm_loss")
-            else None
-        )
-        teacher_l1_loss = self._extract_loss_value(
-            loss_components.teacher_l1_loss
-            if hasattr(loss_components, "teacher_l1_loss")
-            else None
+            getattr(loss_components, "teacher_llm_loss", None)
         )
         student_llm_loss = self._extract_loss_value(
-            loss_components.student_llm_loss
-            if hasattr(loss_components, "student_llm_loss")
-            else None
+            getattr(loss_components, "student_llm_loss", None)
         )
-        student_l1_loss = self._extract_loss_value(
-            loss_components.student_l1_loss
-            if hasattr(loss_components, "student_l1_loss")
-            else None
+        teacher_caption_loss = self._extract_loss_value(
+            getattr(loss_components, "teacher_caption_loss", None)
+        )
+        teacher_grounding_loss = self._extract_loss_value(
+            getattr(loss_components, "teacher_grounding_loss", None)
+        )
+        teacher_formatting_loss = self._extract_loss_value(
+            getattr(loss_components, "teacher_formatting_loss", None)
+        )
+        student_caption_loss = self._extract_loss_value(
+            getattr(loss_components, "student_caption_loss", None)
+        )
+        student_grounding_loss = self._extract_loss_value(
+            getattr(loss_components, "student_grounding_loss", None)
+        )
+        student_formatting_loss = self._extract_loss_value(
+            getattr(loss_components, "student_formatting_loss", None)
         )
 
         # Update histories
         self._update_history(self.loss_history, main_loss)
-        self._update_history(self.llm_loss_history, llm_loss)
-        self._update_history(self.coordinate_loss_history, coordinate_loss)
-        self._update_history(self.teacher_loss_history, teacher_loss)
-        self._update_history(self.student_loss_history, student_loss)
+        self._update_history(self.teacher_loss_history, teacher_llm_loss)
+        self._update_history(self.student_loss_history, student_llm_loss)
 
-        # Update granular teacher-student loss histories
         self._update_history(self.teacher_llm_loss_history, teacher_llm_loss)
-        self._update_history(self.teacher_l1_loss_history, teacher_l1_loss)
         self._update_history(self.student_llm_loss_history, student_llm_loss)
-        self._update_history(self.student_l1_loss_history, student_l1_loss)
+        self._update_history(self.teacher_caption_loss_history, teacher_caption_loss)
+        self._update_history(self.teacher_grounding_loss_history, teacher_grounding_loss)
+        self._update_history(self.teacher_formatting_loss_history, teacher_formatting_loss)
+        self._update_history(self.student_caption_loss_history, student_caption_loss)
+        self._update_history(self.student_grounding_loss_history, student_grounding_loss)
+        self._update_history(self.student_formatting_loss_history, student_formatting_loss)
 
     def _extract_loss_value(self, loss: Any) -> Optional[float]:
         """
@@ -197,15 +187,14 @@ class LossTracker:
         """
         return {
             "loss": self._compute_average(self.loss_history),
-            "llm_loss": self._compute_average(self.llm_loss_history),
-            "coordinate_loss": self._compute_average(self.coordinate_loss_history),
-            "teacher_loss": self._compute_average(self.teacher_loss_history),
-            "student_loss": self._compute_average(self.student_loss_history),
-            # Granular teacher-student loss components
             "teacher_llm_loss": self._compute_average(self.teacher_llm_loss_history),
-            "teacher_l1_loss": self._compute_average(self.teacher_l1_loss_history),
             "student_llm_loss": self._compute_average(self.student_llm_loss_history),
-            "student_l1_loss": self._compute_average(self.student_l1_loss_history),
+            "teacher_caption_loss": self._compute_average(self.teacher_caption_loss_history),
+            "teacher_grounding_loss": self._compute_average(self.teacher_grounding_loss_history),
+            "teacher_formatting_loss": self._compute_average(self.teacher_formatting_loss_history),
+            "student_caption_loss": self._compute_average(self.student_caption_loss_history),
+            "student_grounding_loss": self._compute_average(self.student_grounding_loss_history),
+            "student_formatting_loss": self._compute_average(self.student_formatting_loss_history),
         }
 
     def _compute_average(self, history: List[float]) -> Optional[float]:
@@ -225,16 +214,16 @@ class LossTracker:
     def reset(self) -> None:
         """Reset all loss histories."""
         self.loss_history = []
-        self.llm_loss_history = []
-        self.coordinate_loss_history = []
         self.teacher_loss_history = []
         self.student_loss_history = []
-
-        # Reset granular teacher-student loss histories
         self.teacher_llm_loss_history = []
-        self.teacher_l1_loss_history = []
         self.student_llm_loss_history = []
-        self.student_l1_loss_history = []
+        self.teacher_caption_loss_history = []
+        self.teacher_grounding_loss_history = []
+        self.teacher_formatting_loss_history = []
+        self.student_caption_loss_history = []
+        self.student_grounding_loss_history = []
+        self.student_formatting_loss_history = []
 
 
 class AugmentationScheduleCallback(TrainerCallback):
@@ -244,9 +233,9 @@ class AugmentationScheduleCallback(TrainerCallback):
         self, args, state: TrainerState, control: TrainerControl, **kwargs
     ):
         trainer = (
-            kwargs.get("model")._get_training_trainer()
-            if hasattr(kwargs.get("model"), "_get_training_trainer")
-            else kwargs.get("trainer")
+            kwargs["model"]._get_training_trainer()
+            if ("model" in kwargs and hasattr(kwargs["model"], "_get_training_trainer"))
+            else (kwargs["trainer"] if ("trainer" in kwargs) else None)
         )
         dataset = (
             getattr(trainer, "train_dataset", None) if trainer is not None else None

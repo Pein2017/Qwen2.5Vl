@@ -7,41 +7,42 @@ vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
 lr_top_layers: 1.0e-5
-lr_coord_slice: 5.0e-6
-llm_top_k_block: 6   
-
+# JSON mode: remove coord-slice lr
+llm_top_k_block: 4   
 
 collator_type: standard
-packed_segment_isolation: false  # Enable block-diagonal attention to isolate packed segments
-teacher_ratio: 0.0
+# JSON mode: packed segment isolation not used
+teacher_ratio: 0.6 
 
-model_path: outputs/7B-full-retrained/phase_2/9-10-phase_2-bs_32-ep_40-teacher_0.3-3_types_tokens-last_4_layers/best-2000-eval_loss0.4499
+model_path: model_cache/Qwen/Qwen2.5-VL-3B-Instruct
 
-run_name: "9-11-phase_2-bs_16-ep_40-teacher_0-3_types_tokens-last_6_layers-resume"
-output_dir: outputs/7B-full-retrained/phase_2
+run_name: "9-16-json-phase_2-dynamic_teacher"
+output_dir: outputs/7B-json/phase_2
 
 phase_name: phase_2
 # Restrict training to only these special tokens (embeddings + LM head rows)
-trainable_token_strings:
-  - "<|line_start|>"
-  - "<|line_end|>"
-  - "<|box_start|>"
-  - "<|box_end|>"
-  - "<|quad_start|>"
-  - "<|quad_end|>"
+
+
+dynamic_pairing_enabled: true
+dynamic_pair_target_assignment: current
+dynamic_pair_cross_bucket_explore_prob: 0.0
+dynamic_pair_candidate_pool_size: 128
+dynamic_pair_max_teacher_uses_per_epoch: 5
+dynamic_pair_temperature: 0.7
 
 # Enable augmentation in phase_2
 use_aug: true
 augmentation_schedule:
-  - { start_epoch: 0, preset: "conservative" }
-  - { start_epoch: 15, preset: "moderate" }
+  - { start_epoch: 0, preset: "off" }
+  - { start_epoch: 2, preset: "conservative" }
+  - { start_epoch: 20, preset: "moderate" }
 
 
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
   rng_seed: 12345
   photometric:
-    enabled: false
+    enabled: true
     apply_prob: 0.5
     num_ops: 1
     magnitude: 0.3
@@ -49,16 +50,15 @@ teacher_augmentation:
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
+# JSON mode: no coordinate loss weight
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.0
-grounding_loss_weight: 1.0
+grounding_loss_weight: 1.2
 formatting_loss_weight: 0.3
 
 
 conversation_variant_ratios:
-  dense_caption: 0.3
-  coords_to_desc: 0.3
-  desc_to_coords: 0.2
-  summary: 0.2
+  dense_caption: 0.4
+  coords_to_desc: 0.2
+  desc_to_coords: 0.4
 

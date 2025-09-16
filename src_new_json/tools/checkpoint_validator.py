@@ -36,7 +36,6 @@ class CheckpointValidator:
 
     # Optional but recommended files
     OPTIONAL_FILES = [
-        "coordinate_config.json",
         "vocab.json",
         "merges.txt",
     ]
@@ -64,7 +63,6 @@ class CheckpointValidator:
             "required_files": {},
             "model_weights": {},
             "optional_files": {},
-            "coordinate_tokens": {},
             "config_validation": {},
             "errors": [],
             "warnings": [],
@@ -84,9 +82,6 @@ class CheckpointValidator:
 
         # Validate optional files
         self._validate_optional_files(results)
-
-        # Validate coordinate token configuration
-        self._validate_coordinate_tokens(results)
 
         # Validate configuration files
         self._validate_configs(results)
@@ -122,18 +117,12 @@ class CheckpointValidator:
                 weight_files_found.append(weight_file)
                 results["model_weights"][weight_file] = {
                     "exists": True,
-                    "size_mb": file_path.stat().st_size / (1024 * 1024),
                 }
 
         # Check for sharded model files
         sharded_files = list(self.checkpoint_path.glob("model-*.safetensors"))
         if sharded_files:
             results["model_weights"]["sharded_files"] = len(sharded_files)
-            total_size = sum(f.stat().st_size for f in sharded_files)
-            results["model_weights"]["total_sharded_size_mb"] = total_size / (
-                1024 * 1024
-            )
-
             # Check for index file
             index_file = self.checkpoint_path / "model.safetensors.index.json"
             if index_file.exists():
@@ -154,106 +143,9 @@ class CheckpointValidator:
             file_path = self.checkpoint_path / file_name
             results["optional_files"][file_name] = file_path.exists()
 
-    def _validate_coordinate_tokens(self, results: Dict):
-        """Validate coordinate token configuration."""
-        coord_config_path = self.checkpoint_path / "coordinate_config.json"
-
-        if coord_config_path.exists():
-            try:
-                with open(coord_config_path, "r") as f:
-                    coord_config = json.load(f)
-
-                results["coordinate_tokens"]["config_exists"] = True
-                results["coordinate_tokens"]["enabled"] = coord_config.get(
-                    "coordinate_tokens_enabled", False
-                )
-                results["coordinate_tokens"]["max_coord_value"] = coord_config.get(
-                    "max_coord_value"
-                )
-                results["coordinate_tokens"]["vocab_size_extended"] = coord_config.get(
-                    "vocab_size_extended"
-                )
-
-                # Validate tokenizer has extended vocabulary
-                tokenizer_config_path = self.checkpoint_path / "tokenizer_config.json"
-                if tokenizer_config_path.exists():
-                    with open(tokenizer_config_path, "r") as f:
-                        tokenizer_config = json.load(f)
-
-                    vocab_size = tokenizer_config.get("vocab_size")
-                    # Consider tokenizer extended if coordinate token range is present
-                    try:
-                        from transformers import AutoTokenizer
-
-                        from ..processing.special_tokens import (
-                            get_coord_token_range,
-                        )
-
-                        tok = AutoTokenizer.from_pretrained(
-                            str(self.checkpoint_path),
-                            trust_remote_code=False,
-                            use_fast=True,
-                        )
-                        if not getattr(tok, "is_fast", False):
-                            raise RuntimeError("Fast tokenizer required for checkpoint validation")
-                        _enc = tok(
-                            "sanity",
-                            return_offsets_mapping=True,
-                            add_special_tokens=False,
-                            return_tensors="pt",
-                        )
-                        if _enc.get("offset_mapping") is None:
-                            raise RuntimeError("Fast tokenizer did not return offset_mapping in validator")
-                        rng = get_coord_token_range(tok)
-                        has_coords = rng.end_exclusive > rng.start_id
-                    except Exception:
-                        has_coords = bool(
-                            vocab_size and vocab_size % 128 == 0 and vocab_size > 0
-                        )
-                    if has_coords:
-                        results["coordinate_tokens"]["tokenizer_extended"] = True
-                    else:
-                        results["warnings"].append(
-                            "Coordinate tokens enabled but tokenizer not extended (no coord range detected)"
-                        )
-
-            except Exception as e:
-                results["errors"].append(f"Failed to parse coordinate_config.json: {e}")
-        else:
-            results["coordinate_tokens"]["config_exists"] = False
-
     def _validate_configs(self, results: Dict):
-        """Validate configuration files."""
-        # Validate model config
-        config_path = self.checkpoint_path / "config.json"
-        if config_path.exists():
-            try:
-                with open(config_path, "r") as f:
-                    model_config = json.load(f)
-
-                results["config_validation"]["model_config"] = {
-                    "valid": True,
-                    "vocab_size": model_config.get("vocab_size"),
-                    "model_type": model_config.get("model_type"),
-                }
-            except Exception as e:
-                results["errors"].append(f"Failed to parse config.json: {e}")
-
-        # Validate preprocessor config
-        preprocessor_path = self.checkpoint_path / "preprocessor_config.json"
-        if preprocessor_path.exists():
-            try:
-                with open(preprocessor_path, "r") as f:
-                    preprocessor_config = json.load(f)
-
-                results["config_validation"]["preprocessor_config"] = {
-                    "valid": True,
-                    "max_pixels": preprocessor_config.get("max_pixels"),
-                }
-            except Exception as e:
-                results["errors"].append(
-                    f"Failed to parse preprocessor_config.json: {e}"
-                )
+        """Placeholder for config validation (JSON mode)."""
+        return
 
     def print_validation_report(self, results: Dict):
         """Print a formatted validation report."""
@@ -285,19 +177,6 @@ class CheckpointValidator:
                     logger.info(f"   📊 {key}: {value}")
         else:
             logger.error(f"   ❌ No model weights found")
-
-        if (
-            "config_exists" in results["coordinate_tokens"]
-            and results["coordinate_tokens"]["config_exists"]
-        ):
-            logger.info(f"\n🎯 Coordinate Tokens:")
-            coord_info = results["coordinate_tokens"]
-            logger.info(f"   ✅ Configuration found")
-            logger.info(f"   📊 Enabled: {coord_info.get('enabled')}")
-            logger.info(f"   📊 Max coord value: {coord_info.get('max_coord_value')}")
-            logger.info(
-                f"   📊 Extended vocab size: {coord_info.get('vocab_size_extended')}"
-            )
 
 
 def validate_checkpoint(

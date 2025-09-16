@@ -52,18 +52,11 @@ class CoordinateProcessor:
     _tokenizer: Optional[PreTrainedTokenizerBase]
 
     def __init__(self, config: "Config") -> None:
-        """
-        Initialize coordinate processor.
-
-        Args:
-            config: Configuration object with coordinate settings
-        """
         self.config = config
-        self.coordinate_tokens_enabled = config.coordinate_tokens_enabled
-        self.max_coord_value = config.max_coord_value
-        self.original_vocab_size = None  # Will be set when tokenizer is available
-
-        # Initialize coordinate token range as None - will be set when tokenizer is available
+        # JSON mode: disable coordinate tokens
+        self.coordinate_tokens_enabled = False
+        self.max_coord_value = 0
+        self.original_vocab_size = None
         self.coordinate_token_range = None
         self._tokenizer = None
 
@@ -82,18 +75,9 @@ class CoordinateProcessor:
         rng = get_coord_token_range(tokenizer)
         vocab = tokenizer.get_vocab()
 
-        if self.coordinate_tokens_enabled:
-            if rng.end_exclusive <= rng.start_id:
-                raise ValueError(
-                    "Coordinate tokens enabled but no valid coordinate token range detected"
-                )
-            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
-            self.original_vocab_size = int(rng.start_id)
-            logger.info(f"🎯 Coordinate token range: {self.coordinate_token_range}")
-        else:
-            # Coordinates disabled: record vocab size and zero range
-            self.original_vocab_size = len(vocab)
-            self.coordinate_token_range = (0, 0)
+        # JSON mode: coordinates disabled
+        self.original_vocab_size = len(vocab)
+        self.coordinate_token_range = (0, 0)
 
     def update_after_extension(self, tokenizer) -> None:
         """
@@ -111,20 +95,10 @@ class CoordinateProcessor:
         from src_new_json.processing.special_tokens import get_coord_token_range
 
         rng = get_coord_token_range(tokenizer)
-        if self.coordinate_tokens_enabled:
-            if rng.end_exclusive <= rng.start_id:
-                raise ValueError(
-                    "Coordinate tokens enabled but no valid coordinate token range after extension"
-                )
-            self.original_vocab_size = int(rng.start_id)
-            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
-            logger.info(
-                f"🎯 Updated after extension: final coordinate token range: {self.coordinate_token_range}"
-            )
-        else:
-            vocab = tokenizer.get_vocab()
-            self.original_vocab_size = len(vocab)
-            self.coordinate_token_range = (0, 0)
+        # JSON mode: coordinates disabled
+        vocab = tokenizer.get_vocab()
+        self.original_vocab_size = len(vocab)
+        self.coordinate_token_range = (0, 0)
 
     def mask_coordinate_logits(
         self,
@@ -141,8 +115,8 @@ class CoordinateProcessor:
         Returns:
             Masked logits tensor
         """
-        if not self.coordinate_tokens_enabled or self.coordinate_token_range is None:
-            return logits
+        # JSON mode: no coordinate masking
+        return logits
 
         # Use the actual coordinate token range from tokenizer (end-exclusive)
         start_idx, end_idx = self.coordinate_token_range
@@ -186,8 +160,8 @@ class CoordinateProcessor:
         Returns:
             Boolean mask for coordinate tokens [batch_size, seq_len]
         """
-        if not self.coordinate_tokens_enabled or self.coordinate_token_range is None:
-            return torch.zeros_like(input_ids, dtype=torch.bool)
+        # JSON mode: no coordinate mask
+        return torch.zeros_like(input_ids, dtype=torch.bool)
 
         # Create mask for coordinate value tokens based on the actual token range
         start_idx, end_idx = self.coordinate_token_range
@@ -244,28 +218,14 @@ class DetectionModel(nn.Module):
         self._config = self.base_model.config
         self.tokenizer = tokenizer
 
-        # Initialize coordinate mode first
-        self._coordinate_mode = config.coordinate_tokens_enabled
+        # JSON mode: disable coordinate mode
+        self._coordinate_mode = False
 
         # Initialize coordinate processor
         self.coordinate_processor = CoordinateProcessor(config)
 
-        # Initialize token processor for vocabulary extension
-        from src_new_json.processing.token_processor import TokenConfig, TokenProcessor
-
-        # Validate required config attributes
-        if not hasattr(config, "new_geometry_tokens"):
-            raise ValueError(
-                "Config missing required attribute 'new_geometry_tokens'. Ensure config validation was run."
-            )
-
-        token_config = TokenConfig(
-            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
-            max_coord_value=config.max_coord_value,
-            new_geometry_tokens=config.new_geometry_tokens or [],
-            coordinate_init_mode=config.coordinate_init_mode,
-        )
-        self.token_processor = TokenProcessor(token_config)
+        # JSON mode: no TokenProcessor required
+        self.token_processor = None
 
         # Store tokenizer reference for coordinate processing
         self._tokenizer = tokenizer
@@ -304,24 +264,7 @@ class DetectionModel(nn.Module):
             self.coordinate_processor._tokenizer = final_tokenizer
 
             # Get coordinate token range - fail fast if tokenizer is invalid
-            rng = get_coord_token_range(final_tokenizer)
-            self.coordinate_processor.coordinate_token_range = (
-                rng.start_id,
-                rng.end_exclusive,
-            )
-
-            if skip_expansion and self._coordinate_mode:
-                # Re-validate coordinate range for skip_expansion mode
-                rng2 = get_coord_token_range(final_tokenizer)
-                if rng2.start_id == rng2.end_exclusive and self._coordinate_mode:
-                    raise ValueError(
-                        "Coordinate mode enabled but no coordinate tokens found in tokenizer. "
-                        "Ensure tokenizer was properly extended with coordinate tokens."
-                    )
-                self.coordinate_processor.coordinate_token_range = (
-                    rng2.start_id,
-                    rng2.end_exclusive,
-                )
+            # JSON mode: no coordinate token range use
 
         # Initialize loss manager lazily to avoid requiring full loss config at construction time
         self.loss_manager = None
@@ -343,20 +286,7 @@ class DetectionModel(nn.Module):
                 self.loss_manager.set_token_grouping_plugin(
                     TokenGroupingPlugin(final_tokenizer)
                 )
-                # If auxiliary coordinate losses are enabled, configure options now
-                if self.training_config.coord_aux_enabled:
-                    self.loss_manager.set_coordinate_aux_options(
-                        tau=float(self.training_config.coord_aux_tau),
-                        sigma_bins=float(self.training_config.coord_aux_sigma_bins),
-                        window_bins=int(self.training_config.coord_aux_window_bins),
-                        topk=int(self.training_config.coord_aux_topk),
-                        lambda_kce=float(self.training_config.coord_aux_lambda_kce),
-                        lambda_unlike=float(
-                            self.training_config.coord_aux_lambda_unlike
-                        ),
-                        lambda_lap1=0.0,  # Laplacian regularizer removed
-                        lambda_lap2=0.0,  # Laplacian regularizer removed
-                    )
+                # JSON mode: coordinate auxiliary losses removed
                 # Laplacian regularizer removed: no embedding accessor needed
 
         # Store initializer for later use
@@ -450,17 +380,7 @@ class DetectionModel(nn.Module):
         # OPTIMIZATION 1: Intelligent checkpoint detection
         is_extended_checkpoint = cls.detect_extended_checkpoint(model_path)
 
-        if is_extended_checkpoint and config.coordinate_tokens_enabled:
-            logger.info(
-                f"🚀 Fast loading - detected extended checkpoint at {model_path}"
-            )
-            # Extended checkpoint detected; vocabulary extension will be skipped by callers
-        elif not config.coordinate_tokens_enabled:
-            logger.info(f"📋 Loading base model - coordinate tokens disabled")
-        else:
-            logger.info(
-                f"🔧 Loading base model - will extend vocabulary for coordinate tokens"
-            )
+        logger.info(f"�� Loading base model")
 
         # OPTIMIZATION 2: Load base model with optimized parameters
         dtype_map = {
@@ -737,9 +657,7 @@ class DetectionModel(nn.Module):
             # Debug logging for coordinate mode
             # Using module-level rank-aware logger
 
-            logger.debug(
-                f"🎯 Using coordinate mode: coordinate_tokens_enabled={self.coordinate_processor.coordinate_tokens_enabled}"
-            )
+            # JSON mode: no coordinate mode logging
             logger.debug(
                 f"🎯 Coordinate token range: {self.coordinate_processor.coordinate_token_range}"
             )
@@ -1233,21 +1151,4 @@ class DetectionModel(nn.Module):
         """
         # Using module-level rank-aware logger
 
-        if checkpoint_info["max_coord_detected"] is not None:
-            config_max_coord = config.max_coord_value
-            checkpoint_max_coord = checkpoint_info["max_coord_detected"]
-
-            if config_max_coord != checkpoint_max_coord:
-                logger.warning(f"⚠️ Configuration mismatch detected:")
-                logger.warning(f"   Config max_coord_value: {config_max_coord}")
-                logger.warning(f"   Checkpoint max_coord: {checkpoint_max_coord}")
-                logger.warning(
-                    "   This may cause issues with coordinate token processing"
-                )
-                logger.warning(
-                    "   Consider updating config to match checkpoint or vice versa"
-                )
-            else:
-                logger.info(
-                    f"✅ Configuration validated: max_coord_value = {config_max_coord}"
-                )
+        # JSON mode: skip coord-related validation

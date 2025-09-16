@@ -110,6 +110,14 @@ class StandardDataCollator:
             "attention_mask": padded_attention_mask,
             "labels": padded_labels,
         }
+        # Optional: propagate sample indices for hardness updates
+        try:
+            if "sample_index" in features[0]:
+                batch["sample_indices"] = torch.tensor(
+                    [int(f["sample_index"]) for f in features], dtype=torch.long
+                )
+        except Exception:
+            pass
         if pixel_values is not None:
             batch["pixel_values"] = pixel_values
         if image_grid_thw is not None:
@@ -122,12 +130,12 @@ class StandardDataCollator:
         # Propagate assistant spans so grouped losses (caption/grounding/formatting) work identically to packed
         try:
             if "teacher_assistant_spans" in features[0]:
-                batch["teacher_assistant_spans"] = [f.get("teacher_assistant_spans", []) for f in features]
+                batch["teacher_assistant_spans"] = [f["teacher_assistant_spans"] for f in features]
             if "student_assistant_spans" in features[0]:
-                batch["student_assistant_spans"] = [f.get("student_assistant_spans", []) for f in features]
+                batch["student_assistant_spans"] = [f["student_assistant_spans"] for f in features]
             if "assistant_spans" in features[0]:
                 # Unified spans fallback (treated as student spans in the wrapper/loss manager)
-                batch["assistant_spans"] = [f.get("assistant_spans", []) for f in features]
+                batch["assistant_spans"] = [f["assistant_spans"] for f in features]
             if "conversation_variant" in features[0]:
                 batch["conversation_variant"] = features[0]["conversation_variant"]
             # Provide original batch size for diagnostics (optional)
@@ -136,7 +144,12 @@ class StandardDataCollator:
             except Exception:
                 pass
             # Fail-fast: ensure at least student or unified spans present per item
-            spans_all = batch.get("student_assistant_spans") or batch.get("assistant_spans")
+            if "student_assistant_spans" in batch:
+                spans_all = batch["student_assistant_spans"]
+            elif "assistant_spans" in batch:
+                spans_all = batch["assistant_spans"]
+            else:
+                raise ValueError("Collator: missing assistant spans in batch; cannot compute grouped losses.")
             if not spans_all or not any(len(s) > 0 for s in spans_all):
                 raise ValueError("Collator: missing assistant spans in batch; cannot compute grouped losses.")
         except Exception as e:

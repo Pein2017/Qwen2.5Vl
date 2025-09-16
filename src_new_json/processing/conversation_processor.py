@@ -5,11 +5,10 @@ HuggingFace-first conversation processor for Qwen2.5-VL.
 
 Simplified, self-contained implementation that:
 - Uses processor.apply_chat_template() for conversation formatting
-- Converts objects to strings via CoordinateTokenConverter
+- Formats objects to JSON via JsonGeometryFormatter
 - Provides dense-captioning builders and two additional detection-style variants
 - Supports teacher-student and simple flows; includes inference builder
 """
-
 from __future__ import annotations
 
 import logging
@@ -17,16 +16,17 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
-from src_new_json.types import FormatMode, ConversationVariant
+from src_new_json.types import ConversationVariant
 
 import torch
 from PIL import Image
 from transformers import Qwen2VLProcessor
 
-from src_new_json.processing.coordinate_converter import CoordinateTokenConverter
 from src_new_json.processing.templates import CONSTANTS, get_system_prompt
 from src_new_json.processing.special_tokens import IMAGE_PAD
 from src_new_json.processing.variants import create_default_variant_registry
+from src_new_json.processing.json_formatter import JsonGeometryFormatter
+from src_new_json.types.json_schema import JsonSchema
 from src_new_json.utils.rank_aware_logging import get_rank_aware_logger
 
 logger = get_rank_aware_logger("processing.conversation")
@@ -215,46 +215,27 @@ class ConversationProcessor:
     """
     HuggingFace-first conversation processor.
 
-    Wrapper around official HuggingFace processor with coordinate token conversion.
+    Wrapper around official HuggingFace processor with JSON formatting.
     """
 
     processor: Qwen2VLProcessor
-    coordinate_tokens_enabled: bool
-    coordinate_converter: CoordinateTokenConverter
+    json_schema: JsonSchema
+    json_formatter: JsonGeometryFormatter
 
     def __init__(
         self,
         processor: Qwen2VLProcessor,
-        max_coord_value: int,
-        coordinate_tokens_enabled: bool,
     ) -> None:
         if processor is None:
             raise ValueError("processor cannot be None")
-        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
-            )
-        if not isinstance(coordinate_tokens_enabled, bool):
-            raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}"
-            )
         self.processor = processor
-        self.coordinate_tokens_enabled = coordinate_tokens_enabled
-        self._format_mode: str = (
-            FormatMode.COORD_TOKENS.value if self.coordinate_tokens_enabled else FormatMode.SPECIAL_TOKENS.value
-        )
-        self.coordinate_converter = CoordinateTokenConverter(
-            max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
-            format_mode=self._format_mode,
-        )
-        # Cache system prompt once (stable per instance)
-        self._system_prompt: str = get_system_prompt(
-            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
-            format_mode=self._format_mode,
-        )
-        # Variant registry
-        self._variant_registry = create_default_variant_registry(self.coordinate_converter)
+        # JSON-first setup
+        self.json_schema = JsonSchema()
+        self.json_formatter = JsonGeometryFormatter(self.json_schema)
+        # System prompt (JSON-only wording)
+        self._system_prompt: str = get_system_prompt()
+        # Variant registry (JSON-only)
+        self._variant_registry = create_default_variant_registry(self.json_formatter)
 
     # ---------------- Variant user-text helpers are centralized in geometry_text/variants ----------------
 
@@ -350,9 +331,9 @@ class ConversationProcessor:
         except Exception as e:
             raise RuntimeError(f"Processor call failed: {type(e).__name__}: {e}")
         # Squeeze batch dimension on text tensors for downstream span/mask code
-        if isinstance(outputs.get("input_ids"), torch.Tensor) and outputs["input_ids"].dim() == 2 and outputs["input_ids"].shape[0] == 1:
+        if ("input_ids" in outputs) and isinstance(outputs["input_ids"], torch.Tensor) and outputs["input_ids"].dim() == 2 and outputs["input_ids"].shape[0] == 1:
             outputs["input_ids"] = outputs["input_ids"].squeeze(0)
-        if isinstance(outputs.get("attention_mask"), torch.Tensor) and outputs["attention_mask"].dim() == 2 and outputs["attention_mask"].shape[0] == 1:
+        if ("attention_mask" in outputs) and isinstance(outputs["attention_mask"], torch.Tensor) and outputs["attention_mask"].dim() == 2 and outputs["attention_mask"].shape[0] == 1:
             outputs["attention_mask"] = outputs["attention_mask"].squeeze(0)
         # Validate that image placeholders in text match provided images
         image_token_count = text.count(IMAGE_PAD)
@@ -371,20 +352,19 @@ class ConversationProcessor:
             )
         # Attach conversation text
         outputs["conversation_text"] = text
-        # Attach offset_mapping from tokenizer strictly; fail if unavailable
+        # Build offset mapping against decoded text that matches input_ids (accounts for expanded <|image_pad|> blocks)
         tokenizer = getattr(self.processor, "tokenizer", None)
         if tokenizer is None:
             raise RuntimeError("Processor missing tokenizer for offset mapping")
+        decoded_text = tokenizer.decode(outputs["input_ids"], skip_special_tokens=False) if ("input_ids" in outputs and isinstance(outputs["input_ids"], torch.Tensor)) else text
+        outputs["decoded_text"] = decoded_text
         tokenized = tokenizer(
-            text,
+            decoded_text,
             return_offsets_mapping=True,
             add_special_tokens=False,
             return_tensors="pt",
         )
-        try:
-            om = tokenized.get("offset_mapping")
-        except Exception:
-            om = None
+        om = tokenized["offset_mapping"] if "offset_mapping" in tokenized else None
         if om is None:
             raise RuntimeError("Tokenizer did not return offset_mapping")
         outputs["offset_mapping"] = om[0]
@@ -396,7 +376,7 @@ class ConversationProcessor:
     ) -> Dict[str, torch.Tensor]:
         if "objects" not in sample or not sample["objects"]:
             raise ConversationStructureError("Sample missing non-empty 'objects'")
-        assistant_render = self.coordinate_converter.convert_objects_to_tokens(
+        assistant_render = self.json_formatter.convert_objects_to_tokens(
             sample["objects"]
         )
         assistant_text = assistant_render["text"] if isinstance(assistant_render, dict) else assistant_render
@@ -431,7 +411,7 @@ class ConversationProcessor:
         for t_sample, t_images in zip(teacher_samples, teacher_images_list):
             if "objects" not in t_sample or not t_sample["objects"]:
                 continue
-            t_assistant_render = self.coordinate_converter.convert_objects_to_tokens(
+            t_assistant_render = self.json_formatter.convert_objects_to_tokens(
                 t_sample["objects"]
             )
             t_assistant = t_assistant_render["text"] if isinstance(t_assistant_render, dict) else t_assistant_render
@@ -442,13 +422,13 @@ class ConversationProcessor:
                 ]
             )
             all_images.extend(t_images[:1])
-            if isinstance(t_assistant_render, dict) and t_assistant_render.get("group_char_spans"):
+            if isinstance(t_assistant_render, dict) and ("group_char_spans" in t_assistant_render):
                 turn_group_spans.append(t_assistant_render["group_char_spans"])
                 turn_roles.append("teacher")
         # Student turn: user with only image; assistant full dense outputs (training)
         if "objects" not in student_sample or not student_sample["objects"]:
             raise TeacherStudentValidationError("Student sample missing objects")
-        s_assistant_render = self.coordinate_converter.convert_objects_to_tokens(
+        s_assistant_render = self.json_formatter.convert_objects_to_tokens(
             student_sample["objects"]
         )
         s_assistant = s_assistant_render["text"] if isinstance(s_assistant_render, dict) else s_assistant_render
@@ -500,12 +480,16 @@ class ConversationProcessor:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": self._system_prompt}]
         all_images: List[Image.Image] = []
         for t_sample, t_images in zip(teacher_samples, teacher_images_list):
-            objs = t_sample.get("objects", [])
+            if "objects" not in t_sample or not isinstance(t_sample["objects"], list):
+                if enable_recovery:
+                    continue
+                raise TeacherStudentValidationError("Empty teacher objects")
+            objs = t_sample["objects"]
             if not objs:
                 if enable_recovery:
                     continue
                 raise TeacherStudentValidationError("Empty teacher objects")
-            t_assistant = self.coordinate_converter.convert_objects_to_tokens(objs)
+            t_assistant = self.json_formatter.convert_objects_to_tokens(objs)
             messages.extend(
                 [
                     {"role": "user", "content": [{"type": "image"}]},
@@ -525,7 +509,9 @@ class ConversationProcessor:
     # ------------- Unified variant dispatcher -------------
     def _get_variant_handlers(self, variant: Union[str, ConversationVariant]):
         v = getattr(variant, "value", variant)
-        handler = self._variant_registry.get(str(v))
+        if str(v) not in self._variant_registry:
+            raise ValueError(f"Unknown conversation variant: {v}")
+        handler = self._variant_registry[str(v)]
         try:
             handler_name = type(handler).__name__
         except Exception:
@@ -593,11 +579,11 @@ class ConversationProcessor:
         # Teacher examples first
         valid_teachers = 0
         for t_sample, t_images in zip(teacher_samples, teacher_images_list or []):
-            objs = t_sample.get("objects")
-            if not isinstance(objs, list) or not objs:
+            if ("objects" not in t_sample) or (not isinstance(t_sample["objects"], list)) or (len(t_sample["objects"]) == 0):
                 # Skip empty teacher samples rather than failing
-                logger.warning(f"Skipping teacher sample with empty/invalid objects: {type(objs)}")
+                logger.warning(f"Skipping teacher sample with empty/invalid objects: {type(t_sample.get('objects'))}")
                 continue
+            objs = t_sample["objects"]
             
             t_render = assistant_fn(objs)
             t_assistant = (
@@ -609,7 +595,7 @@ class ConversationProcessor:
                     {"role": "assistant", "content": t_assistant},
                 ]
             )
-            all_images.append(t_images[0])
+            all_images.extend(t_images[:1])
             if isinstance(t_render, dict) and t_render.get("group_char_spans"):
                 turn_group_spans.append(t_render["group_char_spans"])
                 turn_roles.append("teacher")

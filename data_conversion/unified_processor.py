@@ -198,6 +198,55 @@ class UnifiedProcessor:
                 pass
         return s
 
+    def _rewrite_desc_with_remark(self, desc: str) -> str:
+        """Rewrite hierarchical desc by folding trailing free-text level into ',备注:...'.
+
+        Rules (from hierarchical_attribute_mapping.json):
+        - Levels are separated by '/'; same-level attributes use ','.
+        - Remark exists only for non-标签 types and is always the final level AFTER all structured levels.
+          Structured levels depend on object type and L1 values:
+            * BBU设备: if L1 contains '机柜空间充足需要安装', then level-2 is structured (挡风板符合性)
+            * 螺丝、光纤插头: if L1 contains '不符合要求', then level-2 is structured (具体问题)
+            * 光纤: if L1 contains '有保护措施', then level-2 is structured (保护细节)
+            * 挡风板/电线: only level-1 is structured
+            * 标签: no remark
+        - If a remark is detected, remove its slash-level and append ',备注:{remark}'.
+        - If no remark is detected, return desc unchanged.
+        """
+        try:
+            parts = [p for p in (desc or "").split("/") if p != ""]
+            if not parts:
+                return desc
+            obj = parts[0]
+            levels = parts[1:]
+            # 标签不支持备注
+            if obj.startswith("标签"):
+                return desc
+            # 计算结构化层数
+            structured_count = 1 if levels else 0
+            l1_tokens = []
+            if levels:
+                l1_tokens = [t.strip() for t in levels[0].split(",") if t.strip()]
+            if obj.startswith("BBU设备") and any("机柜空间充足需要安装" in t for t in l1_tokens):
+                structured_count = min(2, len(levels))
+            elif obj.startswith("螺丝、光纤插头") and any("不符合要求" in t for t in l1_tokens):
+                structured_count = min(2, len(levels))
+            elif obj.startswith("光纤") and any("有保护措施" in t for t in l1_tokens):
+                structured_count = min(2, len(levels))
+            elif obj.startswith("挡风板") or obj.startswith("电线"):
+                structured_count = min(1, len(levels))
+
+            # 如果存在额外层，视为备注层（最后一层）
+            if len(levels) > structured_count:
+                remark = levels[-1]
+                base = "/".join([obj] + levels[:structured_count]) if structured_count > 0 else obj
+                # 将备注折叠到末尾，保持半角逗号和冒号风格
+                return f"{base},备注:{remark}"
+            return desc
+        except Exception as e:
+           logger.error(f"Error rewriting desc with remark: {e}")
+           raise Exception("Error rewriting desc with remark")
+
     def extract_objects_from_datalist(self, data_list: List[Dict]) -> List[Dict]:
         """Extract objects from dataList format."""
         objects = []
@@ -235,6 +284,7 @@ class UnifiedProcessor:
                 if getattr(self.config, "remove_occlusion_tokens", False) or getattr(self.config, "sanitize_text", False) or getattr(self.config, "standardize_label_desc", False):
                     desc = self._sanitize_description(desc)
                 if desc:
+                    desc = self._rewrite_desc_with_remark(desc)
                     objects.append({"bbox_2d": bbox, "desc": desc})
 
         return objects
@@ -249,6 +299,11 @@ class UnifiedProcessor:
                 d = obj.get("desc", "")
                 if d:
                     obj["desc"] = self._sanitize_description(d)
+        # Fold trailing free-text level into ',备注:...' deterministically
+        for obj in objects:
+            d = obj.get("desc", "")
+            if d:
+                obj["desc"] = self._rewrite_desc_with_remark(d)
         return objects
 
     def process_single_sample(self, json_path: Path) -> Optional[Dict]:
@@ -853,7 +908,7 @@ class UnifiedProcessor:
 
         # Step 3: Validate output structure
         StructureValidator.validate_pipeline_output(
-            train_samples, val_samples, teacher_samples
+            train_samples, val_samples, teacher_samples, max_teachers=self.config.max_teachers
         )
 
         # Step 4: Write output files

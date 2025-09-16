@@ -333,6 +333,16 @@ class TeacherSelector:
             logger.warning("No samples provided for teacher selection")
             return [], [], {}
 
+        # Handle explicit zero teachers (dynamic teacher-sampling)
+        if self.max_teachers == 0:
+            logger.info("max_teachers=0: Skipping teacher selection for dynamic teacher-sampling")
+            stats = {
+                "mode": self.mode,
+                "pool_size": 0,
+                "max_teachers": self.max_teachers,
+            }
+            return [], [], stats
+
         if len(samples) <= self.max_teachers:
             logger.info(
                 f"Using all {len(samples)} samples as teachers (below max_teachers)"
