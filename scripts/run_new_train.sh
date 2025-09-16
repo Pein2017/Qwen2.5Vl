@@ -11,8 +11,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
 PROJECT_ROOT="."
-# CONFIG_NAME="phase_2/standard"
-CONFIG_NAME="phase_1/debug"
+CONFIG_NAME="phase_1/standard"
 ARCH="json"   # json | legacy
 MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
 to_console=true
@@ -25,7 +24,7 @@ PY="/root/miniconda3/envs/ms/bin/python"
 if [[ -z "${GPU_DEVICES:-}" ]]; then
     if [[ $# -eq 0 ]]; then
         # Default configuration when no arguments provided
-        GPU_DEVICES="0,1"
+        GPU_DEVICES="0,1,2,3,4,5,6,7"
         LOG_NAME="${LOG_NAME:-run.log}"
         echo "🚀 Default run: GPUs 0,1,2,3,4,5,6,7 → ${LOG_NAME}"
     else

@@ -84,7 +84,7 @@ class TeacherPoolManager:
         self.config = config
 
         # Check if dynamic pairing is enabled
-        self.dynamic_pairing_enabled = getattr(config, 'dynamic_pairing_enabled', True) if config else False
+        self.dynamic_pairing_enabled = (config.dynamic_pairing_enabled if config is not None else False)
 
         # Load teacher pool only if file is provided or dynamic pairing is disabled
         if teacher_pool_file or not self.dynamic_pairing_enabled:

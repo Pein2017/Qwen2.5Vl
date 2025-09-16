@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 _GLOBAL_LOG_LEVEL = logging.INFO
 _CONFIGURED_LOGGERS = set()
 
+# Prefer rank-aware logger for this module
+try:
+    from ..utils.rank_aware_logging import get_rank_aware_logger as _get_logger
+    logger = _get_logger("config")
+except Exception:
+    pass
+
 
 def set_global_log_level(level: str) -> None:
     """Set global log level for all loggers in the system.
@@ -374,7 +381,6 @@ class Config:
     dynamic_pair_target_assignment: str = "current"  # {random,current,opposite}
     # Deprecated/compat-only: dynamic_pair_candidate_pool_size is superseded by pool_fraction/pool_max (upper cap only)
     dynamic_pair_candidate_pool_size: int = 128
-    dynamic_pair_max_teacher_uses_per_epoch: int = 5
     dynamic_pair_temperature: float = 1.2
     dynamic_pair_cross_bucket_explore_prob: float = 0.0
     # Large-pool controls for sampling (explicit; used by BucketedSamplingEngine)
@@ -385,14 +391,6 @@ class Config:
     hardness_alpha: float = 0.1
     hardness_warmup_epochs: int = 1
 
-    # Coordinate auxiliary losses (compatibility; only used when coord_aux_enabled: true)
-    coord_aux_enabled: bool = False
-    coord_aux_tau: Optional[float] = None
-    coord_aux_sigma_bins: Optional[int] = None
-    coord_aux_window_bins: Optional[int] = None
-    coord_aux_topk: Optional[int] = None
-    coord_aux_lambda_kce: Optional[float] = None
-    coord_aux_lambda_unlike: Optional[float] = None
 
     # Span extraction options
     span_include_im_end_in_labels: bool = True
@@ -403,7 +401,7 @@ class Config:
     # If best_checkpoint_min_interval_steps is provided, it takes precedence.
     # Otherwise the interval is computed as eval_steps * best_checkpoint_interval_multiplier.
     best_checkpoint_min_interval_steps: Optional[int] = None
-    best_checkpoint_interval_multiplier: int = 5
+    best_checkpoint_interval_multiplier: int = 10
     
     # Removed: packed segment isolation no longer supported
 
@@ -490,7 +488,7 @@ class Config:
             )
 
         # Seed must be non-negative
-        if getattr(self, "seed", 17) < 0:
+        if self.seed < 0:
             raise ValueError(f"seed must be non-negative, got {self.seed}")
 
     def _validate_data_settings(self) -> None:
@@ -550,10 +548,6 @@ class Config:
             raise ValueError(
                 f"dynamic_pair_candidate_pool_size must be > 0, got {self.dynamic_pair_candidate_pool_size}"
             )
-        if self.dynamic_pair_max_teacher_uses_per_epoch <= 0:
-            raise ValueError(
-                f"dynamic_pair_max_teacher_uses_per_epoch must be > 0, got {self.dynamic_pair_max_teacher_uses_per_epoch}"
-            )
         if self.dynamic_pair_temperature <= 0:
             raise ValueError(
                 f"dynamic_pair_temperature must be > 0, got {self.dynamic_pair_temperature}"
@@ -582,7 +576,7 @@ class Config:
             )
 
         # Conversation variant ratios (optional)
-        sampling = getattr(self, "conversation_variant_ratios", None)
+        sampling = self.conversation_variant_ratios
         if sampling is not None:
             if not isinstance(sampling, dict):
                 raise ValueError("conversation_variant_ratios must be a dict if provided")
@@ -624,10 +618,10 @@ class Config:
 
     def _validate_augmentation_settings(self) -> None:
         """Validate augmentation settings when provided."""
-        aug = getattr(self, "augmentation", None)
+        aug = self.augmentation
         if aug is None:
             # Still validate schedule if present
-            sched = getattr(self, "augmentation_schedule", None)
+            sched = self.augmentation_schedule
             if sched is not None:
                 self._validate_augmentation_schedule(sched)
             return
@@ -637,12 +631,12 @@ class Config:
             raise ValueError(f"Invalid augmentation configuration: {e}")
 
         # Validate schedule alongside an explicit augmentation config if provided
-        sched = getattr(self, "augmentation_schedule", None)
+        sched = self.augmentation_schedule
         if sched is not None:
             self._validate_augmentation_schedule(sched)
 
         # Optional teacher-specific augmentation
-        taug = getattr(self, "teacher_augmentation", None)
+        taug = self.teacher_augmentation
         if taug is not None:
             try:
                 validate_augmentation_config_fn(taug)
@@ -686,7 +680,7 @@ class Config:
     def _validate_phase_name(self) -> None:
         # Accept off or explicit phase markers
         allowed = {"off", "phase_1", "phase_2", "phase_3"}
-        pn = str(getattr(self, "phase_name", "off") or "off").lower()
+        pn = str(self.phase_name or "off").lower()
         if pn not in allowed:
             raise ValueError(f"phase_name must be one of {sorted(allowed)}, got {pn!r}")
         # Light validation for selective unfreeze overrides
@@ -694,10 +688,10 @@ class Config:
             v = getattr(self, k, None)
             if v is not None and (not isinstance(v, int) or v < 0):
                 raise ValueError(f"{k} must be a non-negative int when provided, got {v!r}")
-        fpe = getattr(self, "freeze_patch_embed", None)
+        fpe = self.freeze_patch_embed
         if fpe is not None and not isinstance(fpe, bool):
             raise ValueError("freeze_patch_embed must be a boolean when provided")
-        tts = getattr(self, "trainable_token_strings", None)
+        tts = self.trainable_token_strings
         if tts is not None:
             if not isinstance(tts, list) or not all(isinstance(x, str) for x in tts):
                 raise ValueError("trainable_token_strings must be a list of strings")
@@ -738,7 +732,7 @@ class Config:
             raise ValueError(
                 f"best_checkpoint_min_interval_steps must be a non-negative int when provided, got {bmin!r}"
             )
-        mult = getattr(self, "best_checkpoint_interval_multiplier", 5)
+        mult = getattr(self, "best_checkpoint_interval_multiplier", 10)
         if not isinstance(mult, int) or mult < 1:
             raise ValueError(
                 f"best_checkpoint_interval_multiplier must be a positive int, got {mult!r}"
@@ -796,7 +790,6 @@ def load_config(override_config_path: str) -> Config:
 
     # Load override YAML
     try:
-        
         with open(override_file, "r", encoding="utf-8") as f:
             override_data = yaml.safe_load(f) or {}
     except (yaml.YAMLError, OSError) as e:
@@ -804,8 +797,22 @@ def load_config(override_config_path: str) -> Config:
             f"Failed to load or parse override config at {override_config_path}: {e}"
         )
 
+    # NOTE: Do not require fields in override alone; validate after merge so base or override can satisfy
+    # required settings like 'max_pixels'. This ensures base defaults work and experiments can override.
+
     # Deep merge the configurations
     data = _deep_merge_dicts(base_data, override_data)
+
+    # Validate required fields in the MERGED configuration (fail-fast)
+    if (
+        ("max_pixels" not in data)
+        or (data["max_pixels"] is None)
+        or (not isinstance(data["max_pixels"], (int, float)))
+        or int(data["max_pixels"]) <= 0
+    ):
+        raise ValueError(
+            "Configuration must include a positive 'max_pixels' value in either base or experiment YAML."
+        )
 
     if not isinstance(data, dict):
         raise ValueError(f"Configuration must be a dictionary, got {type(data)}")
@@ -820,7 +827,7 @@ def load_config(override_config_path: str) -> Config:
     # === Dataset path resolution (auto-derive from data_root when missing) ===
     # Check if dynamic pairing is enabled to determine if teacher_pool_file is required
     if "dynamic_pairing_enabled" not in data:
-        raise ValueError("dynamic_pairing_enabled must be explicitly set in YAML (true/false)")
+        data["dynamic_pairing_enabled"] = False # Default to False if not set
     dynamic_pairing_enabled = bool(data["dynamic_pairing_enabled"])
     
     # Base required paths (always needed)
@@ -1190,7 +1197,6 @@ def load_config(override_config_path: str) -> Config:
         "coordinate_tokens_enabled",
         "max_coord_value",
         "packed_segment_isolation",
-        "plain_text_mode_enabled",
     }
     ignored_present = sorted([k for k in list(data.keys()) if k in LEGACY_IGNORED_FIELDS])
     for k in ignored_present:

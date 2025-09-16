@@ -230,15 +230,37 @@ def get_available_device() -> str:
 
 
 def setup_logging(level: Union[str, int] = DEFAULT_LOG_LEVEL) -> logging.Logger:
-    """Setup basic logging configuration."""
-    if isinstance(level, str):
-        level = getattr(logging, level.upper(), DEFAULT_LOG_LEVEL)
+    """Setup logging using centralized rank-aware configuration.
 
-    logging.basicConfig(
-        level=level, format=DEFAULT_LOG_FORMAT, handlers=[logging.StreamHandler()]
-    )
+    This avoids basicConfig to prevent duplicate handlers across ranks.
+    """
+    try:
+        from .rank_aware_logging import configure_rank_aware_logging, get_rank_aware_logger
 
-    return logging.getLogger(__name__)
+        # Normalize level
+        if isinstance(level, str):
+            level_norm: Union[str, int] = level.upper()
+        else:
+            level_norm = int(level)
+
+        configure_rank_aware_logging(log_level=level_norm)
+        return get_rank_aware_logger(__name__)
+    except Exception:
+        # Fallback to minimal standard logging without adding multiple handlers
+        if isinstance(level, str):
+            level_int = getattr(logging, level.upper(), DEFAULT_LOG_LEVEL)
+        else:
+            level_int = int(level)
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(DEFAULT_LOG_FORMAT)
+            handler.setFormatter(formatter)
+            handler.setLevel(level_int)
+            logger.addHandler(handler)
+            logger.setLevel(level_int)
+            logger.propagate = False
+        return logger
 
 
 # === Export Control ===

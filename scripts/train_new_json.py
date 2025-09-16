@@ -31,7 +31,7 @@ apply_comprehensive_qwen25_fixes()
 
 
 if TYPE_CHECKING:
-    from transformers import TrainingArguments
+    from transformers.training_args import TrainingArguments
     from src_new_json.config.config import Config
 
 
@@ -68,7 +68,7 @@ def parse_args():
 
 
 def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
-    from transformers import TrainingArguments
+    from transformers.training_args import TrainingArguments
 
     logger = get_logger()
 
@@ -95,11 +95,11 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         fp16=config.fp16,
         eval_strategy=config.eval_strategy,
         eval_steps=config.eval_steps,
-        save_strategy=config.save_strategy,
+        save_strategy='no',
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
         save_safetensors=True,
-        load_best_model_at_end=config.load_best_model_at_end,
+        load_best_model_at_end=False,
         metric_for_best_model=config.metric_for_best_model,
         greater_is_better=config.greater_is_better,
         logging_steps=config.logging_steps,
@@ -111,12 +111,14 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         dataloader_prefetch_factor=(
             config.prefetch_factor if config.dataloader_num_workers > 0 else None
         ),
+        dataloader_persistent_workers=(
+            True if config.dataloader_num_workers > 0 else False
+        ),
         remove_unused_columns=config.remove_unused_columns,
-        save_on_each_node=getattr(config, "save_on_each_node", False),
         dataloader_drop_last=True,
         deepspeed=deepspeed_config if deepspeed_enabled else None,
-        seed=int(getattr(config, "seed", 17)),
-        data_seed=int(getattr(config, "seed", 17)),
+        seed=int(config.seed),
+        data_seed=int(config.seed),
     )
 
     logger.info(
@@ -155,7 +157,7 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
     image_processor = Qwen2VLImageProcessor.from_pretrained(
         config.model_path, trust_remote_code=True
     )
-    if hasattr(config, "max_pixels") and int(config.max_pixels) > 0:
+    if int(config.max_pixels) > 0:
         if not hasattr(image_processor, "max_pixels"):
             raise ValueError("Qwen2VLImageProcessor missing 'max_pixels' attribute")
         image_processor.max_pixels = int(config.max_pixels)
@@ -164,8 +166,8 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
     teacher_pool_manager = None
     try:
         # Check if dynamic pairing is enabled
-        dynamic_pairing_enabled = getattr(config, 'dynamic_pairing_enabled', True)
-        teacher_pool_file = getattr(config, "teacher_pool_file", None)
+        dynamic_pairing_enabled = config.dynamic_pairing_enabled
+        teacher_pool_file = config.teacher_pool_file
         
         if teacher_pool_file and not dynamic_pairing_enabled:
             # Traditional teacher pool approach
@@ -214,8 +216,18 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
     # Load model
     from transformers import Qwen2_5_VLForConditionalGeneration
 
+    dtype_str = str(config.torch_dtype).lower()
+    if dtype_str in {"bf16", "bfloat16"}:
+        torch_dtype = torch.bfloat16
+    elif dtype_str in {"fp16", "float16"}:
+        torch_dtype = torch.float16
+    elif dtype_str in {"fp32", "float32"}:
+        torch_dtype = torch.float32
+    else:
+        raise ValueError(f"Invalid torch_dtype in config: {config.torch_dtype}")
+
     loading_kwargs = {
-        "torch_dtype": getattr(torch, config.torch_dtype),
+        "torch_dtype": torch_dtype,
         "attn_implementation": config.attn_implementation,
         "trust_remote_code": False,
         "low_cpu_mem_usage": True,
@@ -230,7 +242,7 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
 
     # Tokenizer/model alignment
     try:
-        if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+        if (tokenizer.pad_token is None) and (tokenizer.eos_token is not None):
             tokenizer.pad_token = tokenizer.eos_token
         if hasattr(tokenizer, "padding_side"):
             tokenizer.padding_side = "left"
@@ -239,7 +251,7 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
         cfg.pad_token_id = tokenizer.pad_token_id
         cfg.eos_token_id = tokenizer.eos_token_id
         cfg.bos_token_id = bos_id
-        if getattr(base_model, "generation_config", None) is not None:
+        if hasattr(base_model, "generation_config") and (base_model.generation_config is not None):
             base_model.generation_config.pad_token_id = cfg.pad_token_id
             base_model.generation_config.eos_token_id = cfg.eos_token_id
             base_model.generation_config.bos_token_id = cfg.bos_token_id
@@ -319,7 +331,7 @@ def create_trainer_with_new_architecture(training_args: "TrainingArguments", con
     from transformers import Qwen2VLProcessor, Qwen2VLVideoProcessor
 
     proc_ckpt = Qwen2VLProcessor.from_pretrained(config.model_path, trust_remote_code=True)
-    video_processor = getattr(proc_ckpt, "video_processor", None) or Qwen2VLVideoProcessor()
+    video_processor = proc_ckpt.video_processor if hasattr(proc_ckpt, "video_processor") and proc_ckpt.video_processor is not None else Qwen2VLVideoProcessor()
     processor = Qwen2VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
@@ -346,8 +358,8 @@ def main():
 
     # Seed RNGs
     try:
-        seed_everything(getattr(config, "seed", 17), deterministic=False, set_hf_seed=True)
-        logger.info(f"🔧 Seeded RNGs with seed={getattr(config, 'seed', 17)}")
+        seed_everything(config.seed, deterministic=False, set_hf_seed=True)
+        logger.info(f"🔧 Seeded RNGs with seed={config.seed}")
     except Exception as e:
         logger.warning(f"⚠️ Could not seed RNGs: {e}")
 

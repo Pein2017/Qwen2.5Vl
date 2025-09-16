@@ -23,6 +23,15 @@ from typing import TYPE_CHECKING
 __version__ = "2.0.0"
 __author__ = "Qwen2.5-VL Team"
 
+# Initialize rank-aware logging as early as possible so all modules inherit filters/handlers
+try:
+    from src_new_json.utils.rank_aware_logging import initialize_logging_from_env
+
+    initialize_logging_from_env()
+except Exception:
+    # Defer to consumers if rank-aware logging utilities are unavailable during early import
+    pass
+
 # Core modules
 from src_new_json.config import Config, load_config
 from src_new_json.data import Dataset, TeacherPoolManager, create_data_collator

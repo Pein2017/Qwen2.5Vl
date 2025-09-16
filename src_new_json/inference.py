@@ -244,10 +244,15 @@ class InferenceEngine:
                     f"Teacher guidance requires batch_size=1. Changing from {self.batch_size} to 1."
                 )
                 self.batch_size = 1
+            # Explicit mode log
+            logger.info("🧭 Inference mode: teacher-guided (teacher-student prompts)")
         elif self.num_teachers > 0 and not self.teacher_pool_manager:
             logger.warning(
                 f"Teacher guidance requested ({self.num_teachers} teachers) but no teacher pool manager available"
             )
+            logger.info("🧭 Inference mode: single-turn (fallback; teacher pool unavailable)")
+        else:
+            logger.info("🧭 Inference mode: single-turn (no teacher guidance)")
 
         logger.info("✅ InferenceEngine initialized successfully")
 
@@ -287,6 +292,14 @@ class InferenceEngine:
         )
         if not getattr(self.tokenizer, "is_fast", False):
             raise RuntimeError("Fast tokenizer required for inference (use_fast=True)")
+        # Ensure padding side and pad token are set for Qwen2.5-VL
+        try:
+            if (self.tokenizer.pad_token is None) and (self.tokenizer.eos_token is not None):
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if hasattr(self.tokenizer, "padding_side"):
+                self.tokenizer.padding_side = "left"
+        except Exception:
+            pass
         _enc = self.tokenizer(
             "sanity",
             return_offsets_mapping=True,
@@ -333,10 +346,8 @@ class InferenceEngine:
             # Inference-specific optimizations
             torch_dtype=torch.bfloat16,
             attn_implementation="eager",  # Stable attention for inference
-            device_map={"": "cuda:0"},  # Direct GPU placement
             trust_remote_code=False,
             use_cache=True,  # Enable KV cache for inference
-            low_cpu_mem_usage=True,  # Reduce CPU memory during loading
         )
 
         model_load_time = time.time() - model_load_start
@@ -385,7 +396,7 @@ class InferenceEngine:
         try:
             # Try to load from checkpoint for consistency
             proc_from_ckpt = Qwen2VLProcessor.from_pretrained(
-                self.config.model_path, trust_remote_code=True
+                self._model_path, trust_remote_code=True
             )
             video_processor = (
                 getattr(proc_from_ckpt, "video_processor", None)
@@ -1028,10 +1039,10 @@ class InferenceEngine:
                         vis_obj[key] = coords
                     break
 
-                        # Only add if we found a geometry key
+            # Only add if we found a geometry key
             if any(k in vis_obj for k in ("box_points", "quadrilateral_points", "line_points")):
                 vis_objects.append(vis_obj)
-            return vis_objects
+        return vis_objects
 
     def _convert_objects_to_training_format(
         self, objects: List[Dict[str, Any]]
@@ -1040,9 +1051,9 @@ class InferenceEngine:
 
         Rules:
         - Field name for text is 'desc' (fallback from 'label' if needed)
-        - Only geometry keys allowed: 'box_points', 'quadrilateral_points', 'line_points'
-
-        - Coordinates are coerced to int where possible
+        - Geometry keys accepted in JSON: 'box_points', 'quadrilateral_points', 'line_points'
+        - Output training geometry keys: 'bbox_2d' | 'quad' | 'line'
+        - Coordinates are coerced to int when possible
         - Ignore objects without a supported geometry
         """
         normalized: List[Dict[str, Any]] = []
@@ -1050,16 +1061,13 @@ class InferenceEngine:
             if not isinstance(obj, dict):
                 continue
 
-            desc_value = obj["desc"] if "desc" in obj else None
+            desc_value = obj.get("desc")
             if not isinstance(desc_value, str) or desc_value == "":
-                # Fallback from 'label' if present
-                label_value = obj["label"] if "label" in obj else None
+                label_value = obj.get("label")
                 desc_value = label_value if isinstance(label_value, str) else ""
 
-            # Determine geometry and coordinates
             geometry_key = None
             coords: Optional[List[Any]] = None
-            # Priority order
             for key in ("box_points", "quadrilateral_points", "line_points"):
                 if key in obj and isinstance(obj[key], list):
                     geometry_key = key
@@ -1069,28 +1077,37 @@ class InferenceEngine:
             if geometry_key is None or coords is None:
                 continue
 
-            # Enforce allowed geometries only
-            if geometry_key not in ("box_points", "quadrilateral_points", "line_points"):
+            # Coerce and flatten coordinates to training format
+            if geometry_key == "box_points":
+                # Expect [[x1,y1],[x2,y2]] -> [x1,y1,x2,y2]
+                try:
+                    flat = [int(v) for pair in coords for v in pair]
+                except Exception:
+                    flat = [v for pair in coords for v in pair]
+                if len(flat) != 4:
+                    continue
+                normalized_item: Dict[str, Any] = {"desc": desc_value, "bbox_2d": flat}
+            elif geometry_key == "quadrilateral_points":
+                # Expect 4 pairs -> 8 ints
+                try:
+                    flat = [int(v) for pair in coords for v in pair]
+                except Exception:
+                    flat = [v for pair in coords for v in pair]
+                if len(flat) != 8:
+                    continue
+                normalized_item = {"desc": desc_value, "quad": flat}
+            elif geometry_key == "line_points":
+                # Expect N pairs -> 2N ints
+                try:
+                    flat = [int(v) for pair in coords for v in pair]
+                except Exception:
+                    flat = [v for pair in coords for v in pair]
+                if len(flat) < 4 or (len(flat) % 2) != 0:
+                    continue
+                normalized_item = {"desc": desc_value, "line": flat}
+            else:
                 continue
 
-            # Coerce coordinates to int when possible
-            try:
-                coerced_coords = [int(c) for c in coords]
-            except Exception:
-                coerced_coords = coords
-
-            # Validate coord lengths for geometry types
-            if geometry_key == "bbox_2d" and len(coerced_coords) != 4:
-                continue
-            if geometry_key == "quad" and len(coerced_coords) != 8:
-                continue
-            if geometry_key == "line" and (
-                len(coerced_coords) < 4 or len(coerced_coords) % 2 != 0
-            ):
-                continue
-
-            normalized_item: Dict[str, Any] = {"desc": desc_value}
-            normalized_item[geometry_key] = coerced_coords
             normalized.append(normalized_item)
 
         return normalized
@@ -1527,7 +1544,7 @@ class InferenceEngine:
     def _normalize_prediction_to_vis_objects(self, text: str) -> List[Dict[str, Any]]:
         """Normalize raw generated text into a list of visualization objects.
 
-        Preferred schema per object: one geometry key in {'bbox_2d','quad','line'} and a 'desc' string.
+        Preferred schema per object: one geometry key in {'bbox_2d','quad','line'} and a 'label' string.
         """
         logger.info(f"🔍 Parsing response (JSON mode)")
         logger.info(f"   Response length: {len(text)} characters")
@@ -1551,11 +1568,11 @@ class InferenceEngine:
                     if not isinstance(obj, dict):
                         logger.debug(f"   Skipping non-dict item: {type(obj)}")
                         continue
-                    desc_val = obj["desc"] if "desc" in obj else None
-                    if not isinstance(desc_val, str) or desc_val == "":
-                        lbl = obj["label"] if "label" in obj else None
-                        desc_val = lbl if isinstance(lbl, str) else ""
-                    json_item: Dict[str, Any] = {"desc": desc_val}
+                    label_val = obj["label"] if "label" in obj else None
+                    if not isinstance(label_val, str) or label_val == "":
+                        desc_fallback = obj["desc"] if "desc" in obj else None
+                        label_val = desc_fallback if isinstance(desc_fallback, str) else ""
+                    json_item: Dict[str, Any] = {"label": label_val}
                     for key in ("box_points", "quadrilateral_points", "line_points"):
                         if key in obj and isinstance(obj[key], list):
                             json_item[key] = obj[key]
@@ -1590,8 +1607,8 @@ class InferenceEngine:
                 for obj in parsed_list:
                     if not isinstance(obj, dict):
                         continue
-                    desc = (obj["desc"] if ("desc" in obj and isinstance(obj["desc"], str)) else (obj["label"] if "label" in obj else ""))
-                    merged: Dict[str, Any] = {"desc": desc}
+                    label = (obj["label"] if ("label" in obj and isinstance(obj["label"], str)) else (obj["desc"] if "desc" in obj else ""))
+                    merged: Dict[str, Any] = {"label": label}
                     for k in ("box_points", "quadrilateral_points", "line_points"):
                         if k in obj:
                             merged[k] = obj[k]
@@ -1721,8 +1738,12 @@ def main():
             f"Invalid logging level: {args.log_level}. Valid levels: DEBUG, INFO, WARNING, ERROR, CRITICAL"
         )
     log_level = getattr(logging, log_level_name)
-    logging.getLogger().setLevel(log_level)
-    logger.setLevel(log_level)
+    try:
+        from src_new_json.utils.rank_aware_logging import set_global_log_level as _set_rank_level
+        _set_rank_level(log_level)
+    except Exception:
+        logging.getLogger().setLevel(log_level)
+        logger.setLevel(log_level)
 
     # Normalize critical paths: accept relative and '@src_new_json' alias (preserve relativity)
 

@@ -1,7 +1,7 @@
-num_train_epochs: 2
-per_device_train_batch_size: 2
-per_device_eval_batch_size: 2
-gradient_accumulation_steps: 1 
+num_train_epochs: 5
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 2 
 logging_steps: 1
 eval_strategy: steps
 eval_steps: 2
@@ -17,7 +17,7 @@ lr_top_layers: 1.0e-5
 
 collator_type: standard
 teacher_ratio: 1
-max_dataset_size: 10
+max_dataset_size: 8
 
 # --- Dynamic pairing (bucketed random, no teacher_pool) ---
 dynamic_pairing_enabled: true
@@ -27,7 +27,6 @@ dynamic_pair_target_assignment: current
 dynamic_pair_cross_bucket_explore_prob: 0.02
 # Overlap-pool sampling + hardness controls (JSON)
 pool_fraction: 0.2
-pool_min: 128
 pool_max: 512
 hardness_alpha: 0.1
 hardness_warmup_epochs: 1
@@ -46,8 +45,8 @@ phase_name: phase_1
 
 use_aug: false
 augmentation_schedule:
-  - { start_epoch: 0, preset: "off" }
-  - { start_epoch: 10, preset: "off" }
+  - { start_epoch: 1, preset: "off" }
+  - { start_epoch: 2, preset: "aggressive" }
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
@@ -65,5 +64,3 @@ conversation_variant_ratios:
 
 
 debug_alignment: true
-# Enable global plain text JSON mode
-# JSON mode uses JSON conversation by default; no plain_text_mode toggle needed

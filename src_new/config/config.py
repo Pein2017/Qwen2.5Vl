@@ -393,7 +393,7 @@ class Config:
     packed_segment_isolation: bool = False  # Enable block-diagonal attention to isolate packed segments
 
     # Dynamic contrastive pairing (training-time feature; eval/inference force disabled)
-    dynamic_pairing_enabled: bool = True
+    dynamic_pairing_enabled: bool = False
     dynamic_pair_target_assignment: str = "random"  # {random,current,opposite}
     dynamic_pair_candidate_pool_size: int = 128
     dynamic_pair_max_teacher_uses_per_epoch: int = 5
@@ -402,7 +402,6 @@ class Config:
     dynamic_pair_cross_bucket_explore_prob: float = 0.0
 
     # Plain text JSON mode toggle (kept for compatibility; not used in src_new core)
-    plain_text_mode_enabled: bool = False
 
     # === COMPUTED PROPERTIES ===
     @property

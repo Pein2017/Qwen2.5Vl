@@ -151,12 +151,6 @@ class Dataset(TorchDataset):
         # Load and validate data
         self.raw_data = self._load_data()
         self.samples = self._validate_and_filter_samples(self.raw_data)
-        # Size hardness EMA to dataset length
-        try:
-            self._hardness_ema = [0.0 for _ in range(len(self.samples))]
-        except Exception:
-            self._hardness_ema = []
-
         # Initialize teacher assignment tracking
         self.teacher_assignments = {}
         self.teacher_assignment_counts = {}
@@ -164,7 +158,11 @@ class Dataset(TorchDataset):
         # Hardness EMA cache (student loss per sample)
         self._hardness_ema_alpha = float(self.config.hardness_alpha)
         self._hardness_warmup_epochs = int(self.config.hardness_warmup_epochs)
-        self._hardness_ema = [0.0 for _ in range(0)]  # will size after samples loaded
+        # Size hardness EMA to dataset length (initialized to zeros)
+        try:
+            self._hardness_ema = [0.0 for _ in range(len(self.samples))]
+        except Exception:
+            self._hardness_ema = []
         self._hardness_weights = None
 
         # Initialize dynamic pairing structures and build epoch-0 map
@@ -229,10 +227,10 @@ class Dataset(TorchDataset):
                     from src_new_json.augmentation.wrappers import get_preset_config
 
                     cfg = get_preset_config(
-                        getattr(self.config.augmentation, "preset"),
-                        rng_seed=int(getattr(self.config.augmentation, "rng_seed")),
+                        self.config.augmentation.preset,
+                        rng_seed=int(self.config.augmentation.rng_seed),
                         apply_to_teachers=bool(
-                            getattr(self.config.augmentation, "apply_to_teachers")
+                            self.config.augmentation.apply_to_teachers
                         ),
                     )
                     self.augmentation_pipeline = (
@@ -252,8 +250,13 @@ class Dataset(TorchDataset):
         - Applies augmentation schedule when provided
         - Builds dynamic contrastive pairing episode mapping per epoch when enabled
         """
-        # Augmentation schedule
-        if self._augmentation_schedule:
+        # Augmentation schedule (apply only when augmentation is enabled)
+        if not bool(self.config.use_aug):
+            # Ensure pipeline stays cleared when augmentation is disabled
+            if getattr(self, "augmentation_pipeline", None) is not None:
+                self.augmentation_pipeline = None
+                logger.info("🔒 Augmentation disabled by config; pipeline cleared")
+        elif self._augmentation_schedule:
             from src_new_json.augmentation import ObjectAwareAugmentationPipeline
             from src_new_json.augmentation.wrappers import get_preset_config
 
@@ -274,6 +277,8 @@ class Dataset(TorchDataset):
 
         # Variant schedule (optional)
         schedule = getattr(self.config, "conversation_variant_schedule", None)
+        if schedule is not None and not isinstance(schedule, list):
+            raise ValueError("conversation_variant_schedule must be a list of steps when provided")
         if isinstance(schedule, list) and schedule:
             chosen = None
             for entry in sorted(schedule, key=lambda e: int(e["start_epoch"])):
@@ -301,10 +306,12 @@ class Dataset(TorchDataset):
             ):
                 from src_new_json.sampling import BucketedSamplingEngine, SamplingConfig as _SampCfg
                 base_seed = int(self.config.seed)
-                engine = BucketedSamplingEngine()
+                # Reuse a persistent engine to leverage caches across epochs
+                if not hasattr(self, "_pair_engine") or (self._pair_engine is None):
+                    self._pair_engine = BucketedSamplingEngine()
+                engine = self._pair_engine
                 pair_cfg = _SampCfg(
                     candidate_pool_size=int(self.config.dynamic_pair_candidate_pool_size),
-                    max_teacher_uses_per_epoch=int(self.config.dynamic_pair_max_teacher_uses_per_epoch),
                     temperature=float(self.config.dynamic_pair_temperature),
                     target_assignment=str(self.config.dynamic_pair_target_assignment),
                     cross_bucket_explore_prob=float(self.config.dynamic_pair_cross_bucket_explore_prob),
@@ -313,8 +320,8 @@ class Dataset(TorchDataset):
                 )
                 # Normalize hardness EMA to weights per epoch (after warmup only)
                 sample_weights = None
-                try:
-                    if epoch_index >= self._hardness_warmup_epochs and len(self._hardness_ema) == len(self.samples):
+                if epoch_index >= self._hardness_warmup_epochs and len(self._hardness_ema) == len(self.samples):
+                    try:
                         arr = torch.tensor(self._hardness_ema, dtype=torch.float32)
                         if torch.isfinite(arr).any():
                             # Robust scaling via clipped percentiles
@@ -323,11 +330,26 @@ class Dataset(TorchDataset):
                             denom = max(1e-6, float((p90 - p10).item()))
                             norm = torch.clamp((arr - p10) / denom, 0.0, 1.0)
                             sample_weights = [float(x) for x in norm.tolist()]
-                except Exception as e:
-                    logger.debug(f"hardness normalization skipped: {e}")
+                    except Exception as e:
+                        logger.debug(f"hardness normalization skipped: {e}")
 
                 # Force eval split single-turn by zeroing teacher_ratio in build
                 teacher_ratio = 0.0 if self.is_eval else float(self.teacher_ratio)
+                # Derive rank and worker_id for deterministic seeding across DDP/DataLoader workers
+                try:
+                    rank = 0
+                    if torch.distributed.is_available() and torch.distributed.is_initialized():
+                        rank = int(torch.distributed.get_rank())
+                except Exception:
+                    rank = 0
+                try:
+                    # DataLoader worker id; default 0 if main process or dataset used outside workers
+                    from torch.utils.data import get_worker_info
+                    wi = get_worker_info()
+                    worker_id = int(wi.id) if wi is not None else 0
+                except Exception:
+                    worker_id = 0
+
                 episode_map, metrics = engine.build_epoch_map(
                     samples=self.samples,
                     cfg=pair_cfg,
@@ -336,6 +358,8 @@ class Dataset(TorchDataset):
                     teacher_ratio=teacher_ratio,
                     is_eval=bool(self.is_eval),
                     sample_weights=sample_weights,
+                    rank=rank,
+                    worker_id=worker_id,
                 )
                 # Materialize: target_idx -> {context_idx}
                 self._episode_map = {spec.target_idx: {"context_idx": spec.context_idx} for spec in episode_map.values()}
@@ -345,6 +369,16 @@ class Dataset(TorchDataset):
                 logger.info(
                     f"📊 Context coverage≈{metrics.coverage_context_unique_pct:.1f}% hist={metrics.context_usage_histogram}"
                 )
+                # Log a few concrete pair examples to prove usage
+                try:
+                    example_pairs = []
+                    for k in sorted(self._episode_map.keys())[:5]:
+                        v = self._episode_map[k]
+                        example_pairs.append((int(k), int(v["context_idx"]) if v["context_idx"] is not None else None))
+                    if example_pairs:
+                        logger.info(f"🔗 Pair examples (student→teacher): {example_pairs}")
+                except Exception:
+                    pass
             elif self.is_eval:
                 # Eval split: enforce single-turn
                 self._episode_map = {}
@@ -611,8 +645,8 @@ class Dataset(TorchDataset):
             )
 
             # Teachers optionally
-            taug_cfg = getattr(self.config, "teacher_augmentation", None)
-            aug_cfg = getattr(self.config, "augmentation", None)
+            taug_cfg = self.config.teacher_augmentation
+            aug_cfg = self.config.augmentation
             use_teacher_aug = False
             teacher_pipeline = None
             if taug_cfg is not None:
@@ -678,6 +712,11 @@ class Dataset(TorchDataset):
             inputs["conversation_variant"] = str(variant)
         except Exception:
             inputs["conversation_variant"] = variant
+        # Attach num_teachers for downstream debug/collator propagation
+        try:
+            inputs["num_teachers"] = int(len(teacher_samples) if has_teachers else 0)
+        except Exception:
+            inputs["num_teachers"] = 0
 
         # JSON mode: grouping is JSON-structure-based; wrapper tokens are not used.
 

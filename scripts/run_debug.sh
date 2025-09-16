@@ -13,7 +13,8 @@ export PYTHONDONTWRITEBYTECODE=1
 # Project paths
 PROJECT_ROOT="."
 CONFIG_NAME="phase_1/debug"                      # Config to use: bbu_v2
-GPU_DEVICES="0,1,2,3"                             # Single GPU for robust debugging
+ARCH="json"   # json | legacy
+GPU_DEVICES="0,1,2,3,4,5,6,7"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
@@ -110,19 +111,40 @@ validate_config() {
         exit 1
     fi
     
-    # Test config loading with new architecture
-    echo "🧪 Testing config loading with src_new..."
-    python -c "
+    # Test config loading with selected architecture
+    if [[ "$ARCH" == "json" ]]; then
+        echo "🧪 Testing config loading with src_new_json..."
+        python - <<EOF
+from src_new_json.config.config import load_config
+try:
+    config = load_config('configs/${CONFIG_NAME}.yaml')
+    print('✅ Config loading successful (src_new_json)')
+    try:
+        print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
+    except Exception:
+        pass
+    print(f'   Teacher ratio: {config.teacher_ratio}')
+except Exception as e:
+    print(f'❌ Config loading failed (src_new_json): {e}')
+    exit(1)
+EOF
+    else
+        echo "🧪 Testing config loading with src_new..."
+        python - <<EOF
 from src_new.config.config import load_config
 try:
     config = load_config('configs/${CONFIG_NAME}.yaml')
-    print('✅ Config loading successful with new architecture')
-    print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
+    print('✅ Config loading successful (src_new)')
+    try:
+        print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
+    except Exception:
+        pass
     print(f'   Teacher ratio: {config.teacher_ratio}')
 except Exception as e:
-    print(f'❌ Config loading failed: {e}')
+    print(f'❌ Config loading failed (src_new): {e}')
     exit(1)
-"
+EOF
+    fi
     
     # Check if DeepSpeed config exists (if enabled)
     if [[ $DEEPSPEED_ENABLED == true ]]; then
@@ -146,7 +168,14 @@ except Exception as e:
 launch_single_gpu() {
     echo "🖥️  Single GPU Training with New Architecture (GPU: ${GPU_DEVICES%%,*})"
     
-    python scripts/train_new.py \
+    local TRAIN_SCRIPT
+    if [[ "$ARCH" == "json" ]]; then
+        TRAIN_SCRIPT="scripts/train_new_json.py"
+    else
+        TRAIN_SCRIPT="scripts/train_new.py"
+    fi
+    
+    python "$TRAIN_SCRIPT" \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
         --max_steps 10
@@ -164,11 +193,18 @@ launch_deepspeed() {
     echo "   📊 Log Level: $LOG_LEVEL"
     echo "   🔗 Master Port: $MASTER_PORT"
     
+    local TRAIN_SCRIPT
+    if [[ "$ARCH" == "json" ]]; then
+        TRAIN_SCRIPT="scripts/train_new_json.py"
+    else
+        TRAIN_SCRIPT="scripts/train_new.py"
+    fi
+    
     # Launch with torchrun
     torchrun \
         --master_port="$MASTER_PORT" \
         --nproc_per_node="$NUM_GPUS" \
-        scripts/train_new.py \
+        "$TRAIN_SCRIPT" \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
         --max_steps 10
@@ -186,7 +222,11 @@ main() {
     
     echo "🚀 New Architecture Training Launcher (src_new)"
     echo "   📄 Config: $CONFIG_NAME | 🖥️ GPUs: $GPU_DEVICES | 📊 Log: $LOG_LEVEL"
-    echo "   🏗️  Architecture: src_new (simplified, modular design)"
+    if [[ "$ARCH" == "json" ]]; then
+        echo "   🏗️  Architecture: src_new_json (pure JSON geometry)"
+    else
+        echo "   🏗️  Architecture: src_new (legacy)"
+    fi
     if [[ "$to_console" == "true" ]]; then
         echo "   🐛 DEBUG MODE: Console output enabled"
     else

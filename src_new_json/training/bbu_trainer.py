@@ -110,6 +110,11 @@ class BBUTrainer(HFTrainer):
             model=model,
             logger=None,  # Will use HF's logging
         )
+        # Expose training_config on TrainingArguments for downstream consumers (e.g., checkpoint_saver)
+        try:
+            setattr(self.args, "training_config", training_config)
+        except Exception:
+            pass
 
         # Initialize unified checkpoint manager
         # Extract checkpoint settings from training_config
@@ -272,6 +277,17 @@ class BBUTrainer(HFTrainer):
                 except Exception:
                     pass
 
+        # Debug: surface whether teachers are being used in this batch
+        try:
+            if isinstance(inputs, dict) and "num_teachers" in inputs:
+                nt = inputs["num_teachers"]
+                # nt may be tensor per-sample; compute total teachers in batch
+                total_teachers = int(nt.sum().item()) if hasattr(nt, "sum") else int(sum(nt))
+                if total_teachers > 0 and (self._micro_batch_count % max(1, int(self.args.logging_steps))) == 0:
+                    logger.info(f"🧪 Dynamic pairing in action: batch has {total_teachers} teacher context(s)")
+        except Exception:
+            pass
+
         # Increment micro batch count
         self._micro_batch_count += 1
 
@@ -354,16 +370,48 @@ class BBUTrainer(HFTrainer):
         # Handle evaluation if needed
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
-
-        # Handle checkpoint saving: regular schedule or best-at-eval (independent)
-        current_metrics = self._extract_current_metrics()
-        if self.control.should_save:
-            # Regular save (step checkpoint), then best copy handled inside saver
-            self._save_checkpoint(model, trial, current_metrics)
+            ran_eval = True
         else:
-            # Best checkpoint independent: if new best at eval, save step then copy as best
-            if current_metrics and self.checkpoint_manager.is_new_best(current_metrics):
-                self._save_checkpoint(model, trial, current_metrics)
+            ran_eval = False
+
+        # Unified saving policy (disable HF saver):
+        # - Regular save: every save_steps
+        # - Best save: only on eval steps at multiples of eval_steps * multiplier (or explicit min), and when metric improves
+        current_metrics = self._extract_current_metrics()
+
+        # Compute step-based regular cadence
+        step = int(self.state.global_step)
+        try:
+            save_steps = int(getattr(self.args, "save_steps", 0) or 0)
+        except Exception:
+            save_steps = 0
+        should_save_regular = save_steps > 0 and (step % save_steps == 0)
+
+        # Compute eval-based best cadence (only when an eval actually ran)
+        should_save_best_tick = False
+        if ran_eval:
+            try:
+                cfg = getattr(self.args, "training_config", None)
+                eval_steps = int(getattr(cfg, "eval_steps", 0) or 0)
+                mult = int(getattr(cfg, "best_checkpoint_interval_multiplier", 10) or 10)
+                explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps", None)
+                interval = int(explicit_min) if (explicit_min is not None) else (eval_steps * mult if eval_steps > 0 else 0)
+                should_save_best_tick = interval > 0 and (step % interval == 0)
+            except Exception:
+                should_save_best_tick = False
+
+        # Decide whether to save this step checkpoint (we always write the step dir once if either condition holds)
+        should_write_step_ckpt = should_save_regular or (ran_eval and should_save_best_tick)
+
+        if should_write_step_ckpt:
+            is_new_best = ran_eval and current_metrics and self.checkpoint_manager.is_new_best(current_metrics)
+            self._save_checkpoint(
+                model,
+                trial,
+                current_metrics if is_new_best else {},
+                is_eval_step=ran_eval,
+                force_step_save=True,
+            )
 
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
@@ -573,7 +621,7 @@ class BBUTrainer(HFTrainer):
             return f"{lr_value:.2e}"
 
     def _save_checkpoint(
-        self, model, trial, current_metrics: Optional[Dict[str, float]] = None
+        self, model, trial, current_metrics: Optional[Dict[str, float]] = None, is_eval_step: bool = False, force_step_save: bool = False
     ):
         """
         Unified checkpoint saving with best checkpoint management via CheckpointSaver.
@@ -586,6 +634,8 @@ class BBUTrainer(HFTrainer):
             processor=getattr(self, "processor", None),
             step=step,
             current_metrics=current_metrics,
+            is_eval_step=is_eval_step,
+            force_step_save=force_step_save,
             is_deepspeed_enabled=bool(self.is_deepspeed_enabled),
             training_start_time=self._training_start_time,
         )
@@ -891,20 +941,9 @@ class BBUTrainer(HFTrainer):
                 )
                 self._param_group_mapping.append("top_layers")
 
-            # Coord slice group (optional; embeddings/head rows masked by callback)
-            if coord_slice_params:
-                clr = getattr(config, "lr_coord_slice", None)
-                param_groups.append(
-                    {
-                        "params": coord_slice_params,
-                        "lr": clr
-                        if (clr is not None)
-                        else getattr(config, "llm_lr", self.args.learning_rate),
-                        "name": "coord_slice",
-                        "weight_decay": 0.0,
-                    }
-                )
-                self._param_group_mapping.append("coord_slice")
+            # Coord slice group (removed in JSON mode)
+            if False:
+                pass
 
             # LLM group
             if llm_params:
@@ -927,8 +966,36 @@ class BBUTrainer(HFTrainer):
                 "eps": self.args.adam_epsilon,
                 "weight_decay": self.args.weight_decay,
             }
-
+            # todo: try cuda-optimized kernel
             self.optimizer = torch.optim.AdamW(param_groups, **optimizer_kwargs)
+
+            # One-time LR consistency checks and table log
+            try:
+                # Extract intended overrides
+                lr_merger = getattr(config, "merger_lr", None)
+                lr_vision = getattr(config, "vision_lr", None)
+                lr_llm = getattr(config, "llm_lr", None)
+                lr_top_layers = getattr(config, "lr_top_layers", None)
+                lr_full_model = getattr(config, "lr_full_model", None)
+
+                # Mutually exclusive: lr_top_layers and lr_full_model for LLM
+                if (lr_top_layers is not None) and (lr_full_model is not None):
+                    logger.warning(
+                        "Both lr_top_layers and lr_full_model are set; lr_top_layers applies to selected layers, lr_full_model to the rest."
+                    )
+
+                # Build a compact table of groups and LRs
+                rows = []
+                for g in self.optimizer.param_groups:
+                    name = g.get("name", "group")
+                    lr = float(g.get("lr", 0.0))
+                    rows.append((name, lr))
+                # Stable sort for readability
+                rows = sorted(rows, key=lambda x: x[0])
+                table = ", ".join([f"{n}: {lr:.2e}" for (n, lr) in rows])
+                logger.info(f"🧮 Optimizer LR groups → {table}")
+            except Exception as e:
+                logger.debug(f"LR table logging skipped: {e}")
 
         return self.optimizer
 

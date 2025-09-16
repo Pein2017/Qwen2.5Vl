@@ -330,6 +330,13 @@ class VariantRegistry:
             raise ValueError(f"Unsupported variant: {key}")
         return self._handlers[k]
 
+    def __contains__(self, key: object) -> bool:
+        k = str(getattr(key, "value", key)).strip().lower()
+        return k in self._handlers
+
+    def __getitem__(self, key: str) -> VariantHandler:
+        return self.get(key)
+
 
 def create_default_variant_registry(formatter: Optional[JsonGeometryFormatter] = None) -> VariantRegistry:
     """Create registry with JSON-first handlers (default schema via formatter).

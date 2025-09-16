@@ -109,31 +109,31 @@ class CheckpointSaver:
                 f"⚠️ Failed to remove existing tmp best path '{tmp_dst}': {e}"
             )
 
-        # First attempt: standard copytree into tmp
-        try:
-            shutil.copytree(
-                src,
-                tmp_dst,
-                dirs_exist_ok=False,
-                ignore=shutil.ignore_patterns(*IGNORED_COPY_FILES),
-                copy_function=shutil.copy,
-            )
-            # Replace destination atomically
-            try:
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-            except Exception as e:
-                logger.warning(
-                    f"⚠️ Failed to remove existing best path '{dst}' before rename: {e}"
-                )
-            os.replace(tmp_dst, dst)
-            return
-        except Exception as e:
-            logger.warning(
-                f"⚠️ copytree failed for best checkpoint (falling back to per-file copy): {e}"
-            )
+        # Use safe per-file copy by default (copytree disabled)
+        skip_copytree = True
+        logger.info("🛡️ Using safe per-file copy for best checkpoint (copytree disabled by default)")
 
-        # Fallback: file-by-file copy into tmp, then atomic replace
+        # Source directory validation with retries (important for NFS sync delays)
+        max_wait_attempts = 5
+        for attempt in range(max_wait_attempts):
+            if os.path.exists(src) and os.path.isdir(src):
+                # Double-check that key files exist (not just the directory)
+                try:
+                    files_in_src = list(os.listdir(src))
+                    if len(files_in_src) > 0:
+                        break  # Source looks ready
+                except Exception:
+                    pass
+            if attempt < max_wait_attempts - 1:
+                logger.info(f"🕒 Waiting for source checkpoint directory to be ready (attempt {attempt + 1}/{max_wait_attempts})")
+                time.sleep(1.0)  # Wait a bit for NFS sync
+        else:
+            raise Exception(f"Source checkpoint directory '{src}' not ready after {max_wait_attempts} attempts")
+
+        # First attempt: standard copytree (skip if NFS detected)
+        # copytree disabled; using safe per-file copy below
+
+        # Safe per-file copy into tmp, then atomic replace
         try:
             # Ensure tmp destination exists and is empty
             try:
@@ -142,6 +142,34 @@ class CheckpointSaver:
             except Exception:
                 pass
             os.makedirs(tmp_dst, exist_ok=True)
+
+            def _copy_with_fsync(src_path: str, dst_path: str) -> None:
+                # Copy with explicit read/write and fsync to ensure durability on NFS
+                import errno
+                bufsize = 1024 * 1024
+                with open(src_path, 'rb', buffering=0) as rf:
+                    st = os.fstat(rf.fileno())
+                    # Pre-create destination with same mode
+                    with open(dst_path, 'wb', buffering=0) as wf:
+                        try:
+                            os.chmod(dst_path, st.st_mode & 0o777)
+                        except Exception:
+                            pass
+                        while True:
+                            chunk = rf.read(bufsize)
+                            if not chunk:
+                                break
+                            wf.write(chunk)
+                        try:
+                            wf.flush()
+                            os.fsync(wf.fileno())
+                        except Exception as _:
+                            pass
+                # Preserve mtime/atime
+                try:
+                    os.utime(dst_path, (st.st_atime, st.st_mtime), follow_symlinks=False)
+                except Exception:
+                    pass
 
             for root, dirs, files in os.walk(src):
                 rel = os.path.relpath(root, src)
@@ -159,7 +187,7 @@ class CheckpointSaver:
                     last_exc: Optional[Exception] = None
                     for attempt in range(3):
                         try:
-                            shutil.copy(src_f, dst_f)
+                            _copy_with_fsync(src_f, dst_f)
                             last_exc = None
                             break
                         except Exception as fe:
@@ -168,15 +196,26 @@ class CheckpointSaver:
                     if last_exc is not None:
                         logger.warning(f"⚠️ Failed to copy '{src_f}' → '{dst_f}': {last_exc}")
 
-            # Replace destination atomically
-            try:
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-            except Exception as e:
-                logger.warning(
-                    f"⚠️ Failed to remove existing best path '{dst}' before rename; proceeding with atomic replace: {e}"
-                )
+            # Ensure tmp dir visibility and durability (NFS): fsync tmp dir and parent
+            def _fsync_dir(path: str) -> None:
+                try:
+                    fd = os.open(path, os.O_RDONLY)
+                    try:
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                except Exception:
+                    pass
+            for _ in range(5):
+                if os.path.isdir(tmp_dst):
+                    break
+                time.sleep(0.2)
+            _fsync_dir(tmp_dst)
+            _fsync_dir(os.path.dirname(tmp_dst))
+            # Atomic replace (works if dst exists or not)
             os.replace(tmp_dst, dst)
+            # Fsync parent of destination to flush rename
+            _fsync_dir(os.path.dirname(dst))
 
             # Cleanup tmp if created (should be gone after replace, but be safe)
             try:
@@ -193,7 +232,7 @@ class CheckpointSaver:
             except Exception:
                 pass
             raise RuntimeError(
-                f"Best checkpoint copy failed (per-file copy also failed): {e2}"
+                f"Best checkpoint copy failed: {e2}"
             )
 
     def save_checkpoint(
@@ -204,6 +243,8 @@ class CheckpointSaver:
         processor: Optional[Any],
         step: int,
         current_metrics: Optional[Dict[str, float]] = None,
+        is_eval_step: bool = False,
+        force_step_save: bool = False,
         is_deepspeed_enabled: bool = False,
         training_start_time: Optional[float] = None,
     ) -> str:
@@ -228,6 +269,44 @@ class CheckpointSaver:
                 self.args.output_dir, f"checkpoint-{step}"
             )
 
+            # Determine if we should create/update the step checkpoint directory on this call
+            # Rules:
+            # - If force_step_save=True (HF save_steps cadence), always save step checkpoint now (eval-gated by caller).
+            # - Else, if is_eval_step and best-interval gate passes (checked below), we'll still need a step checkpoint to copy-from.
+            # - Otherwise skip writing step checkpoints at every eval.
+            should_write_step_ckpt = bool(force_step_save)
+
+            # Compute best-save min_interval early for gating
+            min_interval = 0
+            cadence_steps = 0
+            interval_multiplier = 0
+            explicit_min = None
+            try:
+                cfg = getattr(getattr(self, "args", None), "training_config", None)
+                eval_steps = 0
+                if cfg is not None and hasattr(cfg, "eval_steps"):
+                    eval_steps = int(getattr(cfg, "eval_steps") or 0)
+                if (not isinstance(eval_steps, int)) or eval_steps <= 0:
+                    eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
+                try:
+                    interval_multiplier = int(getattr(cfg, "best_checkpoint_interval_multiplier")) if (cfg is not None and hasattr(cfg, "best_checkpoint_interval_multiplier")) else int(getattr(self.args, "best_checkpoint_interval_multiplier", 10))
+                except Exception:
+                    interval_multiplier = 10
+                try:
+                    explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps") if (cfg is not None and hasattr(cfg, "best_checkpoint_min_interval_steps")) else getattr(self.args, "best_checkpoint_min_interval_steps", None)
+                except Exception:
+                    explicit_min = None
+                cadence_steps = int(eval_steps) if int(eval_steps) > 0 else 0
+                computed = (int(cadence_steps) * int(interval_multiplier)) if (int(cadence_steps) > 0 and int(interval_multiplier) > 0) else 0
+                min_interval = int(explicit_min) if (explicit_min is not None) else int(computed)
+            except Exception:
+                min_interval = 0
+
+            # If not forcing, allow step checkpoint only on best-save ticks so we can copy to best-*
+            if (not should_write_step_ckpt) and is_eval_step and (min_interval > 0):
+                if (int(step) % int(min_interval)) == 0:
+                    should_write_step_ckpt = True
+
             # Save core model + processor/tokenizer files
             if is_deepspeed_enabled:
                 self._save_deepspeed_inference_checkpoint(
@@ -238,51 +317,53 @@ class CheckpointSaver:
                 )
                 checkpoint_dir = final_checkpoint_dir
                 # Best checkpoint handling
-                if current_metrics:
+                if is_eval_step and current_metrics:
                     self._maybe_update_best_and_rotate(
                         checkpoint_dir, current_metrics, step
                     )
             else:
                 checkpoint_dir = final_checkpoint_dir
-                if os.path.exists(checkpoint_dir):
-                    # Avoid overwriting; keep idempotent behavior across retries
-                    logger.info(
-                        f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
-                    )
-                    self._ensure_auxiliary_files(
-                        checkpoint_dir=checkpoint_dir,
-                        model=model,
-                        processing_class=processing_class,
-                        processor=processor,
-                    )
-                else:
-                    os.makedirs(checkpoint_dir, exist_ok=True)
-                    unwrapped = self._get_unwrapped_model(model)
-                    logger.info(
-                        "💾 [RANK 0] Saving model weights (SafeTensors format)..."
-                    )
-                    unwrapped.save_pretrained(
-                        checkpoint_dir,
-                        safe_serialization=True,
-                        max_shard_size="5GB",
-                        push_to_hub=False,
-                    )
-                    logger.info("✅ [RANK 0] Model weights saved")
-                    self._ensure_auxiliary_files(
-                        checkpoint_dir=checkpoint_dir,
-                        model=model,
-                        processing_class=processing_class,
-                        processor=processor,
-                    )
+                if should_write_step_ckpt:
+                    if os.path.exists(checkpoint_dir):
+                        # Avoid overwriting; keep idempotent behavior across retries
+                        logger.info(
+                            f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
+                        )
+                        self._ensure_auxiliary_files(
+                            checkpoint_dir=checkpoint_dir,
+                            model=model,
+                            processing_class=processing_class,
+                            processor=processor,
+                        )
+                    else:
+                        os.makedirs(checkpoint_dir, exist_ok=True)
+                        unwrapped = self._get_unwrapped_model(model)
+                        logger.info(
+                            "💾 [RANK 0] Saving model weights (SafeTensors format)..."
+                        )
+                        unwrapped.save_pretrained(
+                            checkpoint_dir,
+                            safe_serialization=True,
+                            max_shard_size="5GB",
+                            push_to_hub=False,
+                        )
+                        logger.info("✅ [RANK 0] Model weights saved")
+                        self._ensure_auxiliary_files(
+                            checkpoint_dir=checkpoint_dir,
+                            model=model,
+                            processing_class=processing_class,
+                            processor=processor,
+                        )
 
-                # Best checkpoint handling
-                if current_metrics:
+                # Best checkpoint handling (only when we have metrics and a fresh step checkpoint)
+                if is_eval_step and current_metrics and should_write_step_ckpt:
                     self._maybe_update_best_and_rotate(
                         checkpoint_dir, current_metrics, step
                     )
 
-            # Always rotate step checkpoints (regardless of metrics or deepspeed)
-            self._rotate_inference_checkpoints()
+            # Rotate only if a step checkpoint was written (avoids repeated directory scans)
+            if should_write_step_ckpt:
+                self._rotate_inference_checkpoints()
 
             if should_log:
                 dur = time.time() - save_start_time
@@ -302,27 +383,101 @@ class CheckpointSaver:
         min_interval = 0
         try:
             cfg = getattr(getattr(self, "args", None), "training_config", None)
-            # In JSON mode, training_config lives on the model; TrainingArguments won't carry it
-            # So fallback: look for attributes on args directly (passed from config)
-            eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
-            interval_multiplier = int(getattr(cfg or self.args, "best_checkpoint_interval_multiplier", 5))
-            explicit_min = getattr(cfg or self.args, "best_checkpoint_min_interval_steps", None)
-            computed = (eval_steps * interval_multiplier) if eval_steps and interval_multiplier else 0
-            min_interval = int(explicit_min) if explicit_min is not None else int(computed)
+            # Prefer values from training_config when available, otherwise fall back to args
+            eval_steps = 0
+            try:
+                if cfg is not None and hasattr(cfg, "eval_steps"):
+                    eval_steps = int(getattr(cfg, "eval_steps") or 0)
+            except Exception:
+                eval_steps = 0
+            if (not isinstance(eval_steps, int)) or eval_steps <= 0:
+                eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
+
+            try:
+                interval_multiplier = int(getattr(cfg, "best_checkpoint_interval_multiplier")) if (cfg is not None and hasattr(cfg, "best_checkpoint_interval_multiplier")) else int(getattr(self.args, "best_checkpoint_interval_multiplier", 10))
+            except Exception:
+                interval_multiplier = 10
+
+            try:
+                explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps") if (cfg is not None and hasattr(cfg, "best_checkpoint_min_interval_steps")) else getattr(self.args, "best_checkpoint_min_interval_steps", None)
+            except Exception:
+                explicit_min = None
+
+            # Determine cadence steps for interval: prefer eval_steps, else save_steps, else logging_steps
+            cadence_steps = 0
+            if int(eval_steps) > 0:
+                cadence_steps = int(eval_steps)
+            else:
+                try:
+                    cadence_steps = int(getattr(self.args, "save_steps", 0) or 0)
+                except Exception:
+                    cadence_steps = 0
+                if cadence_steps <= 0:
+                    try:
+                        cadence_steps = int(getattr(self.args, "logging_steps", 0) or 0)
+                    except Exception:
+                        cadence_steps = 0
+
+            computed = (int(cadence_steps) * int(interval_multiplier)) if (int(cadence_steps) > 0 and int(interval_multiplier) > 0) else 0
+            min_interval = int(explicit_min) if (explicit_min is not None) else int(computed)
         except Exception:
             min_interval = 0
 
+        try:
+            logger.debug(f"Best checkpoint min_interval computed: cadence_steps={cadence_steps}, multiplier={interval_multiplier}, explicit_min={explicit_min} -> min_interval={min_interval}")
+        except Exception:
+            pass
+
+        # Dynamic eval-period detection and baseline skip if eval cadence not yet known
+        try:
+            last_eval_step = getattr(self.checkpoint_manager, "_last_eval_step", None)
+            if last_eval_step is None and explicit_min is None:
+                # Establish baseline on first eval; do not save best here
+                setattr(self.checkpoint_manager, "_last_eval_step", int(step))
+                logger.debug("⏭️ Skipping best checkpoint on first eval to establish baseline")
+                return
+            if last_eval_step is not None and int(step) > int(last_eval_step):
+                detected_period = int(step) - int(last_eval_step)
+                setattr(self.checkpoint_manager, "_last_eval_step", int(step))
+                if (min_interval <= 0) and (int(interval_multiplier) > 0) and (explicit_min is None) and (detected_period > 0):
+                    min_interval = int(detected_period) * int(interval_multiplier)
+                    logger.debug(f"🧮 Derived min_interval dynamically: detected_period={detected_period}, multiplier={interval_multiplier} -> min_interval={min_interval}")
+        except Exception:
+            pass
+
+        # Skip best checkpointing entirely during the initial warmup window
+        if min_interval > 0 and int(step) < int(min_interval):
+            logger.debug(
+                f"⏭️ Skipping best checkpoint within warmup window: step {step} < min_interval {min_interval}"
+            )
+            return
+
         # Track last best save step on the manager for gating
         last_best_step = getattr(self.checkpoint_manager, "_last_best_save_step", None)
-        if last_best_step is not None and min_interval > 0:
-            if int(step) - int(last_best_step) < min_interval:
-                # Skip creating another best checkpoint due to interval gating
-                return
+        if min_interval > 0:
+            if last_best_step is None:
+                # First best attempt after warmup: gate on absolute step distance as well
+                # Only allow best save if we are at a multiple of min_interval from step 0
+                if (int(step) % int(min_interval)) != 0:
+                    return
+            else:
+                # Subsequent best saves must be at least min_interval apart
+                if int(step) - int(last_best_step) < int(min_interval):
+                    return
 
         if (
             current_metrics
             and self.checkpoint_manager.is_new_best(current_metrics)
         ):
+            # Deduplication: prevent multiple best checkpoint attempts for same step
+            metrics_hash = hash(str(sorted(current_metrics.items())))
+            last_best_attempt = getattr(self.checkpoint_manager, "_last_best_attempt", None)
+            if last_best_attempt and last_best_attempt == (step, metrics_hash):
+                return
+            
+            # Record this attempt
+            setattr(self.checkpoint_manager, "_last_best_attempt", (step, metrics_hash))
+            
             logger.info("🏆 Creating best checkpoint by direct folder copy")
             best_checkpoint_name = self.checkpoint_manager.create_best_checkpoint_name(
                 current_metrics, step

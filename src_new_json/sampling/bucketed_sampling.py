@@ -26,7 +26,6 @@ class SamplingMetrics:
 @dataclass(frozen=True)
 class SamplingConfig:
     candidate_pool_size: int
-    max_teacher_uses_per_epoch: int
     temperature: float  # hardness temperature for weighting
     target_assignment: str  # {"random","current","opposite"}
     cross_bucket_explore_prob: float = 0.0
@@ -46,6 +45,14 @@ class BucketedSamplingEngine:
       hardness using temperature; else uniform.
     - Optional small cross-bucket explore fallback when pool is empty.
     """
+
+    def __init__(self) -> None:
+        # Caches keyed by (id(samples), n)
+        self._cache_key: Optional[Tuple[int, int]] = None
+        self._cached_type_to_ids: Optional[Dict[str, List[int]]] = None
+        self._cached_sample_types: Optional[List[List[str]]] = None
+        # Candidate pools cached per epoch: key = (id(samples), n, epoch_idx)
+        self._epoch_candidate_cache: Dict[Tuple[int, int, int], List[List[int]]] = {}
 
     @staticmethod
     def _map_prefix_to_bucket(prefix: str) -> Optional[str]:
@@ -90,6 +97,55 @@ class BucketedSamplingEngine:
                 type_to_ids.setdefault(t, []).append(idx)
         return type_to_ids, sample_types
 
+    def _ensure_caches(self, samples: List[Dict[str, Any]]) -> Tuple[Dict[str, List[int]], List[List[str]]]:
+        key = (id(samples), len(samples))
+        if self._cache_key != key or self._cached_type_to_ids is None or self._cached_sample_types is None:
+            type_to_ids, sample_types = self._build_type_inverted_index(samples)
+            self._cache_key = key
+            self._cached_type_to_ids = type_to_ids
+            self._cached_sample_types = sample_types
+        return self._cached_type_to_ids, self._cached_sample_types  # type: ignore[return-value]
+
+    def _ensure_epoch_candidate_pools(
+        self,
+        samples: List[Dict[str, Any]],
+        epoch_idx: int,
+    ) -> List[List[int]]:
+        key = (id(samples), len(samples), int(epoch_idx))
+        cached = self._epoch_candidate_cache.get(key)
+        if cached is not None:
+            return cached
+        type_to_ids, sample_types = self._ensure_caches(samples)
+        n = len(samples)
+        pools: List[List[int]] = [[] for _ in range(n)]
+        for i in range(n):
+            t_i = sample_types[i]
+            if not t_i:
+                pools[i] = []
+                continue
+            # Common fast-path: single bucket
+            if len(t_i) == 1:
+                base = type_to_ids.get(t_i[0], [])
+                if base:
+                    # Exclude self
+                    pools[i] = [j for j in base if j != i]
+                else:
+                    pools[i] = []
+                continue
+            # Multi-bucket union
+            seen: Dict[int, bool] = {}
+            for t in t_i:
+                ids = type_to_ids.get(t, [])
+                for j in ids:
+                    if j != i:
+                        seen[j] = True
+            if seen:
+                pools[i] = sorted(seen.keys())
+            else:
+                pools[i] = []
+        self._epoch_candidate_cache[key] = pools
+        return pools
+
     def build_epoch_map(
         self,
         samples: List[Dict[str, Any]],
@@ -99,6 +155,9 @@ class BucketedSamplingEngine:
         teacher_ratio: float,
         is_eval: bool,
         sample_weights: Optional[List[float]] = None,
+        *,
+        rank: int = 0,
+        worker_id: int = 0,
     ) -> Tuple[Dict[int, EpisodeSpec], SamplingMetrics]:
         n = len(samples)
         if is_eval or teacher_ratio <= 0.0 or n == 0:
@@ -112,15 +171,18 @@ class BucketedSamplingEngine:
                 context_usage_histogram=empty_hist,
             )
 
-        rng = Random(int(base_seed) + int(epoch_idx))
+        # Deterministic seed incorporating epoch, rank, and worker
+        rng_seed = int(base_seed) + int(epoch_idx) + int(rank) * 100000 + int(worker_id) * 1000
+        rng = Random(rng_seed)
 
-        # Build inverted index once
-        type_to_ids, sample_types = self._build_type_inverted_index(samples)
-
+        # Build or reuse inverted index and per-student candidate pools
+        type_to_ids, sample_types = self._ensure_caches(samples)
         # Determine upper-limit pool cap
         frac = max(0.0, min(1.0, float(cfg.pool_fraction)))
         frac_cap = int(round(frac * n))
         upper_cap = max(0, min(int(cfg.pool_max), frac_cap if frac_cap > 0 else int(cfg.pool_max)))
+
+        candidate_pools = self._ensure_epoch_candidate_pools(samples, int(epoch_idx))
 
         context_use_count: Dict[int, int] = {}
         episode_map: Dict[int, EpisodeSpec] = {}
@@ -160,14 +222,8 @@ class BucketedSamplingEngine:
             if rng.random() >= float(teacher_ratio):
                 continue
 
-            # Construct object-type overlap pool
-            t_i = sample_types[i]
-            pool: List[int] = []
-            for t in t_i:
-                if t in type_to_ids:
-                    pool.extend(type_to_ids[t])
-            # Deduplicate and exclude self
-            pool = [j for j in sorted(set(pool)) if j != i]
+            # Use cached candidate pool (already self-excluding)
+            pool: List[int] = candidate_pools[i]
 
             # If empty, optional cross-explore or global fallback
             if not pool:

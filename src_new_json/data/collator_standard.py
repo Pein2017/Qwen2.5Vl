@@ -125,6 +125,14 @@ class StandardDataCollator:
             logger.debug(
                 f"Added image_grid_thw to batch: {image_grid_thw.shape} = {image_grid_thw}"
             )
+        # Optional: propagate number of teachers per sample for debugging
+        try:
+            if "num_teachers" in features[0]:
+                batch["num_teachers"] = torch.tensor(
+                    [int(f.get("num_teachers", 0)) for f in features], dtype=torch.long
+                )
+        except Exception:
+            pass
 
 
         # Propagate assistant spans so grouped losses (caption/grounding/formatting) work identically to packed
