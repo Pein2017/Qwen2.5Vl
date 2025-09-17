@@ -409,6 +409,12 @@ class LossManager:
             if per_sample_student is not None:
                 diagnostics.setdefault("per_sample", {})["student_llm_loss"] = per_sample_student
 
+            diag_payload = {"group_losses": diagnostics} if diagnostics else None
+            if per_sample_student is not None:
+                if diag_payload is None:
+                    diag_payload = {}
+                diag_payload.setdefault("per_sample", {})["student_llm_loss"] = per_sample_student
+
             loss_components = LossComponents(
                 loss=total_loss,
                 teacher_caption_loss=teacher_caption_loss,
@@ -419,7 +425,7 @@ class LossManager:
                 student_formatting_loss=student_formatting_loss,
                 teacher_llm_loss=teacher_llm_weighted,
                 student_llm_loss=student_llm_weighted,
-                diagnostics={"group_losses": diagnostics} if diagnostics else None,
+                diagnostics=diag_payload,
             )
 
         else:

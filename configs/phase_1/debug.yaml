@@ -1,39 +1,28 @@
-num_train_epochs: 5
+num_train_epochs: 10
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 2 
+gradient_accumulation_steps: 1 
 logging_steps: 1
 eval_strategy: steps
 eval_steps: 2
-save_strategy: steps
+best_checkpoint_interval_multiplier: 4
+save_strategy: "no"  # Use manual saver only
 save_steps: 1000
 save_total_limit: 1 
 learning_rate: 5.0e-5
 vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 5.0e-6
-lr_top_layers: 1.0e-5
-# JSON mode: remove coord-slice lr; keep llm/vision/merger lrs only
+lr_coord_slice: 1.0e-4  # LR for trainable token rows (embedding + LM head)
 
 collator_type: standard
-teacher_ratio: 1
-max_dataset_size: 8
+teacher_ratio: 0.6
+max_dataset_size: 10
 
 # --- Dynamic pairing (bucketed random, no teacher_pool) ---
 dynamic_pairing_enabled: true
-# Always keep current sample as student (target) in the last turn
-dynamic_pair_target_assignment: current
 # Small probability to sample teacher from all samples (cross-bucket exploration)
 dynamic_pair_cross_bucket_explore_prob: 0.02
-# Overlap-pool sampling + hardness controls (JSON)
-pool_fraction: 0.2
-pool_max: 512
-hardness_alpha: 0.1
-hardness_warmup_epochs: 1
-# Unused by the minimal engine but kept for compatibility
-dynamic_pair_candidate_pool_size: 128
-dynamic_pair_max_teacher_uses_per_epoch: 5
-dynamic_pair_temperature: 1.2
 
 model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
 
@@ -43,14 +32,22 @@ output_dir: outputs/debug
 phase_name: phase_1
 # Restrict training to only these special tokens (embeddings + LM head rows)
 
+trainable_token_strings:
+  - "<|line_start|>"
+  - "<|line_end|>"
+  - "<|box_start|>"
+  - "<|box_end|>"
+  - "<|quad_start|>"
+  - "<|quad_end|>"
+
 use_aug: false
 augmentation_schedule:
-  - { start_epoch: 1, preset: "off" }
-  - { start_epoch: 2, preset: "aggressive" }
+  - { start_epoch: 0, preset: "moderate" }
+  - { start_epoch: 1, preset: "aggressive" }
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-# JSON mode: no coordinate loss weight
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.2
 grounding_loss_weight: 1.5
@@ -58,9 +55,10 @@ formatting_loss_weight: 0.3
 
 conversation_variant_ratios:
   dense_caption: 0.5
-  coords_to_desc: 0.25
+  coords_to_desc: 0.15
   desc_to_coords: 0.25
-  summary: 0
+  summary: 0.1
 
 
 debug_alignment: true
+# Enable global plain text JSON mode

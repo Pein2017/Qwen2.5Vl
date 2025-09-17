@@ -813,6 +813,19 @@ class LossManager:
                 input_ids=self._last_input_ids if hasattr(self, "_last_input_ids") else None,
                 variant_key=variant_key,
             )
+            # Ensure at least one summary line is emitted for grouping coverage
+            try:
+                if logger.isEnabledFor(logging.DEBUG):
+                    def _cnt(x):
+                        import torch as _t
+                        return int(x.sum().item()) if isinstance(x, _t.Tensor) else 0
+                    logger.debug(
+                        "[GroupingDebug] teacher(cap/grd/fmt)=(%d/%d/%d) | student(cap/grd/fmt)=(%d/%d/%d)",
+                        _cnt(gm.teacher_caption), _cnt(gm.teacher_grounding), _cnt(gm.teacher_formatting),
+                        _cnt(gm.student_caption), _cnt(gm.student_grounding), _cnt(gm.student_formatting),
+                    )
+            except Exception:
+                pass
             # Detailed dump once per phase when enabled
             try:
                 self._maybe_dump_detailed(labels, teacher_spans, student_spans, gm)

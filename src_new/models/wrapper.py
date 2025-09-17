@@ -323,6 +323,19 @@ class DetectionModel(nn.Module):
                     rng2.end_exclusive,
                 )
 
+        # Cache IMAGE_PAD token id once for forward-time fast counting
+        self._image_pad_token_id = None
+        try:
+            cfg_id = getattr(self.base_model.config, "image_token_id", None)
+            if isinstance(cfg_id, int) and cfg_id >= 0:
+                self._image_pad_token_id = int(cfg_id)
+            elif final_tokenizer is not None:
+                vocab = final_tokenizer.get_vocab()
+                if isinstance(vocab, dict) and IMAGE_PAD in vocab:
+                    self._image_pad_token_id = int(vocab[IMAGE_PAD])
+        except Exception:
+            pass
+
         # Initialize loss manager lazily to avoid requiring full loss config at construction time
         self.loss_manager = None
 
@@ -623,15 +636,7 @@ class DetectionModel(nn.Module):
             n_image_tokens = 0
             if input_ids is not None:
                 # Determine image token id robustly (from model config or tokenizer)
-                image_token_id_val = None
-                if hasattr(self.base_model.config, "image_token_id"):
-                    image_token_id_attr = self.base_model.config.image_token_id
-                    if isinstance(image_token_id_attr, int):
-                        image_token_id_val = image_token_id_attr
-                if image_token_id_val is None and self.tokenizer is not None:
-                    vocab = self.tokenizer.get_vocab()
-                    if IMAGE_PAD in vocab:
-                        image_token_id_val = int(vocab[IMAGE_PAD])
+                image_token_id_val = self._image_pad_token_id
                 if image_token_id_val is not None:
                     mask_tensor = input_ids == image_token_id_val
                     n_image_tokens = int(mask_tensor.sum().item())

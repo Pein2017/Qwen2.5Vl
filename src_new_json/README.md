@@ -47,7 +47,7 @@ Key sections (see `src_new_json/config/config.py` for full schema and validation
   - `dynamic_pairing_enabled: true`
   - `dynamic_pair_target_assignment: current`
   - `dynamic_pair_cross_bucket_explore_prob: 0.0`
-  - `dynamic_pair_candidate_pool_size: 128`, `dynamic_pair_temperature: 0.7` (compatibility knobs; sampling is uniform in‑bucket with hardness weighting)
+  - `dynamic_pair_temperature: 0.7`
 - Geometry/vision
   - `merge_size`, `max_pixels`.
 - Loss weights

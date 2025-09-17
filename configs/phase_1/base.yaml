@@ -26,7 +26,7 @@ tb_dir: &tb_dir tb
 # - torch_dtype:            Computation precision ("bfloat16", "float16").
 # - use_cache:              Enable KV caching in the model (disable for training).
 # --------------------------------------------------------------------------------------
-model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
+model_path: outputs/7B/phase_3/9-2-7b-phase_3-smaller_lrs-added_data/checkpoint-5400
 attn_implementation: flash_attention_2
 torch_dtype: bfloat16
 use_cache: false
@@ -54,7 +54,7 @@ merger_lr: 5.0e-5
 llm_lr: 5.0e-6
 warmup_ratio: 0.1
 weight_decay: 1.0e-3
-max_grad_norm: 0.5
+max_grad_norm: 1
 lr_scheduler_type: cosine
 seed: 17
 
@@ -62,7 +62,7 @@ seed: 17
 # Phase-freeze (separate runs)
 #   - off | phase_1 | phase_2 | phase_3
 # --------------------------------------------------------------------------------------
-phase_name: "phase_1"
+phase_name: off
 
 data_root: data/ds_v2_full
 max_total_length: 12000
@@ -70,21 +70,18 @@ num_teacher_samples: 1
 max_dataset_size: -1
 collator_type: standard
 teacher_ratio: 0
-# Dynamic contrastive pairing (JSON mode)
-dynamic_pairing_enabled: true
-dynamic_pair_target_assignment: current
-dynamic_pair_cross_bucket_explore_prob: 0.0
-dynamic_pair_candidate_pool_size: 128
-dynamic_pair_temperature: 0.7
 
 bf16: true
 fp16: false
 gradient_checkpointing: true
 eval_strategy: steps
 eval_steps: 20
-save_strategy: steps
+save_strategy: "no"  # Use manual saver only
 save_steps: 1000
 save_total_limit: 2
+# Best checkpoint gating (manual saver)
+best_checkpoint_interval_multiplier: 10
+# best_checkpoint_min_interval_steps: 2000  # (optional) explicit min interval
 load_best_model_at_end: true
 metric_for_best_model: "eval_loss"
 greater_is_better: false
@@ -112,26 +109,23 @@ remove_unused_columns: false
 # - merge_size:               Patch merge size for vision tower.
 # - max_pixels:               Maximum number of pixels for image processing.
 # --------------------------------------------------------------------------------------
-# JSON mode: no coordinate token training toggles required here
+coordinate_tokens_enabled: false
 merge_size: 2
 max_pixels: 401408
+max_coord_value: 1024
+coordinate_init_mode: "fourier_ramp" # "ms_mean" or "fourier_ramp"
 
 # --------------------------------------------------------------------------------------
 # Loss Weights
 #
 # - teacher_loss_weight:    Weight for the teacher loss component.
 # - student_loss_weight:    Weight for the student loss component.
-# - caption_loss_weight:    Weight for caption/description tokens in grouped CE.
-# - grounding_loss_weight:  Weight for coordinate/geometry tokens in grouped CE.
-# - formatting_loss_weight: Weight for punctuation/wrapper tokens in grouped CE.
+# - coordinate_loss_weight: Weight for the coordinate token part of the loss.
+# - regular_loss_weight:    Weight for the regular text part of the loss.
 # --------------------------------------------------------------------------------------
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-# JSON mode grouped loss weights (must sum > 0)
-caption_loss_weight: 0.4
-grounding_loss_weight: 0.4
-formatting_loss_weight: 0.2
-
+coordinate_loss_weight: 0.0 # Disabled by default
 
 # --------------------------------------------------------------------------------------
 # Augmentation Settings
@@ -152,5 +146,16 @@ augmentation:
   photometric_strength: "light"
   blur_strength: "off"
 
-# JSON mode: coordinate auxiliary losses removed
+# --------------------------------------------------------------------------------------
+# Coordinate Auxiliary Loss Settings (Disabled by default)
+#
+# - To enable, set coord_aux_enabled: true and provide all sub-parameters.
+# --------------------------------------------------------------------------------------
+coord_aux_enabled: false
+coord_aux_tau: null
+coord_aux_sigma_bins: null
+coord_aux_window_bins: null
+coord_aux_topk: null
+coord_aux_lambda_kce: null
+coord_aux_lambda_unlike: null
 

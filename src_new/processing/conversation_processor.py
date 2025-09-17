@@ -406,6 +406,18 @@ class ConversationProcessor:
             {"role": "user", "content": ([{"type": "image"}] * len(images))},
             {"role": "assistant", "content": assistant_text},
         ]
+        try:
+            if logger.isEnabledFor(logging.DEBUG):
+                placeholders = sum(
+                    1
+                    for m in messages
+                    if m.get('role') == 'user'
+                    for c in (m.get('content') if isinstance(m.get('content'), list) else [])
+                    if isinstance(c, dict) and c.get('type') == 'image'
+                )
+                logger.debug("[conv] simple: images=%d placeholders=%d", len(images), placeholders)
+        except Exception:
+            pass
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=images, add_generation_prompt=False
         )
@@ -462,6 +474,15 @@ class ConversationProcessor:
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=all_images, add_generation_prompt=False
         )
+        try:
+            placeholder_count = 0
+            for m in messages:
+                if m.get("role") == "user" and isinstance(m.get("content"), list):
+                    placeholder_count += sum(1 for item in m["content"] if isinstance(item, dict) and item.get("type") == "image")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("[conv] teacher_student: teachers=%d images=%d placeholders=%d", len(teacher_samples), len(all_images), placeholder_count)
+        except Exception:
+            pass
         out = self._process_text_and_images(text, oi)
         return out
 
@@ -483,6 +504,15 @@ class ConversationProcessor:
         text, oi = self._apply_chat_template_safe(
             messages=messages, images=images, add_generation_prompt=True
         )
+        try:
+            pl = 0
+            for m in messages:
+                if m.get("role") == "user" and isinstance(m.get("content"), list):
+                    pl += sum(1 for item in m["content"] if isinstance(item, dict) and item.get("type") == "image")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("[conv] inference: images=%d placeholders=%d", len(images), pl)
+        except Exception:
+            pass
         return self._process_text_and_images(text, oi)
 
     def create_teacher_student_conversation_for_generation(
@@ -530,7 +560,8 @@ class ConversationProcessor:
             handler_name = type(handler).__name__
         except Exception:
             handler_name = str(handler)
-        logger.debug(f"🧩 Variant resolved: '{v}' -> handler={handler_name}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("🧩 Variant resolved: '%s' -> handler=%s", v, handler_name)
         return handler.build_user_text, handler.build_assistant_text
 
     def _get_system_prompt_for_variant(self, variant: Union[str, ConversationVariant]) -> str:

@@ -19,8 +19,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
-from transformers import PreTrainedTokenizer, TrainingArguments
-from transformers import Trainer as HFTrainer
+from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.training_args import TrainingArguments
+from transformers.trainer import Trainer as HFTrainer
 
 
 if TYPE_CHECKING:
@@ -111,6 +112,12 @@ class BBUTrainer(HFTrainer):
             model=model,
             logger=None,  # Will use HF's logging
         )
+
+        # Expose training_config on TrainingArguments for downstream consumers (e.g., checkpoint_saver)
+        try:
+            setattr(self.args, "training_config", training_config)
+        except Exception:
+            pass
 
         # Initialize unified checkpoint manager
         # Extract checkpoint settings from training_config
@@ -210,7 +217,50 @@ class BBUTrainer(HFTrainer):
             debug_logger.reconfigure_logger()
             debug_logger.start_training_run()
 
-        # Call parent train method
+        # One-time: snapshot selected embedding rows for debug delta tracking (only when DEBUG)
+        try:
+            if logger.isEnabledFor(logging.DEBUG):
+                self._embedding_debug = {}
+                token_list = getattr(self.model.training_config, "trainable_token_strings", None)
+                tokenizer = getattr(self, "processing_class", None)
+                if tokenizer is not None and token_list:
+                    ids = []
+                    for t in token_list:
+                        try:
+                            tid = tokenizer.convert_tokens_to_ids(t)
+                            if isinstance(tid, int) and tid >= 0:
+                                ids.append(tid)
+                        except Exception:
+                            pass
+                    if ids:
+                        with torch.no_grad():
+                            emb = None
+                            # Find input embedding parameter
+                            for n, p in self.model.named_parameters():
+                                if n.endswith("embed_tokens.weight"):
+                                    emb = p.detach().cpu().clone()
+                                    break
+                            if emb is not None:
+                                selected = emb[ids].clone()
+                                self._embedding_debug["ids"] = ids
+                                self._embedding_debug["baseline"] = selected
+                                try:
+                                    from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
+                                    _get("training.embedding_debug").debug(
+                                        "Tracking %d embedding rows for L2 delta debug", len(ids)
+                                    )
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+
+        # Enable detailed grouping dumps if available
+        try:
+            if hasattr(self.model, "loss_manager") and self.model.loss_manager is not None:
+                self.model.loss_manager.set_debug_mode("train")
+        except Exception:
+            pass
+
         return super().train(*args, **kwargs)
 
     def compute_loss(
@@ -354,14 +404,83 @@ class BBUTrainer(HFTrainer):
         # Handle evaluation if needed
         if self.control.should_evaluate:
             self.evaluate(ignore_keys=ignore_keys_for_eval)
+            ran_eval = True
+        else:
+            ran_eval = False
 
-        # Handle checkpoint saving if needed
-        if self.control.should_save:
-            # Do not recompute training metrics here; reuse eval metrics if available
-            current_metrics = self._extract_current_metrics()
+        # Embedding delta debug: log L2 deltas for tracked rows after eval phases (only when DEBUG)
+        try:
+            if logger.isEnabledFor(logging.DEBUG) and ran_eval and hasattr(self, "_embedding_debug") and self._embedding_debug.get("ids"):
+                ids = self._embedding_debug["ids"]
+                baseline = self._embedding_debug.get("baseline")
+                if baseline is not None:
+                    emb = None
+                    for n, p in self.model.named_parameters():
+                        if n.endswith("embed_tokens.weight"):
+                            emb = p.detach().cpu()
+                            break
+                    if emb is not None:
+                        import torch
+                        current = emb[ids]
+                        deltas = (current - baseline).norm(dim=1)
+                        # Log coord-slice LR if available
+                        clr = None
+                        try:
+                            clr = getattr(self.model.training_config, "lr_coord_slice", None)
+                        except Exception:
+                            clr = None
+                        try:
+                            from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
+                            _get("training.embedding_debug").debug(
+                                "🧪 Embedding L2 deltas (mean=%.6f, max=%.6f) on %d rows; lr_coord_slice=%s",
+                                deltas.mean().item(), deltas.max().item(), len(ids), str(clr)
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
-            # Pass metrics to unified checkpoint saving
-            self._save_checkpoint(model, trial, current_metrics)
+        # Unified saving policy (disable HF saver behavior):
+        # Save ONLY when both conditions hold (at eval ticks we may write step checkpoint, at interval ticks and new-best we promote):
+        current_metrics = self._extract_current_metrics()
+        step = int(self.state.global_step)
+
+        # 1) Regular step-based saving based on save_steps (independent of eval)
+        try:
+            save_steps = int(getattr(self.args, "save_steps", 0) or 0)
+        except Exception:
+            save_steps = 0
+        if save_steps > 0 and step > 0 and (step % save_steps == 0):
+            self._save_checkpoint(
+                model,
+                trial,
+                current_metrics=None,  # regular save does not require metrics
+                is_eval_step=False,
+                force_step_save=True,
+            )
+
+        # 2) Best checkpoint saving strictly at cadence ticks with improvement only
+        should_save_best_tick = False
+        if ran_eval:
+            try:
+                cfg = getattr(self.args, "training_config", None)
+                eval_steps = int(getattr(cfg, "eval_steps", 0) or 0)
+                mult = int(getattr(cfg, "best_checkpoint_interval_multiplier", 10) or 10)
+                explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps", None)
+                interval = int(explicit_min) if (explicit_min is not None) else (eval_steps * mult if eval_steps > 0 else 0)
+                should_save_best_tick = interval > 0 and (step % interval == 0)
+            except Exception:
+                should_save_best_tick = False
+
+        is_new_best = bool(ran_eval and current_metrics and self.checkpoint_manager.is_new_best(current_metrics))
+        if ran_eval and should_save_best_tick and is_new_best:
+            self._save_checkpoint(
+                model,
+                trial,
+                current_metrics,
+                is_eval_step=True,
+                force_step_save=True,
+            )
 
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
@@ -586,7 +705,7 @@ class BBUTrainer(HFTrainer):
             return f"{lr_value:.2e}"
 
     def _save_checkpoint(
-        self, model, trial, current_metrics: Optional[Dict[str, float]] = None
+        self, model, trial, current_metrics: Optional[Dict[str, float]] = None, is_eval_step: bool = False, force_step_save: bool = False
     ):
         """
         Unified checkpoint saving with best checkpoint management via CheckpointSaver.
@@ -599,6 +718,8 @@ class BBUTrainer(HFTrainer):
             processor=getattr(self, "processor", None),
             step=step,
             current_metrics=current_metrics,
+            is_eval_step=is_eval_step,
+            force_step_save=force_step_save,
             is_deepspeed_enabled=bool(self.is_deepspeed_enabled),
             training_start_time=self._training_start_time,
         )
@@ -852,9 +973,8 @@ class BBUTrainer(HFTrainer):
                         top_layers_params.append(param)
                     else:
                         llm_params.append(param)
-                elif any(
-                    key in name for key in ("embed_tokens.weight", "lm_head.weight")
-                ):
+                elif "embed_tokens.weight" in name:
+                    # Coordinate/token slice group applies only to input embeddings
                     coord_slice_params.append(param)
                 else:
                     # Default to LLM parameters (includes model.layers, embed_tokens, lm_head, etc.)
@@ -890,19 +1010,9 @@ class BBUTrainer(HFTrainer):
                 )
                 self._param_group_mapping.append("merger")
 
-            # Top layers group (optional)
+            # Merge any detected top-layer params back into LLM group for unified LR control
             if top_layers_params:
-                tlr = getattr(config, "lr_top_layers", None)
-                param_groups.append(
-                    {
-                        "params": top_layers_params,
-                        "lr": tlr
-                        if (tlr is not None)
-                        else getattr(config, "llm_lr", self.args.learning_rate),
-                        "name": "top_layers",
-                    }
-                )
-                self._param_group_mapping.append("top_layers")
+                llm_params.extend(top_layers_params)
 
             # Coord slice group (optional; embeddings/head rows masked by callback)
             if coord_slice_params:

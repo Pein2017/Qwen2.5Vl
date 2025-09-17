@@ -13,8 +13,8 @@ export PYTHONDONTWRITEBYTECODE=1
 # Project paths
 PROJECT_ROOT="."
 CONFIG_NAME="phase_1/debug"                      # Config to use: bbu_v2
-ARCH="json"   # json | legacy
-GPU_DEVICES="0,1,2,3,4,5,6,7"                             # Single GPU for robust debugging
+ARCH="legacy"   # json | legacy
+GPU_DEVICES="0,1"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
@@ -37,6 +37,8 @@ setup_environment() {
 
     # Rank-aware logging: enable DEBUG from process start
     export BBU_LOG_LEVEL="$LOG_LEVEL"
+    # Enable detailed grouping debug dumps (one-time per phase)
+    export BBU_DEBUG_DETAILED=1
 
     # Distributed training coordination
     export MASTER_ADDR="127.0.0.1"

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from random import Random
 from collections import Counter
+import math
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,6 @@ class SamplingMetrics:
 
 @dataclass(frozen=True)
 class SamplingConfig:
-    candidate_pool_size: int
     temperature: float  # hardness temperature for weighting
     target_assignment: str  # {"random","current","opposite"}
     cross_bucket_explore_prob: float = 0.0
@@ -192,22 +192,23 @@ class BucketedSamplingEngine:
                 return None
             if sample_weights is None or len(sample_weights) != n:
                 return rng.choice(pool_indices)
-            # Temperature-scaled softmax over normalized hardness weights
+            # Temperature-scaled softmax over normalized hardness weights (standardized in-pool)
             tau = max(1e-6, float(cfg.temperature))
-            vals = []
-            maxv = None
+            vals: List[float] = []
             for j in pool_indices:
-                w = max(0.0, float(sample_weights[j]))
-                vals.append(w)
-                maxv = w if maxv is None else max(maxv, w)
-            # Numerical stability
-            exps = []
-            if maxv is None:
+                vals.append(max(0.0, float(sample_weights[j])))
+            if not vals:
                 return rng.choice(pool_indices)
-            for v in vals:
-                exps.append(pow(2.718281828, (v - maxv) / tau))
+            # Standardize within the current pool to make tau comparable across epochs/pools
+            mean_v = sum(vals) / float(len(vals))
+            var_v = sum((v - mean_v) * (v - mean_v) for v in vals) / float(len(vals))
+            std_v = math.sqrt(max(1e-12, var_v))
+            z = [((v - mean_v) / std_v) for v in vals]
+            # Numerical stability via max subtraction
+            z_max = max(z)
+            exps = [math.exp((vz - z_max) / tau) for vz in z]
             s = sum(exps)
-            if s <= 0:
+            if not math.isfinite(s) or s <= 0.0:
                 return rng.choice(pool_indices)
             # Draw based on cumulative probability
             r = rng.random() * s
@@ -232,10 +233,15 @@ class BucketedSamplingEngine:
                 else:
                     pool = [j for j in range(n) if j != i]
 
-            # Apply only upper limit if cap > 0
+            # Apply only upper limit if cap > 0 (loss-aware top-K when weights available)
             if upper_cap > 0 and len(pool) > upper_cap:
-                rng.shuffle(pool)
-                pool = pool[:upper_cap]
+                if sample_weights is not None and len(sample_weights) == n:
+                    # Select top-K by hardness to preserve loss-aware sampling effect
+                    pool.sort(key=lambda j_idx: float(sample_weights[j_idx]), reverse=True)
+                    pool = pool[:upper_cap]
+                else:
+                    rng.shuffle(pool)
+                    pool = pool[:upper_cap]
             elif len(pool) == 0:
                 continue
 

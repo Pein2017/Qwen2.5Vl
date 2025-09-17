@@ -27,6 +27,7 @@ from data_conversion.utils.file_ops import FileOperations
 from data_conversion.validation_manager import ValidationManager
 from data_conversion.vision_process import ImageProcessor
 from data_conversion.teacher_selector import TeacherSelector
+from data_conversion.summary_builder import build_summary_from_objects
 from data_conversion.utils.sanitizers import (
     strip_occlusion_tokens,
     sanitize_text,
@@ -383,6 +384,9 @@ class UnifiedProcessor:
             # Sort objects by position using first coordinate pair
             objects = sort_objects_tlbr(objects)
 
+            # Build deterministic one-line summary from objects
+            summary_text = build_summary_from_objects(objects)
+
             # Process image (copy/resize) to match coordinate transformations
             processed_image_path, _, _ = self.image_processor.process_image(
                 image_path, json_width, json_height
@@ -396,6 +400,7 @@ class UnifiedProcessor:
             return {
                 "images": [rel_image_path],
                 "objects": objects,
+                "summary": summary_text,
                 "width": final_width,
                 "height": final_height,
             }

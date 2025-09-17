@@ -117,10 +117,10 @@ class PhaseFreezeManager:
             model: The Qwen2.5-VL conditional generation model (or wrapper exposing the same parameter names).
             tokenizer: Tokenizer for detecting coordinate-token range (if present).
             phase: One of {"phase_1", "phase_2", "phase_3"}.
-            llm_top_k_block: Optional override for number of last LLM blocks to unfreeze (default derives from PHASE_DEFAULTS).
-            vision_top_k_block: Optional override for number of last vision blocks to unfreeze in phase_3.
+            llm_top_k_block: Controls LLM unfreeze: 0=frozen, -1=all LLM blocks, k=last k decoder blocks.
+            vision_top_k_block: Controls vision unfreeze: 0=frozen, -1=all vision blocks, k=last k blocks.
             coord_slice_only: Optional override for enabling coord-slice masking on embeddings/LM head in phase_1/2.
-            freeze_patch_embed: Optional override for freezing `visual.patch_embed` in phase_3.
+            freeze_patch_embed: Optional override to keep `visual.patch_embed` frozen when not unfreezing all vision.
             trainable_token_strings: Optional list of exact token strings to restrict training to those embedding/LM-head rows only.
 
         Notes:
@@ -131,29 +131,11 @@ class PhaseFreezeManager:
         if phase not in ("phase_1", "phase_2", "phase_3"):
             raise ValueError(f"Unknown phase: {phase}")
 
-        # Resolve effective settings from per-phase defaults when not explicitly provided
-        defaults = PHASE_DEFAULTS.get(phase, {})
-        eff_llm_top_k_block = (
-            defaults.get("llm_top_k_block") if llm_top_k_block is None else int(llm_top_k_block)
-        )
-        eff_vision_top_k_block = (
-            defaults.get("vision_top_k_block")
-            if vision_top_k_block is None
-            else int(vision_top_k_block)
-        )
-        # Alias to existing internal variable names for minimal downstream changes
-        eff_top_k_layers = eff_llm_top_k_block
-        eff_vision_top_k_blocks = eff_vision_top_k_block
-        eff_coord_slice_only = (
-            defaults.get("coord_slice_only")
-            if coord_slice_only is None
-            else bool(coord_slice_only)
-        )
-        eff_freeze_patch_embed = (
-            defaults.get("freeze_patch_embed")
-            if freeze_patch_embed is None
-            else bool(freeze_patch_embed)
-        )
+        # Resolve effective settings directly from arguments (no phase-derived defaults)
+        eff_top_k_layers = int(llm_top_k_block) if llm_top_k_block is not None else 0
+        eff_vision_top_k_blocks = int(vision_top_k_block) if vision_top_k_block is not None else 0
+        eff_coord_slice_only = bool(coord_slice_only) if coord_slice_only is not None else False
+        eff_freeze_patch_embed = bool(freeze_patch_embed) if freeze_patch_embed is not None else True
 
         # Reset any prior hooks
         self.clear()
@@ -176,6 +158,50 @@ class PhaseFreezeManager:
         for name, p in model.named_parameters():
             if "visual.merger" in name:
                 p.requires_grad = True
+
+        # 2b) Always unfreeze LM head so it can be tuned across phases
+        for name, p in model.named_parameters():
+            if name.endswith("lm_head.weight"):
+                p.requires_grad = True
+
+        # Debug: summarize trainable modules after applying phase policy
+        try:
+            vision_trainable = 0
+            vision_total = 0
+            llm_trainable = 0
+            llm_total = 0
+            merger_trainable = False
+            lm_head_trainable = False
+
+            for name, p in model.named_parameters():
+                if ".visual.blocks." in name:
+                    vision_total += 1
+                    if p.requires_grad:
+                        vision_trainable += 1
+                if (".language_model.layers." in name) or (".model.layers." in name):
+                    llm_total += 1
+                    if p.requires_grad:
+                        llm_trainable += 1
+                if "visual.merger" in name and p.requires_grad:
+                    merger_trainable = True
+                if name.endswith("lm_head.weight") and p.requires_grad:
+                    lm_head_trainable = True
+
+            phase_logger = None
+            try:
+                from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
+                phase_logger = _get("training.phase_freeze_manager")
+            except Exception:
+                import logging as _logging
+                phase_logger = _logging.getLogger("training.phase_freeze_manager")
+
+            phase_logger.info(
+                f"🧊 Phase freeze summary — vision_trainable_params={vision_trainable}/{vision_total}, "
+                f"llm_trainable_params={llm_trainable}/{llm_total}, merger_trainable={merger_trainable}, "
+                f"lm_head_trainable={lm_head_trainable}"
+            )
+        except Exception:
+            pass
 
         # 3) Optional: restrict training to specific token IDs (e.g., line_start/line_end)
         token_slice_enabled = False
@@ -222,62 +248,37 @@ class PhaseFreezeManager:
                     "[PhaseFreeze] Could not access embeddings/LM head for coord-slice masking"
                 )
 
-        # 4) Phase-specific unfreezing
-        if phase == "phase_2":
-            # Unfreeze last K LLM layers
-            if eff_top_k_layers and eff_top_k_layers > 0:
-                self._unfreeze_last_k_llm_layers(model, eff_top_k_layers)
-        elif phase == "phase_3":
-            # If we are restricting to specific tokens, do not unfreeze broader modules
-            if token_slice_enabled:
-                # Keep patch_embed frozen when requested (already frozen by default)
-                if eff_freeze_patch_embed:
-                    for name, p in model.named_parameters():
-                        if "visual.patch_embed" in name:
-                            p.requires_grad = False
-                # Ensure merger remains trainable
+        # 4) Unified unfreezing controlled solely by top-k settings
+        # LLM control: 0=frozen, -1=all, k=last-k
+        if eff_top_k_layers == -1:
+            # Unfreeze all detected LLM layers
+            self._unfreeze_last_k_llm_layers(model, k=10**9)
+            # Ensure merger remains trainable
+            for name, p in model.named_parameters():
+                if "visual.merger" in name:
+                    p.requires_grad = True
+        elif eff_top_k_layers > 0:
+            self._unfreeze_last_k_llm_layers(model, eff_top_k_layers)
+
+        # Vision control: 0=frozen, -1=all, k=last-k
+        if eff_vision_top_k_blocks == -1:
+            # Unfreeze all vision blocks and (optionally) patch_embed
+            self._unfreeze_last_k_vision_blocks(model, k=10**9)
+            for name, p in model.named_parameters():
+                if "visual.patch_embed" in name:
+                    p.requires_grad = True
+        elif eff_vision_top_k_blocks > 0:
+            self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
+            # Keep patch_embed frozen unless explicitly overridden
+            if eff_freeze_patch_embed:
                 for name, p in model.named_parameters():
-                    if "visual.merger" in name:
-                        p.requires_grad = True
-            else:
-                # If overrides are provided for memory control, unfreeze selectively.
-                # Otherwise, default to full unfreeze with optional vision restrictions.
-                if (
-                    (eff_top_k_layers and eff_top_k_layers > 0)
-                    or (eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0)
-                ):
-                    # LLM: unfreeze last-K decoder layers when requested
-                    if eff_top_k_layers and eff_top_k_layers > 0:
-                        self._unfreeze_last_k_llm_layers(model, eff_top_k_layers)
-                    # Vision: unfreeze last-K blocks when requested
-                    if eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0:
-                        self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
-                    # Ensure merger remains trainable
-                    for name, p in model.named_parameters():
-                        if "visual.merger" in name:
-                            p.requires_grad = True
-                    # Keep patch_embed frozen when requested (it is already frozen from the initial freeze step)
-                    if eff_freeze_patch_embed:
-                        for name, p in model.named_parameters():
-                            if "visual.patch_embed" in name:
-                                p.requires_grad = False
-                else:
-                    # Full unfreeze by default
-                    for _, p in model.named_parameters():
-                        p.requires_grad = True
-                    # Optionally keep patch_embed frozen
-                    if eff_freeze_patch_embed:
-                        for name, p in model.named_parameters():
-                            if "visual.patch_embed" in name:
-                                p.requires_grad = False
-                    # Optionally restrict to last K vision blocks
-                    if eff_vision_top_k_blocks and eff_vision_top_k_blocks > 0:
-                        self._freeze_all_vision_blocks(model)
-                        self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
-                        # Ensure merger is still unfrozen
-                        for name, p in model.named_parameters():
-                            if "visual.merger" in name:
-                                p.requires_grad = True
+                    if "visual.patch_embed" in name:
+                        p.requires_grad = False
+
+        # Respect token-slice preference: if token_slice_enabled and we didn't unfreeze-all LLM, embeddings/LM head are masked
+        if token_slice_enabled and eff_top_k_layers != -1:
+            # No additional action needed; mask hooks are already installed
+            pass
 
         # 5) Summarize
         num_trainable = 0

@@ -43,7 +43,7 @@ from src_new.models.patches import apply_comprehensive_qwen25_fixes
 
 # Type checking imports
 if TYPE_CHECKING:
-    from transformers import TrainingArguments
+    from transformers.training_args import TrainingArguments
 
     from src_new.config.config import Config
 
@@ -101,7 +101,7 @@ def parse_args():
 
 def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
     """Create TrainingArguments with DeepSpeed configuration."""
-    from transformers import TrainingArguments
+    from transformers.training_args import TrainingArguments
 
     logger = get_logger()
 
@@ -136,13 +136,15 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         # Evaluation settings
         eval_strategy=config.eval_strategy,
         eval_steps=config.eval_steps,
-        save_strategy=config.save_strategy,
+        # Disable HF internal saving; rely on BBUTrainer manual saver
+        save_strategy="no",
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
         # Checkpoint optimization settings
         save_safetensors=True,  # Always use SafeTensors for faster loading
         # Best checkpoint tracking settings
-        load_best_model_at_end=config.load_best_model_at_end,
+        # Disable HF best-model loading; manual saver manages best checkpoints
+        load_best_model_at_end=False,
         metric_for_best_model=config.metric_for_best_model,
         greater_is_better=config.greater_is_better,
         # Logging settings

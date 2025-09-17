@@ -11,8 +11,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
 PROJECT_ROOT="."
-CONFIG_NAME="phase_1/standard"
-ARCH="json"   # json | legacy
+CONFIG_NAME="phase_2/standard"
+ARCH="legacy"   # json | legacy
 MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
 to_console=true
 

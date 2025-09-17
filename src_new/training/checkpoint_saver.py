@@ -94,55 +94,21 @@ class CheckpointSaver:
         self.checkpoint_manager = checkpoint_manager
 
     def _copytree_atomic(self, src: str, dst: str) -> None:
-        """Copy a directory tree atomically via a temporary directory.
+        """Copy a directory tree using per-file copy into a temporary directory, then replace.
 
-        Falls back to file-by-file copy if the filesystem rejects copytree (e.g., Unknown error 524 on some mounts).
+        This implementation avoids shutil.copytree to be more stable on NFS mounts.
         Ensures partial artifacts are cleaned up on failure.
         """
         tmp_dst = f"{dst}.tmp"
-        # Cleanup any previous tmp
+        # Ensure tmp destination is clean
         try:
             if os.path.exists(tmp_dst):
                 shutil.rmtree(tmp_dst)
-        except Exception as e:
-            logger.warning(
-                f"⚠️ Failed to remove existing tmp best path '{tmp_dst}': {e}"
-            )
+        except Exception:
+            pass
+        os.makedirs(tmp_dst, exist_ok=True)
 
-        # First attempt: standard copytree into tmp
         try:
-            shutil.copytree(
-                src,
-                tmp_dst,
-                dirs_exist_ok=False,
-                ignore=shutil.ignore_patterns(*IGNORED_COPY_FILES),
-                copy_function=shutil.copy,
-            )
-            # Replace destination atomically
-            try:
-                if os.path.exists(dst):
-                    shutil.rmtree(dst)
-            except Exception as e:
-                logger.warning(
-                    f"⚠️ Failed to remove existing best path '{dst}' before rename: {e}"
-                )
-            os.replace(tmp_dst, dst)
-            return
-        except Exception as e:
-            logger.warning(
-                f"⚠️ copytree failed for best checkpoint (falling back to per-file copy): {e}"
-            )
-
-        # Fallback: file-by-file copy into tmp, then atomic replace
-        try:
-            # Ensure tmp destination exists and is empty
-            try:
-                if os.path.exists(tmp_dst):
-                    shutil.rmtree(tmp_dst)
-            except Exception:
-                pass
-            os.makedirs(tmp_dst, exist_ok=True)
-
             for root, dirs, files in os.walk(src):
                 rel = os.path.relpath(root, src)
                 target_dir = tmp_dst if rel == "." else os.path.join(tmp_dst, rel)
@@ -151,11 +117,9 @@ class CheckpointSaver:
                     os.makedirs(os.path.join(target_dir, d), exist_ok=True)
                 for f in files:
                     if f in IGNORED_COPY_FILES:
-                        # Skip optional files that are not required for inference
                         continue
                     src_f = os.path.join(root, f)
                     dst_f = os.path.join(target_dir, f)
-                    # Retry a few times to work around transient FS errors (e.g., errno 524)
                     last_exc: Optional[Exception] = None
                     for attempt in range(3):
                         try:
@@ -168,33 +132,30 @@ class CheckpointSaver:
                     if last_exc is not None:
                         logger.warning(f"⚠️ Failed to copy '{src_f}' → '{dst_f}': {last_exc}")
 
-            # Replace destination atomically
+            # Replace destination
             try:
                 if os.path.exists(dst):
                     shutil.rmtree(dst)
             except Exception as e:
                 logger.warning(
-                    f"⚠️ Failed to remove existing best path '{dst}' before rename; proceeding with atomic replace: {e}"
+                    f"⚠️ Failed to remove existing best path '{dst}' before rename; proceeding with replace: {e}"
                 )
             os.replace(tmp_dst, dst)
-
-            # Cleanup tmp if created (should be gone after replace, but be safe)
+        except Exception as e:
+            # Cleanup tmp and propagate
             try:
                 if os.path.exists(tmp_dst):
                     shutil.rmtree(tmp_dst)
             except Exception:
                 pass
-            return
-        except Exception as e2:
-            # Final cleanup and propagate
+            raise RuntimeError(f"Best checkpoint copy failed during per-file copy: {e}")
+        finally:
+            # Ensure tmp is removed if still present
             try:
                 if os.path.exists(tmp_dst):
                     shutil.rmtree(tmp_dst)
             except Exception:
                 pass
-            raise RuntimeError(
-                f"Best checkpoint copy failed (per-file copy also failed): {e2}"
-            )
 
     def save_checkpoint(
         self,
@@ -204,6 +165,8 @@ class CheckpointSaver:
         processor: Optional[Any],
         step: int,
         current_metrics: Optional[Dict[str, float]] = None,
+        is_eval_step: bool = False,
+        force_step_save: bool = False,
         is_deepspeed_enabled: bool = False,
         training_start_time: Optional[float] = None,
     ) -> str:
@@ -228,6 +191,40 @@ class CheckpointSaver:
                 self.args.output_dir, f"checkpoint-{step}"
             )
 
+            # Decide whether to write the step checkpoint on this call
+            should_write_step_ckpt = bool(force_step_save)
+
+            # Compute best-save min_interval for gating
+            min_interval = 0
+            cadence_steps = 0
+            interval_multiplier = 0
+            explicit_min = None
+            try:
+                cfg = getattr(getattr(self, "args", None), "training_config", None)
+                eval_steps = 0
+                if cfg is not None and hasattr(cfg, "eval_steps"):
+                    eval_steps = int(getattr(cfg, "eval_steps") or 0)
+                if (not isinstance(eval_steps, int)) or eval_steps <= 0:
+                    eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
+                try:
+                    interval_multiplier = int(getattr(cfg, "best_checkpoint_interval_multiplier")) if (cfg is not None and hasattr(cfg, "best_checkpoint_interval_multiplier")) else int(getattr(self.args, "best_checkpoint_interval_multiplier", 10))
+                except Exception:
+                    interval_multiplier = 10
+                try:
+                    explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps") if (cfg is not None and hasattr(cfg, "best_checkpoint_min_interval_steps")) else getattr(self.args, "best_checkpoint_min_interval_steps", None)
+                except Exception:
+                    explicit_min = None
+                cadence_steps = int(eval_steps) if int(eval_steps) > 0 else 0
+                computed = (int(cadence_steps) * int(interval_multiplier)) if (int(cadence_steps) > 0 and int(interval_multiplier) > 0) else 0
+                min_interval = int(explicit_min) if (explicit_min is not None) else int(computed)
+            except Exception:
+                min_interval = 0
+
+            # If not forcing, allow writing step checkpoint only on best-save ticks (for copy-to-best)
+            if (not should_write_step_ckpt) and is_eval_step and (min_interval > 0):
+                if (int(step) % int(min_interval)) == 0:
+                    should_write_step_ckpt = True
+
             # Save core model + processor/tokenizer files
             if is_deepspeed_enabled:
                 self._save_deepspeed_inference_checkpoint(
@@ -238,51 +235,52 @@ class CheckpointSaver:
                 )
                 checkpoint_dir = final_checkpoint_dir
                 # Best checkpoint handling
-                if current_metrics:
+                if is_eval_step and current_metrics:
                     self._maybe_update_best_and_rotate(
                         checkpoint_dir, current_metrics, step
                     )
             else:
                 checkpoint_dir = final_checkpoint_dir
-                if os.path.exists(checkpoint_dir):
-                    # Avoid overwriting; keep idempotent behavior across retries
-                    logger.info(
-                        f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
-                    )
-                    self._ensure_auxiliary_files(
-                        checkpoint_dir=checkpoint_dir,
-                        model=model,
-                        processing_class=processing_class,
-                        processor=processor,
-                    )
-                else:
-                    os.makedirs(checkpoint_dir, exist_ok=True)
-                    unwrapped = self._get_unwrapped_model(model)
-                    logger.info(
-                        "💾 [RANK 0] Saving model weights (SafeTensors format)..."
-                    )
-                    unwrapped.save_pretrained(
-                        checkpoint_dir,
-                        safe_serialization=True,
-                        max_shard_size="5GB",
-                        push_to_hub=False,
-                    )
-                    logger.info("✅ [RANK 0] Model weights saved")
-                    self._ensure_auxiliary_files(
-                        checkpoint_dir=checkpoint_dir,
-                        model=model,
-                        processing_class=processing_class,
-                        processor=processor,
-                    )
+                if should_write_step_ckpt:
+                    if os.path.exists(checkpoint_dir):
+                        logger.info(
+                            f"🔄 Checkpoint for step {step} already exists at {checkpoint_dir} — ensuring auxiliary files (tokenizer/processor/configs) are present and skipping duplicate model save"
+                        )
+                        self._ensure_auxiliary_files(
+                            checkpoint_dir=checkpoint_dir,
+                            model=model,
+                            processing_class=processing_class,
+                            processor=processor,
+                        )
+                    else:
+                        os.makedirs(checkpoint_dir, exist_ok=True)
+                        unwrapped = self._get_unwrapped_model(model)
+                        logger.info(
+                            "💾 [RANK 0] Saving model weights (SafeTensors format)..."
+                        )
+                        unwrapped.save_pretrained(
+                            checkpoint_dir,
+                            safe_serialization=True,
+                            max_shard_size="5GB",
+                            push_to_hub=False,
+                        )
+                        logger.info("✅ [RANK 0] Model weights saved")
+                        self._ensure_auxiliary_files(
+                            checkpoint_dir=checkpoint_dir,
+                            model=model,
+                            processing_class=processing_class,
+                            processor=processor,
+                        )
 
-                # Best checkpoint handling
-                if current_metrics:
+                # Best checkpoint handling: only when eval step and a fresh step checkpoint exists
+                if is_eval_step and current_metrics and should_write_step_ckpt:
                     self._maybe_update_best_and_rotate(
                         checkpoint_dir, current_metrics, step
                     )
 
-            # Always rotate step checkpoints (regardless of metrics or deepspeed)
-            self._rotate_inference_checkpoints()
+            # Rotate only if a step checkpoint was written
+            if should_write_step_ckpt:
+                self._rotate_inference_checkpoints()
 
             if should_log:
                 dur = time.time() - save_start_time
@@ -299,6 +297,63 @@ class CheckpointSaver:
         self, checkpoint_dir: str, current_metrics: Dict[str, float], step: int
     ) -> None:
         should_log = bool(getattr(self.args, "should_save", False))
+        # Best-save interval gating (ported from json variant)
+        min_interval = 0
+        cadence_steps = 0
+        interval_multiplier = 0
+        explicit_min = None
+        try:
+            cfg = getattr(getattr(self, "args", None), "training_config", None)
+            eval_steps = 0
+            try:
+                if cfg is not None and hasattr(cfg, "eval_steps"):
+                    eval_steps = int(getattr(cfg, "eval_steps") or 0)
+            except Exception:
+                eval_steps = 0
+            if (not isinstance(eval_steps, int)) or eval_steps <= 0:
+                eval_steps = int(getattr(self.args, "eval_steps", 0)) if hasattr(self.args, "eval_steps") else 0
+
+            try:
+                interval_multiplier = int(getattr(cfg, "best_checkpoint_interval_multiplier")) if (cfg is not None and hasattr(cfg, "best_checkpoint_interval_multiplier")) else int(getattr(self.args, "best_checkpoint_interval_multiplier", 10))
+            except Exception:
+                interval_multiplier = 10
+
+            try:
+                explicit_min = getattr(cfg, "best_checkpoint_min_interval_steps") if (cfg is not None and hasattr(cfg, "best_checkpoint_min_interval_steps")) else getattr(self.args, "best_checkpoint_min_interval_steps", None)
+            except Exception:
+                explicit_min = None
+
+            # Determine cadence steps for interval: prefer eval_steps, else save_steps, else logging_steps
+            cadence_steps = 0
+            if int(eval_steps) > 0:
+                cadence_steps = int(eval_steps)
+            else:
+                try:
+                    cadence_steps = int(getattr(self.args, "save_steps", 0) or 0)
+                except Exception:
+                    cadence_steps = 0
+                if cadence_steps <= 0:
+                    try:
+                        cadence_steps = int(getattr(self.args, "logging_steps", 0) or 0)
+                    except Exception:
+                        cadence_steps = 0
+
+            computed = (int(cadence_steps) * int(interval_multiplier)) if (int(cadence_steps) > 0 and int(interval_multiplier) > 0) else 0
+            min_interval = int(explicit_min) if (explicit_min is not None) else int(computed)
+        except Exception:
+            min_interval = 0
+
+        # Track last best save step on the manager for gating
+        last_best_step = getattr(self.checkpoint_manager, "_last_best_save_step", None)
+        if min_interval > 0:
+            if last_best_step is None:
+                # First best attempt after warmup: gate on absolute step distance as well
+                if (int(step) % int(min_interval)) != 0:
+                    return
+            else:
+                if int(step) - int(last_best_step) < int(min_interval):
+                    return
+
         if (
             should_log
             and current_metrics
@@ -333,6 +388,10 @@ class CheckpointSaver:
                 self.checkpoint_manager.update_best_checkpoint(
                     current_metrics, best_checkpoint_path
                 )
+                try:
+                    setattr(self.checkpoint_manager, "_last_best_save_step", int(step))
+                except Exception:
+                    pass
 
                 # Remove old best if different
                 if (

@@ -197,11 +197,12 @@ class AugmentationConfig:
     apply_to_teachers: bool
     lines_policy: Literal["identity", "drop_objects", "error", "transform"]
 
-    debug_visualization: bool
     debug_output_dir: Optional[str]
 
     # Criteria/guards
     criteria: Optional[CriteriaConfig] = None
+    debug_visualization: bool = False
+    
 
     # New object-aware blocks (optional)
     image_geom: Optional[ImageGeomConfig] = None

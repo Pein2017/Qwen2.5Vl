@@ -265,7 +265,9 @@ class BBUTrainer(HFTrainer):
                 try:
                     diagnostics = getattr(loss_components, "diagnostics", None)
                     if diagnostics and isinstance(diagnostics, dict):
-                        per_sample = diagnostics["per_sample"] if ("per_sample" in diagnostics and isinstance(diagnostics["per_sample"], dict)) else None
+                        # In JSON mode, loss manager nests diagnostics under 'group_losses'
+                        diag_root = diagnostics.get("group_losses", diagnostics)
+                        per_sample = diag_root.get("per_sample") if isinstance(diag_root, dict) else None
                         if per_sample and "student_llm_loss" in per_sample and "sample_indices" in inputs:
                             idx_tensor = inputs["sample_indices"]
                             loss_vec = per_sample["student_llm_loss"]
@@ -375,19 +377,12 @@ class BBUTrainer(HFTrainer):
             ran_eval = False
 
         # Unified saving policy (disable HF saver):
-        # - Regular save: every save_steps
-        # - Best save: only on eval steps at multiples of eval_steps * multiplier (or explicit min), and when metric improves
+        # Save ONLY when both conditions hold:
+        # 1) This step is an eval tick at interval = eval_steps * best_checkpoint_interval_multiplier (or explicit min)
+        # 2) The monitored metric improved (e.g., smaller eval_loss when greater_is_better=False)
         current_metrics = self._extract_current_metrics()
 
-        # Compute step-based regular cadence
         step = int(self.state.global_step)
-        try:
-            save_steps = int(getattr(self.args, "save_steps", 0) or 0)
-        except Exception:
-            save_steps = 0
-        should_save_regular = save_steps > 0 and (step % save_steps == 0)
-
-        # Compute eval-based best cadence (only when an eval actually ran)
         should_save_best_tick = False
         if ran_eval:
             try:
@@ -400,16 +395,14 @@ class BBUTrainer(HFTrainer):
             except Exception:
                 should_save_best_tick = False
 
-        # Decide whether to save this step checkpoint (we always write the step dir once if either condition holds)
-        should_write_step_ckpt = should_save_regular or (ran_eval and should_save_best_tick)
+        is_new_best = bool(ran_eval and current_metrics and self.checkpoint_manager.is_new_best(current_metrics))
 
-        if should_write_step_ckpt:
-            is_new_best = ran_eval and current_metrics and self.checkpoint_manager.is_new_best(current_metrics)
+        if should_save_best_tick and is_new_best:
             self._save_checkpoint(
                 model,
                 trial,
-                current_metrics if is_new_best else {},
-                is_eval_step=ran_eval,
+                current_metrics,
+                is_eval_step=True,
                 force_step_save=True,
             )
 
@@ -966,8 +959,19 @@ class BBUTrainer(HFTrainer):
                 "eps": self.args.adam_epsilon,
                 "weight_decay": self.args.weight_decay,
             }
-            # todo: try cuda-optimized kernel
-            self.optimizer = torch.optim.AdamW(param_groups, **optimizer_kwargs)
+            # Enable CUDA fused AdamW kernel when available for speed
+            fused_supported = False
+            try:
+                import inspect as _inspect
+                fused_supported = "fused" in _inspect.signature(torch.optim.AdamW).parameters
+            except Exception:
+                fused_supported = False
+            fused_flag = bool(torch.cuda.is_available() and fused_supported)
+            self.optimizer = torch.optim.AdamW(
+                param_groups,
+                fused=fused_flag,
+                **optimizer_kwargs,
+            )
 
             # One-time LR consistency checks and table log
             try:

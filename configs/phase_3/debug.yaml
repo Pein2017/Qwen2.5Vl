@@ -1,5 +1,4 @@
 max_dataset_size: 8
-packed_segment_isolation: true  # Test the new segment isolation feature
 
 eval_strategy: steps
 eval_steps: 2
@@ -16,8 +15,7 @@ learning_rate: 5.0e-5
 vision_lr: 1.0e-6
 merger_lr: 5.0e-4
 llm_lr: 1.0e-5
-lr_top_layers: 5.0e-6
-# JSON mode: remove coord-slice lr
+lr_coord_slice: 5.0e-6
 
 model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
 
@@ -44,7 +42,7 @@ teacher_augmentation:
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-# JSON mode: no coordinate loss weight
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.0
 grounding_loss_weight: 1.0

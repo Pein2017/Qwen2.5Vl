@@ -88,7 +88,7 @@
 - HF Trainer: `eval_strategy`, `eval_steps`, `save_strategy`, `save_steps`, `save_total_limit`, `load_best_model_at_end`, `metric_for_best_model`, `greater_is_better`.
 - Logging: `logging_steps`, `report_to`, `disable_tqdm`.
 - Dataloader: `dataloader_num_workers`, `pin_memory`, `prefetch_factor`, `remove_unused_columns`.
-- LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_top_layers`, `lr_full_model`.
+- LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_full_model`.
 - Variants: `conversation_variant_ratios` and/or `conversation_variant_schedule`.
 - Format mode:
   - `coordinate_tokens_enabled: true` → coord_tokens mode

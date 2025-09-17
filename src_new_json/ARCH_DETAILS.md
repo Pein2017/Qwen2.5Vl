@@ -110,7 +110,7 @@
   - `dynamic_pairing_enabled: bool`
   - `dynamic_pair_target_assignment: {current|random|opposite}` (current is used by the engine)
   - `dynamic_pair_cross_bucket_explore_prob: float [0,1]`
-  - `dynamic_pair_candidate_pool_size`, `dynamic_pair_temperature` (compatibility knobs; engine samples uniformly)
+  - `dynamic_pair_temperature`
 - Vision processing: `merge_size`, `max_pixels`.
 - Loss weights: `teacher_loss_weight`, `student_loss_weight`, `caption_loss_weight`, `grounding_loss_weight`, `formatting_loss_weight` (≥ 0; not all zeros).
 - Augmentation: `use_aug`, `augmentation` (preset), `teacher_augmentation` (photometric‑only), `augmentation_schedule`.

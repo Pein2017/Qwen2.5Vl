@@ -24,7 +24,7 @@ class PresetOptions:
     rng_seed: int = 12345
     apply_to_teachers: bool = False
     lines_policy: Literal["identity", "drop_objects", "error", "transform"] = (
-        "transform"
+        "identity"
     )
     debug_visualization: bool = False
     debug_output_dir: Optional[str] = None

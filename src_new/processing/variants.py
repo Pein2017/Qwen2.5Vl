@@ -203,7 +203,7 @@ class SummaryHandler:
                         det = parts[2].strip()
                         if det in FIB_PROTECT_DETAILS:
                             fib_details = det
-                if FIB_BEND_BAD in lvl1:
+                if (FIB_BEND_BAD in lvl1) or ("弯曲半径不合理(弯曲半径<4cm或者成环)" in lvl1):
                     fib_bend = FIB_BEND_BAD
                 elif FIB_BEND_OK in lvl1 and fib_bend is None:
                     fib_bend = FIB_BEND_OK
@@ -252,13 +252,15 @@ class SummaryHandler:
         # 5) 电线整齐度
         add(wire_org)
 
-        # 6) 标签（仅输出无法识别）
+                    # 6) 标签（输出可以识别/无法识别）
         if label_clear is False:
             add("标签/无法识别")
+        elif label_clear is True:
+            add("标签/可以识别")
 
         # Fallback minimal positive phrasing when nothing extracted
         if not out_tokens:
-            out_tokens = [WIRE_NEAT, FIB_BEND_OK, "标签清晰"]
+            out_tokens = [WIRE_NEAT, FIB_BEND_OK, "标签/可以识别"]
 
         summary = "，".join(out_tokens)
         summary = summary.replace("<", "").replace(">", "").replace("[", "").replace("]", "")

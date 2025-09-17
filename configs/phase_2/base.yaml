@@ -16,12 +16,11 @@ learning_rate: 5.0e-5
 vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 5.0e-6
-lr_top_layers: 1.0e-5
 lr_coord_slice: 5.0e-6
 warmup_ratio: 0.2
 weight_decay: 1.0e-3
 
-max_grad_norm: 1
+max_grad_norm: 0.5
 lr_scheduler_type: cosine
 seed: 17
 
@@ -54,20 +53,21 @@ pin_memory: true
 prefetch_factor: 2
 remove_unused_columns: false
 
-# JSON mode: no coordinate token toggles
+coordinate_tokens_enabled: false
 merge_size: 2
 max_pixels: 401408
+max_coord_value: 1024
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-# JSON mode: no coordinate loss weight
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 
 use_aug: true
 augmentation:
   preset: "moderate"
   rng_seed: 12345
   apply_to_teachers: false
-  lines_policy: "transform"
+  lines_policy: "identity"
   object_transform: "cut_paste"
   rotation_strength: "medium"
   photometric_strength: "light"

@@ -311,7 +311,6 @@ class Dataset(TorchDataset):
                     self._pair_engine = BucketedSamplingEngine()
                 engine = self._pair_engine
                 pair_cfg = _SampCfg(
-                    candidate_pool_size=int(self.config.dynamic_pair_candidate_pool_size),
                     temperature=float(self.config.dynamic_pair_temperature),
                     target_assignment=str(self.config.dynamic_pair_target_assignment),
                     cross_bucket_explore_prob=float(self.config.dynamic_pair_cross_bucket_explore_prob),

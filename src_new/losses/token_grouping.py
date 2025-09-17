@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 import re
 import os
+import logging
 
 import torch
 
@@ -198,7 +199,7 @@ class TokenGroupingPlugin:
                 s_assist = student_mask[:, 1:]
                 def _cnt(x: torch.Tensor) -> int:
                     return int(x.sum().item()) if isinstance(x, torch.Tensor) else 0
-                _dbg_logger.info(
+                _dbg_logger.debug(
                     "[GroupingDebug] teacher: assist=%d cap=%d grd=%d fmt=%d | student: assist=%d cap=%d grd=%d fmt=%d",
                     _cnt(t_assist), _cnt(t_caption), _cnt(t_ground), _cnt(t_format),
                     _cnt(s_assist), _cnt(s_caption), _cnt(s_ground), _cnt(s_format),

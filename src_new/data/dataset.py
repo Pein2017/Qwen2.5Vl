@@ -254,6 +254,8 @@ class Dataset(TorchDataset):
         the first entry with start_epoch <= epoch_index and highest start_epoch wins.
         Also builds dynamic contrastive pairing episode mapping per epoch when enabled.
         """
+        has_samples = hasattr(self, "samples") and isinstance(self.samples, list)
+
         if not self._augmentation_schedule and not getattr(self.config, "dynamic_pairing_enabled", False):
             # Nothing to do
             pass
@@ -295,19 +297,36 @@ class Dataset(TorchDataset):
                     )
 
         # Dynamic contrastive pairing mapping (training only)
-        if getattr(self.config, "dynamic_pairing_enabled", False) and not self.is_eval:
+        if getattr(self.config, "dynamic_pairing_enabled", False) and not self.is_eval and has_samples:
             # Use modular pairing engine
             # Delayed import to avoid heavy dependencies at module import time
-            from src_new.pairing import ContrastivePairingEngine, PairingConfig as _PairCfg
+            from src_new.sampler.random_bucket import RandomBucketSampler as _Sampler, RandomBucketConfig as _SamplerCfg
 
             base_seed = int(getattr(self.config, "seed", 12345))
 
-            engine = ContrastivePairingEngine()
-            pair_cfg = _PairCfg(
-                candidate_pool_size=int(getattr(self.config, "dynamic_pair_candidate_pool_size", 128)),
-                max_teacher_uses_per_epoch=int(getattr(self.config, "dynamic_pair_max_teacher_uses_per_epoch", 5)),
-                temperature=float(getattr(self.config, "dynamic_pair_temperature", 0.7)),
-                target_assignment=str(getattr(self.config, "dynamic_pair_target_assignment", "current")),
+            # DEBUG: summarize bucket composition before sampling
+            try:
+                from collections import defaultdict
+                type_counts = defaultdict(int)
+                for s in self.samples:
+                    try:
+                        objs = s.get("objects", []) or []
+                        if objs:
+                            first = str(objs[0].get("type", "misc"))
+                        else:
+                            first = "misc"
+                    except Exception:
+                        first = "misc"
+                    type_counts[first] += 1
+                logger.debug(
+                    f"[pairing] Epoch {epoch_index} bucket composition: "
+                    + ", ".join(f"{k}:{v}" for k, v in list(type_counts.items())[:8])
+                )
+            except Exception:
+                pass
+
+            engine = _Sampler()
+            pair_cfg = _SamplerCfg(
                 cross_bucket_explore_prob=float(getattr(self.config, "dynamic_pair_cross_bucket_explore_prob", 0.0)),
             )
 
@@ -326,8 +345,17 @@ class Dataset(TorchDataset):
             logger.info(
                 f"🎯 Dynamic pairing @epoch {epoch_index}: pair_episodes={metrics.pair_episodes}, single_episodes~={metrics.single_episodes}, target_is_current_pct={metrics.target_is_current_pct:.1f}%"
             )
+            try:
+                # Additional DEBUG: context usage histogram top-k
+                hist_items = list(metrics.context_usage_histogram.items())
+                hist_items.sort(key=lambda x: -x[1])
+                head = ", ".join([f"{i}:{c}" for i, c in hist_items[:5]])
+                logger.debug(f"[pairing] Top context usage: {head}")
+                logger.debug(f"[pairing] Unique contexts: {len(hist_items)}; coverage={metrics.coverage_context_unique_pct:.1f}%")
+            except Exception:
+                pass
             logger.info(
-                f"📊 Context coverage: unique_context_used≈{int(metrics.coverage_context_unique_pct * len(self.samples) / 100.0)} ({metrics.coverage_context_unique_pct:.1f}%), avg_contrast_score={metrics.avg_contrast_score:.3f}"
+                f"📊 Context coverage: unique_context_used≈{int(metrics.coverage_context_unique_pct * len(self.samples) / 100.0)} ({metrics.coverage_context_unique_pct:.1f}%)"
             )
             logger.info(f"📈 context_usage_histogram={metrics.context_usage_histogram}")
 
@@ -506,7 +534,11 @@ class Dataset(TorchDataset):
             if spec and spec.get("context_idx") is not None:
                 c_idx = int(spec["context_idx"])  # type: ignore[index]
                 if 0 <= c_idx < len(self.samples):
-                    teacher_samples = [self.samples[c_idx]]
+                    logger.debug(f"[pairing] __getitem__ idx={idx} -> context_idx={c_idx}")
+                    teacher_samples.append(self.samples[c_idx])
+                else:
+                    logger.debug(f"[pairing] __getitem__ idx={idx} has invalid context_idx={c_idx}; skipping")
+                    pass
 
         # Fallback to legacy teacher_pool_manager when no dynamic mapping
         if not teacher_samples:
@@ -540,7 +572,8 @@ class Dataset(TorchDataset):
         for k, w in zip(keys, weights):
             acc += w
             if r <= acc:
-                logger.debug(f"🎛️ Variant sampled: '{k}' from ratios={ratios}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("🎛️ Variant sampled: '%s' from ratios=%s", k, ratios)
                 return k
         return keys[-1]
 
@@ -650,14 +683,16 @@ class Dataset(TorchDataset):
                 teacher_samples=teacher_samples,
                 teacher_images_list=teacher_images_list,
             )
-            logger.debug(f"✅ Created teacher-student conversation for sample {idx} (variant='{variant}')")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("✅ Created teacher-student conversation for sample %d (variant='%s')", idx, variant)
         else:
             inputs = self.conversation_processor.create_conversation(
                 sample=structured_sample,
                 images=student_images,
                 variant=variant,
             )
-            logger.debug(f"✅ Created student-only conversation for sample {idx} (variant='{variant}')")
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("✅ Created student-only conversation for sample %d (variant='%s')", idx, variant)
 
         # Create labels with proper masking for training and extract spans (unchanged)
         labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
@@ -704,21 +739,26 @@ class Dataset(TorchDataset):
         student_spans = []
 
         try:
-            # STEP 1: Derive the full conversation text by decoding input_ids to GUARANTEE alignment
-            full_text = tokenizer.decode(
-                input_ids_1d, skip_special_tokens=False
-            )
+            # STEP 1: Prefer provided conversation_text / offset_mapping to avoid re-decode
+            if isinstance(conversation_text, str) and len(conversation_text) > 0:
+                full_text = conversation_text
+            else:
+                full_text = tokenizer.decode(
+                    input_ids_1d, skip_special_tokens=False
+                )
 
-            # STEP 2: Compute offset mapping from the decoded text to GUARANTEE token alignment
-            tokenized_with_offsets = tokenizer(
-                full_text,
-                return_offsets_mapping=True,
-                add_special_tokens=False,
-                return_tensors="pt",
-            )
-            offset_mapping = tokenized_with_offsets["offset_mapping"][
-                0
-            ]  # Remove batch dim
+            # STEP 2: Use provided offset_mapping when available; otherwise compute from full_text
+            if isinstance(offset_mapping, torch.Tensor) and offset_mapping.ndim == 2:
+                # Use the provided mapping from ConversationProcessor (already [seq_len, 2])
+                offset_mapping = offset_mapping
+            else:
+                tokenized_with_offsets = tokenizer(
+                    full_text,
+                    return_offsets_mapping=True,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                )
+                offset_mapping = tokenized_with_offsets["offset_mapping"][0]
 
             # STEP 3: Respect provided num_teachers (dataset-level mapping)
             num_teachers = int(num_teachers) if has_teachers else 0

@@ -3,43 +3,46 @@ per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
 gradient_accumulation_steps: 4 
 eval_strategy: steps
-# Save best checkpoint only every multiplier * eval_steps (post-eval only)
-best_checkpoint_interval_multiplier: 10
-# best_checkpoint_min_interval_steps: 0
 eval_steps: 20
-save_strategy: steps
+save_strategy: "no"  # Use manual saver only
 save_steps: 1000
 save_total_limit: 2 
 learning_rate: 5.0e-5
 vision_lr: 1.0e-7
 merger_lr: 5.0e-4
 llm_lr: 5.0e-6
-# JSON mode: coord-slice lr not used
-lr_top_layers: 1.0e-5
+lr_coord_slice: 5.0e-6
 
 collator_type: standard
 teacher_ratio: 0.6
+max_dataset_size: -1
+# Best checkpoint gating (manual saver)
+best_checkpoint_interval_multiplier: 10
+# best_checkpoint_min_interval_steps: 2000  # (optional) explicit min interval
 
 dynamic_pairing_enabled: true
-dynamic_pair_target_assignment: current
-dynamic_pair_candidate_pool_size: 128
-dynamic_pair_temperature: 0.5
 dynamic_pair_cross_bucket_explore_prob: 0.0
-# Overlap-pool sampling + hardness controls (JSON)
-pool_fraction: 0.2
-pool_max: 512
-hardness_alpha: 0.1
-hardness_warmup_epochs: 1
 
 model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
-# Vision processing: override max_pixels for this run
-max_pixels: 401408
 
-run_name: "9-16-json-phase_1-dynamic_pairing-temperature_0.5"
-output_dir: outputs/7B-json/phase_1
+run_name: "9-17-dynamic_pairing-phase_1"
+output_dir: outputs/7B-dynamic_pairing/phase_1
 
 phase_name: phase_1
-# Restrict training to only these special tokens (embeddings + LM head rows)
+# Selective unfreezing to avoid OOM: keep aligner unfrozen; unfreeze only last-K blocks
+# Set K conservatively; tune if memory allows.
+llm_top_k_block: 0           # 0=freeze all, -1=unfreeze all, k>0=last k
+vision_top_k_block: 0        # 0=freeze all, -1=unfreeze all, k>0=last k
+freeze_patch_embed: true     # keep patch embedding frozen for stability
+
+
+trainable_token_strings:
+  - "<|line_start|>"
+  - "<|line_end|>"
+  - "<|box_start|>"
+  - "<|box_end|>"
+  - "<|quad_start|>"
+  - "<|quad_end|>"
 
 use_aug: false
 augmentation_schedule:
@@ -48,7 +51,7 @@ augmentation_schedule:
 
 teacher_loss_weight: 0.6
 student_loss_weight: 1
-# JSON mode: no coordinate loss weight
+coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.2
 grounding_loss_weight: 1.5

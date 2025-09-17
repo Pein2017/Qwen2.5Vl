@@ -379,8 +379,6 @@ class Config:
     # Dynamic contrastive pairing (JSON mode—parity with src_new)
     dynamic_pairing_enabled: bool = True
     dynamic_pair_target_assignment: str = "current"  # {random,current,opposite}
-    # Deprecated/compat-only: dynamic_pair_candidate_pool_size is superseded by pool_fraction/pool_max (upper cap only)
-    dynamic_pair_candidate_pool_size: int = 128
     dynamic_pair_temperature: float = 1.2
     dynamic_pair_cross_bucket_explore_prob: float = 0.0
     # Large-pool controls for sampling (explicit; used by BucketedSamplingEngine)
@@ -542,11 +540,6 @@ class Config:
         if self.dynamic_pair_target_assignment not in {"random", "current", "opposite"}:
             raise ValueError(
                 "dynamic_pair_target_assignment must be one of {'random','current','opposite'}"
-            )
-        # dynamic_pair_candidate_pool_size kept for backward-compat; not used by JSON sampler.
-        if self.dynamic_pair_candidate_pool_size <= 0:
-            raise ValueError(
-                f"dynamic_pair_candidate_pool_size must be > 0, got {self.dynamic_pair_candidate_pool_size}"
             )
         if self.dynamic_pair_temperature <= 0:
             raise ValueError(
@@ -963,12 +956,9 @@ def load_config(override_config_path: str) -> Config:
                 if "apply_to_teachers" not in aug_dict:
                     raise ValueError("augmentation.apply_to_teachers must be explicitly provided (true/false)")
                 apply_to_teachers = bool(aug_dict["apply_to_teachers"]) 
-                if "lines_policy" not in aug_dict:
-                    raise ValueError("augmentation.lines_policy must be explicitly provided")
-                lines_policy = str(aug_dict["lines_policy"]) 
-                if "debug_visualization" not in aug_dict:
-                    raise ValueError("augmentation.debug_visualization must be explicitly provided (true/false)")
-                debug_visualization = bool(aug_dict["debug_visualization"]) 
+                # Default to identity (do not move lines at object-level) if omitted
+                lines_policy = str(aug_dict.get("lines_policy", "identity")) 
+                debug_visualization = bool(aug_dict.get("debug_visualization", False)) 
                 debug_output_dir = (
                     aug_dict["debug_output_dir"]
                     if "debug_output_dir" in aug_dict
@@ -1119,8 +1109,8 @@ def load_config(override_config_path: str) -> Config:
                     enabled=bool(aug_dict["enabled"]),
                     rng_seed=int(aug_dict["rng_seed"]),
                     apply_to_teachers=bool(aug_dict["apply_to_teachers"]),
-                    lines_policy=str(aug_dict["lines_policy"]),
-                    debug_visualization=bool(aug_dict["debug_visualization"]),
+                    lines_policy=str(aug_dict.get("lines_policy", "identity")),
+                    debug_visualization=bool(aug_dict.get("debug_visualization", False)),
                     debug_output_dir=aug_dict.get("debug_output_dir"),
                     criteria=cr,
                     image_geom=ig,

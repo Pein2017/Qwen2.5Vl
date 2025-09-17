@@ -351,7 +351,6 @@ class Config:
     # Optimizer/learning rate groups (optional overrides)
     lr_merger: Optional[float] = None
     lr_coord_slice: Optional[float] = None
-    lr_top_layers: Optional[float] = None
     lr_full_model: Optional[float] = None
 
     # Optional: conversation variant ratios for training sampling
@@ -392,14 +391,16 @@ class Config:
     # Packed segment isolation (experimental)
     packed_segment_isolation: bool = False  # Enable block-diagonal attention to isolate packed segments
 
-    # Dynamic contrastive pairing (training-time feature; eval/inference force disabled)
+    # Teacher sampling (training-time feature; eval/inference force disabled)
     dynamic_pairing_enabled: bool = False
-    dynamic_pair_target_assignment: str = "random"  # {random,current,opposite}
-    dynamic_pair_candidate_pool_size: int = 128
-    dynamic_pair_max_teacher_uses_per_epoch: int = 5
-    dynamic_pair_temperature: float = 0.7
-    # Cross-bucket exploration (small probability to sample teacher from all samples)
+    # Small probability to sample a teacher from all samples (ignoring type buckets)
     dynamic_pair_cross_bucket_explore_prob: float = 0.0
+
+    # Best-checkpoint interval control (optional)
+    # If best_checkpoint_min_interval_steps is provided, it takes precedence.
+    # Otherwise the interval is computed as eval_steps * best_checkpoint_interval_multiplier.
+    best_checkpoint_min_interval_steps: Optional[int] = None
+    best_checkpoint_interval_multiplier: int = 10
 
     # Plain text JSON mode toggle (kept for compatibility; not used in src_new core)
 
@@ -439,6 +440,18 @@ class Config:
         self._validate_learning_rate_groups()
         self._validate_group_loss_settings()
         self._validate_span_settings()
+
+        # Validate best-checkpoint interval settings (optional)
+        bmin = getattr(self, "best_checkpoint_min_interval_steps", None)
+        if bmin is not None and (not isinstance(bmin, int) or bmin < 0):
+            raise ValueError(
+                f"best_checkpoint_min_interval_steps must be a non-negative int when provided, got {bmin!r}"
+            )
+        mult = getattr(self, "best_checkpoint_interval_multiplier", 10)
+        if not isinstance(mult, int) or mult < 1:
+            raise ValueError(
+                f"best_checkpoint_interval_multiplier must be a positive int, got {mult!r}"
+            )
 
         logger.info("✅ Configuration validation passed")
 
@@ -573,22 +586,6 @@ class Config:
         # Dynamic pairing validation
         if not isinstance(self.dynamic_pairing_enabled, bool):
             raise ValueError("dynamic_pairing_enabled must be a boolean")
-        if self.dynamic_pair_target_assignment not in {"random", "current", "opposite"}:
-            raise ValueError(
-                "dynamic_pair_target_assignment must be one of {'random','current','opposite'}"
-            )
-        if self.dynamic_pair_candidate_pool_size <= 0:
-            raise ValueError(
-                f"dynamic_pair_candidate_pool_size must be > 0, got {self.dynamic_pair_candidate_pool_size}"
-            )
-        if self.dynamic_pair_max_teacher_uses_per_epoch <= 0:
-            raise ValueError(
-                f"dynamic_pair_max_teacher_uses_per_epoch must be > 0, got {self.dynamic_pair_max_teacher_uses_per_epoch}"
-            )
-        if self.dynamic_pair_temperature <= 0:
-            raise ValueError(
-                f"dynamic_pair_temperature must be > 0, got {self.dynamic_pair_temperature}"
-            )
         if not (0.0 <= float(self.dynamic_pair_cross_bucket_explore_prob) <= 1.0):
             raise ValueError(
                 f"dynamic_pair_cross_bucket_explore_prob must be in [0,1], got {self.dynamic_pair_cross_bucket_explore_prob}"
@@ -681,7 +678,6 @@ class Config:
         for lr_name in (
             "lr_merger",
             "lr_coord_slice",
-            "lr_top_layers",
             "lr_full_model",
         ):
             if hasattr(self, lr_name):

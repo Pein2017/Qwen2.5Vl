@@ -132,8 +132,8 @@ class SummaryHandler:
         FIB_PROTECT_HAVE = "有保护措施"
         FIB_PROTECT_DETAILS = {"蛇形管", "铠装", "同时有蛇形管和铠装"}
         FIB_BEND_OK = "弯曲半径合理"
-        FIB_BEND_BAD = "弯曲半径不合理(弯曲半径<4cm或者成环)"
-
+        FIB_BEND_BAD = "弯曲半径不合理（弯曲半径<4cm或者成环）"
+        
         WIRE_NEAT = "捆扎整齐"
         WIRE_MESS = "分布散乱"
 
@@ -213,7 +213,7 @@ class SummaryHandler:
                     else:
                         inc((FIB, FIB_PROTECT_HAVE))
                 # 弯曲半径
-                if FIB_BEND_BAD in lvl1:
+                if (FIB_BEND_BAD in lvl1) or ("弯曲半径不合理(弯曲半径<4cm或者成环)" in lvl1):
                     inc((FIB, FIB_BEND_BAD))
                 elif FIB_BEND_OK in lvl1:
                     inc((FIB, FIB_BEND_OK))
@@ -227,10 +227,10 @@ class SummaryHandler:
 
             elif kind == LABEL:
                 text = parts[1].strip() if len(parts) >= 2 else ""
-                if not text:
+                if text in {"无法识别", "不能"}:
                     inc((LABEL, "无法识别"))
                 else:
-                    inc((LABEL, "清晰"))
+                    inc((LABEL, "可以识别"))
 
         # Compose one-line summary with grouping and ×N
         segments: List[str] = []
@@ -281,9 +281,9 @@ class SummaryHandler:
 
         # 标签
         if (LABEL, "无法识别") in counts:
-            segments.append(f"标签无法识别×{counts[(LABEL, '无法识别')]}")
-        if (LABEL, "清晰") in counts:
-            segments.append(f"标签清晰×{counts[(LABEL, '清晰')]}")
+            segments.append(f"标签/无法识别×{counts[(LABEL, '无法识别')]}")
+        if (LABEL, "可以识别") in counts:
+            segments.append(f"标签/可以识别×{counts[(LABEL, '可以识别')]}" )
 
         # 挡风板安装方向
         if (SHIELD, SHIELD_DIR_BAD) in counts:
@@ -293,7 +293,7 @@ class SummaryHandler:
 
         # 若仍为空，构造最小肯定表达
         if not segments:
-            segments = ["电线捆扎整齐", "光纤弯曲合理", "标签清晰"]
+            segments = ["电线捆扎整齐", "光纤弯曲合理", "标签/可以识别"]
 
         summary = "，".join(segments)
 
