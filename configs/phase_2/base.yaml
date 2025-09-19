@@ -20,7 +20,7 @@ lr_coord_slice: 5.0e-6
 warmup_ratio: 0.2
 weight_decay: 1.0e-3
 
-max_grad_norm: 0.5
+max_grad_norm: 1
 lr_scheduler_type: cosine
 seed: 17
 

@@ -352,6 +352,34 @@ class BBUTrainer(HFTrainer):
                 trainer_state=self.state,  # Pass trainer state for remaining_hrs calculation
             )
 
+            # Add per-group gradient norms (diagnostics) when optimizer exists
+            try:
+                if hasattr(self, "optimizer") and self.optimizer is not None:
+                    per_group = {}
+                    for group in self.optimizer.param_groups:
+                        try:
+                            name = group.get("name", "group")
+                        except Exception:
+                            name = "group"
+                        total_sq = 0.0
+                        for p in group.get("params", []):
+                            try:
+                                if p is None or p.grad is None:
+                                    continue
+                                g = p.grad.detach()
+                                # Robust to bf16/fp16 grads
+                                param_norm = g.float().norm(2)
+                                total_sq += float(param_norm.item()) ** 2
+                            except Exception:
+                                continue
+                        per_group[f"grad_norm_{name}"] = (total_sq ** 0.5) if total_sq > 0.0 else 0.0
+                    # Merge into logs under diagnostics
+                    if isinstance(logged_metrics, dict):
+                        logged_metrics.update(per_group)
+            except Exception:
+                # Never fail logging due to diagnostics computation
+                pass
+
             # Process metrics with learning rate information (using correct LR mapping)
             final_logs = self.training_state_manager.log_metrics_batch(
                 logs=logged_metrics,

@@ -24,7 +24,7 @@ dynamic_pairing_enabled: true
 # Small probability to sample teacher from all samples (cross-bucket exploration)
 dynamic_pair_cross_bucket_explore_prob: 0.02
 
-model_path: model_cache/Qwen/Qwen2.5-VL-7B-Instruct-line_tokens
+model_path: outputs/7B-dynamic_pairing/phase_1/9-17-dynamic_pairing-phase_1/checkpoint-2000
 
 run_name: "debug"
 output_dir: outputs/debug

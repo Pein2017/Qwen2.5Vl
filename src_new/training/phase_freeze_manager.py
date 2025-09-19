@@ -262,11 +262,16 @@ class PhaseFreezeManager:
 
         # Vision control: 0=frozen, -1=all, k=last-k
         if eff_vision_top_k_blocks == -1:
-            # Unfreeze all vision blocks and (optionally) patch_embed
+            # Unfreeze all vision blocks; handle patch_embed per freeze flag
             self._unfreeze_last_k_vision_blocks(model, k=10**9)
-            for name, p in model.named_parameters():
-                if "visual.patch_embed" in name:
-                    p.requires_grad = True
+            if eff_freeze_patch_embed:
+                for name, p in model.named_parameters():
+                    if "visual.patch_embed" in name:
+                        p.requires_grad = False
+            else:
+                for name, p in model.named_parameters():
+                    if "visual.patch_embed" in name:
+                        p.requires_grad = True
         elif eff_vision_top_k_blocks > 0:
             self._unfreeze_last_k_vision_blocks(model, eff_vision_top_k_blocks)
             # Keep patch_embed frozen unless explicitly overridden

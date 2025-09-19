@@ -754,11 +754,11 @@ class Config:
         pn = str(getattr(self, "phase_name", "off") or "off").lower()
         if pn not in allowed:
             raise ValueError(f"phase_name must be one of {sorted(allowed)}, got {pn!r}")
-        # Light validation for selective unfreeze overrides
+        # Light validation for selective unfreeze overrides (allow -1 to mean "unfreeze all")
         for k in ("llm_top_k_block", "vision_top_k_block"):
             v = getattr(self, k, None)
-            if v is not None and (not isinstance(v, int) or v < 0):
-                raise ValueError(f"{k} must be a non-negative int when provided, got {v!r}")
+            if v is not None and (not isinstance(v, int) or v < -1):
+                raise ValueError(f"{k} must be an int >= -1 when provided, got {v!r}")
         fpe = getattr(self, "freeze_patch_embed", None)
         if fpe is not None and not isinstance(fpe, bool):
             raise ValueError("freeze_patch_embed must be a boolean when provided")
@@ -766,6 +766,30 @@ class Config:
         if tts is not None:
             if not isinstance(tts, list) or not all(isinstance(x, str) for x in tts):
                 raise ValueError("trainable_token_strings must be a list of strings")
+
+        # Strict phase-specific requirements (fail-fast):
+        # - phase_2 requires explicit llm_top_k_block (>0 or -1) to avoid silently freezing all LLM layers
+        # - phase_1, if llm_top_k_block provided, must be 0 (keep LLM frozen)
+        if pn == "phase_2":
+            v = getattr(self, "llm_top_k_block", None)
+            if v is None:
+                raise ValueError(
+                    "phase_2 requires an explicit llm_top_k_block (>0 for last-K or -1 for all). "
+                    "Set it in your YAML (e.g., llm_top_k_block: 6)."
+                )
+            if not isinstance(v, int):
+                raise ValueError(f"llm_top_k_block must be an int in phase_2, got {type(v).__name__}")
+            if v == 0:
+                raise ValueError(
+                    "llm_top_k_block=0 in phase_2 would keep all LLM blocks frozen. "
+                    "Use a positive K (e.g., 6) or -1 to unfreeze all."
+                )
+        elif pn == "phase_1":
+            v = getattr(self, "llm_top_k_block", None)
+            if v is not None and v != 0:
+                raise ValueError(
+                    "phase_1 should not unfreeze LLM layers. If you specify llm_top_k_block, it must be 0."
+                )
 
     def _validate_group_loss_settings(self) -> None:
         """Validate group loss weights (strict, fail-fast)."""
@@ -857,6 +881,49 @@ def load_config(override_config_path: str) -> Config:
         raise RuntimeError(
             f"Failed to load or parse override config at {override_config_path}: {e}"
         )
+
+    # Fail-fast: require explicit overrides for critical keys in the override YAML (no silent fallbacks to base)
+    required_override_keys = {
+        "run_name",
+        "phase_name",
+        "model_path",
+        "output_dir",
+        "learning_rate",
+        "vision_lr",
+        "merger_lr",
+        "llm_lr",
+        "teacher_ratio",
+        "collator_type",
+        "caption_loss_weight",
+        "grounding_loss_weight",
+        "formatting_loss_weight",
+    }
+    missing_override = [k for k in required_override_keys if k not in override_data]
+    if missing_override:
+        raise ValueError(
+            "Missing critical keys in override YAML (must be explicitly set, not inherited from base): "
+            + ", ".join(sorted(missing_override))
+        )
+    if str(override_data.get("run_name", "")).strip().upper() == "MUST_BE_OVERRIDDEN":
+        raise ValueError("run_name must be explicitly set in the override YAML (not 'MUST_BE_OVERRIDDEN')")
+
+    # Phase-specific explicit requirements in override file
+    phase_in_override = str(override_data.get("phase_name", "off")).lower()
+    if phase_in_override == "phase_2":
+        if "llm_top_k_block" not in override_data:
+            raise ValueError(
+                "phase_2 requires llm_top_k_block in the override YAML (e.g., llm_top_k_block: 6 or -1)."
+            )
+        v = override_data["llm_top_k_block"]
+        if not isinstance(v, int) or v == 0 or v < -1:
+            raise ValueError(
+                f"Invalid llm_top_k_block for phase_2: {v!r}. Use positive K or -1 (all), not 0."
+            )
+    if phase_in_override == "phase_1":
+        if "llm_top_k_block" in override_data and override_data["llm_top_k_block"] != 0:
+            raise ValueError(
+                "phase_1 must keep LLM frozen; if llm_top_k_block is specified, it must be 0."
+            )
 
     # Deep merge the configurations
     data = _deep_merge_dicts(base_data, override_data)

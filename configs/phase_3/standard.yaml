@@ -1,7 +1,8 @@
 num_train_epochs: 40
+collator_type: standard
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
-gradient_accumulation_steps: 2  
+gradient_accumulation_steps: 1  
 learning_rate: 5.0e-4
 vision_lr: 5.0e-7
 merger_lr: 1.0e-5
@@ -11,17 +12,17 @@ lr_coord_slice: 1.0e-6
 weight_decay: 1.0e-3
 teacher_ratio: 0
 
-model_path: outputs/7B-json/phase_2/9-15-json-phase_2/best-5480-eval_loss0.5215
+model_path: outputs/7B-dynamic_pairing/phase_2/9-17-dynamic_pairing-phase_2-last_blocks_6/checkpoint-5000
 
 
-run_name: "9-16-json-phase_3"
-output_dir: outputs/7B-json/phase_3
+run_name: "9-18-dynamic_pairing-phase_3"
+output_dir: outputs/7B-dynamic_pairing/phase_3
 
 phase_name: phase_3
 # Selective unfreezing to avoid OOM: keep aligner unfrozen; unfreeze only last-K blocks
 # Set K conservatively; tune if memory allows.
-llm_top_k_block: 0           # unfreeze last 8 LLM blocks
-vision_top_k_block: 0        # unfreeze last 6 vision blocks
+llm_top_k_block: -1           # unfreeze last 8 LLM blocks
+vision_top_k_block: -1        # unfreeze last 6 vision blocks
 freeze_patch_embed: true     # keep patch embedding frozen for stability
 
 
@@ -32,12 +33,14 @@ trainable_token_strings:
   - "<|box_end|>"
   - "<|quad_start|>"
   - "<|quad_end|>"
+  - "<|object_ref_start|>"
+  - "<|object_ref_end|>"
 
 # Enable augmentation in phase_2
 use_aug: true
 augmentation_schedule:
-  - { start_epoch: 0, preset: "moderate" }
-  - { start_epoch: 25, preset: "aggressive" }
+  - { start_epoch: 2, preset: "moderate" }
+  - { start_epoch: 10, preset: "aggressive" }
   
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
@@ -46,7 +49,7 @@ teacher_augmentation:
     enabled: true
     apply_prob: 0.8
     num_ops: 1
-    magnitude: 0.4
+    magnitude: 0.2
     ocr_safe_pool: true
 
 teacher_loss_weight: 0.6

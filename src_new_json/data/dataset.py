@@ -275,26 +275,6 @@ class Dataset(TorchDataset):
                     f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
                 )
 
-        # Variant schedule (optional)
-        schedule = getattr(self.config, "conversation_variant_schedule", None)
-        if schedule is not None and not isinstance(schedule, list):
-            raise ValueError("conversation_variant_schedule must be a list of steps when provided")
-        if isinstance(schedule, list) and schedule:
-            chosen = None
-            for entry in sorted(schedule, key=lambda e: int(e["start_epoch"])):
-                if epoch_index >= int(entry["start_epoch"]):
-                    chosen = entry
-            if chosen is not None:
-                if ("ratios" not in chosen) or (not isinstance(chosen["ratios"], dict)):
-                    raise ValueError("conversation_variant_schedule entry is missing required 'ratios' dict")
-                self._active_variant_ratios = {
-                    ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
-                    for k, v in chosen["ratios"].items()
-                }
-                logger.info(
-                    f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
-                )
-
         # Dynamic contrastive pairing mapping (training only)
         try:
             if (

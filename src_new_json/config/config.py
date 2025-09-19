@@ -676,11 +676,11 @@ class Config:
         pn = str(self.phase_name or "off").lower()
         if pn not in allowed:
             raise ValueError(f"phase_name must be one of {sorted(allowed)}, got {pn!r}")
-        # Light validation for selective unfreeze overrides
+        # Light validation for selective unfreeze overrides (allow -1 to mean "unfreeze all")
         for k in ("llm_top_k_block", "vision_top_k_block"):
             v = getattr(self, k, None)
-            if v is not None and (not isinstance(v, int) or v < 0):
-                raise ValueError(f"{k} must be a non-negative int when provided, got {v!r}")
+            if v is not None and (not isinstance(v, int) or v < -1):
+                raise ValueError(f"{k} must be an int >= -1 when provided, got {v!r}")
         fpe = self.freeze_patch_embed
         if fpe is not None and not isinstance(fpe, bool):
             raise ValueError("freeze_patch_embed must be a boolean when provided")

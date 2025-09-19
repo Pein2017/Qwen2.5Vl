@@ -19,7 +19,7 @@ DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
 LOG_LEVEL="DEBUG"                          # Logging level: INFO (production) | DEBUG (development)
-to_console=false                             # true: console output, false: log to run_new.log
+to_console=true                             # true: console output, false: log to run_new.log
 
 
 setup_environment() {
