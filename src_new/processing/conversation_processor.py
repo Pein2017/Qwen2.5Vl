@@ -484,6 +484,22 @@ class ConversationProcessor:
         except Exception:
             pass
         out = self._process_text_and_images(text, oi)
+        # Precompute spans for teacher-student
+        try:
+            from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+            t_spans, s_spans = _build_spans(
+                conversation_text=text,
+                offset_mapping=out.get("offset_mapping"),
+                tokenizer=self.processor.tokenizer,
+                input_ids_expanded=out["input_ids"],
+                has_teachers=True,
+                num_teachers=len(teacher_samples),
+                include_eos=True,
+            )
+            out["teacher_assistant_spans"] = t_spans
+            out["student_assistant_spans"] = s_spans
+        except Exception:
+            pass
         return out
 
     def create_inference_conversation(
@@ -673,6 +689,22 @@ class ConversationProcessor:
             messages=messages, images=all_images, add_generation_prompt=False
         )
         out = self._process_text_and_images(text, oi)
+        # Precompute spans for teacher-student
+        try:
+            from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+            t_spans, s_spans = _build_spans(
+                conversation_text=text,
+                offset_mapping=out.get("offset_mapping"),
+                tokenizer=self.processor.tokenizer,
+                input_ids_expanded=out["input_ids"],
+                has_teachers=True,
+                num_teachers=valid_teachers,
+                include_eos=True,
+            )
+            out["teacher_assistant_spans"] = t_spans
+            out["student_assistant_spans"] = s_spans
+        except Exception:
+            pass
         return out
 
     def create_conversation(

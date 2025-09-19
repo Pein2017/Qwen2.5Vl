@@ -33,6 +33,7 @@ from src_new.processing.special_tokens import (
     IM_END,
     IMAGE_PAD,
 )
+from src_new.processing.span_mapping import map_spans_unexpanded_to_expanded
 from src_new.types.arrays import (
     jaxtyped_beartype,
 )
@@ -279,22 +280,6 @@ class Dataset(TorchDataset):
                 logger.info(
                     f"🔁 Augmentation preset switched at epoch {epoch_index}: {active['preset']}"
                 )
-
-            # Variant schedule (optional)
-            schedule = getattr(self.config, "conversation_variant_schedule", None)
-            if isinstance(schedule, list) and schedule:
-                chosen = None
-                for entry in sorted(schedule, key=lambda e: int(e.get("start_epoch", 0))):
-                    if epoch_index >= int(entry.get("start_epoch", 0)):
-                        chosen = entry
-                if chosen and isinstance(chosen.get("ratios"), dict):
-                    self._active_variant_ratios = {
-                        ("dense_caption" if k == "dense_captioning" else "coords_to_desc" if k == "coords_to_desc" else "desc_to_coords" if k == "desc_to_coords" else k): float(v)
-                        for k, v in chosen["ratios"].items()
-                    }
-                    logger.info(
-                        f"🔁 Variant ratios switched at epoch {epoch_index}: {self._active_variant_ratios}"
-                    )
 
         # Dynamic contrastive pairing mapping (training only)
         if getattr(self.config, "dynamic_pairing_enabled", False) and not self.is_eval and has_samples:
@@ -695,14 +680,56 @@ class Dataset(TorchDataset):
                 logger.debug("✅ Created student-only conversation for sample %d (variant='%s')", idx, variant)
 
         # Create labels with proper masking for training and extract spans (unchanged)
-        labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
-            input_ids=inputs["input_ids"],
-            tokenizer=self.tokenizer,
-            has_teachers=has_teachers,
-            conversation_text=inputs.get("conversation_text"),
-            offset_mapping=inputs.get("offset_mapping"),
-            num_teachers=len(teacher_samples) if has_teachers else 0,
-        )
+        # Prefer precomputed spans from processor outputs when available
+        pre_t = inputs.get("teacher_assistant_spans")
+        pre_s = inputs.get("student_assistant_spans")
+        if isinstance(pre_t, list) and isinstance(pre_s, list) and (pre_t or pre_s):
+            # Build labels from provided spans without re-extraction
+            labels = inputs["input_ids"].clone()
+            labels.fill_(-100)
+            teacher_spans = []
+            student_spans = []
+            # Normalize to list of tuples
+            def _add_spans(sp_list, is_teacher: bool):
+                nonlocal teacher_spans, student_spans
+                for st, ed in sp_list:
+                    st_i, ed_i = int(st), int(ed)
+                    if 0 <= st_i < ed_i <= int(labels.shape[0]):
+                        labels[st_i:ed_i] = inputs["input_ids"][st_i:ed_i]
+                        if is_teacher:
+                            teacher_spans.append((st_i, ed_i))
+                        else:
+                            student_spans.append((st_i, ed_i))
+            _add_spans(pre_t, True)
+            _add_spans(pre_s, False)
+            # Mask image pads
+            try:
+                tokenizer = getattr(self.conversation_processor.processor, "tokenizer", None) if self.conversation_processor else None
+                if tokenizer is not None:
+                    image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+                    if image_pad_id is not None:
+                        labels[inputs["input_ids"] == image_pad_id] = -100
+            except Exception:
+                pass
+            # Fallback to local extraction if nothing got unmasked
+            if int((labels != -100).sum().item()) == 0:
+                labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
+                    input_ids=inputs["input_ids"],
+                    tokenizer=self.tokenizer,
+                    has_teachers=has_teachers,
+                    conversation_text=inputs.get("conversation_text"),
+                    offset_mapping=inputs.get("offset_mapping"),
+                    num_teachers=len(teacher_samples) if has_teachers else 0,
+                )
+        else:
+            labels, teacher_spans, student_spans = self._create_masked_labels_with_spans(
+                input_ids=inputs["input_ids"],
+                tokenizer=self.tokenizer,
+                has_teachers=has_teachers,
+                conversation_text=inputs.get("conversation_text"),
+                offset_mapping=inputs.get("offset_mapping"),
+                num_teachers=len(teacher_samples) if has_teachers else 0,
+            )
         inputs["labels"] = labels
         inputs["teacher_assistant_spans"] = teacher_spans
         inputs["student_assistant_spans"] = student_spans
@@ -739,18 +766,28 @@ class Dataset(TorchDataset):
         student_spans = []
 
         try:
-            # STEP 1: Prefer provided conversation_text / offset_mapping to avoid re-decode
+            # STEP 1: Prefer provided conversation_text / offset_mapping to avoid re-decode when available
             if isinstance(conversation_text, str) and len(conversation_text) > 0:
                 full_text = conversation_text
             else:
-                full_text = tokenizer.decode(
-                    input_ids_1d, skip_special_tokens=False
-                )
+                full_text = tokenizer.decode(input_ids_1d, skip_special_tokens=False)
 
             # STEP 2: Use provided offset_mapping when available; otherwise compute from full_text
             if isinstance(offset_mapping, torch.Tensor) and offset_mapping.ndim == 2:
-                # Use the provided mapping from ConversationProcessor (already [seq_len, 2])
+                enc_ids = None
+                # Use provided mapping directly from ConversationProcessor
                 offset_mapping = offset_mapping
+                # Ensure we also have unexpanded token ids for span alignment when needed
+                try:
+                    tokenized_for_ids = tokenizer(
+                        full_text,
+                        return_offsets_mapping=True,
+                        add_special_tokens=False,
+                        return_tensors="pt",
+                    )
+                    enc_ids = tokenized_for_ids["input_ids"][0]
+                except Exception:
+                    enc_ids = None
             else:
                 tokenized_with_offsets = tokenizer(
                     full_text,
@@ -759,6 +796,7 @@ class Dataset(TorchDataset):
                     return_tensors="pt",
                 )
                 offset_mapping = tokenized_with_offsets["offset_mapping"][0]
+                enc_ids = tokenized_with_offsets["input_ids"][0]
 
             # STEP 3: Respect provided num_teachers (dataset-level mapping)
             num_teachers = int(num_teachers) if has_teachers else 0
@@ -774,6 +812,19 @@ class Dataset(TorchDataset):
                 input_ids_1d=input_ids_1d,
                 num_teachers=num_teachers,
             )
+            # Map spans from unexpanded tokenization to expanded input_ids when necessary
+            try:
+                if enc_ids is not None and int(enc_ids.shape[0]) != int(input_ids_1d.shape[0]):
+                    image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+                    assistant_spans = map_spans_unexpanded_to_expanded(
+                        ids_unexpanded=enc_ids,
+                        ids_expanded=input_ids_1d,
+                        image_pad_id=image_pad_id,
+                        spans_unexpanded=assistant_spans,
+                    )
+            except Exception:
+                # If mapping fails, keep original spans and continue; downstream debug_alignment will surface issues
+                pass
 
             # STEP 5: Mask all tokens initially
             labels.fill_(-100)
@@ -876,6 +927,68 @@ class Dataset(TorchDataset):
 
         # Sanity check: ensure we unmasked some assistant tokens
         unmasked_count = int((labels != -100).sum().item())
+        if unmasked_count == 0:
+            # Fallback A: try recomputing offset mapping from full_text and re-extract spans
+            try:
+                tokenized_with_offsets_fb = tokenizer(
+                    full_text,
+                    return_offsets_mapping=True,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                )
+                offset_fb = tokenized_with_offsets_fb["offset_mapping"][0]
+                from src_new.processing.span_extraction import find_assistant_spans as _find
+                spans_fb = _find(
+                    full_text=full_text,
+                    offset_mapping=offset_fb,
+                    tokenizer=tokenizer,
+                    include_eos=bool(getattr(self.config, "span_include_im_end_in_labels", True)),
+                    has_teachers=has_teachers,
+                    input_ids_1d=input_ids_1d,
+                    num_teachers=num_teachers,
+                )
+                if spans_fb:
+                    labels.fill_(-100)
+                    teacher_spans.clear()
+                    student_spans.clear()
+                    for st, ed, is_teacher in spans_fb:
+                        if 0 <= st < ed <= len(labels):
+                            labels[st:ed] = input_ids_1d[st:ed]
+                            span = (st, ed)
+                            if is_teacher:
+                                teacher_spans.append(span)
+                            else:
+                                student_spans.append(span)
+                    # Re-mask image pads
+                    image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+                    if image_pad_id is not None:
+                        labels[input_ids_1d == image_pad_id] = -100
+                    unmasked_count = int((labels != -100).sum().item())
+            except Exception:
+                pass
+
+            # Fallback B: derive last assistant span by scanning markers in text
+            if unmasked_count == 0:
+                try:
+                    last_hdr = full_text.rfind("<|im_start|>assistant")
+                    if last_hdr >= 0:
+                        end_pos = full_text.find("<|im_end|>", last_hdr)
+                        if end_pos < 0:
+                            end_pos = len(full_text)
+                        st_tok = self._char_to_token_position(last_hdr, offset_mapping)
+                        ed_tok = self._char_to_token_position(end_pos, offset_mapping)
+                        if st_tok is not None and ed_tok is not None and 0 <= st_tok < ed_tok <= len(labels):
+                            labels.fill_(-100)
+                            labels[st_tok:ed_tok] = input_ids_1d[st_tok:ed_tok]
+                            teacher_spans = []
+                            student_spans = [(st_tok, ed_tok)]
+                            image_pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+                            if image_pad_id is not None:
+                                labels[input_ids_1d == image_pad_id] = -100
+                            unmasked_count = int((labels != -100).sum().item())
+                except Exception:
+                    pass
+
         if unmasked_count == 0:
             raise RuntimeError(
                 "Masking produced no learnable tokens; check assistant span detection and offset mapping."

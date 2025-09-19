@@ -15,7 +15,7 @@
   - Fast tokenizer required with `offset_mapping` available; chat template must exist (tokenizer or processor).
   - If `coordinate_tokens_enabled=true`, checkpoint must be pre‑expanded: vocab > 151665; `<|line_start|>`, `<|line_end|>` present; full `<|coord_0|>.. <|coord_{max}|>` contiguous; embeddings padded to multiple of 128.
   - Image alignment: decoded `<|image_pad|>` count equals `sum_i (t*h*w) // (merge_size**2)`; `pixel_values` rows equal `sum_i (t*h*w)`.
-  - Labels/spans: assistant spans from regex+offsets; include immediate `<|im_end|>`; `<|image_pad|>` always masked.
+  - Labels/spans: assistant spans are precomputed once in the conversation builder (regex+offsets) and mapped to expanded input_ids; include immediate `<|im_end|>`; `<|image_pad|>` always masked.
 
 - **Data → Model → Loss → Checkpoint** (HF‑first): JSONL → `ConversationProcessor.apply_chat_template` → official processor tensors → `DetectionModel` wrapper (validations) → single‑pass CE (teacher/student masks) + optional coord aux losses → local aggregation (no custom distributed ops) → SafeTensors + tokenizer/processor saved; best checkpoint via atomic copy, rotation enabled.
 
@@ -35,9 +35,9 @@
 - Validate coordinate pre‑expansion if `coordinate_tokens_enabled=true` (vocab/content/128‑padding).
 
 3) Dataset & conversations
-- `Dataset` reads JSONL; validates per‑sample structure; optional augmentation; dynamic teacher assignment (ratio, softmax sampling).
+- `Dataset` reads JSONL; validates per‑sample structure; optional augmentation; dynamic teacher assignment (ratio, bucketed random).
 - `ConversationProcessor.create_conversation(...)` builds teacher‑student or simple conversations, applies HF chat template, threads `conversation_text` + `offset_mapping`, enforces image token consistency.
-- Labels/spans built via offset mapping; assistant spans include immediate `<|im_end|>`, all other regions masked; `<|image_pad|>` masked.
+- Spans are computed once in the builder (`processing/span_builder.py`) and attached as token‑aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; `<|image_pad|>` is masked.
 
 4) Collation & packing
 - `collator_standard` pads to max length.
@@ -89,7 +89,7 @@
 - Logging: `logging_steps`, `report_to`, `disable_tqdm`.
 - Dataloader: `dataloader_num_workers`, `pin_memory`, `prefetch_factor`, `remove_unused_columns`.
 - LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_full_model`.
-- Variants: `conversation_variant_ratios` and/or `conversation_variant_schedule`.
+- Variants: `conversation_variant_ratios`.
 - Format mode:
   - `coordinate_tokens_enabled: true` → coord_tokens mode
   - `coordinate_tokens_enabled: false` → special_tokens mode (default)
@@ -159,8 +159,8 @@
 ## Module Map (refactored `src_new`)
 
 - `config/`: strict dataclass; path normalization; schedule & variant validation.
-- `data/`: dataset + augmentation + teacher pool; HF‑first conversations; offset‑based spans; `<|image_pad|>` masking.
-- `processing/`: conversation builder; coordinate/string conversion; canonical tokens; templates; variant registry.
+- `data/`: dataset + augmentation + teacher pool; consumes precomputed assistant spans; `<|image_pad|>` masking.
+- `processing/`: conversation builder; span precomputation (`processing/span_builder.py`); coordinate/string conversion; canonical tokens; templates; variant registry.
 - `models/`: wrapper + validations; SOLUTION‑1 CE path; optional coord aux; diagnostics.
 - `losses/`: `coord_aux.py` and `token_grouping.py`.
 - `training/`: BBUTrainer; PhaseFreezeManager; TrainingStateManager; CheckpointSaver.
@@ -198,13 +198,6 @@
       summary: 0.15
     ```
   - Disable by omitting `summary` or setting `summary: 0.0`.
-  - Optional schedule:
-    ```yaml
-    conversation_variant_schedule:
-      - start_epoch: 0
-        ratios: {dense_caption: 0.50, coords_to_desc: 0.25, desc_to_coords: 0.25, summary: 0.00}
-      - start_epoch: 2
-        ratios: {dense_caption: 0.45, coords_to_desc: 0.20, desc_to_coords: 0.20, summary: 0.15}
     ```
 
 - Prompt alignment (mitigate drift between SFT and RL):
