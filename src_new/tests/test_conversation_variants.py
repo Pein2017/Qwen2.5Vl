@@ -7,16 +7,16 @@ from typing import Any, Dict, List, Tuple
 import logging
 
 from PIL import Image
-from transformers import Qwen2VLProcessor
+from transformers import Qwen2_5_VLProcessor
 from src_new.processing.templates import (
     COORD_TO_DESC_USER_PROMPT,
     DESC_TO_COORD_USER_PROMPT,
     BASE_USER_PROMPT,
-    WRAPPER_RECON_USER_PROMPT,
+    TEXT_ONLY_USER_PROMPT,
     get_system_prompt,
 )
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
-from src_new.processing.variants import WrapperReconstructionHandler
+from src_new.processing.variants import TextOnlyHandler
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -49,7 +49,7 @@ def _geom_to_token_str(obj: Dict[str, Any]) -> str:
 
 
 class TestConversationVariants(unittest.TestCase):
-    processor: Qwen2VLProcessor | None = None
+    processor: Qwen2_5_VLProcessor | None = None
     logger: logging.Logger | None = None
     converter: CoordinateTokenConverter | None = None
 
@@ -62,7 +62,7 @@ class TestConversationVariants(unittest.TestCase):
             raise FileNotFoundError(
                 f"Model not found at default path: {model_path}. Please place the model there."
             )
-        cls.processor = Qwen2VLProcessor.from_pretrained(str(model_path))
+        cls.processor = Qwen2_5_VLProcessor.from_pretrained(str(model_path))
         # Build a converter matching production defaults (tokens disabled in this test)
         cls.converter = CoordinateTokenConverter(max_coord_value=1024, coordinate_tokens_enabled=False)
 
@@ -174,19 +174,20 @@ class TestConversationVariants(unittest.TestCase):
         )
         self._log("DESC_TO_COORD (raw chat template)", d2c_text)
 
-        # wrapper reconstruction (text-only)
-        recon_handler = WrapperReconstructionHandler(self.converter)
-        user_spec = recon_handler.build_user_text(objects)
+        # text-only variant
+        text_only_handler = TextOnlyHandler(self.converter)
+        user_spec = text_only_handler.build_user_text(objects)
         assert isinstance(user_spec, dict)
-        recon_user_text = user_spec.get("text", WRAPPER_RECON_USER_PROMPT)
-        recon_assistant = recon_handler.build_assistant_text(objects)
+        text_only_user_text = user_spec.get("text", TEXT_ONLY_USER_PROMPT)
+        self.assertTrue(user_spec.get("include_image", True))
+        text_only_assistant = text_only_handler.build_assistant_text(objects)
         self._log(
-            "WRAPPER_RECONSTRUCTION — USER PROMPT (text-only)",
-            recon_user_text,
+            "TEXT_ONLY — USER PROMPT (text-only)",
+            text_only_user_text,
         )
         self._log(
-            "WRAPPER_RECONSTRUCTION — EXPECTED assistant content (wrapper reconstruction)",
-            recon_assistant,
+            "TEXT_ONLY — EXPECTED assistant content (text-only)",
+            text_only_assistant,
         )
 
 

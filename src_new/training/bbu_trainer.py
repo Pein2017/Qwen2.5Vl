@@ -182,7 +182,7 @@ class BBUTrainer(HFTrainer):
         """Set the processor for saving during checkpoints and dataset processing.
 
         Args:
-            processor: Qwen2VLProcessor instance that should be saved with checkpoints
+            processor: Qwen2_5_VLProcessor instance that should be saved with checkpoints
         """
         self.processor = processor
 

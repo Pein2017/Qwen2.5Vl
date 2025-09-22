@@ -1,4 +1,4 @@
-num_train_epochs: 20
+num_train_epochs: 40
 collator_type: standard
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 1
@@ -14,14 +14,14 @@ teacher_ratio: 0
 
 model_path: outputs/7B-dynamic_pairing/phase_3/9-21-dynamic_pairing-phase_3-resume/checkpoint-1200
 
-run_name: "9-22-phase_3-all_tokens"
+run_name: "9-22-phase_3-all_tokens-lower_grounding_weight-last_vision_4-with_text_only"
 output_dir: outputs/7B-all_tokens/phase_3
 
 phase_name: phase_3
 # Selective unfreezing to avoid OOM: keep aligner unfrozen; unfreeze only last-K blocks
 # Set K conservatively; tune if memory allows.
 llm_top_k_block: -1           # unfreeze last 8 LLM blocks
-vision_top_k_block: -1        # unfreeze last 6 vision blocks
+vision_top_k_block: 4        # unfreeze last 6 vision blocks
 freeze_patch_embed: true     # keep patch embedding frozen for stability
 
 # trainable_token_strings:
@@ -37,9 +37,10 @@ freeze_patch_embed: true     # keep patch embedding frozen for stability
 # Enable augmentation in phase_2
 use_aug: true
 augmentation_schedule:
-  - { start_epoch: 0, preset: "conservative" }
-  - { start_epoch: 2, preset: "moderate" }
-  - { start_epoch: 10, preset: "aggressive" }
+  - { start_epoch: 0, preset: "off" }
+  - { start_epoch: 4, preset: "conservative" }
+  - { start_epoch: 16, preset: "moderate" }
+  - { start_epoch: 24, preset: "aggressive" }
   
 # Dedicated teacher augmentation (photometric-only)
 teacher_augmentation:
@@ -56,12 +57,12 @@ student_loss_weight: 1
 coordinate_loss_weight: 0.0  # keep at 0.0 for pure LLM training
 # Group Loss Weights (caption/grounding/formatting)
 caption_loss_weight: 1.2
-grounding_loss_weight: 1.5
+grounding_loss_weight: 0.15
 formatting_loss_weight: 0.8
 
 conversation_variant_ratios:
-  dense_caption: 0.7
-  wrapper_reconstruction: 0.3
+  dense_caption: 0.8
+  text_only: 0.2
   # coords_to_desc: 0.1
   # desc_to_coords: 0.3
   # summary: 0.2

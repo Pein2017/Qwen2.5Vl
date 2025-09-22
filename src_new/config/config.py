@@ -542,7 +542,7 @@ class Config:
             if not isinstance(sampling, dict):
                 raise ValueError("conversation_variant_ratios must be a dict if provided")
             # Validate keys strictly against canonical set
-            allowed = {"dense_caption", "coords_to_desc", "desc_to_coords", "summary", "wrapper_reconstruction"}
+            allowed = {"dense_caption", "coords_to_desc", "desc_to_coords", "summary", "text_only"}
             total = 0.0
             for k, v in sampling.items():
                 if k not in allowed:

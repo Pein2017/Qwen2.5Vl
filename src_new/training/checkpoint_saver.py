@@ -526,7 +526,7 @@ class CheckpointSaver:
 
             # Minimal preprocessor_config.json to keep HF happy
             preprocessor_config = {
-                "processor_class": "Qwen2VLProcessor",
+                "processor_class": "Qwen2_5_VLProcessor",
                 "image_processor_type": "Qwen2VLImageProcessor",
                 "video_processor_type": "Qwen2VLVideoProcessor",
             }
@@ -694,7 +694,7 @@ class CheckpointSaver:
 
             # Minimal preprocessor_config.json to keep HF happy
             preprocessor_config = {
-                "processor_class": "Qwen2VLProcessor",
+                "processor_class": "Qwen2_5_VLProcessor",
                 "image_processor_type": "Qwen2VLImageProcessor",
                 "video_processor_type": "Qwen2VLVideoProcessor",
             }

@@ -21,7 +21,7 @@ from src_new.types import FormatMode, ConversationVariant
 
 import torch
 from PIL import Image
-from transformers import Qwen2VLProcessor
+from transformers import Qwen2_5_VLProcessor
 
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
 from src_new.processing.templates import CONSTANTS, get_system_prompt
@@ -218,13 +218,13 @@ class ConversationProcessor:
     Wrapper around official HuggingFace processor with coordinate token conversion.
     """
 
-    processor: Qwen2VLProcessor
+    processor: Qwen2_5_VLProcessor
     coordinate_tokens_enabled: bool
     coordinate_converter: CoordinateTokenConverter
 
     def __init__(
         self,
-        processor: Qwen2VLProcessor,
+        processor: Qwen2_5_VLProcessor,
         max_coord_value: int,
         coordinate_tokens_enabled: bool,
     ) -> None:

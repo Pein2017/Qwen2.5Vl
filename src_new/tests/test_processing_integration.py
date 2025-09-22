@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from PIL import Image
-from transformers import Qwen2VLProcessor
+from transformers import Qwen2_5_VLProcessor
 
 from src_new.augmentation import ObjectAwareAugmentationPipeline
 from src_new.config.augmentation_config import AugmentationConfig
@@ -51,7 +51,7 @@ def _aug_cfg_identity() -> AugmentationConfig:
 
 
 class TestProcessingIntegration(unittest.TestCase):
-    processor: Qwen2VLProcessor | None = None
+    processor: Qwen2_5_VLProcessor | None = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -62,7 +62,7 @@ class TestProcessingIntegration(unittest.TestCase):
             raise FileNotFoundError(
                 f"Model not found at default path: {model_path}. Please place the model there."
             )
-        cls.processor = Qwen2VLProcessor.from_pretrained(str(model_path))
+        cls.processor = Qwen2_5_VLProcessor.from_pretrained(str(model_path))
 
     def test_numeric_mode_text_roundtrip_after_aug(self) -> None:
         assert self.processor is not None

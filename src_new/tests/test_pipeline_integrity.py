@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 import torch
-from transformers import Qwen2VLProcessor
+from transformers import Qwen2_5_VLProcessor
 
 from src_new.data.dataset import Dataset
 from src_new.config.augmentation_config import (
@@ -28,7 +28,7 @@ from src_new.processing.special_tokens import (
 from src_new.inference import InferenceEngine
 
 
-def _load_processor() -> Qwen2VLProcessor:
+def _load_processor() -> Qwen2_5_VLProcessor:
     """Load a Qwen processor from local cache, preferring the 7B line-token variant."""
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -40,7 +40,7 @@ def _load_processor() -> Qwen2VLProcessor:
 
     for path in candidate_dirs:
         if path.exists():
-            return Qwen2VLProcessor.from_pretrained(str(path), trust_remote_code=True)
+            return Qwen2_5_VLProcessor.from_pretrained(str(path), trust_remote_code=True)
 
     raise FileNotFoundError(
         "Could not locate a cached Qwen2.5-VL processor. Expected one of: "
@@ -103,7 +103,7 @@ class _DummyConfig(SimpleNamespace):
 
 
 class TestPipelineIntegrity(unittest.TestCase):
-    processor: Qwen2VLProcessor
+    processor: Qwen2_5_VLProcessor
     conversation: ConversationProcessor
 
     @classmethod
@@ -223,7 +223,7 @@ class TestPipelineIntegrity(unittest.TestCase):
                 )
 
                 labels = item["labels"].clone()
-                input_ids_tensor = item["input_ids"][0]
+                input_ids_tensor = item["input_ids"] if item["input_ids"].dim() == 1 else item["input_ids"][0]
                 spans = item.get("student_assistant_spans") or item.get("assistant_spans")
                 self.assertTrue(spans, "Assistant spans missing from dataset output")
 
@@ -244,7 +244,8 @@ class TestPipelineIntegrity(unittest.TestCase):
 
                 # Verify image pad tokens remain masked
                 if image_pad_id is not None and image_pad_id >= 0:
-                    pad_mask = item["input_ids"][0] == image_pad_id
+                    input_ids_for_pad_check = item["input_ids"] if item["input_ids"].dim() == 1 else item["input_ids"][0]
+                    pad_mask = input_ids_for_pad_check == image_pad_id
                     if pad_mask.any():
                         self.assertTrue((labels[pad_mask] == -100).all())
 
@@ -327,7 +328,7 @@ class TestPipelineIntegrity(unittest.TestCase):
             im_end_id = tokenizer.convert_tokens_to_ids(IM_END)
 
             for start, end in spans:
-                input_ids_tensor = item["input_ids"][0]
+                input_ids_tensor = item["input_ids"] if item["input_ids"].dim() == 1 else item["input_ids"][0]
                 span_tokens = input_ids_tensor[start:end]
                 span_ids = span_tokens.tolist()
                 span_text = tokenizer.decode(span_ids, skip_special_tokens=False)

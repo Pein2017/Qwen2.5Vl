@@ -24,12 +24,12 @@ COORD_TO_DESC_USER_LINE_SUFFIX = "中的物体信息"
 DESC_TO_COORD_USER_LINE_PREFIX = "请描述"
 
 # Wrapper reconstruction (text-only) prompts
-WRAPPER_RECON_USER_PROMPT = (
-    "请忽略图像，仅根据下方提供的原始对象要素，将每条对象重新格式化为标准的包裹标记行。"
-    "输出时务必逐行给出 `<|object_ref_start|>描述<|object_ref_end|>` 与对应的几何 wrapper，"
-    "不得添加额外说明或遗漏任何对象。"
+TEXT_ONLY_USER_PROMPT = (
+    "无需使用图像，请将下方每条 JSON 记录严格改写为标准包装格式。"
+    "每条记录仅输出一行，形式为 <|object_ref_start|>描述<|object_ref_end|> 加上相应的几何包裹"
+    "（<|box_start|>[...]<|box_end|>、<|quad_start|>[...]<|quad_end|>、或 <|line_start|>[...]<|line_end|>）。"
+    "不要添加解释，不要省略字段，不要改变字段含义；仅将 JSON 内容按规范重写为对应的包装行。"
 )
-WRAPPER_RECON_OBJECT_PREFIX = "对象"
 
 # New: Summary variant prompts (image -> one-line Chinese summary)
 SUMMARY_SYSTEM_PROMPT = (
@@ -183,8 +183,7 @@ CONSTANTS = {
     # New summary prompts
     "SUMMARY_SYSTEM_PROMPT": SUMMARY_SYSTEM_PROMPT,
     "SUMMARY_USER_PROMPT": SUMMARY_USER_PROMPT,
-    # Wrapper reconstruction prompts
-    "WRAPPER_RECON_USER_PROMPT": WRAPPER_RECON_USER_PROMPT,
-    "WRAPPER_RECON_OBJECT_PREFIX": WRAPPER_RECON_OBJECT_PREFIX,
+    # Text-only prompts
+    "TEXT_ONLY_USER_PROMPT": TEXT_ONLY_USER_PROMPT,
     # The system prompt is built via get_system_prompt(); constants retained for user prompts only.
 }

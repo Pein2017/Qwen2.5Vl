@@ -32,9 +32,13 @@ class PackedDataCollator:
     return_tensors: str = "pt"
 
     def __post_init__(self):
+        # Fail-fast: packed mode is disabled in src_new per docs. Keep class for import compatibility only.
+        raise RuntimeError(
+            "PackedDataCollator is disabled in src_new. Use StandardDataCollator via create_data_collator(collator_type='standard')."
+        )
+        # Unreachable, retained to minimize diff if re-enabled in the future
         if self.pad_token_id is None:
             self.pad_token_id = self.tokenizer.pad_token_id
-        # Ignore configured max_total_length to avoid truncation; perform true packing
         self.max_length = None
         logger.info("PackedDataCollator initialized with max_length=None (no truncation; true packing)")
 
@@ -142,7 +146,6 @@ class PackedDataCollator:
             a_spans_lists = [f["assistant_spans"] for f in features]
             merged_a = _offset_merge_spans(a_spans_lists, offsets)
             batch["assistant_spans"] = [merged_a]
-
 
         # Provide the original item count for diagnostics (ignored by model forward)
         try:
@@ -271,7 +274,7 @@ class PackedDataCollator:
     ) -> torch.Tensor:
         flattened: List[torch.Tensor] = []
         for seq in sequences:
-            # Accept [seq] or [1, seq]; squeeze the extra leading dim when present
+            # Accept [seq] or [1, L]; squeeze the extra leading dim when present
             if seq.dim() == 1:
                 flat = seq
             elif seq.dim() == 2 and seq.shape[0] == 1:

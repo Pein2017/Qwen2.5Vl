@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 import torch
 from PIL import Image
 
-from transformers import Qwen2VLProcessor
+from transformers import Qwen2_5_VLProcessor
 
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
@@ -49,7 +49,7 @@ class TestEndToEndSpansAndGroupingWithImagePad(unittest.TestCase):
         model_path = repo_root / "model_cache/Qwen/Qwen2.5-VL-3B-Instruct"
         if not model_path.exists():
             raise unittest.SkipTest(f"Model not found at: {model_path}")
-        cls.processor = Qwen2VLProcessor.from_pretrained(str(model_path))
+        cls.processor = Qwen2_5_VLProcessor.from_pretrained(str(model_path))
 
     def _build_conversation(self, coordinate_tokens_enabled: bool):
         conv = ConversationProcessor(

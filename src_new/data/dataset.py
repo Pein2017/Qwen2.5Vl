@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import torch
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
-from transformers import Qwen2VLImageProcessor, Qwen2VLProcessor
+from transformers import Qwen2VLImageProcessor, Qwen2_5_VLProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src_new.config.config import Config
@@ -62,7 +62,7 @@ def get_data_logger() -> logging.Logger:
 logger = get_data_logger()
 
 
-TEXT_ONLY_VARIANTS = {"wrapper_reconstruction"}
+DUMMY_IMAGE_VARIANTS = {"text_only"}
 
 
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -93,7 +93,7 @@ class Dataset(TorchDataset):
     teacher_ratio: float
     num_teacher_samples: int
 
-    hf_processor: Optional[Qwen2VLProcessor]
+    hf_processor: Optional[Qwen2_5_VLProcessor]
     conversation_processor: Optional[ConversationBuilder]
 
     raw_data: List[Dict[str, Any]]
@@ -147,6 +147,8 @@ class Dataset(TorchDataset):
         self.image_processor = image_processor  # Kept for compatibility, not used
         self.teacher_pool_manager = teacher_pool_manager
         self.config = config
+        self._dummy_image = Image.new("RGB", (28, 28), color=(0, 0, 0))
+        self._dummy_image_path = "__dummy_image__"
 
         # Mark split
         try:
@@ -352,14 +354,14 @@ class Dataset(TorchDataset):
             self._episode_map = {}
             logger.info("🔒 Eval split: forced single-turn episodes (no context)")
 
-    def set_processor(self, hf_processor: Qwen2VLProcessor) -> None:
+    def set_processor(self, hf_processor: Qwen2_5_VLProcessor) -> None:
         """
         Set the HuggingFace processor and initialize conversation processor.
 
         This method should be called by the trainer after the processor is available.
 
         Args:
-            hf_processor: Official HuggingFace Qwen2VLProcessor
+            hf_processor: Official HuggingFace Qwen2_5_VLProcessor
 
         Raises:
             ValueError: If hf_processor is None
@@ -524,13 +526,10 @@ class Dataset(TorchDataset):
                 "Conversation processor not initialized. Call set_processor() first."
             )
 
-        # Get raw sample
         raw_sample = self.samples[idx]
 
-        # Create structured sample with teacher assignments (dynamic per-epoch mapping first)
         structured_sample = self._create_structured_sample(raw_sample, idx)
 
-        # Process the sample through HuggingFace-first pipeline
         return self._process_sample_unified(structured_sample, idx)
 
     def _create_structured_sample(
@@ -588,7 +587,7 @@ class Dataset(TorchDataset):
             "dense_caption": 1.0,
             "coords_to_desc": 0.0,
             "desc_to_coords": 0.0,
-            "wrapper_reconstruction": 0.0,
+            "text_only": 0.0,
         }
         keys = list(ratios.keys())
         weights = [float(ratios[k]) for k in keys]
@@ -609,6 +608,9 @@ class Dataset(TorchDataset):
         path_manager = create_path_manager(self.data_root)
         images = []
         for img_path in image_paths:
+            if img_path == self._dummy_image_path:
+                images.append(self._dummy_image.copy())
+                continue
             try:
                 resolved = path_manager.resolve_path(img_path)
                 image = Image.open(str(resolved)).convert("RGB")
@@ -620,7 +622,9 @@ class Dataset(TorchDataset):
 
     @jaxtyped_beartype
     def _process_sample_unified(
-        self, structured_sample: Dict[str, Any], idx: int
+        self,
+        structured_sample: Dict[str, Any],
+        idx: int,
     ) -> Dict[str, torch.Tensor]:
         """
         Unified processing: centralized variant sampling and unified builder entry.
@@ -631,7 +635,7 @@ class Dataset(TorchDataset):
         # Variant selection
         variant = self._sample_variant()
         variant_key = str(getattr(variant, "value", variant)).strip().lower()
-        text_only_variant = variant_key in TEXT_ONLY_VARIANTS
+        text_only_variant = variant_key in DUMMY_IMAGE_VARIANTS
 
         # Teacher presence (disabled for text-only variants)
         teacher_samples = [] if text_only_variant else structured_sample.get("teacher_samples", [])
@@ -652,13 +656,12 @@ class Dataset(TorchDataset):
         # Load images
         if text_only_variant:
             teacher_images_list = []
-            student_images = []
+            student_images = [self._dummy_image]
             try:
-                # Ensure downstream code doesn't accidentally attempt to load or augment
                 structured_sample = dict(structured_sample)
-                structured_sample["images"] = []
+                structured_sample["images"] = [self._dummy_image_path]
             except Exception:
-                structured_sample["images"] = []
+                structured_sample["images"] = [self._dummy_image_path]
         elif has_teachers:
             teacher_images_list: List[List[Image.Image]] = []
             for t_sample in teacher_samples:
@@ -804,6 +807,15 @@ class Dataset(TorchDataset):
             inputs["conversation_variant"] = variant
 
         # Removed: plain-text char-span grouping path (deprecated). Grouping now always relies on wrapper tokens.
+
+        # Normalize text tensors to 1D per-sample for collator ([seq])
+        try:
+            if isinstance(inputs.get("input_ids"), torch.Tensor) and inputs["input_ids"].dim() == 2 and int(inputs["input_ids"].shape[0]) == 1:
+                inputs["input_ids"] = inputs["input_ids"][0]
+            if isinstance(inputs.get("attention_mask"), torch.Tensor) and inputs["attention_mask"].dim() == 2 and int(inputs["attention_mask"].shape[0]) == 1:
+                inputs["attention_mask"] = inputs["attention_mask"][0]
+        except Exception:
+            pass
 
         return inputs
 

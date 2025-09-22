@@ -14,7 +14,7 @@
 - **Critical invariants**:
   - Fast tokenizer required with `offset_mapping` available; chat template must exist (tokenizer or processor).
   - Coordinate tokens are deprecated. All geometry is emitted as raw integer coordinates with canonical wrappers; no `<|coord_*|>` usage.
-  - Conversation variants cover both multimodal and text-only flows. `wrapper_reconstruction` emits no `<image>` placeholders so the processor must be able to build conversations with images=[], ensuring the model practises wrapper syntax without vision features.
+- Conversation variants cover both multimodal and text-only flows. `text_only` now injects a cached 28×28 all-black image so the vision tower executes every step; the user message still delivers raw JSON guidance, and the assistant target remains identical to dense captioning.
   - Image alignment: decoded `<|image_pad|>` count equals `sum_i (t*h*w) // (merge_size**2)`; `pixel_values` rows equal `sum_i (t*h*w)`.
   - Labels/spans: assistant spans are precomputed once in the conversation builder (regex+offsets) and mapped to expanded input_ids; include immediate `<|im_end|>`; `<|image_pad|>` always masked.
 
@@ -35,13 +35,13 @@
 - Coordinate-token mode is deprecated in src_new; only geometry/object‑ref wrappers are required and validated. Chat template is strictly required and is propagated to the processor at runtime.
 
 3) Dataset & conversations
-- `Dataset` reads JSONL; validates per-sample structure; optional augmentation via `ObjectAwareAugmentationPipeline` with epoch-based presets; dynamic contrastive pairing per-epoch when `dynamic_pairing_enabled` (one context teacher max; eval forced single-turn). Text-only variants (currently `wrapper_reconstruction`) are automatically routed with `images=[]`, no augmentations, and teacher pairing disabled so they stay pure formatting drills.
+- `Dataset` reads JSONL; validates per-sample structure; optional augmentation via `ObjectAwareAugmentationPipeline` with epoch-based presets; dynamic contrastive pairing per-epoch when `dynamic_pairing_enabled` (one context teacher max; eval forced single-turn). Text-only variants (currently `text_only`) bypass augmentation/teacher pairing and receive a sentinel image path that resolves to the cached 28×28 black patch, ensuring the conversation retains a single `<image>` placeholder and the vision tower gradients stay in sync across ranks.
 - `ConversationProcessor.create_conversation(...)` builds teacher-student or simple conversations, applies HF chat template, threads `conversation_text` + `offset_mapping`, enforces image token consistency. The processor accepts user-spec dictionaries (`{"text": ..., "include_image": bool}`) letting variants decide whether placeholders are emitted. Summary variant uses precomputed `sample['summary']`.
 - Spans are computed once in the builder (`processing/span_builder.py`) and attached as token-aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; `<|image_pad|>` is masked; span ends include immediate `<|im_end|>` when present.
 
 4) Collation & packing
-- `collator_standard` pads to max length.
-- `collator_packed` concatenates sequences into one row; emits `segment_lengths` when `packed_segment_isolation=true`; first token of each subsequent sample is masked to prevent cross‑sample transitions.
+- Standard collator pads to the longest in batch; emits `pixel_values` and `image_grid_thw` when present; validates THW vs `pixel_values` rows and enforces `image_grid_thw` shape [num_images, 3].
+- Packed mode is disabled in src_new; only the standard collator is supported.
 
 5) Forward & validations (`models/wrapper.py`)
 - Validate text/image tensor shapes and token/image counts; compute expected image token count from THW grid and merge size; raise on mismatch.
@@ -78,7 +78,7 @@
 - Model/runtime: `model_path`, `attn_implementation {flash_attention_2|eager|sdpa}`, `torch_dtype {float16|bfloat16|float32|bf16|fp16}`, `use_cache`.
 - Training: `num_train_epochs`, `per_device_{train,eval}_batch_size`, `gradient_accumulation_steps`, `learning_rate`, `vision_lr`, `merger_lr`, `llm_lr`, `warmup_ratio`, `weight_decay`, `max_grad_norm`, `lr_scheduler_type`, `gradient_checkpointing`, `bf16|fp16`.
 - Data: `train_data_path`, `val_data_path`, `data_root`, `teacher_pool_file`, `max_total_length`, `num_teacher_samples`, `max_dataset_size`.
-- Features: `max_coord_value`, `merge_size`, `max_pixels`. Remove `coordinate_tokens_enabled` and related settings from new configs.
+- Features: `max_coord_value`, `merge_size`, `max_pixels`, `coordinate_tokens_enabled` (set to false). Coordinate-token mode is deprecated; keep the key in configs for compatibility but disable it.
 - Loss: `teacher_loss_weight`, `student_loss_weight`, `caption_loss_weight`, `grounding_loss_weight`, `formatting_loss_weight`.
 - Collator: `collator_type: standard` only. Packed mode is disabled in src_new and `packed_segment_isolation` is ignored.
 - HF Trainer & Checkpointing: `eval_strategy`, `eval_steps`, `save_steps`, `save_total_limit`, `metric_for_best_model`, `greater_is_better`. HF `save_strategy` is "no"; `CheckpointSaver` writes SafeTensors and tokenizer/processor, promotes best checkpoint by atomic copy at interval ticks, and rotates old `checkpoint-*` folders per `save_total_limit`. `load_best_model_at_end` remains false.
@@ -93,7 +93,7 @@
 ## Loss Computation & Diagnostics (single source)
 
 - LLM loss: single CE pass (shifted), masks per role; grouped LLM masks from `TokenGroupingPlugin` (caption/grounding/formatting) with teacher/student role weights.
-- Coordinate auxiliary losses and coord‑specific diagnostics are deprecated and should not be enabled.
+- Coordinate auxiliary losses (kernelized‑KL + unlikelihood) are optional and off by default. Enable with `coord_aux_enabled: true` to compute per‑group aux at coordinate‑labeled targets and log diagnostics (window_mass, coord_slice_mass, gt_prob, expected_mae_bins, top1/top5, etc.).
 - Grouping policy keyed by variant:
   - `dense_caption`, `coords_to_desc`, `desc_to_coords`: require geometry/object-ref wrappers; fail fast if absent.
   - Plain JSON (when enabled): require strict JSON Lines layout for variants; fail fast if invalid.
@@ -133,7 +133,7 @@
 - `models/`: wrapper + validations; SOLUTION‑1 CE path; grouped LLM losses.
 - `losses/`: `token_grouping.py`.
 - `training/`: BBUTrainer; PhaseFreezeManager; TrainingStateManager; CheckpointSaver.
-- `inference.py`: engine with strict parsing and training‑matched prep.
+- `inference.py`: engine with strict parsing and training-matched prep.
 
 ---
 
@@ -175,22 +175,21 @@
 
 ---
 
-## New: Text-Only Wrapper Reconstruction Variant
+## New: Text-Only Variant
 
 - Purpose: give the base SFT curriculum an explicit formatting rehearsal where the model rewrites ground-truth objects into canonical wrapper lines without seeing pixels. This injects repeated practice for `<|object_ref_start|>…<|line_end|>` balance and discourages truncation during long multimodal turns.
 - Prompt contract:
-  - User turn includes only textual scaffolding summarising each object: `对象{k}: 描述: …   几何: quad […]`, drawn directly from the JSONL. No `<image>` placeholder is attached (`include_image=false`).
+  - User turn lists the raw JSON records (`Object k: {"desc": ..., "bbox_2d": [...]}`) and an English instruction mirroring dense wrapper expectations, while still attaching a single dummy image placeholder so the encoded sequence matches the dense path.
   - Assistant target is the same multimodal wrapper string produced in dense captioning (geometry + description wrappers with raw integers).
 - Implementation details:
-  - Registered as `ConversationVariant.WRAPPER_RECONSTRUCTION` (`processing/variants.py`); handler returns the formatted instruction dictionary.
-  - `ConversationProcessor` normalises user specs and validates zero-image conversations, while `_process_text_and_images` skips image tensors when the placeholder count is zero.
-  - `Dataset._process_sample_unified` recognises the variant, bypasses teacher sampling, image loading, and augmentation, ensuring a deterministic text-only batch.
+  - Registered as `ConversationVariant.TEXT_ONLY` (`processing/variants.py`); handler returns a spec with `include_image=True` so the chat template emits the placeholder.
+  - `Dataset._process_sample_unified` detects the variant, bypasses teacher pairing/augmentation, and swaps the real image path for a sentinel that resolves to the cached 28×28 black patch. `_load_images` feeds that dummy through the Qwen processor, yielding a single image pad token.
 - Configuration:
-  - Add to YAML via `conversation_variant_ratios.wrapper_reconstruction`. Example (phase 3 standard):
+  - Add to YAML via `conversation_variant_ratios.text_only`. Example (phase 3 standard):
     ```yaml
     conversation_variant_ratios:
-      dense_caption: 0.7
-      wrapper_reconstruction: 0.3
+      dense_caption: 0.8
+      text_only: 0.2
     ```
   - Ratios are validated centrally (`config/config.py`) so any typo or negative weight fails fast.
 - Testing: `test_conversation_processor_precomputed_spans.py` covers the zero-image path; `test_conversation_variants.py` logs the prompt/target pair to `conversation_variants.log` for manual inspection.

@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 import torch
-from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2VLProcessor, Qwen2VLVideoProcessor
+from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2_5_VLProcessor, Qwen2VLVideoProcessor
 
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.variants import create_default_variant_registry
@@ -39,10 +39,10 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
             try:
                 tok = AutoTokenizer.from_pretrained(p, trust_remote_code=True, use_fast=True)
                 imgp = Qwen2VLImageProcessor.from_pretrained(p, trust_remote_code=True)
-                proc_from_ckpt = Qwen2VLProcessor.from_pretrained(p, trust_remote_code=True)
+                proc_from_ckpt = Qwen2_5_VLProcessor.from_pretrained(p, trust_remote_code=True)
                 vp = getattr(proc_from_ckpt, "video_processor", None) or Qwen2VLVideoProcessor()
                 chat = getattr(tok, "chat_template", None) or getattr(proc_from_ckpt, "chat_template", None)
-                cls.processor = Qwen2VLProcessor(image_processor=imgp, tokenizer=tok, video_processor=vp, chat_template=chat)
+                cls.processor = Qwen2_5_VLProcessor(image_processor=imgp, tokenizer=tok, video_processor=vp, chat_template=chat)
                 cls.tok = tok
                 return
             except Exception as e:
@@ -57,8 +57,7 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         sample = _toy_sample()
         if str(variant_key).strip().lower() == "summary":
             sample["summary"] = "标签/可以识别×1"
-        images = [] if str(variant_key).strip().lower() == "wrapper_reconstruction" else [img]
-        out = conv.create_conversation(sample=sample, images=images, variant=variant_key)
+        out = conv.create_conversation(sample=sample, images=[img], variant=variant_key)
         # Spans must be present and non-empty for the student turn
         t_spans = out.get("teacher_assistant_spans") or []
         s_spans = out.get("student_assistant_spans") or []
@@ -78,7 +77,7 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         self.assertGreater(int((labels != -100).sum().item()), 0)
 
     def test_variants(self):
-        for variant in ("dense_caption", "coords_to_desc", "desc_to_coords", "summary", "wrapper_reconstruction"):
+        for variant in ("dense_caption", "coords_to_desc", "desc_to_coords", "summary", "text_only"):
             with self.subTest(variant=variant):
                 self._run_variant(variant)
 

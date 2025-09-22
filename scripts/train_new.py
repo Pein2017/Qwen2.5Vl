@@ -159,6 +159,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         if config.dataloader_num_workers > 0
         else None,
         remove_unused_columns=config.remove_unused_columns,
+        ddp_find_unused_parameters=True,
         # Model saving settings - enable SafeTensors for faster inference loading
         save_on_each_node=getattr(
             config, "save_on_each_node", False
@@ -479,10 +480,10 @@ def create_trainer_with_new_architecture(
         logger.warning(f"⚠️ Could not register AugmentationScheduleCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
-    from transformers import Qwen2VLProcessor, Qwen2VLVideoProcessor
+    from transformers import Qwen2_5_VLProcessor, AutoVideoProcessor
 
     # Load processor from pretrained to get the chat template, then update components
-    processor = Qwen2VLProcessor.from_pretrained(
+    processor = Qwen2_5_VLProcessor.from_pretrained(
         config.model_path, trust_remote_code=True
     )
 
@@ -502,9 +503,9 @@ def create_trainer_with_new_architecture(
     # Update processor with our tokenizer, image processor, and required video processor
     # Prefer the video processor loaded from the checkpoint; fallback to a fresh instance
     loaded_video_processor = getattr(processor, "video_processor", None)
-    video_processor = loaded_video_processor or Qwen2VLVideoProcessor()
+    video_processor = loaded_video_processor or AutoVideoProcessor.from_pretrained(config.model_path)
 
-    processor = Qwen2VLProcessor(
+    processor = Qwen2_5_VLProcessor(
         image_processor=image_processor,
         tokenizer=tokenizer,
         video_processor=video_processor,

@@ -56,7 +56,7 @@ logger = get_rank_aware_logger("inference")
 from transformers import (
     AutoTokenizer,
     Qwen2VLImageProcessor,
-    Qwen2VLProcessor,
+    Qwen2_5_VLProcessor,
     Qwen2VLVideoProcessor,
 )
 
@@ -128,7 +128,11 @@ class InferenceEngine:
         self.data_root = data_root
         # Variant: 'dense' (objects) or 'summary' (one-line CN)
         v = str(generation_variant).strip().lower()
-        self.generation_variant = v if v in {"dense", "summary"} else "dense"
+        if v not in {"dense", "summary"}:
+            raise ValueError(
+                f"Unsupported generation_variant: {generation_variant!r}. Must be one of {{'dense', 'summary'}}."
+            )
+        self.generation_variant = v
         # Global teacher ablation configuration
         self.use_global_teacher = bool(use_global_teacher)
         self.global_teacher_seed = int(global_teacher_seed) if global_teacher_seed is not None else None
@@ -504,7 +508,7 @@ class InferenceEngine:
         # Create unified processor from tokenizer, image processor, and video processor
         try:
             # Try to load from checkpoint for consistency
-            proc_from_ckpt = Qwen2VLProcessor.from_pretrained(
+            proc_from_ckpt = Qwen2_5_VLProcessor.from_pretrained(
                 self.config.model_path, trust_remote_code=True
             )
             video_processor = (
@@ -514,7 +518,7 @@ class InferenceEngine:
         except Exception:
             video_processor = Qwen2VLVideoProcessor()
 
-        unified_processor = Qwen2VLProcessor(
+        unified_processor = Qwen2_5_VLProcessor(
             image_processor=self.image_processor,
             tokenizer=self.tokenizer,
             video_processor=video_processor,
@@ -539,7 +543,7 @@ class InferenceEngine:
             logger.debug(f"Tokenizer parity adjustments skipped: {_e}")
 
         # CRITICAL FIX: Ensure chat template is properly inherited from tokenizer
-        # The Qwen2VLProcessor doesn't automatically inherit chat_template from tokenizer
+        # The Qwen2_5_VLProcessor doesn't automatically inherit chat_template from tokenizer
         chat_template = (
             self.tokenizer.chat_template
             if hasattr(self.tokenizer, "chat_template")
@@ -549,8 +553,8 @@ class InferenceEngine:
             unified_processor.chat_template = chat_template
             logger.info("✅ Chat template inherited from tokenizer to processor")
         else:
-            logger.debug(
-                "Tokenizer has no chat_template; skipping processor chat_template inheritance"
+            raise ValueError(
+                "Tokenizer is missing a required chat_template. Ensure your checkpoint tokenizer.json contains a valid chat_template or provide one via preprocessing."
             )
 
         # Expose processor on self for any legacy helpers and cache the system prompt from training templates

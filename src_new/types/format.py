@@ -11,11 +11,13 @@ class FormatMode(str, Enum):
 
 
 class ConversationVariant(str, Enum):
+	"""Conversation format variants."""
+
 	DENSE_CAPTION = "dense_caption"
 	COORDS_TO_DESC = "coords_to_desc"
 	DESC_TO_COORDS = "desc_to_coords"
 	SUMMARY = "summary"
-	WRAPPER_RECONSTRUCTION = "wrapper_reconstruction"
+	TEXT_ONLY = "text_only"
 
 
 __all__ = ["FormatMode", "ConversationVariant"]
