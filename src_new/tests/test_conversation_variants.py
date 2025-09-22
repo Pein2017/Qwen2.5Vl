@@ -8,8 +8,15 @@ import logging
 
 from PIL import Image
 from transformers import Qwen2VLProcessor
-from src_new.processing.templates import COORD_TO_DESC_USER_PROMPT, DESC_TO_COORD_USER_PROMPT, BASE_USER_PROMPT, get_system_prompt
+from src_new.processing.templates import (
+    COORD_TO_DESC_USER_PROMPT,
+    DESC_TO_COORD_USER_PROMPT,
+    BASE_USER_PROMPT,
+    WRAPPER_RECON_USER_PROMPT,
+    get_system_prompt,
+)
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
+from src_new.processing.variants import WrapperReconstructionHandler
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -166,6 +173,21 @@ class TestConversationVariants(unittest.TestCase):
             d2c_assistant,
         )
         self._log("DESC_TO_COORD (raw chat template)", d2c_text)
+
+        # wrapper reconstruction (text-only)
+        recon_handler = WrapperReconstructionHandler(self.converter)
+        user_spec = recon_handler.build_user_text(objects)
+        assert isinstance(user_spec, dict)
+        recon_user_text = user_spec.get("text", WRAPPER_RECON_USER_PROMPT)
+        recon_assistant = recon_handler.build_assistant_text(objects)
+        self._log(
+            "WRAPPER_RECONSTRUCTION — USER PROMPT (text-only)",
+            recon_user_text,
+        )
+        self._log(
+            "WRAPPER_RECONSTRUCTION — EXPECTED assistant content (wrapper reconstruction)",
+            recon_assistant,
+        )
 
 
 if __name__ == "__main__":

@@ -149,6 +149,7 @@ class TestProcessingIntegrationReal(unittest.TestCase):
             self.assertIn(expected_content, text)
             self.assertNotIn("<|coord_", text)
 
+    @unittest.skip("Coordinate tokens deprecated: skipping coord-token mode real integration test")
     def test_real_coordinate_mode_expected_text_and_token_count(self) -> None:
         assert self.processor is not None
         samples = _load_samples(self.jsonl_path, limit=3)

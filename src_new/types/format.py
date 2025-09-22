@@ -15,6 +15,7 @@ class ConversationVariant(str, Enum):
 	COORDS_TO_DESC = "coords_to_desc"
 	DESC_TO_COORDS = "desc_to_coords"
 	SUMMARY = "summary"
+	WRAPPER_RECONSTRUCTION = "wrapper_reconstruction"
 
 
 __all__ = ["FormatMode", "ConversationVariant"]

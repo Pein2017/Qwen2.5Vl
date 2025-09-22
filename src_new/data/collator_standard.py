@@ -34,10 +34,10 @@ class StandardDataCollator:
     def __post_init__(self):
         if self.pad_token_id is None:
             self.pad_token_id = self.tokenizer.pad_token_id
-        if self.max_length is None and self.config is not None:
-            self.max_length = self.config.max_total_length
+        # Ignore configured max_total_length to avoid truncation; pad to longest in batch
+        self.max_length = None
         logger.info(
-            f"StandardDataCollator initialized with max_length={self.max_length}"
+            "StandardDataCollator initialized with max_length=None (no truncation; pad to longest in batch)"
         )
 
     @jaxtyped_beartype
@@ -48,9 +48,14 @@ class StandardDataCollator:
 
         pixel_values = None
         image_grid_thw = None
-        if "pixel_values" in features[0]:
+        pixel_values_present = any(
+            ("pixel_values" in f) and (f["pixel_values"] is not None) for f in features
+        )
+        if pixel_values_present:
             pixel_values_list = []
             for f in features:
+                if "pixel_values" not in f or f["pixel_values"] is None:
+                    continue
                 pv = f["pixel_values"]
                 if pv.dim() == 2:
                     pixel_values_list.append(pv)
@@ -63,19 +68,25 @@ class StandardDataCollator:
                     raise ValueError(
                         f"Invalid pixel_values dims={pv.dim()} shape={pv.shape} (expected {PIXEL_VALUES_STANDARD_SHAPE_DESC})"
                     )
-            if pixel_values_list and pixel_values_list[0].dim() == 2:
-                pixel_values = torch.cat(pixel_values_list, dim=0)
-            else:
-                pixel_values = torch.stack(pixel_values_list)
-        if "image_grid_thw" in features[0]:
+            if pixel_values_list:
+                if pixel_values_list[0].dim() == 2:
+                    pixel_values = torch.cat(pixel_values_list, dim=0)
+                else:
+                    pixel_values = torch.stack(pixel_values_list)
+
+        image_grid_present = any(
+            ("image_grid_thw" in f) and (f["image_grid_thw"] is not None) for f in features
+        )
+        if image_grid_present:
             image_grid_thw_list = []
             for f in features:
-                grid_thw = f["image_grid_thw"]
+                grid_thw = f.get("image_grid_thw")
+                if grid_thw is None:
+                    continue
                 if grid_thw.dim() == 2:
                     if grid_thw.shape[0] == 1 and grid_thw.shape[1] == 3:
-                        grid_thw = grid_thw.squeeze(0)
-                        image_grid_thw_list.append(grid_thw)
-                    elif grid_thw.shape[0] == 2 and grid_thw.shape[1] == 3:
+                        image_grid_thw_list.append(grid_thw.squeeze(0))
+                    elif grid_thw.shape[0] >= 1 and grid_thw.shape[1] == 3:
                         for i in range(grid_thw.shape[0]):
                             image_grid_thw_list.append(grid_thw[i])
                     else:
@@ -87,10 +98,9 @@ class StandardDataCollator:
                         image_grid_thw_list.append(grid_thw)
                     elif grid_thw.shape[0] == 2:
                         h, w = grid_thw
-                        grid_thw = torch.tensor(
-                            [1, h, w], dtype=grid_thw.dtype, device=grid_thw.device
+                        image_grid_thw_list.append(
+                            torch.tensor([1, h, w], dtype=grid_thw.dtype, device=grid_thw.device)
                         )
-                        image_grid_thw_list.append(grid_thw)
                     else:
                         raise ValueError(
                             f"Invalid 1D image_grid_thw shape {grid_thw.shape} (expected 3 elements for THW)"
@@ -99,7 +109,8 @@ class StandardDataCollator:
                     raise ValueError(
                         f"Invalid image_grid_thw dims={grid_thw.dim()} shape={grid_thw.shape} (expected {IMAGE_GRID_THW_SHAPE_DESC})"
                     )
-            image_grid_thw = torch.stack(image_grid_thw_list)
+            if image_grid_thw_list:
+                image_grid_thw = torch.stack(image_grid_thw_list)
 
         padded_input_ids = self._pad_sequence(input_ids, self.pad_token_id)
         padded_attention_mask = self._pad_sequence(attention_mask, 0)
@@ -116,6 +127,10 @@ class StandardDataCollator:
             batch["image_grid_thw"] = image_grid_thw
             logger.debug(
                 f"Added image_grid_thw to batch: {image_grid_thw.shape} = {image_grid_thw}"
+            )
+        if pixel_values is not None and image_grid_thw is None:
+            raise ValueError(
+                "Standard collator: pixel_values present but image_grid_thw missing; cannot build multimodal batch."
             )
 
 

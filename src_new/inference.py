@@ -76,6 +76,8 @@ from src_new.processing.token_processor import TokenConfig, TokenProcessor
 from src_new.utils.data_resolver import DataResolver
 from src_new.utils.path_manager import create_path_manager
 from src_new.utils.validation import PathValidationError
+# Import prompts from training pipeline to ensure consistency
+from src_new.processing.templates import CONSTANTS, get_system_prompt
 
 
 class InferenceEngine:
@@ -93,6 +95,11 @@ class InferenceEngine:
         num_teachers: int = 0,
         force_eager_attention: bool = False,
         data_root: Optional[str] = None,
+        generation_variant: str = "dense",
+        use_global_teacher: bool = False,
+        global_teacher_seed: Optional[int] = None,
+        global_teacher_index: Optional[int] = None,
+        global_teacher_file: Optional[str] = None,
     ):
         """Initialize inference engine with new architecture.
 
@@ -119,6 +126,15 @@ class InferenceEngine:
         self.force_eager_attention = force_eager_attention
         # Optional data root for resolving relative image paths
         self.data_root = data_root
+        # Variant: 'dense' (objects) or 'summary' (one-line CN)
+        v = str(generation_variant).strip().lower()
+        self.generation_variant = v if v in {"dense", "summary"} else "dense"
+        # Global teacher ablation configuration
+        self.use_global_teacher = bool(use_global_teacher)
+        self.global_teacher_seed = int(global_teacher_seed) if global_teacher_seed is not None else None
+        self.global_teacher_index = int(global_teacher_index) if global_teacher_index is not None else None
+        self.global_teacher_file = global_teacher_file
+        self._global_teacher_sample: Optional[Dict[str, Any]] = None
 
         # Load configuration
         logger.info(f"Loading configuration from {config_path}")
@@ -504,6 +520,24 @@ class InferenceEngine:
             video_processor=video_processor,
         )
 
+        # Align tokenizer runtime settings with training (parity)
+        try:
+            if getattr(self.tokenizer, "pad_token", None) is None and getattr(self.tokenizer, "eos_token", None) is not None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if hasattr(self.tokenizer, "padding_side"):
+                self.tokenizer.padding_side = "left"
+            cfg = getattr(self.model, "config", None)
+            if cfg is not None:
+                if getattr(self.tokenizer, "pad_token_id", None) is not None:
+                    cfg.pad_token_id = self.tokenizer.pad_token_id
+                if getattr(self.tokenizer, "eos_token_id", None) is not None:
+                    cfg.eos_token_id = self.tokenizer.eos_token_id
+                if getattr(self.model, "generation_config", None) is not None:
+                    self.model.generation_config.pad_token_id = cfg.pad_token_id
+                    self.model.generation_config.eos_token_id = cfg.eos_token_id
+        except Exception as _e:
+            logger.debug(f"Tokenizer parity adjustments skipped: {_e}")
+
         # CRITICAL FIX: Ensure chat template is properly inherited from tokenizer
         # The Qwen2VLProcessor doesn't automatically inherit chat_template from tokenizer
         chat_template = (
@@ -518,6 +552,17 @@ class InferenceEngine:
             logger.debug(
                 "Tokenizer has no chat_template; skipping processor chat_template inheritance"
             )
+
+        # Expose processor on self for any legacy helpers and cache the system prompt from training templates
+        self.processor = unified_processor
+        try:
+            self.system_prompt = get_system_prompt(
+                coordinate_tokens_enabled=bool(self.config.coordinate_tokens_enabled), format_mode="special_tokens"
+            )
+            logger.info("✅ Cached system prompt from training templates for inference")
+        except Exception as _e:
+            self.system_prompt = None
+            logger.warning(f"Failed to build system prompt from training templates: {_e}")
 
         self.conversation_processor = ConversationBuilder(
             processor=unified_processor,
@@ -572,6 +617,69 @@ class InferenceEngine:
 
         return teacher_samples
 
+    def _select_global_teacher_sample(
+        self,
+        teacher_file: str,
+    ) -> Tuple[Dict[str, Any], Optional[int]]:
+        """Select and cache a single global teacher sample from a JSONL file.
+
+        Returns the selected sample and its zero-based index within teacher_file (or None if unknown).
+        Selection uses global_teacher_index if provided; otherwise uses global_teacher_seed for reproducibility.
+        """
+        if teacher_file is None or len(str(teacher_file).strip()) == 0:
+            raise ValueError("Global teacher mode requires a valid teacher_file")
+
+        # Determine total lines for random index when needed
+        total_lines = 0
+        with open(teacher_file, "r", encoding="utf-8") as f:
+            for _ in f:
+                total_lines += 1
+        if total_lines == 0:
+            raise ValueError(f"Teacher file is empty: {teacher_file}")
+
+        # Choose index
+        if self.global_teacher_index is not None:
+            if self.global_teacher_index < 0 or self.global_teacher_index >= total_lines:
+                raise ValueError(
+                    f"global_teacher_index out of range: {self.global_teacher_index} not in [0,{total_lines-1}]"
+                )
+            chosen_index = int(self.global_teacher_index)
+        else:
+            rng = random.Random(self.global_teacher_seed)
+            chosen_index = rng.randrange(total_lines)
+
+        # Fetch the chosen sample
+        selected_sample: Optional[Dict[str, Any]] = None
+        with open(teacher_file, "r", encoding="utf-8") as f:
+            for idx, line in enumerate(f):
+                if idx == chosen_index:
+                    try:
+                        candidate = json.loads(line.strip())
+                    except Exception as e:
+                        raise ValueError(f"Failed to parse teacher sample at line {idx}: {e}")
+                    if not isinstance(candidate, dict):
+                        raise ValueError("Teacher sample must be a JSON object")
+                    # Basic validation; dense pipeline expects images and objects
+                    if (
+                        "images" not in candidate
+                        or not isinstance(candidate["images"], list)
+                        or len(candidate["images"]) == 0
+                    ):
+                        raise ValueError("Teacher sample missing required 'images' list")
+                    # Do not strictly require 'objects' in summary mode
+                    if self.generation_variant == "dense":
+                        if "objects" not in candidate or not isinstance(candidate["objects"], list):
+                            raise ValueError("Teacher sample missing required 'objects' list for dense mode")
+                    selected_sample = candidate
+                    break
+
+        if selected_sample is None:
+            raise RuntimeError("Failed to retrieve selected global teacher sample")
+
+        # Cache on self for reuse
+        self._global_teacher_sample = selected_sample
+        return selected_sample, chosen_index
+
     def _sample_teachers(self, seed: Optional[int] = None) -> List[Dict[str, Any]]:
         """Sample teachers using dynamic pairing (same as training pipeline)."""
         if not self.teacher_pool_manager or self.num_teachers <= 0:
@@ -614,12 +722,20 @@ class InferenceEngine:
         if data_root is not None:
             self.data_root = data_root
 
-        # Use teacher-guided approach only when explicitly requested
+        # If explicit teachers are provided on the sample, honor them (global-teacher mode)
+        try:
+            explicit_teachers = sample.get("teacher_samples") if isinstance(sample, dict) else None
+            if isinstance(explicit_teachers, list) and len(explicit_teachers) > 0:
+                return self._prepare_with_explicit_teachers(sample, explicit_teachers)
+        except Exception as _e:
+            logger.debug(f"Explicit teachers check failed/ignored: {_e}")
+
+        # Use teacher-guided approach only when explicitly requested via teacher_pool_manager
         if self.teacher_pool_manager and self.num_teachers > 0:
             return self._prepare_training_matched_inputs(sample, seed)
-        else:
-            # Simple conversation path (default in tests)
-            return self._prepare_simple_training_format(sample)
+
+        # Simple conversation path (default)
+        return self._prepare_simple_training_format(sample)
 
     def _prepare_training_matched_inputs(
         self, student_sample: Dict[str, Any], seed: Optional[int] = None
@@ -818,15 +934,21 @@ class InferenceEngine:
                 )
                 raise
 
-        # CRITICAL: Use ConversationBuilder.create_simple_conversation
-        # This matches the training path for samples without teachers
+        # Build conversation based on generation variant
         try:
-            # Build a generation-ready simple conversation via processor
-            inputs = (
-                self.conversation_processor.create_simple_conversation_for_generation(
-                    sample=sample, images=images
+            if self.generation_variant == "summary":
+                inputs = (
+                    self.conversation_processor.create_summary_conversation_for_generation(
+                        images=images
+                    )
                 )
-            )
+            else:
+                inputs = (
+                    self.conversation_processor.create_simple_conversation_for_generation(
+                        sample=sample,
+                        images=images
+                    )
+                )
         except Exception as e:
             raise RuntimeError(f"ConversationBuilder failed: {e}")
 
@@ -901,9 +1023,10 @@ class InferenceEngine:
         for k, v in inputs.items():
             if torch.is_tensor(v):
                 logger.debug(f"   {k}: {v.shape} ({v.dtype}) on {v.device}")
+        debug_mode = logger.isEnabledFor(logging.DEBUG)
 
         # CRITICAL VALIDATION: Cross-validate image tokens and tensors before generation
-        if has_images:
+        if has_images and debug_mode:
             # Decode input_ids to check image token alignment
             ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
             decoded_text = self.tokenizer.decode(
@@ -958,89 +1081,7 @@ class InferenceEngine:
                     "Image token mismatch: No tokens found in text but image data present"
                 )
 
-        # Create constrained decoding function for coordinate tokens
-        def create_coordinate_constrained_fn():
-            """Create a prefix_allowed_tokens_fn that constrains coordinate generation."""
-
-            # Get coordinate token range
-            if self.config.coordinate_tokens_enabled:
-                coord_min, coord_max = self._coord_range
-                coord_token_ids = set(range(int(coord_min), int(coord_max)))
-            else:
-                coord_token_ids = set()
-
-            # Get geometry token IDs
-            geometry_token_ids = set()
-            punctuation_token_ids = set()
-
-            # Flatten canonical geometry tokens from GEOMETRY_TOKENS
-            canonical_tokens = set()
-            for _, toks in GEOMETRY_TOKENS.items():
-                canonical_tokens.update(toks)
-
-            for token in canonical_tokens:
-                token_id = self.tokenizer.convert_tokens_to_ids(token)
-                if token_id != self.tokenizer.unk_token_id:
-                    geometry_token_ids.add(token_id)
-
-            # Punctuation tokens commonly used in coordinate lists
-            for token in ["[", "]", ",", " ", ", "]:
-                token_ids = self.tokenizer.convert_tokens_to_ids(token)
-                if isinstance(token_ids, list):
-                    punctuation_token_ids.update(token_ids)
-                elif token_ids != self.tokenizer.unk_token_id:
-                    punctuation_token_ids.add(token_ids)
-
-            def prefix_allowed_tokens_fn(
-                batch_id: int, input_ids: torch.Tensor
-            ) -> List[int]:
-                """Constrain tokens based on current generation state."""
-
-                # Convert to list for easier processing
-                ids = input_ids.tolist()
-
-                # Check if we're inside a coordinate section by looking for unclosed brackets
-                # after geometry start tokens
-                inside_coord_section = False
-
-                # Look for geometry start patterns followed by unclosed brackets
-                for i in range(
-                    len(ids) - 1, max(-1, len(ids) - 50), -1
-                ):  # Check last 50 tokens
-                    token_id = ids[i]
-
-                    # Check if this is a closing bracket - if so, we're not inside
-                    token_str = self.tokenizer.decode([token_id])
-                    if token_str in ["]"]:
-                        break
-
-                    # Check if this is an opening bracket after geometry start
-                    if token_str in ["["]:
-                        # Look backwards for geometry start token
-                        for j in range(i - 1, max(-1, i - 10), -1):
-                            prev_token_str = self.tokenizer.decode([ids[j]])
-                            # Any canonical geometry start token
-                            geometry_starts = {t[2] for t in GEOMETRY_TOKENS.values()}
-                            if prev_token_str in geometry_starts:
-                                inside_coord_section = True
-                                break
-                        break
-
-                if inside_coord_section:
-                    # Inside coordinate section: allow only coordinate tokens and punctuation
-                    allowed = list(coord_token_ids | punctuation_token_ids)
-                    # Also allow closing bracket and geometry end tokens
-                    geometry_ends = {t[3] for t in GEOMETRY_TOKENS.values()}
-                    for token in ("]", *geometry_ends):
-                        token_id = self.tokenizer.convert_tokens_to_ids(token)
-                        if token_id != self.tokenizer.unk_token_id:
-                            allowed.append(token_id)
-                    return allowed
-                else:
-                    # Outside coordinate section: allow all tokens (normal generation)
-                    return list(range(len(self.tokenizer.get_vocab())))
-
-            return prefix_allowed_tokens_fn
+        # No decoding constraints in inference; model generation is unconstrained.
 
         # Generate response with enhanced error handling
         try:
@@ -1063,14 +1104,12 @@ class InferenceEngine:
                 logger.debug(f"   EOS token ID: {endoftext_token_id}")
 
                 # Prepare EOS tokens (do not include geometry end tokens; let the model decide endings)
+                # Use only <|im_end|> for EOS (training parity)
                 eos_tokens = set()
-                for token in [IM_END, END_OF_TEXT]:
-                    token_id = self.tokenizer.convert_tokens_to_ids(token)
-                    if token_id is not None and token_id != -1:
-                        eos_tokens.add(token_id)
-
-                if self.tokenizer.eos_token_id is not None:
-                    eos_tokens.add(self.tokenizer.eos_token_id)
+                im_end_id = self.tokenizer.convert_tokens_to_ids(IM_END)
+                if im_end_id is None or im_end_id == -1:
+                    raise ValueError("Tokenizer missing IM_END token id for generation")
+                eos_tokens.add(int(im_end_id))
 
                 # Log generation mode
                 if self.config.coordinate_tokens_enabled:
@@ -1082,16 +1121,19 @@ class InferenceEngine:
                         "📝 Generation mode: Standard mode (no coordinate token parsing)"
                     )
 
-                output_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=do_sample,
-                    temperature=temperature if do_sample else 1.0,
-                    repetition_penalty=repetition_penalty,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=list(eos_tokens),
-                    use_cache=True,
-                )
+                # No decode-time token bans; allow full vocabulary per user request
+
+                gen_kwargs = {
+                    'max_new_tokens': max_new_tokens,
+                    'do_sample': do_sample,
+                    'temperature': temperature if do_sample else 1.0,
+                    'repetition_penalty': repetition_penalty,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'eos_token_id': list(eos_tokens),
+                    'use_cache': True,
+                }
+                safe_inputs = self._filter_generate_inputs(inputs)
+                output_ids = self.model.generate(**safe_inputs, **gen_kwargs)
 
         except RuntimeError as e:
             error_msg = str(e)
@@ -1154,8 +1196,13 @@ class InferenceEngine:
         try:
             # Decode ONLY the newly generated tokens (assistant content for the student turn)
             # Preserve coordinate and geometry tokens; do NOT skip specials here.
+            # Compute input length robustly for 1D/2D input_ids
+            if "input_ids" in safe_inputs and hasattr(safe_inputs["input_ids"], "dim") and safe_inputs["input_ids"].dim() == 2:
+                input_len = int(safe_inputs["input_ids"].shape[1])
+            else:
+                input_len = int(inputs["input_ids"].shape[-1])
             generated_text = self.tokenizer.decode(
-                output_ids[0][inputs["input_ids"].shape[1] :], skip_special_tokens=False
+                output_ids[0][input_len:], skip_special_tokens=False
             )
         except Exception as e:
             logger.error(f"❌ DECODING ERROR: {e}")
@@ -1163,7 +1210,7 @@ class InferenceEngine:
             raise RuntimeError(f"Failed to decode generated response: {e}")
 
         # Log generation details
-        input_length = inputs["input_ids"].shape[1]
+        input_length = int(inputs["input_ids"].shape[-1])
         logger.info(f"✅ GENERATION COMPLETED:")
         logger.info(f"   Input tokens: {input_length}")
         logger.info(f"   Generated tokens: {len(generated_text)}")
@@ -1180,19 +1227,19 @@ class InferenceEngine:
         assistant_part = generated_text
         if assistant_part.startswith(ASSISTANT_HEADER):
             assistant_part = assistant_part[len(ASSISTANT_HEADER) :]
-        end_markers = [IM_END, END_OF_TEXT]
-        cut_idx = None
-        for marker in end_markers:
-            idx = assistant_part.find(marker)
-            if idx != -1:
-                cut_idx = idx if cut_idx is None else min(cut_idx, idx)
-        if cut_idx is not None:
-            assistant_part = assistant_part[:cut_idx]
+        # Trim only at the first IM_END (training parity)
+        idx = assistant_part.find(IM_END)
+        if idx != -1:
+            assistant_part = assistant_part[:idx]
 
         # Clean up container tokens; keep geometry/coord tokens for parsing
-        for token in [IM_END, END_OF_TEXT, IM_START]:
+        for token in [IM_END, IM_START]:
             assistant_part = assistant_part.replace(token, "")
         cleaned_response = assistant_part.strip()
+
+        # Expose raw/clean text for downstream result dumping
+        self._last_raw_generated_text = generated_text
+        self._last_clean_generated_text = cleaned_response
 
         # Log the cleaned response for debugging
         logger.info(f"🧹 CLEANED RESPONSE FOR PARSING:")
@@ -1225,6 +1272,63 @@ class InferenceEngine:
         logger.info(f"🎯 Parsed {len(objects_list)} objects from generated response")
 
         return objects_list
+
+    def generate_summary_text(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        max_new_tokens: int,
+        temperature: float = 0.000001,
+        do_sample: bool = False,
+        repetition_penalty: float = 1.0,
+    ) -> str:
+        """Generate one-line Chinese summary text (no geometry/special tokens)."""
+        # Reuse generation pipeline but return cleaned string
+        try:
+            with torch.no_grad():
+                # EOS: <|im_end|> only
+                im_end_id = self.tokenizer.convert_tokens_to_ids(IM_END)
+                if im_end_id is None or im_end_id == -1:
+                    raise ValueError("Tokenizer missing IM_END token id for generation")
+                eos_tokens = [int(im_end_id)]
+                # No decode-time token bans in summary mode per user request
+                gen_kwargs = {
+                    'max_new_tokens': max_new_tokens,
+                    'do_sample': do_sample,
+                    'temperature': temperature if do_sample else 1.0,
+                    'repetition_penalty': repetition_penalty,
+                    'pad_token_id': self.tokenizer.pad_token_id,
+                    'eos_token_id': eos_tokens,
+                    'use_cache': True,
+                }
+                safe_inputs = self._filter_generate_inputs(inputs)
+                # Ensure batch dimension for text tensors
+                if 'input_ids' in safe_inputs and hasattr(safe_inputs['input_ids'], 'dim') and safe_inputs['input_ids'].dim() == 1:
+                    safe_inputs['input_ids'] = safe_inputs['input_ids'].unsqueeze(0)
+                if 'attention_mask' in safe_inputs and hasattr(safe_inputs['attention_mask'], 'dim') and safe_inputs['attention_mask'].dim() == 1:
+                    safe_inputs['attention_mask'] = safe_inputs['attention_mask'].unsqueeze(0)
+                # Compute input length from batched input_ids
+                if 'input_ids' in safe_inputs and hasattr(safe_inputs['input_ids'], 'shape'):
+                    input_len = int(safe_inputs['input_ids'].shape[-1])
+                else:
+                    input_len = int(inputs['input_ids'].shape[-1])
+                output_ids = self.model.generate(**safe_inputs, **gen_kwargs)
+                # Normalize output shape to [1, seq]
+                if hasattr(output_ids, 'dim') and output_ids.dim() == 1:
+                    output_ids = output_ids.unsqueeze(0)
+                # Decode only newly generated tokens
+                generated_text = self.tokenizer.decode(
+                    output_ids[0][input_len:], skip_special_tokens=False
+                )
+                # Trim at IM_END and strip container tokens
+                idx = generated_text.find(IM_END)
+                if idx != -1:
+                    generated_text = generated_text[:idx]
+                for token in [IM_END, IM_START, END_OF_TEXT]:
+                    generated_text = generated_text.replace(token, "")
+                return generated_text.strip()
+        except Exception as e:
+            logger.error(f"Summary generation failed: {e}")
+            return ""
 
     # =====================
     # Visualization helpers
@@ -1410,6 +1514,37 @@ class InferenceEngine:
             logger.debug("🔄 Falling back to standard response parsing")
             return self._parse_standard_response(response)
 
+    def _sanitize_description(self, desc: object) -> str:
+        """Remove stray wrapper tokens and retain the innermost description."""
+
+        if not isinstance(desc, str):
+            return ""
+
+        cleaned = desc.strip()
+
+        # If upstream output duplicated object_ref_start, keep the suffix after the last occurrence.
+        for token in ("<|object_ref_start|>", "<|obj_ref_start|>"):
+            if token in cleaned:
+                cleaned = cleaned.split(token)[-1]
+
+        # Truncate anything after a closing wrapper (common when spans bleed together).
+        for token in ("<|object_ref_end|>", "<|obj_ref_end|>"):
+            if token in cleaned:
+                cleaned = cleaned.split(token)[0]
+
+        # Remove any leftover geometry container markers.
+        for token in (
+            "<|quad_start|>",
+            "<|quad_end|>",
+            "<|box_start|>",
+            "<|box_end|>",
+            "<|line_start|>",
+            "<|line_end|>",
+        ):
+            cleaned = cleaned.replace(token, "")
+
+        return cleaned.strip()
+
     def _parse_coordinate_token_response(self, response: str) -> List[Dict[str, Any]]:
         """
         Parse coordinate token response and convert to validation format (strict).
@@ -1468,27 +1603,32 @@ class InferenceEngine:
                     )
                     continue  # Skip this geometry block but continue parsing others
 
+                clean_desc = self._sanitize_description(desc)
+                if not clean_desc:
+                    logger.warning("Discarding geometry block with empty description after sanitization")
+                    continue
+
                 if geom_type == "bbox":
                     if len(coords) != 4:
                         logger.warning(
                             f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"bbox_2d": coords, "desc": desc.strip()})
+                    objects.append({"bbox_2d": coords, "desc": clean_desc})
                 elif geom_type == "quad":
                     if len(coords) != 8:
                         logger.warning(
                             f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"quad": coords, "desc": desc.strip()})
+                    objects.append({"quad": coords, "desc": clean_desc})
                 elif geom_type == "line":
                     if len(coords) < 4 or len(coords) % 2 != 0:
                         logger.warning(
                             f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"line": coords, "desc": desc.strip()})
+                    objects.append({"line": coords, "desc": clean_desc})
 
                 consumed_spans.append(span)
                 found_any = True
@@ -1566,27 +1706,32 @@ class InferenceEngine:
                     )
                     continue  # Skip this geometry block but continue parsing others
 
+                clean_desc = self._sanitize_description(desc)
+                if not clean_desc:
+                    logger.warning("Discarding geometry block with empty description after sanitization")
+                    continue
+
                 if geom_type == "bbox":
                     if len(coords) != 4:
                         logger.warning(
                             f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"bbox_2d": coords, "desc": desc.strip()})
+                    objects.append({"bbox_2d": coords, "desc": clean_desc})
                 elif geom_type == "quad":
                     if len(coords) != 8:
                         logger.warning(
                             f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"quad": coords, "desc": desc.strip()})
+                    objects.append({"quad": coords, "desc": clean_desc})
                 elif geom_type == "line":
                     if len(coords) < 4 or len(coords) % 2 != 0:
                         logger.warning(
                             f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
                         )
                         continue
-                    objects.append({"line": coords, "desc": desc.strip()})
+                    objects.append({"line": coords, "desc": clean_desc})
 
                 consumed_spans.append(span)
                 found_any = True
@@ -1793,6 +1938,26 @@ class InferenceEngine:
 
         self.data_root = Path(data_root)
 
+        # Global teacher ablation mode: select and cache a single teacher
+        global_teacher: Optional[Dict[str, Any]] = None
+        global_teacher_index: Optional[int] = None
+        if getattr(self, 'use_global_teacher', False):
+            teacher_source = self.global_teacher_file or input_file
+            try:
+                global_teacher, global_teacher_index = self._select_global_teacher_sample(teacher_source)
+                logger.info(
+                    f"🧪 Global-teacher ablation enabled: selected index {global_teacher_index} from '{teacher_source}'"
+                )
+                # Optional: summarize teacher for logs
+                try:
+                    num_imgs = len(global_teacher.get('images', [])) if isinstance(global_teacher.get('images'), list) else 0
+                    logger.info(f"   Teacher has {num_imgs} image(s); fields: {list(global_teacher.keys())}")
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to select global teacher sample: {e}")
+                raise
+
         # Count total samples
         with open(input_file, "r", encoding="utf-8") as f:
             total_samples = sum(1 for _ in f)
@@ -1812,6 +1977,18 @@ class InferenceEngine:
 
                 try:
                     sample = json.loads(line.strip())
+                    # Skip the chosen teacher sample in global-teacher mode to avoid self-pairing
+                    if global_teacher is not None and global_teacher_index is not None and i == global_teacher_index:
+                        logger.debug(f"Skipping teacher sample at index {i} during student loop (global-teacher mode)")
+                        continue
+
+                    # Inject teacher into sample if enabled
+                    if global_teacher is not None:
+                        # Ensure immutability of cached teacher
+                        import copy
+                        teacher_copy = copy.deepcopy(global_teacher)
+                        # Attach explicit teacher for exact reproduction path
+                        sample["teacher_samples"] = [teacher_copy]
 
                     # Process single sample
                     result = self._process_single_sample(
@@ -1873,19 +2050,41 @@ class InferenceEngine:
                     "Sample missing required 'images' field or empty images list"
                 )
 
-            if "objects" not in sample or not isinstance(sample["objects"], list):
-                raise ValueError(
-                    "Sample missing required 'objects' field or objects is not a list"
-                )
+            if self.generation_variant == "dense":
+                if "objects" not in sample or not isinstance(sample["objects"], list):
+                    raise ValueError(
+                        "Sample missing required 'objects' field or objects is not a list"
+                    )
 
-            # Use the training-matched inference pipeline
+            # Use the generation pipeline
             inputs = self.prepare_inference_inputs(
                 sample=sample,
                 seed=42,  # Use fixed seed for reproducible results
                 data_root=self.data_root,
             )
 
-            # Generate structured prediction objects
+            if self.generation_variant == "summary":
+                summary_text = self.generate_summary_text(
+                    inputs=inputs,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    repetition_penalty=repetition_penalty,
+                )
+                result = {
+                    "sample_id": sample.get("id", "unknown"),
+                    "image": sample["images"][0]
+                    if isinstance(sample.get("images"), list) and len(sample["images"]) > 0
+                    else None,
+                    "images": sample["images"],
+                    "summary_text": summary_text,
+                    "ground_truth": sample.get("summary", None),
+                    "width": sample.get("width"),
+                    "height": sample.get("height"),
+                }
+                return result
+
+            # Dense objects path
             prediction_objects = self.generate_response(
                 inputs=inputs,
                 max_new_tokens=max_new_tokens,
@@ -1894,7 +2093,6 @@ class InferenceEngine:
                 repetition_penalty=repetition_penalty,
             )
 
-            # Create result in unified visualization-friendly format
             result = {
                 "sample_id": sample.get("id", "unknown"),
                 "image": sample["images"][0]
@@ -1902,6 +2100,7 @@ class InferenceEngine:
                 else None,
                 "images": sample["images"],
                 "prediction": prediction_objects,
+                "prediction_text_raw": getattr(self, "_last_raw_generated_text", None),
                 "ground_truth": sample.get("objects", []),
                 "width": sample.get("width"),
                 "height": sample.get("height"),
@@ -1911,6 +2110,16 @@ class InferenceEngine:
 
         except Exception as e:
             logger.error(f"Error in _process_single_sample: {e}")
+            # In summary mode, return summary-shaped error to avoid downstream parsing issues
+            if getattr(self, 'generation_variant', 'dense') == 'summary':
+                return {
+                    "sample_id": sample.get("id", "unknown"),
+                    "images": sample.get("images", []),
+                    "summary_text": f"ERROR: {str(e)}",
+                    "ground_truth": sample.get("summary", None),
+                    "width": sample.get("width"),
+                    "height": sample.get("height"),
+                }
             return {
                 "sample_id": sample.get("id", "unknown"),
                 "images": sample.get("images", []),
@@ -1948,38 +2157,33 @@ class InferenceEngine:
 
             image = Image.open(image_path).convert("RGB")
 
-            # Prepare conversation for model
-            messages = []
-            for conv in conversations:
-                if conv.get("from") == "human":
-                    messages.append({"role": "user", "content": conv.get("value", "")})
-                elif conv.get("from") == "gpt":
-                    messages.append(
-                        {"role": "assistant", "content": conv.get("value", "")}
-                    )
-
-            # Use the last user message for generation
-            if not messages or messages[-1]["role"] != "user":
-                raise ValueError("No user message found for generation")
-
-            user_content = messages[-1]["content"]
-
-            # Apply chat template
-            text = self.processor.apply_chat_template(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": user_content},
-                        ],
-                    }
-                ],
-                tokenize=False,
-                add_generation_prompt=True,
+            # Use training-consistent prompts: system from get_system_prompt, user from CONSTANTS
+            user_prompt = CONSTANTS.get("BASE_USER_PROMPT", "")
+            sys_prompt = self.system_prompt or get_system_prompt(
+                coordinate_tokens_enabled=bool(getattr(self.config, "coordinate_tokens_enabled", False))
             )
 
-            # Process inputs
+            # Build messages exactly like ConversationProcessor.create_inference_conversation
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image"},
+                    ],
+                },
+            ]
+
+            # Apply chat template with images param for proper <|image_pad|> handling
+            text = self.processor.apply_chat_template(  # type: ignore[attr-defined]
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                images=[image],
+            )
+
+            # Process inputs via the unified HF processor
             inputs = self.processor(
                 text=[text],
                 images=[image],
@@ -2068,6 +2272,12 @@ class InferenceEngine:
             f"   Response preview: '{text[:200]}{'...' if len(text) > 200 else ''}'"
         )
 
+        # Normalize trivial whitespace/newlines to make regex parsing robust
+        if '\n' in text or '\r' in text:
+            try:
+                text = text.replace('\r', '').replace('\n', '')
+            except Exception:
+                pass
         # Coordinate-token strict path (only when enabled)
         if coordinate_tokens_enabled:
             logger.info("🎯 Attempting coordinate token parsing...")
@@ -2200,6 +2410,21 @@ class InferenceEngine:
         logger.warning(f"   Original text: '{text}'")
         return []
 
+    def _filter_generate_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep only keys accepted by generate/forward and move tensors to device.
+
+        Allowed keys for Qwen2.5-VL generate: input_ids, attention_mask, pixel_values, image_grid_thw
+        """
+        allowed_keys = {"input_ids", "attention_mask", "pixel_values", "image_grid_thw"}
+        filtered: Dict[str, Any] = {}
+        for key, value in inputs.items():
+            if key in allowed_keys:
+                if torch.is_tensor(value):
+                    filtered[key] = value.to(self.model.device)
+                else:
+                    filtered[key] = value
+        return filtered
+
 
 def main():
     """Main function for command-line interface."""
@@ -2285,6 +2510,32 @@ def main():
         "--num_teachers", type=int, default=0, help="Number of teacher examples to use"
     )
 
+    # Global teacher ablation (single teacher used for all students)
+    parser.add_argument(
+        "--use_global_teacher",
+        action="store_true",
+        default=False,
+        help="Enable global-teacher ablation: pick one sample as teacher and inject into all conversations",
+    )
+    parser.add_argument(
+        "--global_teacher_seed",
+        type=int,
+        default=None,
+        help="Random seed for selecting the global teacher sample (ignored if index is provided)",
+    )
+    parser.add_argument(
+        "--global_teacher_index",
+        type=int,
+        default=None,
+        help="Zero-based index of teacher sample to use from the teacher JSONL (overrides seed)",
+    )
+    parser.add_argument(
+        "--global_teacher_file",
+        type=str,
+        default=None,
+        help="Optional JSONL file to choose the global teacher from (defaults to input_file)",
+    )
+
     # Model optimization
     parser.add_argument(
         "--force_eager_attention",
@@ -2299,6 +2550,14 @@ def main():
         default="info",
         choices=["debug", "info", "warning", "error"],
         help="Logging level",
+    )
+
+    parser.add_argument(
+        "--generation_variant",
+        type=str,
+        choices=["dense", "summary"],
+        default="dense",
+        help="Generation variant: 'dense' for objects + geometry, 'summary' for one-line Chinese summary",
     )
 
     args = parser.parse_args()
@@ -2409,6 +2668,11 @@ def main():
         num_teachers=args.num_teachers,
         force_eager_attention=args.force_eager_attention,
         data_root=args.data_root,
+        generation_variant=args.generation_variant,
+        use_global_teacher=args.use_global_teacher,
+        global_teacher_seed=args.global_teacher_seed,
+        global_teacher_index=args.global_teacher_index,
+        global_teacher_file=args.global_teacher_file,
     )
 
     # Run inference

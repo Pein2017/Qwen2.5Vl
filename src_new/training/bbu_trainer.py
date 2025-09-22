@@ -22,6 +22,7 @@ import torch.nn as nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.training_args import TrainingArguments
 from transformers.trainer import Trainer as HFTrainer
+from transformers.trainer_callback import TrainerCallback
 
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ except ImportError:
 
 # Configure rank-aware logger
 logger = get_rank_aware_logger(__name__)
+
 
 
 class BBUTrainer(HFTrainer):
@@ -100,6 +102,8 @@ class BBUTrainer(HFTrainer):
         # Store references
         self.detection_model = model
         self.tokenizer_ref = processing_class
+
+        # Removed per-group grad-norm callback to reduce overhead
 
         # Store processor for saving (will be set during training setup)
         self.processor = None
@@ -352,33 +356,7 @@ class BBUTrainer(HFTrainer):
                 trainer_state=self.state,  # Pass trainer state for remaining_hrs calculation
             )
 
-            # Add per-group gradient norms (diagnostics) when optimizer exists
-            try:
-                if hasattr(self, "optimizer") and self.optimizer is not None:
-                    per_group = {}
-                    for group in self.optimizer.param_groups:
-                        try:
-                            name = group.get("name", "group")
-                        except Exception:
-                            name = "group"
-                        total_sq = 0.0
-                        for p in group.get("params", []):
-                            try:
-                                if p is None or p.grad is None:
-                                    continue
-                                g = p.grad.detach()
-                                # Robust to bf16/fp16 grads
-                                param_norm = g.float().norm(2)
-                                total_sq += float(param_norm.item()) ** 2
-                            except Exception:
-                                continue
-                        per_group[f"grad_norm_{name}"] = (total_sq ** 0.5) if total_sq > 0.0 else 0.0
-                    # Merge into logs under diagnostics
-                    if isinstance(logged_metrics, dict):
-                        logged_metrics.update(per_group)
-            except Exception:
-                # Never fail logging due to diagnostics computation
-                pass
+            # Removed per-group grad-norm diagnostics (grad_norm_*) to reduce overhead
 
             # Process metrics with learning rate information (using correct LR mapping)
             final_logs = self.training_state_manager.log_metrics_batch(

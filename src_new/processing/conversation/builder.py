@@ -96,10 +96,13 @@ class ConversationBuilder:
     def create_simple_conversation_for_generation(
         self, sample: Dict[str, Any], images: List[Image.Image]
     ) -> Dict[str, torch.Tensor]:
-        # Build user-only + generation prompt
-        return self._impl.create_inference_conversation(
-            CONSTANTS["BASE_USER_PROMPT"], images
-        )
+        # Build image-only user + generation prompt (training parity)
+        return self._impl.create_simple_conversation_for_generation(images)
+
+    def create_summary_conversation_for_generation(
+        self, images: List[Image.Image]
+    ) -> Dict[str, torch.Tensor]:
+        return self._impl.create_summary_conversation_for_generation(images)
 
     # New variant delegates
     # Unified variant entry (new)

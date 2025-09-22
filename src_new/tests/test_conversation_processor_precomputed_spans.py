@@ -54,7 +54,11 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         conv = ConversationProcessor(processor=self.processor, max_coord_value=4096, coordinate_tokens_enabled=False)
         # Fake a 1x1 white image for simplicity
         img = Image.new("RGB", (64, 64), color=(255, 255, 255))
-        out = conv.create_conversation(sample=_toy_sample(), images=[img], variant=variant_key)
+        sample = _toy_sample()
+        if str(variant_key).strip().lower() == "summary":
+            sample["summary"] = "标签/可以识别×1"
+        images = [] if str(variant_key).strip().lower() == "wrapper_reconstruction" else [img]
+        out = conv.create_conversation(sample=sample, images=images, variant=variant_key)
         # Spans must be present and non-empty for the student turn
         t_spans = out.get("teacher_assistant_spans") or []
         s_spans = out.get("student_assistant_spans") or []
@@ -62,19 +66,19 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         self.assertIsInstance(s_spans, list)
         self.assertGreaterEqual(len(s_spans), 1)
         # label masking using provided spans
-        labels = out["input_ids"].clone()
+        labels = out["input_ids"][0].clone()
         labels.fill_(-100)
         for st, ed in s_spans:
             self.assertTrue(0 <= int(st) < int(ed) <= int(labels.shape[0]))
-            labels[int(st):int(ed)] = out["input_ids"][int(st):int(ed)]
+            labels[int(st):int(ed)] = out["input_ids"][0][int(st):int(ed)]
         # image_pad tokens masked
         img_id = self.tok.convert_tokens_to_ids(IMAGE_PAD)
         if isinstance(img_id, int) and img_id >= 0:
-            labels[out["input_ids"] == img_id] = -100
+            labels[out["input_ids"][0] == img_id] = -100
         self.assertGreater(int((labels != -100).sum().item()), 0)
 
     def test_variants(self):
-        for variant in ("dense_caption", "coords_to_desc", "desc_to_coords", "summary"):
+        for variant in ("dense_caption", "coords_to_desc", "desc_to_coords", "summary", "wrapper_reconstruction"):
             with self.subTest(variant=variant):
                 self._run_variant(variant)
 

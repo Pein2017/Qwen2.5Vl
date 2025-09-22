@@ -20,6 +20,7 @@ def compose_reward(
     tf_p_fail: float,
     stage_b_text: Optional[str] = None,
     mission: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
 ) -> float:
     if len(reward_names) != len(reward_weights):
         raise ValueError(
@@ -40,6 +41,8 @@ def compose_reward(
         "stage_b_text": (str(stage_b_text) if stage_b_text is not None else None),
         # Mission for mission-aware rewards (coverage/taxonomy etc.)
         "mission": (str(mission) if mission is not None else None),
+        # Meta for auxiliary rewards (e.g., overlong penalty)
+        "meta": meta if isinstance(meta, dict) else {},
     }
     composed = 0.0
     denom = 0.0

@@ -116,6 +116,8 @@ class ConditionalAssigner(BaseCreditAssigner):
         best_single_delta_val: float = 0.0
 
         capped_images = list(images)[: max(0, max_images_tf)]
+        deltas: List[Tuple[float, int]] = []
+        # First pass: measure best margin delta per image
         for i, img in enumerate(capped_images):
             # Build Stage‑A encoding
             messages = conv_builder.build_stage_a_messages(mission)
@@ -170,7 +172,8 @@ class ConditionalAssigner(BaseCreditAssigner):
                 if group_reward_mode == "margin_only":
                     rn, rw = ["group_margin"], [1.0]
                 elif group_reward_mode == "label_match":
-                    rn, rw = ["label_match"], [1.0]
+                    # Deprecated; fallback to margin_only
+                    rn, rw = ["group_margin"], [1.0]
 
                 r_i = compose_reward(
                     gt_label=gt_label,
@@ -182,6 +185,7 @@ class ConditionalAssigner(BaseCreditAssigner):
                     reward_weights=rw,
                     tf_p_pass=prob_pass,
                     tf_p_fail=prob_fail,
+                    mission=mission,
                 )
                 cand_token_ids.append(toks)
                 rewards_i.append(float(r_i))
@@ -206,12 +210,124 @@ class ConditionalAssigner(BaseCreditAssigner):
                 try:
                     best_margin = max(margins_i) if len(margins_i) > 0 else 0.0
                     delta = float(best_margin - baseline_margin)
+                    deltas.append((delta, i))
                     if delta > best_single_delta_val:
                         best_single_delta_val = delta
                 except Exception as e:
                     raise RuntimeError(f"Failed computing best_single_delta: {e}")
 
-            # Backprop per candidate
+            # Mark per-image storage for later gating; defer backprop until top-M selection
+            if i == len(capped_images) - 1:
+                pass  # placeholder; next loop will perform backprop with selection
+
+        # Select top-M images for backprop
+        top_m = max(0, int(tf_cfg.get("top_m", 0)))
+        selected_idx = set(range(len(capped_images))) if top_m == 0 else set([j for _, j in sorted(deltas, key=lambda x: x[0], reverse=True)[:top_m]])
+
+        # Second pass: regenerate and backprop only for selected images
+        for i, img in enumerate(capped_images):
+            if i not in selected_idx:
+                continue
+            messages = conv_builder.build_stage_a_messages(mission)
+            text_a = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            img_proc = sft_style_preprocess_image(img)
+            GroupQCConversationBuilder.validate_typed_image_count(messages, 1)
+            enc_a = processor(text=[text_a], images=[img_proc], padding=True, return_tensors="pt")
+            enc_a = to_device_and_cast(enc_a, device)
+
+            cand_token_ids = []
+            margins_i = []
+            rewards_i = []
+
+            for _ in range(max(1, K_A)):
+                with torch.no_grad():
+                    out = policy.generate(
+                        **enc_a,
+                        generation_config=gen_cfg_a,
+                        logits_processor=logits_processors,
+                        stopping_criteria=stopping,
+                    )
+                new_ids = out[:, enc_a["input_ids"].size(1) :]
+                toks = new_ids[0].tolist()
+                raw = decode_to_text(processor, toks).strip()
+
+                # Build Stage‑B variant
+                context_variant = list(context_lines); context_variant[i] = raw
+                if use_mission_checklist:
+                    msgs_var = conv_builder.build_stage_b_messages(summary_lines=context_variant, checklist_lines=checklist)
+                else:
+                    msgs_var = conv_builder.build_stage_b_messages_minimal(summary_lines=context_variant)
+                text_b_var = processor.apply_chat_template(conversation=msgs_var, tokenize=False, add_generation_prompt=True)
+                enc_b_var = processor(text=[text_b_var], images=None, return_tensors="pt", padding=True)
+                enc_b_var = to_device_and_cast(enc_b_var, device)
+
+                try:
+                    prob_pass, prob_fail = tf_decision_probs(train_model, enc_b_var, processor, length_norm=length_norm)
+                except Exception:
+                    prob_pass, prob_fail = 0.0, 0.0
+
+                rn, rw = reward_names, reward_weights
+                if group_reward_mode == "margin_only":
+                    rn, rw = ["group_margin"], [1.0]
+                elif group_reward_mode == "label_match":
+                    # Deprecated; fallback to margin_only
+                    rn, rw = ["group_margin"], [1.0]
+
+                r_i = compose_reward(
+                    gt_label=gt_label,
+                    pred_label=None,
+                    summary_lines=context_variant,
+                    reason=None,
+                    checklist_lines=checklist,
+                    reward_names=rn,
+                    reward_weights=rw,
+                    tf_p_pass=prob_pass,
+                    tf_p_fail=prob_fail,
+                    mission=mission,
+                )
+                cand_token_ids.append(toks)
+                rewards_i.append(float(r_i))
+                try:
+                    m = decision_margin(enc_b_var, processor, train_model, length_norm=length_norm)
+                except Exception:
+                    m = 0.0
+                margins_i.append(float(m))
+
+            with torch.no_grad():
+                rewards_t = torch.tensor(rewards_i, dtype=torch.float32, device=dev)
+                mean = rewards_t.mean(); std = rewards_t.std(unbiased=False)
+                if float(std.item()) < 1e-6:
+                    adv_i = torch.zeros_like(rewards_t)
+                else:
+                    adv_i = (rewards_t - mean) / (std + 1e-6)
+                adv_i = torch.clamp(adv_i, min=-float(tf_cfg.get("adv_clip", 1.5)), max=float(tf_cfg.get("adv_clip", 1.5)))
+
+            for k in range(len(cand_token_ids)):
+                logp_a_k, cur_logits_a_k, prompt_len_a_k = tf_sum_logprob_and_logits_over_response(
+                    train_model, enc_a, cand_token_ids[k], length_norm
+                )
+                if use_uncertainty_gate:
+                    try:
+                        B, Lm1, _V = cur_logits_a_k.size()
+                        mask = torch.zeros((B, Lm1), dtype=torch.bool, device=cur_logits_a_k.device)
+                        mask[:, int(prompt_len_a_k) - 1 :] = True
+                        ent = sequence_entropy_from_logits(cur_logits_a_k, mask)
+                        entropy_vals.append(float(ent))
+                        if not (ent > entropy_threshold and margins_i[k] > baseline_margin):
+                            decay = float(tf_cfg.get("uncertainty_decay_factor", 0.0) or 0.0)
+                            if decay <= 0.0:
+                                adv_i[k] = torch.tensor(0.0, device=adv_i.device, dtype=adv_i.dtype)
+                            else:
+                                adv_i[k] = decay * adv_i[k]
+                    except Exception:
+                        pass
+                term_a = (-(adv_i[k].detach()) * logp_a_k)
+                if use_ref_kl and (ref_model is not None) and (lambda_kl_stage_a > 0.0):
+                    kl_a_k = kl_to_ref_with_cur_logits(ref_model, enc_a, cand_token_ids[k], cur_logits_a_k, int(prompt_len_a_k))
+                    term_a = term_a + float(lambda_kl_stage_a) * kl_a_k
+                (term_a * accum_scale).backward()
+                loss_a = loss_a + term_a.detach()
+
             for k in range(len(cand_token_ids)):
                 logp_a_k, cur_logits_a_k, prompt_len_a_k = tf_sum_logprob_and_logits_over_response(
                     train_model, enc_a, cand_token_ids[k], length_norm
@@ -225,9 +341,13 @@ class ConditionalAssigner(BaseCreditAssigner):
                         mask[:, int(prompt_len_a_k) - 1 :] = True
                         ent = sequence_entropy_from_logits(cur_logits_a_k, mask)
                         entropy_vals.append(float(ent))
-                        # If candidate not clearly cautious/informative, decay advantage
+                        # If candidate not clearly cautious/informative, decay or zero advantage
                         if not (ent > entropy_threshold and margins_i[k] > baseline_margin):
-                            adv_i[k] = 0.5 * adv_i[k]
+                            decay = float(tf_cfg.get("uncertainty_decay_factor", 0.0) or 0.0)
+                            if decay <= 0.0:
+                                adv_i[k] = torch.tensor(0.0, device=adv_i.device, dtype=adv_i.dtype)
+                            else:
+                                adv_i[k] = decay * adv_i[k]
                     except Exception:
                         pass
                 term_a = (-(adv_i[k].detach()) * logp_a_k)

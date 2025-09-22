@@ -128,10 +128,7 @@ class CoordinateTokenConverter:
                     raise ValueError(
                         f"Object {i} coordinate {j} value {int_coord} out of valid range [0, {self.max_coord_value}]"
                     )
-                if self._use_coord_tokens():
-                    coord_texts.append(f"<|coord_{int_coord}|>")
-                else:
-                    coord_texts.append(str(int_coord))
+                coord_texts.append(str(int_coord))
             coord_string = ", ".join(coord_texts)
             out_lines.append(f"{geom_start}[{coord_string}]{geom_end}")
         return "\n".join(out_lines)
@@ -184,10 +181,7 @@ class CoordinateTokenConverter:
                 raise ValueError(
                     f"Object {obj_index} coordinate {i} value {int_coord} out of valid range [0, {self.max_coord_value}]"
                 )
-            if self._use_coord_tokens():
-                coord_texts.append(f"<|coord_{int_coord}|>")
-            else:
-                coord_texts.append(str(int_coord))
+            coord_texts.append(str(int_coord))
 
         coord_string = ", ".join(coord_texts)
         # Use empty string if description is missing (graceful handling)

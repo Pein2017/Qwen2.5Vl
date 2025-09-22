@@ -10,7 +10,7 @@ has been moved to official HuggingFace components.
 MIGRATION NOTE: All conversation creation logic is now handled by official HuggingFace processor.apply_chat_template().
 """
 
-BASE_USER_PROMPT = "请按照上述规则，根据图像检测设备和部件并按要求输出:"
+BASE_USER_PROMPT = "请按照上述规则，根据图像检测设备和部件并按要求输出.需要输入对象的描述和其坐标"
 
 # Variant prompts for pipeline builders
 # Dense caption uses image-only user turns by default; this text is retained for completeness.
@@ -22,6 +22,14 @@ DESC_TO_COORD_USER_PROMPT = "请返回以下描述的物体的坐标（保持对
 COORD_TO_DESC_USER_LINE_PREFIX = "请描述"
 COORD_TO_DESC_USER_LINE_SUFFIX = "中的物体信息"
 DESC_TO_COORD_USER_LINE_PREFIX = "请描述"
+
+# Wrapper reconstruction (text-only) prompts
+WRAPPER_RECON_USER_PROMPT = (
+    "请忽略图像，仅根据下方提供的原始对象要素，将每条对象重新格式化为标准的包裹标记行。"
+    "输出时务必逐行给出 `<|object_ref_start|>描述<|object_ref_end|>` 与对应的几何 wrapper，"
+    "不得添加额外说明或遗漏任何对象。"
+)
+WRAPPER_RECON_OBJECT_PREFIX = "对象"
 
 # New: Summary variant prompts (image -> one-line Chinese summary)
 SUMMARY_SYSTEM_PROMPT = (
@@ -97,7 +105,7 @@ SYSTEM_PROMPT_BASE = """你是通信机房设备检测AI助手。任务：识别
   - <|box_start|> … <|box_end|>
   - <|quad_start|> … <|quad_end|>
   - <|line_start|> … <|line_end|>
-- 使用原始数字坐标（整数）；或在"坐标令牌模式"下使用 <|coord_N|> 令牌（由配置 coordinate_tokens_enabled 控制）。
+- 使用原始数字坐标（整数）。
 - 方括号必须为英文[ ]，元素之间使用英文逗号+空格（", ");不得出现空元素、额外逗号或换行。
 - 坐标数量与顺序要求（严格）：
   - <|box_start|>…<|box_end|>：4 个坐标 [x1, y1, x2, y2]，且 x1 < x2, y1 < y2；
@@ -152,24 +160,7 @@ def get_system_prompt(
         mode = "coord_tokens" if coordinate_tokens_enabled else "special_tokens"
 
     # Coordinate-token mode: wording tweaks + convert numeric examples in wrapper-based lines
-    if mode == "coord_tokens":
-        text = text.replace("几何类型与坐标（严格）：", "几何类型与坐标令牌（严格）：")
-        text = text.replace("个坐标，", "个坐标令牌，")
-        text = text.replace("个坐标，按", "个坐标令牌，按")
-
-        new_lines: list[str] = []
-        for line in text.splitlines():
-            if ("例如 " in line) and (
-                "<|box_start|>" in line or "<|quad_start|>" in line or "<|line_start|>" in line
-            ):
-                line = re.sub(r"(?<!\|)(?<![A-Za-z_])\b\d+\b(?!\|)", _to_coord_token, line)
-            new_lines.append(line)
-        text = "\n".join(new_lines)
-
-
-    # Fail-fast sanity: in coord-token mode, examples must contain coord tokens after conversion
-    if mode == "coord_tokens" and "<|coord_" not in text:
-        raise RuntimeError("Token-mode system prompt build failed: no coord tokens found")
+    # Coord-token mode deprecated; no transformation performed.
 
     return text
 
@@ -192,5 +183,8 @@ CONSTANTS = {
     # New summary prompts
     "SUMMARY_SYSTEM_PROMPT": SUMMARY_SYSTEM_PROMPT,
     "SUMMARY_USER_PROMPT": SUMMARY_USER_PROMPT,
+    # Wrapper reconstruction prompts
+    "WRAPPER_RECON_USER_PROMPT": WRAPPER_RECON_USER_PROMPT,
+    "WRAPPER_RECON_OBJECT_PREFIX": WRAPPER_RECON_OBJECT_PREFIX,
     # The system prompt is built via get_system_prompt(); constants retained for user prompts only.
 }

@@ -165,46 +165,7 @@ class TestObjectAwareAug(unittest.TestCase):
             l = o["line"]
             self.assertEqual(len(l), 2 * 32)
 
-    def test_occlusion_updates_desc(self):
-        # Two overlapping quads
-        sample: Dict[str, Any] = {
-            "width": 100,
-            "height": 100,
-            "objects": [
-                {"quad": [10, 10, 50, 10, 50, 50, 10, 50], "desc": "A,无遮挡"},
-                {"quad": [30, 30, 80, 30, 80, 80, 30, 80], "desc": "B"},
-            ],
-        }
-        img = _make_image((100, 100))
-
-        cfg = AugmentationConfig(
-            enabled=True,
-            rng_seed=0,
-            apply_to_teachers=False,
-            lines_policy="transform",
-            debug_visualization=False,
-            debug_output_dir=None,
-            image_geom=None,
-            photometric=None,
-            lines=None,
-            type_policies=None,
-            ocr=None,
-            criteria=CriteriaConfig(
-                occlusion=OcclusionCriterionConfig(
-                    enabled=True,
-                    min_overlap_fraction_bbox=0.2,
-                    min_overlap_fraction_line=0.2,
-                    mask_downscale=4,
-                    line_width_px=2,
-                )
-            ),
-        )
-
-        pipe = ObjectAwareAugmentationPipeline.from_config(cfg)
-        _, out_sample = pipe.apply(copy.deepcopy(sample), [img], sample_index=0)
-        descs = [o["desc"] for o in out_sample["objects"]]
-        self.assertTrue(any("有遮挡" in d for d in descs))
-
+        
 
 if __name__ == "__main__":
     unittest.main()

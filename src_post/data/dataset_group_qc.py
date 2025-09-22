@@ -128,3 +128,16 @@ class RLGroupQCDataset(Dataset):
             "meta": sample.meta,
             "num_images": len(sample.image_paths),
         }
+
+    def get_label_indices(self) -> Dict[str, List[int]]:
+        """Return mapping from normalized label ('pass'|'fail') to list of dataset indices.
+
+        This method does not load any images and relies on labels gathered at init time.
+        """
+        mapping: Dict[str, List[int]] = {"pass": [], "fail": []}
+        for i, s in enumerate(self._samples):
+            lab = str(s.label).strip().lower()
+            if lab not in mapping:
+                mapping[lab] = []
+            mapping[lab].append(i)
+        return mapping

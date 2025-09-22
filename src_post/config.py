@@ -24,6 +24,8 @@ class RLRunnerConfig:
     # Dataset (one of the two must be provided)
     train_data_dir: Optional[str]
     eval_data_dir: Optional[str]
+    # Sampling balance
+    balance_pass_fail: bool
     # Optional outputs
     results_jsonl: Optional[str]
     metrics_jsonl: Optional[str]
@@ -37,6 +39,7 @@ class RLRunnerConfig:
     # Logging
     tb_log_dir: Optional[str]
     run_name: Optional[str]
+    log_step: int
     # Generation
     temperature: float
     top_p: float  # recommended Stage-A baseline: temperature=0.01, top_p=0.5
@@ -91,7 +94,7 @@ class RLRunnerConfig:
     freeze_stage_b_steps: int
     use_mission_checklist: bool
     # New: group reward strategy
-    group_reward_mode: str  # 'margin_only' | 'label_match' | 'combined'
+    group_reward_mode: str  # 'margin_only' | 'combined'
     # New: pairwise fallback
     pairwise_credit_enabled: bool
     pairwise_pairs_per_group: int
@@ -104,6 +107,35 @@ class RLRunnerConfig:
     decision_ce_ema_beta: float
     # New: toggles
     train_aligner: bool
+    
+    # ---- Enhancements (optional toggles; safe defaults) ----
+    # Stage-B: clipped GRPO
+    enable_clipped_grpo: bool
+    epsilon_low: Optional[float]
+    epsilon_high: Optional[float]
+    loss_type_stage_b: Optional[str]  # {'grpo','bnpo','dr_grpo'} when enabled
+    # Stage-B: entropy mask
+    enable_entropy_mask_stage_b: bool
+    entropy_top_quantile_stage_b: Optional[float]
+    entropy_min_threshold_stage_b: Optional[float]
+    # Sampling stability
+    max_resample_times: int
+    # Stage-A focusing & gating
+    stage_a_top_m: int
+    uncertainty_decay_factor: float
+    pairwise_select: str  # {'heuristic','entropy','delta'}
+    # Logging & shaping
+    log_all_candidates: bool
+    soft_overlong_penalty_enabled: bool
+    soft_overlong_penalty_weight: Optional[float]
+    # Stage-A token bias (optional)
+    stage_a_bias_fail_enabled: bool
+    stage_a_bias_fail_value: float
+    stage_a_bias_pass_enabled: bool
+    stage_a_bias_pass_value: float
+    # Checkpoint saving (interval + retention)
+    save_step: int
+    save_limit: int
 
 
 def _read_config_file(path: str) -> Dict[str, Any]:
@@ -198,6 +230,7 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         "checkpoint", "processor", "output_dir",
         # Runtime
         "device", "seed",
+        # Balance toggle (optional default false allowed)
         # Generation
         "temperature", "top_p", "max_new_tokens_stage_a", "max_new_tokens_stage_b",
         "mask_geometry_tokens", "mask_coordinate_tokens", "sanitize_stage_a",
@@ -289,7 +322,7 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
 
     # New enums (explicit)
     group_reward_mode = str(_req_str(cfg, "group_reward_mode")).strip().lower()
-    if group_reward_mode not in {"margin_only", "label_match", "combined"}:
+    if group_reward_mode not in {"margin_only", "combined"}:
         raise ValueError(
             f"group_reward_mode must be one of ['margin_only','label_match','combined']; got '{group_reward_mode}'."
         )
@@ -304,10 +337,10 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     mission = str(cfg.get("mission")) if cfg.get("mission") else None
     if mission is not None:
         try:
-            from src_post.prompting.conversation import MISSION_HINTS
-            if mission not in MISSION_HINTS:
-                valid = ", ".join(MISSION_HINTS.keys())
-                raise ValueError(f"Unknown mission '{mission}'. Valid missions: [{valid}].")
+            from src_post.prompting.schema import get_mission_checks
+            checks = get_mission_checks(mission)
+            if not checks:
+                raise ValueError(f"Unknown or unsupported mission '{mission}' per group_annotation/table.json")
         except Exception as e:
             # Re-raise with actionable hint
             raise ValueError(f"Mission validation failed: {e}")
@@ -375,6 +408,28 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     output_dir = _req_str(cfg, "output_dir")
     results_jsonl = cfg.get("results_jsonl") or str(Path(output_dir) / "results.jsonl")
     metrics_jsonl = cfg.get("metrics_jsonl") or str(Path(output_dir) / "metrics.jsonl")
+    balance_pass_fail = bool(cfg.get("balance_pass_fail", False))
+    # Optional logging knobs (safe defaults)
+    try:
+        log_step = int(cfg.get("log_step", 1) or 1)
+    except Exception:
+        log_step = 1
+    if log_step < 1:
+        log_step = 1
+    # Optional Stage-A token bias toggles
+    stage_a_bias_fail_enabled = bool(cfg.get("stage_a_bias_fail_enabled", False))
+    stage_a_bias_fail_value = float(cfg.get("stage_a_bias_fail_value", 0.0) or 0.0)
+    stage_a_bias_pass_enabled = bool(cfg.get("stage_a_bias_pass_enabled", False))
+    stage_a_bias_pass_value = float(cfg.get("stage_a_bias_pass_value", 0.0) or 0.0)
+    # Optional checkpoint saving interval and retention
+    save_step = int(cfg.get("save_step", 0) or 0)
+    save_limit = int(cfg.get("save_limit", 3) or 0)
+    # Logging cadence (safe default)
+    try:
+        log_step = int(cfg.get("log_step", 10))
+    except Exception:
+        log_step = 10
+
 
     # Limit groups normalization: (None|0|-1) => -1
     limit_groups_raw = cfg.get("limit_groups", -1)
@@ -402,12 +457,71 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     max_grad_norm = _req_float(cfg, "max_grad_norm")
     drop_last = _req_bool(cfg, "drop_last")
 
+    # ---- Enhancements validation (optional) ----
+    enable_clipped_grpo = bool(cfg.get("enable_clipped_grpo", False))
+    epsilon_low = _as_float_opt(cfg.get("epsilon_low"))
+    epsilon_high = _as_float_opt(cfg.get("epsilon_high"))
+    loss_type_stage_b = str(cfg.get("loss_type_stage_b")) if cfg.get("loss_type_stage_b") is not None else None
+    if enable_clipped_grpo:
+        if epsilon_low is None or loss_type_stage_b is None:
+            raise ValueError(
+                "When enable_clipped_grpo=true, you must set 'epsilon_low' in (0,1] and 'loss_type_stage_b' in {grpo,bnpo,dr_grpo}."
+            )
+        if not (0.0 < float(epsilon_low) <= 1.0):
+            raise ValueError(f"Invalid epsilon_low={epsilon_low}; expected (0,1].")
+        valid_loss = {"grpo", "bnpo", "dr_grpo"}
+        if loss_type_stage_b not in valid_loss:
+            raise ValueError(f"Invalid loss_type_stage_b='{loss_type_stage_b}'; expected one of {sorted(list(valid_loss))}.")
+        if epsilon_high is not None and float(epsilon_high) < 0.0:
+            raise ValueError(f"Invalid epsilon_high={epsilon_high}; expected >=0.")
+
+    enable_entropy_mask_stage_b = bool(cfg.get("enable_entropy_mask_stage_b", False))
+    entropy_top_quantile_stage_b = _as_float_opt(cfg.get("entropy_top_quantile_stage_b"))
+    entropy_min_threshold_stage_b = _as_float_opt(cfg.get("entropy_min_threshold_stage_b"))
+    if enable_entropy_mask_stage_b:
+        has_q = entropy_top_quantile_stage_b is not None
+        has_t = entropy_min_threshold_stage_b is not None
+        if has_q == has_t:
+            raise ValueError(
+                "When enable_entropy_mask_stage_b=true, set exactly one of 'entropy_top_quantile_stage_b' in (0,1] or 'entropy_min_threshold_stage_b' > 0."
+            )
+        if has_q and not (0.0 < float(entropy_top_quantile_stage_b) <= 1.0):
+            raise ValueError(f"entropy_top_quantile_stage_b must be in (0,1], got {entropy_top_quantile_stage_b}.")
+        if has_t and not (float(entropy_min_threshold_stage_b) > 0.0):
+            raise ValueError(f"entropy_min_threshold_stage_b must be > 0, got {entropy_min_threshold_stage_b}.")
+
+    max_resample_times = int(cfg.get("max_resample_times", 0) or 0)
+    if max_resample_times < 0:
+        raise ValueError("max_resample_times must be >= 0")
+
+    stage_a_top_m = int(cfg.get("stage_a_top_m", 0) or 0)
+    if stage_a_top_m < 0:
+        raise ValueError("stage_a_top_m must be >= 0")
+
+    uncertainty_decay_factor = float(cfg.get("uncertainty_decay_factor", 0.0) or 0.0)
+    if not (0.0 <= uncertainty_decay_factor <= 1.0):
+        raise ValueError(f"uncertainty_decay_factor must be in [0,1], got {uncertainty_decay_factor}.")
+
+    pairwise_select = str(cfg.get("pairwise_select", "heuristic")).strip().lower()
+    if pairwise_select not in {"heuristic", "entropy", "delta"}:
+        raise ValueError("pairwise_select must be one of {'heuristic','entropy','delta'}")
+
+    log_all_candidates = bool(cfg.get("log_all_candidates", False))
+
+    soft_overlong_penalty_enabled = bool(cfg.get("soft_overlong_penalty_enabled", False))
+    soft_overlong_penalty_weight = _as_float_opt(cfg.get("soft_overlong_penalty_weight"))
+    if soft_overlong_penalty_enabled and (soft_overlong_penalty_weight is None or float(soft_overlong_penalty_weight) < 0.0):
+        raise ValueError(
+            "When soft_overlong_penalty_enabled=true, set 'soft_overlong_penalty_weight' >= 0."
+        )
+
     return RLRunnerConfig(
         checkpoint=checkpoint,
         processor=str(processor),
         output_dir=str(output_dir),
         train_data_dir=str(train_data_dir) if train_data_dir else None,
         eval_data_dir=str(eval_data_dir) if eval_data_dir else None,
+        balance_pass_fail=balance_pass_fail,
         results_jsonl=str(results_jsonl),
         metrics_jsonl=str(metrics_jsonl),
         mission=(str(cfg.get("mission")) if cfg.get("mission") else None),
@@ -417,6 +531,7 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         skip_save_checkpoints=bool(cfg.get("skip_save_checkpoints", False)),
         tb_log_dir=(str(cfg.get("tb_log_dir")) if cfg.get("tb_log_dir") else None),
         run_name=(str(cfg.get("run_name")) if cfg.get("run_name") else None),
+        log_step=int(log_step),
         temperature=temperature,
         top_p=top_p,
         max_new_tokens_stage_a=max_new_tokens_stage_a,
@@ -470,4 +585,26 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         grad_accum_steps=grad_accum_steps,
         decision_ce_ema_beta=decision_ce_ema_beta,
         train_aligner=_req_bool(cfg, "train_aligner"),
+        # Enhancements
+        enable_clipped_grpo=enable_clipped_grpo,
+        epsilon_low=epsilon_low,
+        epsilon_high=epsilon_high,
+        loss_type_stage_b=loss_type_stage_b,
+        enable_entropy_mask_stage_b=enable_entropy_mask_stage_b,
+        entropy_top_quantile_stage_b=entropy_top_quantile_stage_b,
+        entropy_min_threshold_stage_b=entropy_min_threshold_stage_b,
+        max_resample_times=max_resample_times,
+        stage_a_top_m=stage_a_top_m,
+        uncertainty_decay_factor=uncertainty_decay_factor,
+        pairwise_select=pairwise_select,
+        log_all_candidates=log_all_candidates,
+        soft_overlong_penalty_enabled=soft_overlong_penalty_enabled,
+        soft_overlong_penalty_weight=soft_overlong_penalty_weight,
+        # Stage-A bias knobs
+        stage_a_bias_fail_enabled=stage_a_bias_fail_enabled,
+        stage_a_bias_fail_value=stage_a_bias_fail_value,
+        stage_a_bias_pass_enabled=stage_a_bias_pass_enabled,
+        stage_a_bias_pass_value=stage_a_bias_pass_value,
+        save_step=save_step,
+        save_limit=save_limit,
     )

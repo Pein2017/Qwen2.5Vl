@@ -16,7 +16,6 @@ from .generation import (
     sft_style_preprocess_image,
     build_stage_a_stopping,
     build_stage_a_context_lines,
-    GeometryCoordMaskLogitsProcessor,
 )
 from .tf import (
     tf_sum_logprob_over_response,
@@ -58,7 +57,6 @@ __all__ = [
     "sft_style_preprocess_image",
     "build_stage_a_stopping",
     "build_stage_a_context_lines",
-    "GeometryCoordMaskLogitsProcessor",
     # TF
     "tf_sum_logprob_over_response",
     "tf_sum_logprob_and_logits_over_response",

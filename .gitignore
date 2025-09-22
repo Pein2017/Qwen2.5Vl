@@ -48,6 +48,7 @@ legacy/**
 logs/**
 .claude/**
 test_back/**
+AI研发工作汇报.md
 
 # 6) Re-ignore large/binary artifacts
 **/*.pt

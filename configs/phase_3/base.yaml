@@ -44,7 +44,7 @@ seed: 17
 # --------------------------------------------------------------------------------------
 phase_name: phase_3
 
-data_root: data/ds_v2_bbu_bbu_shield
+data_root: data/ds_v2_full
 max_total_length: 12000
 num_teacher_samples: 1
 max_dataset_size: -1
@@ -74,9 +74,9 @@ disable_tqdm: true
 # - prefetch_factor:        Number of batches to prefetch.
 # - remove_unused_columns:  Remove columns not used by the model.
 # --------------------------------------------------------------------------------------
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 pin_memory: true
-prefetch_factor: 2
+prefetch_factor: 4
 remove_unused_columns: false
 
 # --------------------------------------------------------------------------------------

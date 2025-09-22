@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Iterable
 import re
 
 from src_new.types.coords import CoordTokenRange
@@ -46,42 +46,14 @@ OBJECT_REF_SYNONYMS_END: Tuple[str, str] = ("<|object_ref_end|>", "<|obj_ref_end
 
 
 def _collect_coordinate_token_ids(tokenizer) -> List[int]:
-    """Collect all tokenizer IDs that correspond to <|coord_N|> tokens.
-
-    Returns an empty list if none are present.
+    """Deprecated: coordinate tokens not supported; return empty.
     """
-    vocab = tokenizer.get_vocab() if hasattr(tokenizer, "get_vocab") else {}
-    coord_ids: List[int] = []
-    for tok, idx in vocab.items():
-        if not isinstance(tok, str):
-            continue
-        if tok.startswith("<|coord_") and tok.endswith("|>"):
-            # Extract integer part; skip if it is not a valid integer
-            inner = tok[len("<|coord_") : -2]
-            try:
-                int(inner)
-            except Exception:
-                continue
-            try:
-                coord_ids.append(int(idx))
-            except Exception:
-                continue
-    return coord_ids
+    return []
 
 
 def get_coord_token_range(tokenizer) -> CoordTokenRange:
-    """Derive coordinate token ID range from tokenizer.
-
-    Returns:
-            CoordTokenRange with start-inclusive and end-exclusive semantics. If no
-            coordinate tokens are found, returns (0, 0).
-    """
-    ids = _collect_coordinate_token_ids(tokenizer)
-    if not ids:
-        return CoordTokenRange(0, 0)
-    start_id = min(ids)
-    end_exclusive = max(ids) + 1
-    return CoordTokenRange(start_id, end_exclusive)
+    """Deprecated: coordinate tokens not supported; return empty range (0, 0)."""
+    return CoordTokenRange(0, 0)
 
 
 def validate_geometry_tokens(tokenizer) -> None:
@@ -116,6 +88,62 @@ def validate_geometry_tokens(tokenizer) -> None:
         )
 
 
+# ---- NEW: strict validators that raise on missing tokens (for training fail-fast) ----
+
+def _require_tokens(tokenizer, tokens: Iterable[str], what: str) -> None:
+    vocab = tokenizer.get_vocab() if hasattr(tokenizer, "get_vocab") else {}
+    missing = [t for t in tokens if t not in vocab]
+    if missing:
+        raise ValueError(
+            f"Missing required {what} in tokenizer vocabulary: {missing}. "
+            f"Load a checkpoint that already contains these tokens, or extend the tokenizer before training."
+        )
+
+
+def require_core_special_tokens(tokenizer) -> None:
+    """Fail fast if core chat/image tokens are missing."""
+    _require_tokens(
+        tokenizer,
+        tokens=(IM_START, IM_END, IMAGE_PAD, END_OF_TEXT),
+        what="core special tokens (<|im_*|>, <|image_pad|>, <|endoftext|>)",
+    )
+
+
+def require_geometry_tokens(tokenizer, *, require_line: bool = True) -> None:
+    """Fail fast if geometry/object-ref wrapper tokens are missing.
+
+    Args:
+        tokenizer: tokenizer instance
+        require_line: whether to require <|line_start|>/<|line_end|>; set False if line is not used
+    """
+    required: List[str] = []
+    for geom_type, (ref_s, ref_e, geo_s, geo_e) in GEOMETRY_TOKENS.items():
+        if geom_type == "line" and not require_line:
+            # still require object_ref wrappers
+            required.extend([ref_s, ref_e])
+            continue
+        required.extend([ref_s, ref_e, geo_s, geo_e])
+    _require_tokens(tokenizer, tokens=tuple(sorted(set(required))), what="geometry/object-ref wrapper tokens")
+
+
+def require_coordinate_token_range(tokenizer, *, min_count: Optional[int] = None) -> None:
+    """Fail fast if coordinate token range is absent or too small.
+
+    Args:
+        min_count: when provided, require at least this many coord tokens present (e.g., max_coord_value+1)
+    """
+    rng = get_coord_token_range(tokenizer)
+    if rng.end_exclusive <= rng.start_id:
+        raise ValueError("Coordinate tokens not found in tokenizer (<|coord_*|> range is empty)")
+    if isinstance(min_count, int) and min_count > 0:
+        count = int(rng.end_exclusive - rng.start_id)
+        if count < min_count:
+            raise ValueError(
+                f"Coordinate token range too small: found {count}, required >= {min_count}. "
+                f"Ensure the checkpoint includes <|coord_0|>.. tokens for your configured max_coord_value."
+            )
+
+
 __all__ = [
     "CoordTokenRange",
     "GEOMETRY_TOKENS",
@@ -123,6 +151,7 @@ __all__ = [
     "OBJECT_REF_SYNONYMS_END",
     "get_coord_token_range",
     "validate_geometry_tokens",
+    # core and strict validators
     "IM_START",
     "IM_END",
     "IMAGE_PAD",
@@ -130,4 +159,7 @@ __all__ = [
     "ASSISTANT_HEADER",
     "ASSISTANT_SPAN_PATTERN",
     "ASSISTANT_SPAN_RE",
+    "require_core_special_tokens",
+    "require_geometry_tokens",
+    "require_coordinate_token_range",
 ]

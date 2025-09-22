@@ -76,7 +76,7 @@ class TestGroupedTokenLosses(unittest.TestCase):
             regular_loss_weight = 1.0
             teacher_loss_weight = 1.0
             student_loss_weight = 1.0
-            coordinate_tokens_enabled = True
+            coordinate_tokens_enabled = False
             # group weights (required)
             caption_loss_weight = 0.5
             grounding_loss_weight = 1.0
@@ -179,15 +179,14 @@ class TestGroupedTokenLosses(unittest.TestCase):
         )
         # Presence of group diagnostics
         for k in [
-            "student_caption_ce",
-            "student_grounding_ce",
-            "student_formatting_ce",
-            "student_caption_tokens",
-            "student_grounding_tokens",
-            "student_formatting_tokens",
-            "group_caption_ce",
-            "group_grounding_ce",
-            "group_formatting_ce",
+            "teacher_llm_loss",
+            "student_llm_loss",
+            "teacher_caption_loss",
+            "teacher_grounding_loss",
+            "teacher_formatting_loss",
+            "student_caption_loss",
+            "student_grounding_loss",
+            "student_formatting_loss",
         ]:
             self.assertIn(k, out)
 

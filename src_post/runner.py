@@ -23,7 +23,7 @@ from contextlib import nullcontext
 from src_post.config import RLRunnerConfig, load_and_validate_config
 from src_post.prompting.conversation import GroupQCConversationBuilder
 from src_post.data.dataset_group_qc import RLGroupQCDataset
-from src_post.generation.logits_processors import GeometryCoordMaskLogitsProcessor
+
 from src_post.models import (
     apply_freeze_and_param_groups,
     load_detection_model,
@@ -42,7 +42,7 @@ from src_post.tf.teacher_forcing import (
     tf_sum_logprob_and_logits_over_response,
 )
 from src_post.rewards.compose import compose_reward
-from src_post.data.data_loader import build_epoch_indices, iter_batches
+from src_post.data.data_loader import build_epoch_indices, build_balanced_indices, iter_batches
 from src_post.logging.logging_utils import compute_eta, rank0_log, aggregate_training_metrics
 from src_post.io.checkpoints import save_if_rank0
 from src_post.logging.diagnostics import compute_phase_a_diagnostics
@@ -209,14 +209,8 @@ class RLRunner:
 
         # Logits processor for decode-time masking
         logits_processors = LogitsProcessorList()
-        if cfg.mask_geometry_tokens or cfg.mask_coordinate_tokens:
-            logits_processors.append(
-                GeometryCoordMaskLogitsProcessor(
-                    tokenizer=processor.tokenizer,
-                    mask_geometry_tokens=cfg.mask_geometry_tokens,
-                    mask_coordinate_tokens=cfg.mask_coordinate_tokens,
-                )
-            )
+        # Config-based Stage-A token bias (mission-aware)
+        pass_set_all, fail_set_all = set(), set()
 
         # Stage-A stopping
         stopping_stage_a = build_stage_a_stopping(processor)
@@ -316,14 +310,38 @@ class RLRunner:
         # Epoch loop
         for epoch_round in range(int(max(1, cfg.epochs))):
             epoch_idx = epoch_round
-            indices = build_epoch_indices(
-                dataset_len=len(dataset),
-                world_size=world_size,
-                rank=rank,
-                limit_groups=int(cfg.limit_groups),
-                seed=int(cfg.seed),
-                epoch=epoch_idx,
-            )
+            if bool(getattr(cfg, 'balance_pass_fail', False)):
+                try:
+                    label_map = dataset.get_label_indices()
+                    p_idx = label_map.get('pass', [])
+                    f_idx = label_map.get('fail', [])
+                    indices = build_balanced_indices(
+                        pass_indices=p_idx,
+                        fail_indices=f_idx,
+                        world_size=world_size,
+                        rank=rank,
+                        limit_groups=int(cfg.limit_groups),
+                        seed=int(cfg.seed),
+                        epoch=epoch_idx,
+                    )
+                except Exception:
+                    indices = build_epoch_indices(
+                        dataset_len=len(dataset),
+                        world_size=world_size,
+                        rank=rank,
+                        limit_groups=int(cfg.limit_groups),
+                        seed=int(cfg.seed),
+                        epoch=epoch_idx,
+                    )
+            else:
+                indices = build_epoch_indices(
+                    dataset_len=len(dataset),
+                    world_size=world_size,
+                    rank=rank,
+                    limit_groups=int(cfg.limit_groups),
+                    seed=int(cfg.seed),
+                    epoch=epoch_idx,
+                )
             if rank == 0:
                 logger.info(f"[data] Start epoch {epoch_round+1}/{cfg.epochs}: num_local={len(indices)} (drop_last={cfg.drop_last})")
             processed_so_far_local_epoch = 0
@@ -359,23 +377,56 @@ class RLRunner:
                 # Additional classification metrics
                 fn_count = 0.0  # GT=fail but pred=pass
                 gt_fail_count = 0.0
+                
+                # Stage-B clipped GRPO metrics accumulators
+                sb_clip_low_sum = 0.0
+                sb_clip_high_sum = 0.0
+                sb_clip_region_sum = 0.0
+                sb_clip_den = 0.0
+                sb_entropy_mask_true_sum = 0.0
+                sb_reply_token_sum = 0.0
 
                 for idx in batch_indices:
+                    grp_start_ts = time.time()
                     sample = dataset[idx]
                     images: List[Image.Image] = sample["images"]
                     gt_label: str = str(sample["label"]).strip().lower()
+                    # Heartbeat: entering group processing
+                    try:
+                        gid = sample.get("meta", {}).get("group_id", "-") if isinstance(sample, dict) else "-"
+                    except Exception:
+                        gid = "-"
+                    try:
+                        logger.info(
+                            f"[group] idx={idx} gid={gid} gt={gt_label} images={len(images)} "
+                            f"K_B={int(cfg.K_B)} K_A={int(cfg.K_A)} mode_A={cfg.train_stage_a_mode} "
+                            f"pairwise={bool(cfg.pairwise_credit_enabled)}"
+                        )
+                    except Exception:
+                        pass
 
                     # 1) Stage-A greedy context lines
+                    # No Stage-A token bias
+                    local_logits_processors = LogitsProcessorList(list(logits_processors))
+
+                    t_a_start = time.time()
                     context_lines = build_stage_a_context_lines(
                         policy=policy,
                         processor=processor,
                         images=images,
                         gen_cfg=gen_cfg_stage_a,
-                        logits_processors=logits_processors,
+                        logits_processors=local_logits_processors,
                         stopping=stopping_stage_a,
                         sanitize=bool(cfg.sanitize_stage_a),
                         mission=cfg.mission,
+                        conv_builder=conv_builder,
                     )
+                    try:
+                        dt_a = time.time() - t_a_start
+                        preview = ", ".join([str(s)[:] for s in context_lines[:]])
+                        logger.info(f"[stage-a] done in {dt_a:.2f}s | lines={len(context_lines)} | preview={preview}")
+                    except Exception:
+                        pass
 
                     # 2) Stage-B GRPO step
                     checklist = conv_builder.rules_for_mission(cfg.mission)
@@ -409,7 +460,13 @@ class RLRunner:
                         except Exception:
                             pass
 
+                    t_b_tf_start = time.time()
                     tf_p_pass, tf_p_fail = tf_decision_probs(train_model, enc_b, processor, length_norm=bool(cfg.length_norm))
+                    try:
+                        dt_b_tf = time.time() - t_b_tf_start
+                        logger.info(f"[stage-b/tf] p_pass={tf_p_pass:.4f} p_fail={tf_p_fail:.4f} in {dt_b_tf:.2f}s")
+                    except Exception:
+                        pass
                     # Baseline decision margin for logging
                     import math as _math
                     eps = 1e-9
@@ -427,6 +484,7 @@ class RLRunner:
                     replies_text: List[str] = []
                     rewards_b: List[float] = []
                     pred_labels: List[Optional[str]] = []
+                    reasons: List[Optional[str]] = []
 
                     # Build a prefix constraint so Stage-B must start with a strict decision line
                     prefix_fn = None
@@ -437,6 +495,7 @@ class RLRunner:
                     except Exception:
                         prefix_fn = None
 
+                    t_b_samp_start = time.time()
                     for _ in range(max(1, int(cfg.K_B))):
                         with torch.no_grad():
                             gen_kwargs_b = {
@@ -470,9 +529,21 @@ class RLRunner:
                             reward_names = ["group_margin"]
                             reward_weights = [1.0]
                         elif cfg.group_reward_mode == "label_match":
-                            reward_names = ["label_match"]
+                            # Deprecated mode; default to margin_only behavior
+                            reward_names = ["group_margin"]
                             reward_weights = [1.0]
                         # else: combined → use config as-is
+                        # Detect overlong (hit max tokens without EOS)
+                        hit_max = False
+                        try:
+                            max_len_b = int(gen_cfg_stage_b.max_new_tokens)
+                            hit_max = len(token_ids) >= max_len_b and (processor.tokenizer.eos_token_id not in token_ids)
+                        except Exception:
+                            hit_max = False
+                        meta = {
+                            "stage_b_hit_max": bool(hit_max),
+                            "soft_overlong_penalty_weight": float(cfg.soft_overlong_penalty_weight or 0.0) if bool(cfg.soft_overlong_penalty_enabled) else 0.0,
+                        }
                         r = compose_reward(
                             gt_label=gt_label,
                             pred_label=pred_label,
@@ -485,6 +556,7 @@ class RLRunner:
                             tf_p_fail=tf_p_fail,
                             stage_b_text=text_out,
                             mission=cfg.mission,
+                            meta=meta,
                         )
                         if not (r == r and abs(r) != float("inf")):
                             r = 0.0
@@ -492,14 +564,83 @@ class RLRunner:
                         replies_text.append(text_out)
                         rewards_b.append(float(r))
                         pred_labels.append(pred_label)
+                        reasons.append(reason)
+                    try:
+                        dt_b_samp = time.time() - t_b_samp_start
+                        if len(rewards_b) > 0:
+                            import statistics as _st
+                            _mean = _st.mean(rewards_b)
+                            _std = (_st.pvariance(rewards_b) ** 0.5) if len(rewards_b) > 1 else 0.0
+                            # Print raw natural-language reasons (second line), no extra parsing
+                            _raw_reasons = []
+                            for _txt in replies_text:
+                                _lines = _txt.splitlines()
+                                if len(_lines) >= 2:
+                                    _r = _lines[1].strip()
+                                else:
+                                    _r = _txt.strip()
+                                if _r.startswith("原因:") or _r.startswith("原因："):
+                                    _r = _r[3:].strip()
+                                _raw_reasons.append(_r)
+                            logger.info(f"[stage-b/sample] K_B={len(rewards_b)} in {dt_b_samp:.2f}s | reward_mean={_mean:.3f} std={_std:.3f} | labels={pred_labels} | reasons={_raw_reasons}")
+                        else:
+                            logger.info(f"[stage-b/sample] K_B=0 in {dt_b_samp:.2f}s")
+                    except Exception:
+                        pass
 
                     with torch.no_grad():
                         rewards_t = torch.tensor(rewards_b, dtype=torch.float32, device=device)
                         mean = rewards_t.mean()
                         std = rewards_t.std(unbiased=False)
                         if float(std.item()) < 1e-6:
-                            adv = torch.zeros_like(rewards_t)
-                            skip_std0_count += 1.0
+                            # Attempt bounded resampling if configured
+                            attempts = int(getattr(cfg, 'max_resample_times', 0) or 0)
+                            if attempts > 0:
+                                tried = 0
+                                while tried < attempts and float(std.item()) < 1e-6:
+                                    tried += 1
+                                    with torch.no_grad():
+                                        # Resample one more candidate
+                                        gen_kwargs_b = {
+                                            "generation_config": gen_cfg_stage_b,
+                                            "logits_processor": logits_processors,
+                                        }
+                                        if prefix_fn is not None:
+                                            gen_kwargs_b["prefix_allowed_tokens_fn"] = prefix_fn
+                                        out = policy.generate(**enc_b, **gen_kwargs_b)
+                                        new_ids = out[:, enc_b["input_ids"].size(1):]
+                                        token_ids = new_ids[0].tolist() or [int(processor.tokenizer.eos_token_id)]
+                                        text_out = decode_to_text(processor, token_ids)
+                                        from src_post.prompting.span_parser import parse_stage_b_output
+                                        parsed = parse_stage_b_output(text_out)
+                                        pred_label = parsed.get("label")
+                                        reason = parsed.get("reason")
+                                        # reuse reward composition
+                                        rn, rw = reward_names, reward_weights
+                                        r_new = compose_reward(
+                                            gt_label=gt_label,
+                                            pred_label=pred_label,
+                                            summary_lines=context_lines,
+                                            reason=reason,
+                                            checklist_lines=checklist,
+                                            reward_names=rn,
+                                            reward_weights=rw,
+                                            tf_p_pass=tf_p_pass,
+                                            tf_p_fail=tf_p_fail,
+                                            stage_b_text=text_out,
+                                            mission=cfg.mission,
+                                        )
+                                        rewards_b.append(float(r_new))
+                                        replies_token_ids.append(token_ids)
+                                        replies_text.append(text_out)
+                                        pred_labels.append(pred_label)
+                                        rewards_t = torch.tensor(rewards_b, dtype=torch.float32, device=device)
+                                        mean = rewards_t.mean(); std = rewards_t.std(unbiased=False)
+                            if float(std.item()) < 1e-6:
+                                adv = torch.zeros_like(rewards_t)
+                                skip_std0_count += 1.0
+                            else:
+                                adv = (rewards_t - mean) / (std + 1e-6)
                         else:
                             adv = (rewards_t - mean) / (std + 1e-6)
                         adv = torch.clamp(adv, min=-cfg.adv_clip, max=cfg.adv_clip)
@@ -512,15 +653,77 @@ class RLRunner:
                             logp_k, cur_logits_k, prompt_len_k = tf_sum_logprob_and_logits_over_response(
                                 train_model, enc_b, replies_token_ids[k], cfg.length_norm
                             )
-                            term = - (adv[k].detach()) * logp_k
-                            if cfg.use_ref_kl and ref_model is not None and cfg.lambda_kl_stage_b > 0.0:
-                                kl_k = kl_to_ref_with_cur_logits(ref_model, enc_b, replies_token_ids[k], cur_logits_k, int(prompt_len_k))
-                                try:
-                                    kl_b_sum += float(kl_k.detach().item())
-                                    kl_b_count += 1
-                                except Exception:
-                                    pass
-                                term = term + (cfg.lambda_kl_stage_b * kl_k)
+                            if bool(getattr(cfg, 'enable_clipped_grpo', False)):
+                                # Per-token clipped GRPO with optional entropy mask
+                                from src_post.tf.grpo_loss import (
+                                    build_reply_mask,
+                                    per_token_logps_from_logits,
+                                    compute_ratio_and_clip,
+                                    reduce_loss,
+                                    apply_entropy_mask_from_logits,
+                                )
+                                # Build full token ids = [prompt + reply] to derive next-token targets
+                                prompt_ids = enc_b["input_ids"].to(cur_logits_k.device)
+                                reply_ids = torch.tensor([replies_token_ids[k]], dtype=prompt_ids.dtype, device=prompt_ids.device)
+                                full_ids = torch.cat([prompt_ids, reply_ids], dim=1)
+                                targets = full_ids[:, 1:]  # align with logits (next-token targets)
+                                reply_mask = build_reply_mask(int(prompt_len_k), cur_logits_k)
+                                cur_logps = per_token_logps_from_logits(cur_logits_k, targets)
+                                old_logps = cur_logps.detach()
+                                coef_1, coef_2 = compute_ratio_and_clip(cur_logps, old_logps, float(cfg.epsilon_low), float(getattr(cfg, 'epsilon_high', 0.0) or 0.0))
+                                # Broadcast advantage to [B,L] (single-sample batch)
+                                adv_scalar = float(adv[k].detach())
+                                adv_tok = torch.full_like(cur_logps, fill_value=adv_scalar)
+                                per_token_loss = -torch.minimum(coef_1 * adv_tok, coef_2 * adv_tok)
+                                # Optional entropy mask
+                                ent_mask = None
+                                if bool(getattr(cfg, 'enable_entropy_mask_stage_b', False)):
+                                    top_q = getattr(cfg, 'entropy_top_quantile_stage_b', None)
+                                    min_thr = getattr(cfg, 'entropy_min_threshold_stage_b', None)
+                                    ent_mask = apply_entropy_mask_from_logits(
+                                        cur_logits_k, reply_mask, top_quantile=top_q, min_threshold=min_thr
+                                    )
+                                    per_token_loss = per_token_loss * ent_mask.to(per_token_loss.dtype)
+                                    # accumulate entropy mask ratio
+                                    sb_entropy_mask_true_sum += float(ent_mask.sum().item())
+                                # Add KL term (already computed with cached logits)
+                                term = reduce_loss(per_token_loss, reply_mask, str(getattr(cfg, 'loss_type_stage_b', 'grpo')))
+                                if cfg.use_ref_kl and ref_model is not None and cfg.lambda_kl_stage_b > 0.0:
+                                    kl_k = kl_to_ref_with_cur_logits(ref_model, enc_b, replies_token_ids[k], cur_logits_k, int(prompt_len_k))
+                                    try:
+                                        kl_b_sum += float(kl_k.detach().item()); kl_b_count += 1
+                                    except Exception:
+                                        pass
+                                    term = term + (cfg.lambda_kl_stage_b * kl_k)
+                                # accumulate clip ratios over reply tokens
+                                with torch.no_grad():
+                                    low = 1.0 - float(cfg.epsilon_low)
+                                    high = 1.0 + float(getattr(cfg, 'epsilon_high', 0.0) or 0.0)
+                                    is_reply = reply_mask
+                                    # token-level conditions
+                                    is_low = (coef_1 < low) & (adv_tok < 0)
+                                    is_high = (coef_1 > high) & (adv_tok > 0)
+                                    is_region = is_low | is_high
+                                    # restrict to reply tokens
+                                    is_low = is_low & is_reply
+                                    is_high = is_high & is_reply
+                                    is_region = is_region & is_reply
+                                    sb_clip_low_sum += float(is_low.sum().item())
+                                    sb_clip_high_sum += float(is_high.sum().item())
+                                    sb_clip_region_sum += float(is_region.sum().item())
+                                    sb_den_inc = float(is_reply.sum().item())
+                                    sb_clip_den += sb_den_inc
+                                    sb_reply_token_sum += sb_den_inc
+                            else:
+                                # Legacy un-clipped update (−A·logp)
+                                term = - (adv[k].detach()) * logp_k
+                                if cfg.use_ref_kl and ref_model is not None and cfg.lambda_kl_stage_b > 0.0:
+                                    kl_k = kl_to_ref_with_cur_logits(ref_model, enc_b, replies_token_ids[k], cur_logits_k, int(prompt_len_k))
+                                    try:
+                                        kl_b_sum += float(kl_k.detach().item()); kl_b_count += 1
+                                    except Exception:
+                                        pass
+                                    term = term + (cfg.lambda_kl_stage_b * kl_k)
                             # Apply Stage‑B freeze/toggle at backward time
                             if bool(cfg.train_stage_b) and update >= int(cfg.freeze_stage_b_steps):
                                 scale_b = float(cfg.stage_b_weight)
@@ -536,6 +739,17 @@ class RLRunner:
                     reward_best_sum += best_reward
                     reward_best_sq_sum += best_reward * best_reward
                     best_label = pred_labels[best_idx] if len(pred_labels) > 0 else None
+                    try:
+                        best_reason = reasons[best_idx] if len(reasons) > 0 else None
+                        # Log raw natural-language reason (second line) from the best reply
+                        _best_txt = replies_text[best_idx] if len(replies_text) > 0 else ""
+                        _lines = _best_txt.splitlines()
+                        _best_reason = _lines[1].strip() if len(_lines) >= 2 else _best_txt.strip()
+                        if _best_reason.startswith("原因:") or _best_reason.startswith("原因："):
+                            _best_reason = _best_reason[3:].strip()
+                        logger.info(f"[stage-b/best] label={best_label} reward={best_reward:.3f} reason={_best_reason}")
+                    except Exception:
+                        pass
                     best_hit_count += int(isinstance(best_label, str) and best_label == gt_label)
                     any_hit = int(any((lbl == gt_label) for lbl in pred_labels if isinstance(lbl, str)))
                     any_hit_count += any_hit
@@ -557,6 +771,7 @@ class RLRunner:
                     loss_a = torch.tensor(0.0, dtype=torch.float32, device=device)
                     assigner = get_credit_assigner(cfg.train_stage_a_mode)
                     if cfg.train_stage_a_mode in {"conditional", "joint"}:
+                        t_a_grpo_start = time.time()
                         tf_cfg = {
                             "device": device,
                             "length_norm": bool(cfg.length_norm),
@@ -567,6 +782,9 @@ class RLRunner:
                             "adv_clip": float(cfg.adv_clip),
                             "ddp_policy": ddp_policy,
                             "pairs_per_group": int(cfg.pairwise_pairs_per_group),
+                            # Stage-A enhancements
+                            "top_m": int(getattr(cfg, 'stage_a_top_m', 0) or 0),
+                            "uncertainty_decay_factor": float(getattr(cfg, 'uncertainty_decay_factor', 0.0) or 0.0),
                             # Scale Stage-A gradients by stage_a_weight
                             "accum_scale": float(accum_scale * float(cfg.stage_a_weight)),
                         }
@@ -600,6 +818,13 @@ class RLRunner:
                                 gen_cfg_a=gen_cfg_stage_a,
                                 reward_cfg=reward_cfg,
                             )
+                        try:
+                            dt_a_grpo = time.time() - t_a_grpo_start
+                            d_best = float(diags_a.get("best_single_delta", 0.0)) if isinstance(diags_a, dict) else 0.0
+                            ent_m = float(diags_a.get("phase_a_entropy_mean", 0.0)) if isinstance(diags_a, dict) else 0.0
+                            logger.info(f"[stage-a/grpo] done in {dt_a_grpo:.2f}s | best_single_delta={d_best:.4f} ent_mean={ent_m:.3f}")
+                        except Exception:
+                            pass
                         # Pairwise fallback when enabled and stage-B best != GT and deltas weak
                         pairwise_triggered_flag = 0
                         if bool(cfg.pairwise_credit_enabled):
@@ -704,7 +929,29 @@ class RLRunner:
                             "used_minimal_prompt": (not bool(cfg.use_mission_checklist)),
                             "pairwise_triggered": bool(pairwise_triggered_flag),
                         }
+                        if bool(getattr(cfg, 'log_all_candidates', False)):
+                            cands = []
+                            for j in range(len(replies_text)):
+                                cands.append({
+                                    "raw": replies_text[j],
+                                    "reward": float(rewards_b[j]) if j < len(rewards_b) else 0.0,
+                                    "pred_label": pred_labels[j] if j < len(pred_labels) else None,
+                                })
+                            rec["candidates"] = cands
                         writer.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+                # End-of-group heartbeat (max memory and total time)
+                try:
+                    dt_grp = time.time() - grp_start_ts
+                    if torch.cuda.is_available():
+                        import torch as _t
+                        mem_alloc = float(_t.cuda.memory_allocated() / (1024**2))
+                        mem_reserved = float(_t.cuda.memory_reserved() / (1024**2))
+                        logger.info(f"[group] idx={idx} done in {dt_grp:.2f}s | cuda_mem(MB) alloc={mem_alloc:.1f} reserved={mem_reserved:.1f}")
+                    else:
+                        logger.info(f"[group] idx={idx} done in {dt_grp:.2f}s")
+                except Exception:
+                    pass
 
                 # Aggregate per-batch metrics and log (rank0)
                 if total_items > 0:
@@ -780,12 +1027,62 @@ class RLRunner:
                     prefix = f"[{epoch_idx+1}/{int(cfg.epochs)}][{processed_so_far_g}/{epoch_total_g}] "
 
                     if rank == 0:
+                        # Advance step counter first for intuitive 1-based logging
+                        update += 1
                         lrs = {str(g.get("name", f"group{i}")): float(g.get("lr", 0.0)) for i, g in enumerate(optimizer.param_groups)}
                         # Merge raw + windowed for logging/JSONL/TensorBoard
                         scalars_to_log = dict(agg)
                         scalars_to_log.update(agg_win)
-                        rank0_log(logger, tb_writer, metrics_writer, update, prefix, scalars_to_log, lrs)
-                        update += 1
+                        # New Stage-B metrics
+                        if sb_clip_den > 0.0:
+                            scalars_to_log["sb_clip_low_mean"] = float(sb_clip_low_sum / sb_clip_den)
+                            scalars_to_log["sb_clip_high_mean"] = float(sb_clip_high_sum / sb_clip_den)
+                            scalars_to_log["sb_clip_region_mean"] = float(sb_clip_region_sum / sb_clip_den)
+                        if sb_reply_token_sum > 0.0:
+                            scalars_to_log["sb_entropy_mask_ratio"] = float(sb_entropy_mask_true_sum / sb_reply_token_sum)
+                        # Tunable logging cadence via cfg.log_step (default=10) + env + edge conditions
+                        try:
+                            step_mod = int(getattr(cfg, 'log_step', 10) or 10)
+                        except Exception:
+                            step_mod = 10
+                        if step_mod < 1:
+                            step_mod = 1
+                        force_every_step_env = str(os.environ.get("FORCE_LOG_EVERY_STEP", "0")).strip().lower() in {"1", "true", "yes"}
+                        end_of_epoch = (processed_so_far_g >= epoch_total_g)
+                        # Always log the first few steps for visibility
+                        do_log = force_every_step_env or (update <= 3) or ((update % step_mod) == 0) or end_of_epoch
+                        if do_log:
+                            rank0_log(logger, tb_writer, metrics_writer, update, prefix, scalars_to_log, lrs)
+
+                        # Periodic checkpoint saving (per update)
+                        try:
+                            ss = int(getattr(cfg, 'save_step', 0) or 0)
+                            sl = int(getattr(cfg, 'save_limit', 0) or 0)
+                        except Exception:
+                            ss, sl = 0, 0
+                        do_periodic_save = (ss > 0) and ((update % ss) == 0)
+                        if do_periodic_save and not bool(cfg.skip_save_checkpoints):
+                            # Save with rolling limit
+                            tag = f"grpo_step{update}"
+                            try:
+                                save_if_rank0(policy, processor, cfg.output_dir, tag=tag, skip_save=False)
+                            except Exception as e:
+                                logger.warning(f"Periodic save failed at update {update}: {e}")
+                            # Enforce save_limit by removing oldest
+                            try:
+                                from pathlib import Path as _P
+                                ckpt_root = _P(cfg.output_dir) / "checkpoints"
+                                all_ckpts = sorted([p for p in ckpt_root.glob("grpo_step*") if p.is_dir()], key=lambda p: p.stat().st_mtime)
+                                if sl > 0 and len(all_ckpts) > sl:
+                                    to_del = all_ckpts[: max(0, len(all_ckpts) - sl)]
+                                    for d in to_del:
+                                        try:
+                                            import shutil as _sh
+                                            _sh.rmtree(str(d), ignore_errors=True)
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
 
             # Finalize after last epoch
             if (epoch_round + 1) == int(cfg.epochs):

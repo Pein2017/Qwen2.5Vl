@@ -10,11 +10,12 @@ export PYTHONPATH=.
 export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
+
 PROJECT_ROOT="."
 CONFIG_NAME="phase_3/standard"
-ARCH="legacy"   # json | legacy
+ARCH="legacy"   # json | legacy | ref
 MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
-to_console=true
+to_console=false
 
 # Python interpreter - use ms environment directly
 PY="/root/miniconda3/envs/ms/bin/python"
@@ -191,7 +192,21 @@ except Exception as e:
     print(f'❌ Config loading failed (src_new_json): {e}')
     raise
 EOF
-    else
+        else
+        if [[ "$ARCH" == "ref" ]]; then
+        echo "🧪 Testing config loading with src_new_reference..."
+        "$PY" - <<EOF
+from src_new_reference.config.config import load_config
+try:
+    config = load_config('configs/${CONFIG_NAME}.yaml')
+    print('✅ Config loading successful (src_new_reference)')
+    print(f'   Model path: {config.model_path}')
+    print(f'   Teacher ratio: {config.teacher_ratio}')
+except Exception as e:
+    print(f'❌ Config loading failed (src_new_reference): {e}')
+    raise
+EOF
+        else
         echo "🧪 Testing config loading with src_new..."
         "$PY" - <<EOF
 from src_new.config.config import load_config
@@ -204,6 +219,7 @@ except Exception as e:
     print(f'❌ Config loading failed (src_new): {e}')
     raise
 EOF
+        fi
     fi
     
     # Check if DeepSpeed config exists (if enabled)
@@ -239,7 +255,20 @@ launch_single_gpu() {
                 --config "$CONFIG_NAME" \
                 --log_level "$LOG_LEVEL"
         fi
+    elif [[ "$ARCH" == "ref" ]]; then
+        # Reference pipeline (src_new_reference)
+        if [[ -n "$MAX_STEPS" ]]; then
+            "$PY" "${PROJECT_ROOT}/scripts/train_new_ref.py" \
+                --config "$CONFIG_NAME" \
+                --log_level "$LOG_LEVEL" \
+                --max_steps "$MAX_STEPS"
+        else
+            "$PY" "${PROJECT_ROOT}/scripts/train_new_ref.py" \
+                --config "$CONFIG_NAME" \
+                --log_level "$LOG_LEVEL"
+        fi
     else
+        # Legacy/new pipeline (src_new)
         "$PY" "${PROJECT_ROOT}/scripts/train_new.py" \
             --config "$CONFIG_NAME" \
             --log_level "$LOG_LEVEL"
@@ -262,14 +291,19 @@ launch_deepspeed() {
     local TRAIN_SCRIPT
     if [[ "$ARCH" == "json" ]]; then
         TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new_json.py"
+    elif [[ "$ARCH" == "ref" ]]; then
+        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new_ref.py"
     else
         TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new.py"
     fi
+
+    # No BBU_ARCH env needed when selecting explicit TRAIN_SCRIPT
+    :
     
-    # Launch with torchrun
-    torchrun \
-        --master_port="$MASTER_PORT" \
-        --nproc_per_node="$NUM_GPUS" \
+    # Launch with Python distributed run (torch.distributed.run)
+    "$PY" -m torch.distributed.run \
+        --master_port "$MASTER_PORT" \
+        --nproc_per_node "$NUM_GPUS" \
         "$TRAIN_SCRIPT" \
         --config "$CONFIG_NAME" \
         --log_level "$LOG_LEVEL" \
@@ -293,6 +327,8 @@ main() {
     echo "   📊 Log level: $LOG_LEVEL"
     if [[ "$ARCH" == "json" ]]; then
         echo "   🏗️  Architecture: src_new_json (pure JSON geometry)"
+    elif [[ "$ARCH" == "ref" ]]; then
+        echo "   🏗️  Architecture: src_new_reference (reference SFT)"
     else
         echo "   🏗️  Architecture: src_new (legacy)"
     fi
@@ -312,11 +348,14 @@ main() {
     
     # After validation, decide whether to keep FlashAttention/Triton-specific env
     FLASH_ATTENTION_ENABLED=$("$PY" - <<EOF
+arch = "$ARCH".strip()
 try:
-    from src_new_json.config.config import load_config
-except Exception:
-    from src_new.config.config import load_config
-try:
+    if arch == "json":
+        from src_new_json.config.config import load_config
+    elif arch == "ref":
+        from src_new_reference.config.config import load_config
+    else:
+        from src_new.config.config import load_config
     cfg = load_config(f"configs/${CONFIG_NAME}.yaml")
     print('1' if getattr(cfg, 'attn_implementation', 'eager') == 'flash_attention_2' else '0')
 except Exception:

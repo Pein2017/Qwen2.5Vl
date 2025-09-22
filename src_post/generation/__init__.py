@@ -9,7 +9,7 @@ from src_post.generation.generation import (
     build_stage_a_stopping,
     build_stage_a_context_lines,
 )
-from src_post.generation.logits_processors import GeometryCoordMaskLogitsProcessor
+
 
 __all__ = [
     "to_device_and_cast",
@@ -17,5 +17,5 @@ __all__ = [
     "sft_style_preprocess_image",
     "build_stage_a_stopping",
     "build_stage_a_context_lines",
-    "GeometryCoordMaskLogitsProcessor",
+
 ]

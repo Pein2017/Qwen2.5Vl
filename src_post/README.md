@@ -393,3 +393,41 @@ device: cuda
 epochs: 1
 batch_size: 1
 ```
+
+## GRPO enhancements (optional)
+
+The following keys enable more robust GRPO behavior. They are optional and disabled by default; when enabled, values are validated fail‑fast.
+
+```yaml
+# Stage‑B clipped GRPO
+enable_clipped_grpo: true
+epsilon_low: 0.2                # (0,1]
+# Optional upper slack for asymmetric clipping (0 = symmetric)
+epsilon_high: 0.0
+loss_type_stage_b: grpo         # {grpo|bnpo|dr_grpo}
+
+# Stage‑B entropy mask (specify exactly ONE of the following when enabled)
+enable_entropy_mask_stage_b: true
+entropy_top_quantile_stage_b: 0.2  # keep top‑entropy tokens
+# entropy_min_threshold_stage_b: 1.5 # alternatively, absolute threshold
+
+# Stability: resample when std==0 (bounded attempts)
+max_resample_times: 2
+
+# Stage‑A focusing & gating
+stage_a_top_m: 1                   # backprop only top‑M images per group (0 = all)
+uncertainty_decay_factor: 0.0      # when gate fails: 0 => zero advantage; (0,1] => decay factor
+pairwise_select: heuristic          # {heuristic|entropy|delta}
+
+# Logging & shaping
+log_all_candidates: true
+soft_overlong_penalty_enabled: true
+soft_overlong_penalty_weight: 0.2   # penalty applied when Stage‑B hits max length without EOS
+```
+
+Notes:
+- Clipped GRPO computes per‑token ratios r = exp(cur − old) and clamps to [1−epsilon_low, 1+epsilon_high], then applies the GRPO min operator with the group advantage.
+- Entropy mask drops low‑entropy reply tokens from loss to stabilize updates; use quantile or absolute threshold (mutually exclusive).
+- `max_resample_times` only affects degenerate groups with zero reward variance and preserves randomness seeding across attempts.
+- `stage_a_top_m` focuses Stage‑A credit to the most impactful images by Δ margin; `uncertainty_decay_factor` controls how strictly the gate zeroes/decays advantages.
+- `log_all_candidates` extends JSONL with all K_B candidates and their rewards; existing schema remains unchanged when disabled.

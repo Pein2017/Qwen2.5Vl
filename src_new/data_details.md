@@ -23,7 +23,7 @@
   - desc: Hierarchical, slash- and comma-separated string built from the templates below. The literals in data are canonical and defined by the taxonomy/mapping; this document explains them in English. A final slash-level free-text "remarks" segment is allowed (see Description Construction).
 - width, height: int — processed image size.
 - meta: Dict — per-sample metadata (see Meta block).
-- summary (optional, SFT-only): str — a single-line Chinese summary distilled from objects; used by the SFT "summary" variant as teacher-forcing target. Per-image only: must NOT include any group-level or pass/fail decisions; must contain no coordinates or special tokens.
+- summary (optional, SFT-only): str — a single-line Chinese summary precomputed during data conversion; used by the SFT "summary" variant as teacher-forcing target. Per-image only: must NOT include any group-level or pass/fail decisions; must contain no coordinates or special tokens.
 
 ## Geometry & Object Types
 - Geometry formats

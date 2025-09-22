@@ -657,6 +657,26 @@ class DetectionModel(nn.Module):
                     f"pixel_values shape={tuple(pixel_values.shape)} (expected leading shape {PIXEL_VALUES_PACKED_SHAPE_DESC})"
                 )
 
+        # NEW: one-time strict tokenizer validation (fail-fast) to catch missing wrappers early
+        try:
+            if not hasattr(self, "_validated_special_tokens"):
+                self._validated_special_tokens = False
+            if not bool(self._validated_special_tokens):
+                _tok = getattr(self, "_tokenizer", None) if hasattr(self, "_tokenizer") else None
+                if _tok is None and hasattr(self.base_model, "processor"):
+                    _tok = getattr(getattr(self.base_model, "processor"), "tokenizer", None)
+                from src_new.processing.special_tokens import (
+                    require_core_special_tokens,
+                    require_geometry_tokens,
+                )
+                if _tok is not None:
+                    require_core_special_tokens(_tok)
+                    # Require line wrappers by default; models configured without line can disable elsewhere
+                    require_geometry_tokens(_tok, require_line=True)
+                self._validated_special_tokens = True
+        except Exception as e:
+            raise ValueError(f"Model wrapper special-token validation failed: {e}")
+
         # NEW: Strict validation for text tensors before base model call (fail-fast)
         if input_ids is not None:
             if not (input_ids.dim() == 2):

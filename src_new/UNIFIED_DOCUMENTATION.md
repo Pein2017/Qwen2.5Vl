@@ -1,6 +1,6 @@
 # Qwen2.5-VL BBU Detection Training Pipeline - Unified Documentation
 
-**Complete Reference for Vision-Language Model Fine-tuning with Coordinate Token System**
+**Complete Reference for Vision-Language Model Fine-tuning (coordinate tokens deprecated)**
 
 ---
 
@@ -13,13 +13,14 @@
 
 - **Critical invariants**:
   - Fast tokenizer required with `offset_mapping` available; chat template must exist (tokenizer or processor).
-  - If `coordinate_tokens_enabled=true`, checkpoint must be pre‑expanded: vocab > 151665; `<|line_start|>`, `<|line_end|>` present; full `<|coord_0|>.. <|coord_{max}|>` contiguous; embeddings padded to multiple of 128.
+  - Coordinate tokens are deprecated. All geometry is emitted as raw integer coordinates with canonical wrappers; no `<|coord_*|>` usage.
+  - Conversation variants cover both multimodal and text-only flows. `wrapper_reconstruction` emits no `<image>` placeholders so the processor must be able to build conversations with images=[], ensuring the model practises wrapper syntax without vision features.
   - Image alignment: decoded `<|image_pad|>` count equals `sum_i (t*h*w) // (merge_size**2)`; `pixel_values` rows equal `sum_i (t*h*w)`.
   - Labels/spans: assistant spans are precomputed once in the conversation builder (regex+offsets) and mapped to expanded input_ids; include immediate `<|im_end|>`; `<|image_pad|>` always masked.
 
-- **Data → Model → Loss → Checkpoint** (HF‑first): JSONL → `ConversationProcessor.apply_chat_template` → official processor tensors → `DetectionModel` wrapper (validations) → single‑pass CE (teacher/student masks) + optional coord aux losses → local aggregation (no custom distributed ops) → SafeTensors + tokenizer/processor saved; best checkpoint via atomic copy, rotation enabled.
+- **Data → Model → Loss → Checkpoint** (HF‑first): JSONL → `ConversationProcessor.apply_chat_template` → official processor tensors → `DetectionModel` wrapper (validations) → single‑pass CE (teacher/student masks) + grouped LLM losses → optional coord‑aux (when enabled) → local aggregation (no custom distributed ops) → SafeTensors + tokenizer/processor saved; best checkpoint via atomic copy, rotation enabled.
 
-- **Freezing phases**: `phase_1` train `visual.merger` (+ coord‑slice rows if coords); `phase_2` = phase_1 + last‑K LLM blocks; `phase_3` unfreeze all (keep `visual.patch_embed` frozen by default; optional last‑K vision blocks).
+- **Freezing phases**: phased unfreezing for LLM/vision remains. PhaseFreezeManager applies per-phase policies: phase_1 trains `visual.merger` (optionally coord-slice on embeddings/LM head), phase_2 unfreezes last‑K LLM blocks, phase_3 unfreezes all by default (keeping `visual.patch_embed` frozen unless overridden).
 
 ---
 
@@ -31,13 +32,12 @@
 
 2) Tokenizer/processor & model
 - Fast tokenizer and `Qwen2VLImageProcessor` from `config.model_path`; `image_processor.max_pixels` overridden from YAML.
-- `Qwen2_5_VLForConditionalGeneration.from_pretrained(...)` with dtype/attention/low‑CPU settings; device_map=`auto` when single GPU.
-- Validate coordinate pre‑expansion if `coordinate_tokens_enabled=true` (vocab/content/128‑padding).
+- Coordinate-token mode is deprecated in src_new; only geometry/object‑ref wrappers are required and validated. Chat template is strictly required and is propagated to the processor at runtime.
 
 3) Dataset & conversations
-- `Dataset` reads JSONL; validates per‑sample structure; optional augmentation; dynamic teacher assignment (ratio, bucketed random).
-- `ConversationProcessor.create_conversation(...)` builds teacher‑student or simple conversations, applies HF chat template, threads `conversation_text` + `offset_mapping`, enforces image token consistency.
-- Spans are computed once in the builder (`processing/span_builder.py`) and attached as token‑aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; `<|image_pad|>` is masked.
+- `Dataset` reads JSONL; validates per-sample structure; optional augmentation via `ObjectAwareAugmentationPipeline` with epoch-based presets; dynamic contrastive pairing per-epoch when `dynamic_pairing_enabled` (one context teacher max; eval forced single-turn). Text-only variants (currently `wrapper_reconstruction`) are automatically routed with `images=[]`, no augmentations, and teacher pairing disabled so they stay pure formatting drills.
+- `ConversationProcessor.create_conversation(...)` builds teacher-student or simple conversations, applies HF chat template, threads `conversation_text` + `offset_mapping`, enforces image token consistency. The processor accepts user-spec dictionaries (`{"text": ..., "include_image": bool}`) letting variants decide whether placeholders are emitted. Summary variant uses precomputed `sample['summary']`.
+- Spans are computed once in the builder (`processing/span_builder.py`) and attached as token-aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; `<|image_pad|>` is masked; span ends include immediate `<|im_end|>` when present.
 
 4) Collation & packing
 - `collator_standard` pads to max length.
@@ -49,14 +49,14 @@
 
 6) Loss computation (`models/loss_manager.py`)
 - Single‑pass CE once; apply teacher/student masks; grouped LLM losses (caption/grounding/formatting) via `losses/token_grouping.py` with weights from config (teacher/student weighted separately).
-- Coordinate auxiliary losses (optional): Kernelized‑KL + Unlikelihood on coordinate‑labeled targets; diagnostics (window mass, coord slice mass, gt prob, expected MAE bins, top‑k, outside‑window mass, non‑coord top‑k mass, entropy, margin, mean offset, coord‑pos count). Strictly fail if enabled but no coord targets within spans.
+- Coordinate auxiliary losses are optional and disabled by default. When enabled (`coord_aux_enabled: true`), LossManager computes per-group kernelized-KL and unlikelihood components only at positions where the label is a coordinate token, and logs diagnostics (window_mass, gt_prob, top1/top5, etc.).
 
 7) Phases & optimizer
-- `PhaseFreezeManager` applies `phase_name`; coord‑slice grad masks on embeddings/head when applicable; param groups: `vision`, `merger`, `top_layers`, `coord_slice`, `llm`. LR logging reports true group names.
+- `PhaseFreezeManager` applies `phase_name`; coordinate‑slice specific groups removed; use standard groups: `vision`, `merger`, `llm`.
 
 8) Logging, evaluation, checkpointing
 - `TrainingStateManager` aggregates loss components locally; `_maybe_log_save_evaluate` overridden to avoid NCCL conflicts; evaluation accumulates components too.
-- `CheckpointSaver` writes SafeTensors, tokenizer/processor, `coordinate_config.json` (coord mode); best checkpoint via atomic folder copy; rotation respects `save_total_limit`.
+- `CheckpointSaver` writes SafeTensors and tokenizer/processor. Coordinate config files are no longer produced.
 
 ---
 
@@ -64,16 +64,12 @@
 
 - JSONL fields per sample: `images: [str]`, `objects: [dict]`, `width: int`, `height: int`.
 - Supported geometry keys: `bbox_2d` (4 ints), `quad` (8 ints), `line` (even ≥ 4 ints); coordinates clamped to `[0, max_coord_value]`.
-- Coordinate tokens mode: geometry lists emitted as `<|coord_N|>` tokens; non‑token mode uses integers; object text wrapped with canonical tokens: `<|object_ref_start|>...<|object_ref_end|>` + geometry wrappers (`<|box_*|>`, `<|quad_*|>`, `<|line_*|>`).
+- Geometry is emitted with canonical wrappers and raw integers only. Example per object line:
+  - `<|object_ref_start|>描述<|object_ref_end|><|box_start|>[x1, y1, x2, y2]<|box_end|>`
+  - `<|object_ref_start|>描述<|object_ref_end|><|quad_start|>[x1, y1, x2, y2, x3, y3, x4, y4]<|quad_end|>`
+  - `<|object_ref_start|>描述<|object_ref_end|><|line_start|>[x1, y1, x2, y2, …]<|line_end|>`
 - Object categories (6): `bbu`, `bbu_shield`, `connect_point`, `label`, `fiber`, `wire`.
-- Description policy (Chinese): one object per line; concise but complete; no extra commentary; sort outputs top‑to‑bottom then left‑to‑right; line start is leftmost endpoint (break ties by y then x); quad ordering TL → TR → BR → BL.
-- Business attributes (condensed, values fixed):
-  - BBU设备: 品牌 {华为, 中兴, 爱立信}; 完整性 {显示完整, 只显示部分}; 挡风板需求 {无需安装, 机柜空间充足需要安装}; [挡风板配置符合性] {这个BBU设备按要求配备了挡风板, 这个BBU设备未按要求配备挡风板}; [备注文本]
-  - 挡风板: 品牌 {华为, 中兴}; 完整性 {显示完整, 只显示部分}; 安装方向 {安装方向正确, 安装方向错误}; [备注文本]
-  - 螺丝、光纤插头: 类型 {BBU安装螺丝, 机柜处接地螺丝, 地排处接地螺丝, ODF端光纤插头, BBU端光纤插头}; 完整性 {显示完整, 只显示部分}; 合规性 {符合要求, 不符合要求}; [具体问题] 从 {未拧紧, 露铜, 复接, 生锈}; [备注文本]
-  - 标签: 文字内容（可为空字符串）
-  - 光纤: 保护措施 {无保护措施, 有保护措施}; 弯曲半径 {弯曲半径合理, 弯曲半径不合理（弯曲半径<4cm或者成环）}; [保护类型] {蛇形管, 铠装, 同时有蛇形管和铠装}; [备注文本]
-  - 电线: 整齐度 {捆扎整齐, 分布散乱}; [备注文本]
+- Description policy (Chinese): one object per line; concise but complete; sort outputs top‑to‑bottom then left‑to‑right; line start is leftmost endpoint (break ties by y then x); quad ordering TL → TR → BR → BL.
 
 ---
 
@@ -82,38 +78,32 @@
 - Model/runtime: `model_path`, `attn_implementation {flash_attention_2|eager|sdpa}`, `torch_dtype {float16|bfloat16|float32|bf16|fp16}`, `use_cache`.
 - Training: `num_train_epochs`, `per_device_{train,eval}_batch_size`, `gradient_accumulation_steps`, `learning_rate`, `vision_lr`, `merger_lr`, `llm_lr`, `warmup_ratio`, `weight_decay`, `max_grad_norm`, `lr_scheduler_type`, `gradient_checkpointing`, `bf16|fp16`.
 - Data: `train_data_path`, `val_data_path`, `data_root`, `teacher_pool_file`, `max_total_length`, `num_teacher_samples`, `max_dataset_size`.
-- Features: `coordinate_tokens_enabled`, `coordinate_init_mode {ms_mean|fourier_ramp}`, `max_coord_value`, `merge_size`, `max_pixels`.
-- Loss: `teacher_loss_weight`, `student_loss_weight`, `caption_loss_weight`, `grounding_loss_weight`, `formatting_loss_weight`, `coordinate_loss_weight`, `teacher_ratio`.
-- Collator: `collator_type {packed|standard}`, `packed_segment_isolation` (bool).
-- HF Trainer: `eval_strategy`, `eval_steps`, `save_strategy`, `save_steps`, `save_total_limit`, `load_best_model_at_end`, `metric_for_best_model`, `greater_is_better`.
+- Features: `max_coord_value`, `merge_size`, `max_pixels`. Remove `coordinate_tokens_enabled` and related settings from new configs.
+- Loss: `teacher_loss_weight`, `student_loss_weight`, `caption_loss_weight`, `grounding_loss_weight`, `formatting_loss_weight`.
+- Collator: `collator_type: standard` only. Packed mode is disabled in src_new and `packed_segment_isolation` is ignored.
+- HF Trainer & Checkpointing: `eval_strategy`, `eval_steps`, `save_steps`, `save_total_limit`, `metric_for_best_model`, `greater_is_better`. HF `save_strategy` is "no"; `CheckpointSaver` writes SafeTensors and tokenizer/processor, promotes best checkpoint by atomic copy at interval ticks, and rotates old `checkpoint-*` folders per `save_total_limit`. `load_best_model_at_end` remains false.
 - Logging: `logging_steps`, `report_to`, `disable_tqdm`.
 - Dataloader: `dataloader_num_workers`, `pin_memory`, `prefetch_factor`, `remove_unused_columns`.
-- LRs (optional): `lr_merger`, `lr_coord_slice`, `lr_full_model`.
+- LRs (optional): `lr_merger`, `lr_full_model`.
 - Variants: `conversation_variant_ratios`.
-- Format mode:
-  - `coordinate_tokens_enabled: true` → coord_tokens mode
-  - `coordinate_tokens_enabled: false` → special_tokens mode (default)
+- Format mode: a single numeric mode (special wrappers + integers). Coordinate‑token mode is deprecated.
 
 ---
 
 ## Loss Computation & Diagnostics (single source)
 
 - LLM loss: single CE pass (shifted), masks per role; grouped LLM masks from `TokenGroupingPlugin` (caption/grounding/formatting) with teacher/student role weights.
-- Coordinate aux losses (optional):
-  - Kernelized‑KL over Gaussian window centered at GT bin; Unlikelihood on non‑coord slice (top‑K).
-  - Config: `coord_aux_enabled`, `coord_aux_tau`, `coord_aux_sigma_bins`, `coord_aux_window_bins`, `coord_aux_topk`, `coord_aux_lambda_kce`, `coord_aux_lambda_unlike`.
-  - Diagnostics per role: `window_mass`, `coord_slice_mass`, `gt_prob`, `expected_mae_bins`, `top1_acc`, `top5_acc`, `outside_window_mass`, `noncoord_topk_mass`, `window_entropy`, `margin_top1_top2`, `mean_bin_offset`, `coord_pos_count`.
+- Coordinate auxiliary losses and coord‑specific diagnostics are deprecated and should not be enabled.
 - Grouping policy keyed by variant:
-  - `dense_caption`, `coords_to_desc`, `desc_to_coords` (special_tokens mode): require geometry/object-ref wrappers; fail fast if absent.
+  - `dense_caption`, `coords_to_desc`, `desc_to_coords`: require geometry/object-ref wrappers; fail fast if absent.
   - Plain JSON (when enabled): require strict JSON Lines layout for variants; fail fast if invalid.
   - `summary`: caption-only grouping over assistant spans; wrappers/JSON not required.
-  - The sampled variant is propagated as `conversation_variant` from dataset → collator → loss manager to select the correct grouping branch.
 
 ---
 
 ## Freezing Phases (separate runs)
 
-- `phase_1`: Train `visual.merger`; if coord tokens present, enable coord‑slice grad masks on `embed_tokens.weight` and `lm_head.weight`; freeze LLM & vision.
+- `phase_1`: Train `visual.merger`; freeze most of LLM & vision as needed.
 - `phase_2`: Phase 1 + unfreeze last‑K LLM decoder blocks (use `llm_top_k_block` in configs); vision remains frozen; merger trainable.
 - `phase_3`: Unfreeze all by default (keep `visual.patch_embed` frozen). For memory‑constrained runs, selectively unfreeze last‑K LLM blocks via `llm_top_k_block` and last‑K vision blocks via `vision_top_k_block`; merger always trainable.
 
@@ -121,8 +111,8 @@
 
 ## Collation
 
-- Standard: pad sequences to max length; emit `pixel_values` and `image_grid_thw` when present; validate THW vs `pixel_values` rows.
-- Packed: concatenate to one row; mask first token at each boundary; optionally emit `segment_lengths` for block‑diagonal attention isolation.
+- Standard: pad sequences to max length; emit `pixel_values` and `image_grid_thw` when present; validate THW vs `pixel_values` rows and ensure `image_grid_thw` has shape [num_images, 3].
+- Packed: disabled in src_new. Only the standard collator is supported; `collator_type` must be "standard" and `packed_segment_isolation` is not used.
 
 ---
 
@@ -130,29 +120,8 @@
 
 - Loads tokenizer/processor/model with the same validations as training; enforces image token/tensor alignment.
 - Teacher‑guided mode (num_teachers > 0) replicates dynamic pairing; batch size forced to 1.
-- Parsing priority: coordinate token blocks (strict) → geometry tokens with raw numbers → JSON best‑effort; optional prefix constraints allow only coordinate slice + punctuation inside geometry sections.
+- Parsing priority: geometry tokens with raw numbers → JSON best‑effort; no coordinate‑token parsing.
 - Stability recommendations: `attn_implementation="eager"`, `bf16`, batch size 1.
-
----
-
-## Troubleshooting (compact)
-
-| Issue | Root cause | Fix |
-|---|---|---|
-| NCCL timeouts during logging/eval | Conflicts in distributed ops | Use `BBUTrainer` (local aggregation) which overrides `_maybe_log_save_evaluate`; no custom distributed ops |
-| Checkpoint save: `'Qwen2VLProcessor' has no get_vocab` | `processing_class` set to processor | Set `trainer.processing_class = tokenizer`; save processor separately |
-| Span misalignment / NaNs | Char vs token mismatch; missing EOS in spans | Use offset mapping; include immediate `<|im_end|>` in assistant spans |
-| Empty student spans | Incomplete teacher‑student conversations | Ensure builder emits full student responses; dataset always supplies student turn |
-| Image features/tokens mismatch | `<|image_pad|>` count not equal to THW expansion | Validate with `utils/tensor_validation.py`; ensure merge size and image grid consistent |
-
----
-
-## Performance & Ops
-
-- Prefer `flash_attention_2` for training; `eager` for inference stability; `bf16` for memory/perf balance.
-- 7B model typical settings: `per_device_train_batch_size=1`, `gradient_accumulation_steps≈8`, VRAM ≈24GB, throughput ≈2–3 samples/s on A100.
-- Differential LRs recommended (vision < LLM; merger highest); enable gradient checkpointing for memory.
-- Always save SafeTensors; shard `max_shard_size ~ 5GB`.
 
 ---
 
@@ -160,12 +129,11 @@
 
 - `config/`: strict dataclass; path normalization; schedule & variant validation.
 - `data/`: dataset + augmentation + teacher pool; consumes precomputed assistant spans; `<|image_pad|>` masking.
-- `processing/`: conversation builder; span precomputation (`processing/span_builder.py`); coordinate/string conversion; canonical tokens; templates; variant registry.
-- `models/`: wrapper + validations; SOLUTION‑1 CE path; optional coord aux; diagnostics.
-- `losses/`: `coord_aux.py` and `token_grouping.py`.
+- `processing/`: conversation builder; span precomputation (`processing/span_builder.py`); numeric geometry conversion; canonical tokens; templates; variant registry.
+- `models/`: wrapper + validations; SOLUTION‑1 CE path; grouped LLM losses.
+- `losses/`: `token_grouping.py`.
 - `training/`: BBUTrainer; PhaseFreezeManager; TrainingStateManager; CheckpointSaver.
 - `inference.py`: engine with strict parsing and training‑matched prep.
-- `utils/`: rank‑aware logging; path/data resolvers; tensor validation; debug logging.
 
 ---
 
@@ -173,19 +141,11 @@
 
 - Summary variant (SFT, optional): image → one-line Chinese summary per image
   - Purpose: reduce distribution shift before RL by teaching a clean, single-line, per-image summary with no coordinates/special tokens.
-  - Source: distilled on-the-fly from each sample’s `objects[*].desc` (no extra JSONL required). The extractor respects slash-level semantics:
+  - Source: precomputed during data conversion as `summary` in each sample; src_new reads this field directly (no dynamic extraction). The precomputation respects the same slash-level semantics:
     - Level-0: object type literal (e.g., “BBU设备”, “挡风板”, …)
     - Level-1: comma-joined canonical attributes (e.g., visibility, compliance, bend radius, organization)
     - Level-2 (conditional): present only when parent condition is met (e.g., `windshield_conformity`, `specific_issues`, `protection_details`)
     - Level-Last (remarks): optional free-text “special circumstances” (e.g., cannot determine/rectified/space-limited). Detected strictly by position (last slash segment), not by keywords.
-  - Content priority in summary (from severe to mild):
-    - Screws/connectors noncompliant → list specific issues {未拧紧, 露铜, 复接, 生锈}
-    - Fiber bend violation（弯曲半径不合理）
-    - Wiring disorganized（分布散乱）
-    - Shield required but missing/nonconformant; shield install direction incorrect
-    - BBU visibility partial（只显示部分）
-    - Label readability: 清晰/不清晰 (no OCR text)
-    - Optional short remarks (Level-Last)
   - Hard constraints: per-image only; no group-level or pass/fail decisions; no `<|...|>`, `<`, `>`, `[`, `]`, or coordinates.
 
 - YAML toggle (no code changes needed):
@@ -198,7 +158,6 @@
       summary: 0.15
     ```
   - Disable by omitting `summary` or setting `summary: 0.0`.
-    ```
 
 - Prompt alignment (mitigate drift between SFT and RL):
   - SFT summary system prompt (`SUMMARY_SYSTEM_PROMPT`, `src_new/processing/templates.py`) and RL Stage‑A system prompt (`STAGE_A_SYSTEM_PROMPT`, `src_post/conversation.py`) share the same core constraints:
@@ -213,3 +172,25 @@
 
 - Evaluation note:
   - The default eval flow uses `dense_caption`; to evaluate summary behavior, run a small validation pass sampling the `summary` variant and check formatting/cleanliness metrics (symbol leakage=0, length 10–40 chars, coverage of severe slots).
+
+---
+
+## New: Text-Only Wrapper Reconstruction Variant
+
+- Purpose: give the base SFT curriculum an explicit formatting rehearsal where the model rewrites ground-truth objects into canonical wrapper lines without seeing pixels. This injects repeated practice for `<|object_ref_start|>…<|line_end|>` balance and discourages truncation during long multimodal turns.
+- Prompt contract:
+  - User turn includes only textual scaffolding summarising each object: `对象{k}: 描述: …   几何: quad […]`, drawn directly from the JSONL. No `<image>` placeholder is attached (`include_image=false`).
+  - Assistant target is the same multimodal wrapper string produced in dense captioning (geometry + description wrappers with raw integers).
+- Implementation details:
+  - Registered as `ConversationVariant.WRAPPER_RECONSTRUCTION` (`processing/variants.py`); handler returns the formatted instruction dictionary.
+  - `ConversationProcessor` normalises user specs and validates zero-image conversations, while `_process_text_and_images` skips image tensors when the placeholder count is zero.
+  - `Dataset._process_sample_unified` recognises the variant, bypasses teacher sampling, image loading, and augmentation, ensuring a deterministic text-only batch.
+- Configuration:
+  - Add to YAML via `conversation_variant_ratios.wrapper_reconstruction`. Example (phase 3 standard):
+    ```yaml
+    conversation_variant_ratios:
+      dense_caption: 0.7
+      wrapper_reconstruction: 0.3
+    ```
+  - Ratios are validated centrally (`config/config.py`) so any typo or negative weight fails fast.
+- Testing: `test_conversation_processor_precomputed_spans.py` covers the zero-image path; `test_conversation_variants.py` logs the prompt/target pair to `conversation_variants.log` for manual inspection.

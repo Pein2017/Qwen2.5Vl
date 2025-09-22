@@ -34,13 +34,13 @@ class PackedDataCollator:
     def __post_init__(self):
         if self.pad_token_id is None:
             self.pad_token_id = self.tokenizer.pad_token_id
-        if self.max_length is None and self.config is not None:
-            self.max_length = self.config.max_total_length
-        logger.info(f"PackedDataCollator initialized with max_length={self.max_length}")
+        # Ignore configured max_total_length to avoid truncation; perform true packing
+        self.max_length = None
+        logger.info("PackedDataCollator initialized with max_length=None (no truncation; true packing)")
 
     @jaxtyped_beartype
     def __call__(self, features: List[Dict[str, Any]]) -> MultimodalBatch:
-        has_images = "pixel_values" in features[0]
+        has_images = any(("pixel_values" in f) and (f["pixel_values"] is not None) for f in features)
         if has_images:
             return self._collate_with_images(features)
         else:
@@ -59,8 +59,10 @@ class PackedDataCollator:
         input_ids_1d = [_to_1d(f["input_ids"]) for f in features]
         attention_mask_1d = [_to_1d(f["attention_mask"]) for f in features]
         labels_1d = [_to_1d(f["labels"]) for f in features]
-        pixel_values_list = []
+        pixel_values_list: List[torch.Tensor] = []
         for f in features:
+            if "pixel_values" not in f or f["pixel_values"] is None:
+                continue
             pv = f["pixel_values"]
             if pv.dim() == 2:
                 pixel_values_list.append(pv)
@@ -73,10 +75,13 @@ class PackedDataCollator:
                 raise ValueError(
                     f"Invalid pixel_values dims={pv.dim()} shape={pv.shape} (expected {PIXEL_VALUES_PACKED_SHAPE_DESC})"
                 )
-        if pixel_values_list and pixel_values_list[0].dim() == 2:
-            pixel_values = torch.cat(pixel_values_list, dim=0)
+        if pixel_values_list:
+            if pixel_values_list[0].dim() == 2:
+                pixel_values = torch.cat(pixel_values_list, dim=0)
+            else:
+                pixel_values = torch.stack(pixel_values_list)
         else:
-            pixel_values = torch.stack(pixel_values_list)
+            pixel_values = None
 
         # True text packing: concatenate sequences into a single row [1, sum(Li)]
         total_length = sum(int(t.size(0)) for t in input_ids_1d)
@@ -118,9 +123,10 @@ class PackedDataCollator:
             "input_ids": packed_input_ids,
             "attention_mask": packed_attention_mask,
             "labels": packed_labels,
-            "pixel_values": pixel_values,
             "segment_lengths": segment_lengths,
         }
+        if pixel_values is not None:
+            batch["pixel_values"] = pixel_values
         if "conversation_variant" in features[0]:
             batch["conversation_variant"] = features[0]["conversation_variant"]
 
@@ -144,15 +150,19 @@ class PackedDataCollator:
         except Exception:
             pass
 
-        if "image_grid_thw" in features[0]:
+        image_grid_present = any(
+            ("image_grid_thw" in f) and (f["image_grid_thw"] is not None) for f in features
+        )
+        if image_grid_present:
             image_grid_thw_list = []
             for f in features:
-                grid_thw = f["image_grid_thw"]
+                grid_thw = f.get("image_grid_thw")
+                if grid_thw is None:
+                    continue
                 if grid_thw.dim() == 2:
                     if grid_thw.shape[0] == 1 and grid_thw.shape[1] == 3:
-                        grid_thw = grid_thw.squeeze(0)
-                        image_grid_thw_list.append(grid_thw)
-                    elif grid_thw.shape[0] == 2 and grid_thw.shape[1] == 3:
+                        image_grid_thw_list.append(grid_thw.squeeze(0))
+                    elif grid_thw.shape[0] >= 1 and grid_thw.shape[1] == 3:
                         for i in range(grid_thw.shape[0]):
                             image_grid_thw_list.append(grid_thw[i])
                     else:
@@ -164,10 +174,9 @@ class PackedDataCollator:
                         image_grid_thw_list.append(grid_thw)
                     elif grid_thw.shape[0] == 2:
                         h, w = grid_thw
-                        grid_thw = torch.tensor(
-                            [1, h, w], dtype=grid_thw.dtype, device=grid_thw.device
+                        image_grid_thw_list.append(
+                            torch.tensor([1, h, w], dtype=grid_thw.dtype, device=grid_thw.device)
                         )
-                        image_grid_thw_list.append(grid_thw)
                     else:
                         raise ValueError(
                             f"Invalid 1D image_grid_thw shape {grid_thw.shape} (expected 3 elements for THW)"
@@ -176,8 +185,18 @@ class PackedDataCollator:
                     raise ValueError(
                         f"Invalid image_grid_thw dims={grid_thw.dim()} shape={grid_thw.shape} (expected {IMAGE_GRID_THW_SHAPE_DESC})"
                     )
-            image_grid_thw = torch.stack(image_grid_thw_list)
-            batch["image_grid_thw"] = image_grid_thw
+            if image_grid_thw_list:
+                image_grid_thw = torch.stack(image_grid_thw_list)
+                batch["image_grid_thw"] = image_grid_thw
+            else:
+                image_grid_thw = None
+        else:
+            image_grid_thw = None
+
+        if pixel_values is not None and image_grid_thw is None:
+            raise ValueError(
+                "Packed collator: pixel_values present but image_grid_thw missing; cannot build multimodal batch."
+            )
 
         try:
             if "pixel_values" in batch and "image_grid_thw" in batch:

@@ -32,11 +32,16 @@ def build_assistant_spans_token_aligned(
         return_offsets_mapping=True,
         add_special_tokens=False,
         return_tensors="pt",
+        truncation=False,
     )
     offset_map = offset_mapping
     if not isinstance(offset_map, torch.Tensor):
         offset_map = tokenized["offset_mapping"][0]
     input_ids_unexpanded = tokenized["input_ids"][0]
+
+    # Normalize expanded ids to 1D when provided as [1, S]
+    if isinstance(input_ids_expanded, torch.Tensor) and input_ids_expanded.dim() == 2 and int(input_ids_expanded.shape[0]) == 1:
+        input_ids_expanded = input_ids_expanded[0]
 
     # Find spans at char-level, map to unexpanded token indices
     assistant_spans = find_assistant_spans(

@@ -2,13 +2,13 @@
 # Clean inference pipeline with improved directory structure
 set -e
 
-###############################################################################
 # EXPERIMENT CONFIGURATION - EDIT THIS SECTION
-###############################################################################
+export CUDA_VISIBLE_DEVICES=0
 
-# Experiment name (set manually)
-MODEL_PATH="outputs/7B-full-retrained/teacher-0.6/9-9-bs_32-ep_40-teacher_0.6-3_types_tokens/best-1000-eval_loss0.8189"  
-EXP_NAME="9-9-bs_32-ep_40-teacher_0.6-3_types_tokens"           
+
+MODEL_PATH="outputs/7B-dynamic_pairing/phase_3/9-21-dynamic_pairing-phase_3-resume/checkpoint-1200"
+
+EXP_NAME="9-21-dynamic_pairing-phase_3-resume"           
 CONFIG_PATH=""  # Optional: leave empty to auto-load from checkpoint
 
 # Dataset to process (single dataset per run)
@@ -19,18 +19,26 @@ OUTPUT_BASE="infer_results"
 
 # Teacher configuration (set manually)
 NUM_TEACHERS=1
+# Global teacher selection (used when NUM_TEACHERS > 0)
+# Set GLOBAL_TEACHER_INDEX to a number to choose a fixed line; otherwise seed is used
+GLOBAL_TEACHER_SEED=17
+GLOBAL_TEACHER_INDEX=""
 
 # Model configuration
 
 MODEL_NAME="qwen2_5_vl"
 MAX_NEW_TOKENS=1024
+TEMPERATURE=0.000001
+DO_SAMPLE=true
+GENERATION_VARIANT="dense"   # dense | summary
+REPETITION_PENALTY=1.2   # Stronger anti-repetition for cleaner outputs
 BATCH_SIZE=1          # Use batch_size=1 for coordinate token models
 NUM_WORKERS=4         # Use 0 workers to avoid memory issues
 ENABLE_TORCH_COMPILE=false
 # Force eager attention to avoid Flash Attention triton issues
 FORCE_EAGER_ATTENTION=true
 
-MAX_SAMPLES=10      
+MAX_SAMPLES=5      
 
 # Logging level (debug shows validation details)
 LOG_LEVEL="debug"                       # "debug" for detailed validation info, "info" for normal
@@ -41,7 +49,6 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH=.:$PYTHONPATH
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-export CUDA_VISIBLE_DEVICES=0
 
 # Normalize to absolute paths per repository rules
 ABS_REPO_ROOT="."
@@ -104,13 +111,21 @@ EOF
 
 echo "💾 Saved experiment config: $CONFIG_FILE"
 
-# Determine teacher arguments
+# Determine teacher arguments (global-teacher ablation when NUM_TEACHERS > 0)
 if [ "$NUM_TEACHERS" -gt 0 ]; then
-    TEACHER_ARGS="--num_teachers $NUM_TEACHERS"
-    echo "👨‍🏫 Using $NUM_TEACHERS teacher(s). Teacher pool will be auto-resolved from data_root."
+    TEACHER_ARGS="--use_global_teacher"
+    if [ -n "$GLOBAL_TEACHER_INDEX" ]; then
+        TEACHER_ARGS="$TEACHER_ARGS --global_teacher_index $GLOBAL_TEACHER_INDEX"
+        echo "👨‍🏫 Global teacher ablation: Using fixed teacher index $GLOBAL_TEACHER_INDEX"
+    elif [ -n "$GLOBAL_TEACHER_SEED" ]; then
+        TEACHER_ARGS="$TEACHER_ARGS --global_teacher_seed $GLOBAL_TEACHER_SEED"
+        echo "👨‍🏫 Global teacher ablation: Using seed $GLOBAL_TEACHER_SEED to select teacher"
+    else
+        echo "👨‍🏫 Global teacher ablation: No index/seed provided; a random teacher will be chosen"
+    fi
 else
     TEACHER_ARGS=""
-    echo "🚫 No teacher mode"
+    echo "🚫 Global teacher disabled"
 fi
 
 # If config is not provided, try to detect in model path for logging
@@ -136,9 +151,12 @@ INFERENCE_CMD="$PY_BIN $ABS_REPO_ROOT/src_new/inference.py \
     --output_file \"$OUTPUT_FILE\" \
     --data_root \"${ABS_DATA_ROOT}\" \
     --max_new_tokens $MAX_NEW_TOKENS \
+    --temperature $TEMPERATURE \
+    --repetition_penalty $REPETITION_PENALTY \
     --batch_size $BATCH_SIZE \
     --num_workers $NUM_WORKERS \
     --log_level \"$LOG_LEVEL\" \
+    --generation_variant "$GENERATION_VARIANT" \
     $TEACHER_ARGS"
 
 # Include config_path only if available (inference can auto-detect otherwise)
@@ -149,6 +167,10 @@ fi
 # Add max_samples parameter if set
 if [ -n "$MAX_SAMPLES" ] && [ "$MAX_SAMPLES" != "None" ] && [ "$MAX_SAMPLES" != "null" ]; then
     INFERENCE_CMD="$INFERENCE_CMD --max_samples $MAX_SAMPLES"
+fi
+
+if [ "$DO_SAMPLE" = true ]; then
+    INFERENCE_CMD="$INFERENCE_CMD --do_sample"
 fi
 
 if [ "$ENABLE_TORCH_COMPILE" = true ]; then

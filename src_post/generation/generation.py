@@ -136,13 +136,14 @@ def build_stage_a_context_lines(
     stopping: Optional[StoppingCriteriaList],
     sanitize: bool,
     mission: Optional[str] = None,
+    conv_builder: Optional[object] = None,
 ) -> List[str]:
     from src_post.prompting.conversation import GroupQCConversationBuilder
     lines: List[str] = []
-    conv_builder = GroupQCConversationBuilder(processor=processor)
+    conv = conv_builder if conv_builder is not None else GroupQCConversationBuilder(processor=processor)
     for img in images:
         img_proc = sft_style_preprocess_image(img)
-        messages = conv_builder.build_stage_a_messages(mission)
+        messages = conv.build_stage_a_messages(mission)
         # Enforce typed message carries exactly one image
         GroupQCConversationBuilder.validate_typed_image_count(messages, 1)
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -180,7 +181,8 @@ def build_stage_a_context_lines(
             text_s = _re.sub(r"\[\s*(?:-?\d+\s*(?:,\s*)?)+\s*\]?", "", text_s)
             for ch in ["<", ">", "[", "]", "'", '"', "“", "”", "‘", "’"]:
                 text_s = text_s.replace(ch, "")
-            text_s = _re.sub(r"[A-Za-z0-9]+", "", text_s)
+            # Keep digits to preserve '×N' counting; strip only Latin letters
+            text_s = _re.sub(r"[A-Za-z]+", "", text_s)
             text_s = _re.sub(r"\s+", " ", text_s)
             text_s = _re.sub(r"[,，；;]\s*[,，；;]+", ",", text_s)
             parts = _re.split(r"[，,；;、]", text_s)

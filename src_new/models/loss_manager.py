@@ -272,6 +272,7 @@ class LossManager:
                 return_offsets_mapping=True,
                 add_special_tokens=False,
                 return_tensors="pt",
+                truncation=False,
             )
             offsets = tok["offset_mapping"][0].tolist()
             # Build assistant masks (unshifted)

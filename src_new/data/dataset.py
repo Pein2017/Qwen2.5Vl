@@ -62,6 +62,9 @@ def get_data_logger() -> logging.Logger:
 logger = get_data_logger()
 
 
+TEXT_ONLY_VARIANTS = {"wrapper_reconstruction"}
+
+
 def read_jsonl(path: str) -> List[Dict[str, Any]]:
     """Read JSONL file and return list of dictionaries.
 
@@ -366,7 +369,31 @@ class Dataset(TorchDataset):
 
         self.hf_processor = hf_processor
 
-        from src_new.processing.conversation import ConversationBuilder
+        # NEW: strict tokenizer special-token validations (fail-fast)
+        try:
+            tok = getattr(hf_processor, "tokenizer", None)
+            if tok is None:
+                raise ValueError("Processor is missing tokenizer; cannot validate special tokens")
+            from src_new.processing.special_tokens import (
+                require_core_special_tokens,
+                require_geometry_tokens,
+                require_coordinate_token_range,
+            )
+            # Core chat/image tokens must exist
+            require_core_special_tokens(tok)
+            # Geometry/object-ref wrappers must exist; require line wrappers only when lines are used/configured
+            # In our dataset all three shapes are supported; keep require_line=True unless explicitly disabled by config
+            require_line_tokens: bool = True
+            if hasattr(self.config, "require_line_tokens"):
+                require_line_tokens = bool(getattr(self.config, "require_line_tokens"))
+            require_geometry_tokens(tok, require_line=require_line_tokens)
+            # Coordinate token coverage if enabled
+            if bool(getattr(self.config, "coordinate_tokens_enabled")):
+                max_coord_value = int(getattr(self.config, "max_coord_value"))
+                # Require at least max_coord_value+1 coord tokens present
+                require_coordinate_token_range(tok, min_count=max_coord_value + 1)
+        except Exception as e:
+            raise ValueError(f"Tokenizer special-token validation failed: {e}")
 
         # Fail-fast: max_coord_value must come from YAML (no defaults allowed)
         if not hasattr(self.config, "max_coord_value"):
@@ -541,11 +568,27 @@ class Dataset(TorchDataset):
     # --- New helpers: unified variant sampling & image loading ---
     def _sample_variant(self) -> str:
         if self.is_eval:
+            # Eval: if configuration focuses exclusively on summary, use summary variant
+            ratios = (
+                getattr(self, "_active_variant_ratios", None)
+                or getattr(self.config, "conversation_variant_ratios", None)
+            )
+            try:
+                if isinstance(ratios, dict):
+                    summary_weight = float(ratios.get("summary", 0.0))
+                    total_weight = sum(float(v) for v in ratios.values()) if ratios else 0.0
+                    # Summary-only when summary is the only non-zero weight (e.g., summary: 1)
+                    if summary_weight > 0.0 and (total_weight - summary_weight) <= 0.0:
+                        return "summary"
+            except Exception:
+                # Fall back to dense if any issue arises when interpreting ratios
+                pass
             return "dense_caption"
         ratios = getattr(self, "_active_variant_ratios", None) or getattr(self.config, "conversation_variant_ratios", None) or {
             "dense_caption": 1.0,
             "coords_to_desc": 0.0,
             "desc_to_coords": 0.0,
+            "wrapper_reconstruction": 0.0,
         }
         keys = list(ratios.keys())
         weights = [float(ratios[k]) for k in keys]
@@ -587,16 +630,36 @@ class Dataset(TorchDataset):
 
         # Variant selection
         variant = self._sample_variant()
+        variant_key = str(getattr(variant, "value", variant)).strip().lower()
+        text_only_variant = variant_key in TEXT_ONLY_VARIANTS
 
-        # Teacher presence
-        teacher_samples = structured_sample.get("teacher_samples", [])
+        # Teacher presence (disabled for text-only variants)
+        teacher_samples = [] if text_only_variant else structured_sample.get("teacher_samples", [])
         has_teachers = len(teacher_samples) > 0
+        if text_only_variant and has_teachers:
+            logger.debug(
+                "Text-only variant '%s' requested; ignoring %d teacher samples",
+                variant_key,
+                len(teacher_samples),
+            )
+            teacher_samples = []
+            has_teachers = False
+
         logger.debug(
-            f"🧪 Sample idx={idx}: variant='{variant}', has_teachers={has_teachers}"
+            f"🧪 Sample idx={idx}: variant='{variant_key}', has_teachers={has_teachers}"
         )
 
         # Load images
-        if has_teachers:
+        if text_only_variant:
+            teacher_images_list = []
+            student_images = []
+            try:
+                # Ensure downstream code doesn't accidentally attempt to load or augment
+                structured_sample = dict(structured_sample)
+                structured_sample["images"] = []
+            except Exception:
+                structured_sample["images"] = []
+        elif has_teachers:
             teacher_images_list: List[List[Image.Image]] = []
             for t_sample in teacher_samples:
                 t_paths = t_sample.get("images", [])
@@ -610,7 +673,7 @@ class Dataset(TorchDataset):
             student_images = self._load_images(structured_sample.get("images", []))
 
         # Optional augmentation
-        if self.augmentation_pipeline is not None:
+        if self.augmentation_pipeline is not None and not text_only_variant:
             from torch.utils.data import get_worker_info
 
             wi = get_worker_info()
@@ -784,6 +847,7 @@ class Dataset(TorchDataset):
                         return_offsets_mapping=True,
                         add_special_tokens=False,
                         return_tensors="pt",
+                        truncation=False,
                     )
                     enc_ids = tokenized_for_ids["input_ids"][0]
                 except Exception:
@@ -794,6 +858,7 @@ class Dataset(TorchDataset):
                     return_offsets_mapping=True,
                     add_special_tokens=False,
                     return_tensors="pt",
+                    truncation=False,
                 )
                 offset_mapping = tokenized_with_offsets["offset_mapping"][0]
                 enc_ids = tokenized_with_offsets["input_ids"][0]
@@ -935,6 +1000,7 @@ class Dataset(TorchDataset):
                     return_offsets_mapping=True,
                     add_special_tokens=False,
                     return_tensors="pt",
+                    truncation=False,
                 )
                 offset_fb = tokenized_with_offsets_fb["offset_mapping"][0]
                 from src_new.processing.span_extraction import find_assistant_spans as _find
