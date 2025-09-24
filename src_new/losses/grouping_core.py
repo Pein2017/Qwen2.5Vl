@@ -29,6 +29,9 @@ class GroupingIdSets:
 	objref_wrapper_ids: Tuple[int, ...]
 	punctuation_ids: Tuple[int, ...]
 	geom_sep_ids: Tuple[int, ...]
+	# New (non-breaking): IDs whose token strings represent numeric literals (e.g., "0", "123", "▁45").
+	# Not used by existing callers, but available for stricter grounding definitions.
+	numeric_ids: Tuple[int, ...] = ()
 
 
 def _safe_id(tok, token: str) -> Optional[int]:
@@ -86,6 +89,28 @@ def build_id_sets(tok) -> GroupingIdSets:
 	punctuation_ids = _encode_chars_to_ids(tok, punctuation_chars)
 	geom_sep_ids = _encode_chars_to_ids(tok, geom_sep_chars)
 
+	# Best-effort numeric token IDs:
+	# - Map single digits '0'..'9'
+	# - Additionally scan vocab entries whose raw token string matches optional whitespace prefix + digits
+	numeric_ids_set: Dict[int, bool] = {}
+	for d in "0123456789":
+		for tid in tok.encode(d, add_special_tokens=False):
+			if isinstance(tid, int):
+				numeric_ids_set[int(tid)] = True
+	try:
+		vocab = getattr(tok, "get_vocab", None)
+		if callable(vocab):
+			for s, tid in tok.get_vocab().items():  # type: ignore[attr-defined]
+				if not isinstance(tid, int):
+					continue
+				# Normalize common BPE/SentencePiece whitespace markers
+				norm = str(s).lstrip("▁Ġ")
+				if re.fullmatch(r"[0-9]+", norm or ""):
+					numeric_ids_set[int(tid)] = True
+	except Exception:
+		# Fallback silently; char-based coverage still helps
+		pass
+
 	return GroupingIdSets(
 		coord_start=coord_start,
 		coord_end_exclusive=coord_end_exclusive,
@@ -93,12 +118,13 @@ def build_id_sets(tok) -> GroupingIdSets:
 		objref_wrapper_ids=tuple(sorted(set(objref_wrapper_ids))),
 		punctuation_ids=tuple(sorted(set(punctuation_ids))),
 		geom_sep_ids=tuple(sorted(set(geom_sep_ids))),
+		numeric_ids=tuple(sorted(numeric_ids_set.keys())),
 	)
 
 
 def build_base_predicates(
 	*,
-	labels: torch.Tensor,
+	labels: torch.Tensor,	
 	ids: GroupingIdSets,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, bool]:
 	"""Build base boolean predicates and wrapper presence flag from labels.
@@ -127,7 +153,6 @@ def build_base_predicates(
 
 	wrappers_present = is_geom_wrapper.any() or is_objref_wrapper.any()
 	return is_coord, is_geom_wrapper, is_objref_wrapper, is_punct, is_geom_sep, bool(wrappers_present)
-
 
 
 

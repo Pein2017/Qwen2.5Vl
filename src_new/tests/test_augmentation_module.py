@@ -7,6 +7,7 @@ from typing import Any, Dict, Tuple
 from PIL import Image, ImageDraw
 
 from src_new.augmentation import ObjectAwareAugmentationPipeline
+from src_new.augmentation.utils import smart_resize_dimensions
 from src_new.config.augmentation_config import (
     AugmentationConfig,
     CriteriaConfig,
@@ -14,6 +15,7 @@ from src_new.config.augmentation_config import (
     LineAugConfig,
     OcclusionCriterionConfig,
     PhotometricConfig,
+    SmartResizeConfig,
 )
 
 
@@ -41,6 +43,81 @@ def _base_sample(size_wh: Tuple[int, int] = (160, 120)) -> Dict[str, Any]:
 
 
 class TestObjectAwareAug(unittest.TestCase):
+    def test_smart_resize_scales_geometry(self):
+        sample = _base_sample()
+        img = _make_image()
+
+        smart_cfg = SmartResizeConfig(
+            enabled=True,
+            factor=28,
+            min_pixels=512 * 28 * 28,
+            max_pixels=768 * 28 * 28,
+            max_ratio=200.0,
+        )
+        cfg = AugmentationConfig(
+            enabled=True,
+            rng_seed=111,
+            apply_to_teachers=False,
+            lines_policy="transform",
+            debug_visualization=False,
+            debug_output_dir=None,
+            smart_resize=smart_cfg,
+            image_geom=None,
+            photometric=None,
+            lines=None,
+            type_policies=None,
+            ocr=None,
+            criteria=CriteriaConfig(occlusion=None),
+        )
+
+        pipe = ObjectAwareAugmentationPipeline.from_config(cfg)
+        out_imgs, out_sample = pipe.apply(
+            copy.deepcopy(sample), [img], sample_index=0
+        )
+
+        self.assertEqual(len(out_imgs), 1)
+        expected_w, expected_h = smart_resize_dimensions(
+            width=sample["width"],
+            height=sample["height"],
+            factor=smart_cfg.factor,
+            min_pixels=smart_cfg.min_pixels,
+            max_pixels=smart_cfg.max_pixels,
+            max_ratio=smart_cfg.max_ratio,
+        )
+        self.assertEqual(out_sample["width"], expected_w)
+        self.assertEqual(out_sample["height"], expected_h)
+
+        scale_x = expected_w / sample["width"]
+        scale_y = expected_h / sample["height"]
+
+        bbox = out_sample["objects"][0]["bbox_2d"]
+        expected_bbox = [
+            int(round(12 * scale_x)),
+            int(round(12 * scale_y)),
+            int(round(58 * scale_x)),
+            int(round(38 * scale_y)),
+        ]
+        # Ensure bbox coordinates stay within bounds and preserve ordering
+        self.assertTrue(all(0 <= v < expected_w for v in bbox[0::2]))
+        self.assertTrue(all(0 <= v < expected_h for v in bbox[1::2]))
+        self.assertGreater(bbox[2], bbox[0])
+        self.assertGreater(bbox[3], bbox[1])
+
+        quad = out_sample["objects"][1]["quad"]
+        quad_pairs = list(zip(quad[0::2], quad[1::2]))
+        for (orig_x, orig_y), (new_x, new_y) in zip(
+            [(82, 22), (118, 22), (118, 58), (82, 58)], quad_pairs
+        ):
+            self.assertEqual(new_x, max(0, min(expected_w - 1, int(round(orig_x * scale_x)))))
+            self.assertEqual(new_y, max(0, min(expected_h - 1, int(round(orig_y * scale_y)))))
+
+        line = out_sample["objects"][2]["line"]
+        for idx in range(0, len(line), 2):
+            orig_x = sample["objects"][2]["line"][idx]
+            orig_y = sample["objects"][2]["line"][idx + 1]
+            self.assertEqual(line[idx], max(0, min(expected_w - 1, int(round(orig_x * scale_x)))))
+            self.assertEqual(line[idx + 1], max(0, min(expected_h - 1, int(round(orig_y * scale_y)))))
+
     def test_image_geom_rotate_invariants(self):
         sample = _base_sample()
         img = _make_image()

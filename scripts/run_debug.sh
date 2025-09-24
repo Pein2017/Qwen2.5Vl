@@ -12,9 +12,9 @@ export PYTHONDONTWRITEBYTECODE=1
 
 # Project paths
 PROJECT_ROOT="."
-CONFIG_NAME="phase_1/debug"                      # Config to use: bbu_v2
+CONFIG_NAME="debug"                      # Config to use: bbu_v2
 ARCH="legacy"   # json | legacy
-GPU_DEVICES="0,1"                             # Single GPU for robust debugging
+GPU_DEVICES="0"                             # Single GPU for robust debugging
 DEEPSPEED_CONFIG="scripts/zero2.json"    # DeepSpeed configuration file
 
 # Logging configuration
@@ -105,21 +105,13 @@ determine_deepspeed_usage() {
 validate_config() {
     echo "🔍 Validating configuration for new architecture..."
     
-    # Check if config file exists
-    if [[ ! -f "configs/${CONFIG_NAME}.yaml" ]]; then
-        echo "❌ Configuration file not found: configs/${CONFIG_NAME}.yaml"
-        echo "💡 Available configs:"
-        ls -1 configs/*.yaml | sed 's/configs\///g' | sed 's/\.yaml//g' | sed 's/^/   - /'
-        exit 1
-    fi
-    
     # Test config loading with selected architecture
     if [[ "$ARCH" == "json" ]]; then
         echo "🧪 Testing config loading with src_new_json..."
         python - <<EOF
 from src_new_json.config.config import load_config
 try:
-    config = load_config('configs/${CONFIG_NAME}.yaml')
+    config = load_config('${CONFIG_NAME}')
     print('✅ Config loading successful (src_new_json)')
     try:
         print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')
@@ -135,7 +127,7 @@ EOF
         python - <<EOF
 from src_new.config.config import load_config
 try:
-    config = load_config('configs/${CONFIG_NAME}.yaml')
+    config = load_config('${CONFIG_NAME}')
     print('✅ Config loading successful (src_new)')
     try:
         print(f'   Coordinate tokens: {config.coordinate_tokens_enabled}')

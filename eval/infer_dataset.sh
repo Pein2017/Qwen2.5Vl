@@ -3,12 +3,15 @@
 set -e
 
 # EXPERIMENT CONFIGURATION - EDIT THIS SECTION
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=6
 
 
-MODEL_PATH="outputs/7B-dynamic_pairing/phase_3/9-21-dynamic_pairing-phase_3-resume/checkpoint-1200"
+MODEL_PATH="outputs/summary/9-23-summary/checkpoint-600"
+# MODEL_PATH="outputs/7B-all_tokens/phase_3/9-22-phase_3-all_tokens-lower_grounding_weight-last_vision_4-with_text_only/checkpoint-6000"
 
-EXP_NAME="9-21-dynamic_pairing-phase_3-resume"           
+
+
+EXP_NAME="9-23-summary"           
 CONFIG_PATH=""  # Optional: leave empty to auto-load from checkpoint
 
 # Dataset to process (single dataset per run)
@@ -18,7 +21,7 @@ OUTPUT_BASE="infer_results"
 
 
 # Teacher configuration (set manually)
-NUM_TEACHERS=1
+NUM_TEACHERS=0
 # Global teacher selection (used when NUM_TEACHERS > 0)
 # Set GLOBAL_TEACHER_INDEX to a number to choose a fixed line; otherwise seed is used
 GLOBAL_TEACHER_SEED=17
@@ -27,11 +30,11 @@ GLOBAL_TEACHER_INDEX=""
 # Model configuration
 
 MODEL_NAME="qwen2_5_vl"
-MAX_NEW_TOKENS=1024
+MAX_NEW_TOKENS=512
 TEMPERATURE=0.000001
-DO_SAMPLE=true
-GENERATION_VARIANT="dense"   # dense | summary
-REPETITION_PENALTY=1.2   # Stronger anti-repetition for cleaner outputs
+DO_SAMPLE=false
+GENERATION_VARIANT="summary"   # dense | summary
+REPETITION_PENALTY=1.1   # Stronger anti-repetition for cleaner outputs
 BATCH_SIZE=1          # Use batch_size=1 for coordinate token models
 NUM_WORKERS=4         # Use 0 workers to avoid memory issues
 ENABLE_TORCH_COMPILE=false

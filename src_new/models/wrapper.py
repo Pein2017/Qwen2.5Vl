@@ -356,20 +356,6 @@ class DetectionModel(nn.Module):
                 self.loss_manager.set_token_grouping_plugin(
                     TokenGroupingPlugin(final_tokenizer)
                 )
-                # If auxiliary coordinate losses are enabled, configure options now
-                if self.training_config.coord_aux_enabled:
-                    self.loss_manager.set_coordinate_aux_options(
-                        tau=float(self.training_config.coord_aux_tau),
-                        sigma_bins=float(self.training_config.coord_aux_sigma_bins),
-                        window_bins=int(self.training_config.coord_aux_window_bins),
-                        topk=int(self.training_config.coord_aux_topk),
-                        lambda_kce=float(self.training_config.coord_aux_lambda_kce),
-                        lambda_unlike=float(
-                            self.training_config.coord_aux_lambda_unlike
-                        ),
-                        lambda_lap1=0.0,  # Laplacian regularizer removed
-                        lambda_lap2=0.0,  # Laplacian regularizer removed
-                    )
                 # Laplacian regularizer removed: no embedding accessor needed
 
         # Store initializer for later use

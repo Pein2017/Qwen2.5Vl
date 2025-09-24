@@ -7,12 +7,12 @@
 
 ### Repository components (3)
 - `data_conversion/`: V2 annotations → strict JSONL with native geometry (bbox/quad/line), canonical ordering, and hierarchical Chinese descriptions; teacher pool selection; images EXIF-corrected and smart-resized.
-- `src_new/`: HF-first SFT pipeline (Qwen2.5‑VL) with optional coordinate tokens, strict config, span alignment, grouped losses, and robust multimodal validations.
+- `src_new/`: HF-first SFT pipeline (Qwen2.5‑VL) with optional coordinate auxiliaries (legacy), strict config, span alignment, grouped losses, and robust multimodal validations. Coordinate tokens are deprecated; use raw integers for geometry.
 - `src_post/`: RL post‑training (GRPO) for group-level QC decisions using an SFT checkpoint; Stage‑A summaries + Stage‑B pass/fail.
 
 ## End‑to‑End Flow (conceptual)
 1) Data conversion (strict): raw V2 JSON + images → flat JSONL samples + processed images
-2) SFT training (HF-first): build typed conversations → tokenization → span masking → model wrapper with validations → single‑pass CE (+ optional coord aux) → checkpoints (+ processor)
+2) SFT training (HF-first): build typed conversations → tokenization → span masking → model wrapper with validations → single‑pass CE (+ grouped losses) → checkpoints (+ processor)
 3) RL post‑training (optional): Stage‑A summaries → Stage‑B pass/fail GRPO on short text
 
 ---
@@ -25,16 +25,14 @@
   - Expected image token count = sum over images of `(t*h*w) // (merge_size**2)` from `image_grid_thw` and model merge size; must equal `<|image_pad|>` count found in `input_ids`.
   - `pixel_values` rows must equal `sum_i (t_i*h_i*w_i)`; else error.
 - Assistant spans and labels:
-  - Assistant spans are extracted from decoded text via offset mapping (regex over `<|im_start|>assistant ... <|im_end|>`), then converted to token spans.
+  - Assistant spans are precomputed once in the conversation builder (regex over `<|im_start|>assistant ... <|im_end|>`), stored with token‑aligned indices, then consumed by the dataset to build labels.
   - Labels outside assistant spans are `-100`. The immediate `<|im_end|>` token is included inside each assistant span to teach termination.
   - Teacher–student: teacher assistant spans (earlier turns) and the last assistant span (student) are separated; only student is the generation target by default.
-- Coordinate tokens (optional feature):
-  - No hard‑coded IDs. The dynamic range is detected by scanning tokenizer for `<|coord_*>`; stored as start‑inclusive, end‑exclusive.
-  - When enabled, geometry is rendered/parsed with `<|coord_N|>` tokens; otherwise raw integers are used.
+- Coordinate tokens (deprecated in `src_new`):
+  - Do not use `<|coord_*|>` in `src_new`. Geometry is emitted as raw integers with canonical wrappers. Dynamic range detection is retained only for legacy compatibility/inference.
 - Losses (grouped and optional coord aux):
   - Single‑pass CE computed once and reused for teacher/student masks; grouped CE components (caption/grounding/formatting) built from label IDs and spans.
-  - Optional coordinate auxiliary losses: kernelized‑KL on a sparse window around the correct bin + unlikelihood on non‑coordinate tokens at coordinate positions.
-  - Total loss equals the sum of weighted components; report disaggregated teacher/student and grouped metrics.
+  - Optional coordinate auxiliary losses exist for legacy coord‑token mode only and are disabled by default.
 - Checkpoints & tokenizer:
   - Save tokenizer/processor with checkpoints; wrapper exposes `model.config` to preserve HF integration expectations.
 - Configuration (strict):
@@ -66,26 +64,23 @@
 ## SFT pipeline (src_new, HF‑first)
 - Conversation building:
   - Use `ConversationProcessor` (HF‑first) which wraps the official processor.
-  - Variants: dense caption (default), coords→desc, desc→coords; teacher–student conversations interleave teacher examples before the student turn.
+  - Variants: dense caption (default), coords→desc, desc→coords; optional `summary` (image→one‑line CN) and `text_only` (dummy image + JSON guidance). Teacher–student conversations interleave teacher examples before the student turn; inference is single‑turn.
 - Span detection and labeling:
-  - Decode `input_ids` → compute offset mapping by re‑tokenizing decoded text (no special‑token skipping) → regex spans → map chars→tokens.
-  - Unmask assistant spans into `labels`; include immediate `<|im_end|>`; mask `<|image_pad|>` back to `-100`.
+  - Spans are precomputed once in the builder (`processing/span_builder.py`) and attached as token‑aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; include immediate `<|im_end|>`; mask `<|image_pad|>` back to `-100`.
 - Collation & shapes:
-  - Collators emit `input_ids [B,S]`, `attention_mask [B,S]`, `labels [B,S]`; if images: `pixel_values [sum(t*h*w), D]`, `image_grid_thw [num_images,3]`.
-  - Packed rows: optional block‑diagonal attention isolation when `segment_lengths` provided.
+  - Standard collator pads to the longest in batch; emits `pixel_values` and `image_grid_thw` when present; validates THW vs `pixel_values` rows and enforces `image_grid_thw` shape [num_images, 3].
+  - Packed mode is disabled in `src_new`.
 - Model wrapper (`DetectionModel`):
   - Fail‑fast multimodal validations (shapes, counts, expected `<|image_pad|>`); obtains merge size from model vision config (fallback to training config).
-  - Intelligent checkpoint handling; tokenizer/vocab extension with ms‑swift embedding padding; coordinate token range dynamically detected.
-  - Loss path: bypass base loss when spans provided; compute single‑pass CE once; apply teacher/student masks and grouped masks; optional coord aux enabled via config.
+  - Intelligent checkpoint handling; tokenizer/vocab extension with ms‑swift embedding padding; coordinate token range detection retained only for legacy.
+  - Loss path: bypass base loss when spans provided; compute single‑pass CE once; apply teacher/student masks and grouped masks; optional coord aux is legacy only.
 - Grouped LLM losses (token‑ID based):
-  - caption (inside object‑ref), grounding (coord tokens + geom wrappers + inside geom blocks minus separators), formatting (punctuation + object‑ref wrappers + geom separators); masks aligned to shifted CE.
+  - caption (inside object‑ref), grounding (plain digits inside geometry spans), formatting (punctuation + object‑ref/geometry wrappers + residual). Masks are aligned to shifted CE.
 
 ---
 
-## Coordinate token system (optional)
-- Enable via config; set `max_coord_value` and `coordinate_init_mode` (`ms_mean|fourier_ramp`).
-- Token range is derived dynamically (`get_coord_token_range`); never hard‑code.
-- When disabled, emit numeric coordinates; when enabled, emit `<|coord_N|>` and train with grouped CE (always) plus optional coord aux (KCE + unlikelihood).
+## Coordinate token system (legacy only)
+- `src_new` disables coordinate‑token mode by default; keep `coordinate_tokens_enabled: false` in configs. Raw integers are authoritative. Range detection utilities remain for backward compatibility (e.g., legacy inference checkpoints).
 
 ---
 
@@ -104,7 +99,7 @@
 - `pixel_values` rows == sum over `image_grid_thw` of (t*h*w).
 - `<|image_pad|>` count in `input_ids` equals expected `(t*h*w)//(merge_size**2)` totals.
 - Assistant spans found; `<|im_end|>` included; labels outside spans are `-100`.
-- Coord mode: tokenizer contains `<|coord_*>`; dynamic range detected; if coord aux is enabled but no coord‑labeled targets inside spans, fail fast.
+- Coord mode is legacy only; if coord aux is enabled but no coord‑labeled targets inside spans, fail fast.
 - Loss: total equals sum of weighted components; diagnostics finite.
 - Checkpoints: Save processor; wrapper exposes HF `model.config`.
 
@@ -114,8 +109,8 @@
 - `src_new/processing/conversation_processor.py` (HF‑first builders, validation)
 - `src_new/processing/coordinate_converter.py` (object→token conversion)
 - `src_new/models/wrapper.py` (DetectionModel, validations, loss path)
-- `src_new/models/loss_manager.py` and `src_new/losses/token_grouping.py` (single‑pass CE, grouped masks, coord aux)
-- `src_new/data/dataset.py` (offset‑based spans, masking, variant dispatch)
+- `src_new/models/loss_manager.py` and `src_new/losses/token_grouping.py` (single‑pass CE, grouped masks, coord aux legacy)
+- `src_new/data/dataset.py` (precomputed spans, masking, variant dispatch)
 - `data_conversion/unified_processor.py` and `coordinate_manager.py` (EXIF→rescale→smart‑resize; canonical geometry)
 - `src_post/runner.py` and `src_post/conversation.py` (Stage‑A/B flows, GRPO core)
 
@@ -130,5 +125,5 @@
 
 ## References
 - Data conversion deep dive: `data_conversion/README.md`
-- SFT docs hub: `src_new/UNIFIED_DOCUMENTATION.md` and `docs/SRC_NEW_REFERENCE.md`
+- SFT docs hub: `src_new/UNIFIED_DOCUMENTATION.md`
 - RL post‑training: `src_post/README.md`

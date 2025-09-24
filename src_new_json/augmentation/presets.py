@@ -11,6 +11,7 @@ from src_new_json.config.augmentation_config import (
     OcclusionCriterionConfig,
     OCRPolicyConfig,
     PhotometricConfig,
+    SmartResizeConfig,
     TypePolicyConfig,
 )
 
@@ -28,6 +29,11 @@ class PresetOptions:
     )
     debug_visualization: bool = False
     debug_output_dir: Optional[str] = None
+    smart_resize_enabled: Optional[bool] = None
+    smart_resize_factor: Optional[int] = None
+    smart_resize_min_pixels: Optional[int] = None
+    smart_resize_max_pixels: Optional[int] = None
+    smart_resize_max_ratio: Optional[float] = None
 
 
 _DEF_TYPE_POLICIES: Dict[str, TypePolicyConfig] = {
@@ -122,6 +128,27 @@ def _disable_moves(tp: Dict[str, TypePolicyConfig]) -> Dict[str, TypePolicyConfi
     return out
 
 
+def _build_smart_resize_from_options(opts: PresetOptions) -> SmartResizeConfig:
+    if (
+        opts.smart_resize_enabled is None
+        or opts.smart_resize_factor is None
+        or opts.smart_resize_min_pixels is None
+        or opts.smart_resize_max_pixels is None
+        or opts.smart_resize_max_ratio is None
+    ):
+        raise ValueError(
+            "Preset '{}' requires smart_resize configuration (enabled, factor, min_pixels, max_pixels, max_ratio)."
+            " Provide these under augmentation.smart_resize in YAML.".format(opts.preset)
+        )
+    return SmartResizeConfig(
+        enabled=bool(opts.smart_resize_enabled),
+        factor=int(opts.smart_resize_factor),
+        min_pixels=int(opts.smart_resize_min_pixels),
+        max_pixels=int(opts.smart_resize_max_pixels),
+        max_ratio=float(opts.smart_resize_max_ratio),
+    )
+
+
 def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationConfig:
     preset = opts.preset
     if preset == "off":
@@ -132,6 +159,7 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
             lines_policy=opts.lines_policy,
             debug_visualization=opts.debug_visualization,
             debug_output_dir=opts.debug_output_dir,
+            smart_resize=None,
             image_geom=None,
             photometric=None,
             lines=None,  # keep line objects unchanged
@@ -155,6 +183,7 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
             lines_policy=opts.lines_policy,
             debug_visualization=opts.debug_visualization,
             debug_output_dir=opts.debug_output_dir,
+            smart_resize=_build_smart_resize_from_options(opts),
             image_geom=ImageGeomConfig(
                 rotate_deg_range=(-8.0, 8.0),
                 translate_pct=0.10,
@@ -184,6 +213,7 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
             lines_policy=opts.lines_policy,
             debug_visualization=opts.debug_visualization,
             debug_output_dir=opts.debug_output_dir,
+            smart_resize=_build_smart_resize_from_options(opts),
             image_geom=ImageGeomConfig(
                 rotate_deg_range=(-10.0, 10.0),
                 translate_pct=0.10,
@@ -213,6 +243,7 @@ def build_augmentation_config_from_preset(opts: PresetOptions) -> AugmentationCo
         lines_policy=opts.lines_policy,
         debug_visualization=opts.debug_visualization,
         debug_output_dir=opts.debug_output_dir,
+        smart_resize=_build_smart_resize_from_options(opts),
         image_geom=ImageGeomConfig(
             rotate_deg_range=(-15.0, 15.0),
             translate_pct=0.12,

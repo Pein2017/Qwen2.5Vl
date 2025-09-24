@@ -1,22 +1,19 @@
-"""
-Configuration management for Qwen2.5-VL training.
+"""Public configuration API for src_new."""
 
-This module provides a unified configuration system with direct YAML mapping
-and comprehensive validation.
-"""
-
-from typing import TYPE_CHECKING
-
-# Re-export core components
-from src_new.config.config import Config, load_config, save_config
-
-
-if TYPE_CHECKING:
-    # Type-only imports
-    pass
+from src_new.config.config import (
+    Config,
+    load_config,
+    save_config,
+    set_global_log_level,
+)
+from src_new.config.loader import load_layered_config
+from src_new.config.schema import TrainingConfig
 
 __all__ = [
     "Config",
+    "TrainingConfig",
     "load_config",
+    "load_layered_config",
     "save_config",
+    "set_global_log_level",
 ]

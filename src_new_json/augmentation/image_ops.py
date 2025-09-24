@@ -15,8 +15,9 @@ from src_new_json.augmentation.utils import (
     deg2rad,
     rotate_point_about_center,
     round_and_clamp_points,
+    smart_resize_dimensions,
 )
-from src_new_json.config.augmentation_config import ImageGeomConfig
+from src_new_json.config.augmentation_config import ImageGeomConfig, SmartResizeConfig
 
 
 def _build_canvas_transform(
@@ -47,6 +48,119 @@ def _rotate_point_list(
         ry += t.translate_xy[1]
         rotated.append((rx, ry))
     return round_and_clamp_points(rotated, t.out_size_wh[0], t.out_size_wh[1])
+
+
+def _scale_bbox(
+    bbox: List[int], scale_x: float, scale_y: float, out_w: int, out_h: int
+) -> List[int]:
+    if len(bbox) != 4:
+        raise ValueError(f"Expected bbox of length 4, got {bbox}")
+    max_x = max(out_w - 1, 0)
+    max_y = max(out_h - 1, 0)
+    x1 = int(round(bbox[0] * scale_x))
+    y1 = int(round(bbox[1] * scale_y))
+    x2 = int(round(bbox[2] * scale_x))
+    y2 = int(round(bbox[3] * scale_y))
+    x1 = max(0, min(max_x, x1))
+    y1 = max(0, min(max_y, y1))
+    x2 = max(0, min(max_x, x2))
+    y2 = max(0, min(max_y, y2))
+    if x1 >= x2:
+        if x1 >= max_x:
+            x1 = max(0, max_x - 1)
+            x2 = max_x
+        else:
+            x2 = min(max_x, x1 + 1)
+    if y1 >= y2:
+        if y1 >= max_y:
+            y1 = max(0, max_y - 1)
+            y2 = max_y
+        else:
+            y2 = min(max_y, y1 + 1)
+    return [x1, y1, x2, y2]
+
+
+def _scale_points(
+    points: List[Tuple[int, int]], scale_x: float, scale_y: float, out_w: int, out_h: int
+) -> List[Tuple[int, int]]:
+    scaled = [(p[0] * scale_x, p[1] * scale_y) for p in points]
+    return round_and_clamp_points(scaled, out_w, out_h)
+
+
+def apply_smart_resize(
+    images: List[Image.Image],
+    sample: Dict[str, Any],
+    cfg: SmartResizeConfig,
+) -> Tuple[List[Image.Image], Dict[str, Any]]:
+    if not images or not cfg.enabled:
+        return images, sample
+
+    if "width" not in sample or "height" not in sample:
+        raise ValueError("Sample missing required 'width'/'height' keys for smart resize")
+
+    width = int(sample["width"])
+    height = int(sample["height"])
+    target_w, target_h = smart_resize_dimensions(
+        width=width,
+        height=height,
+        factor=int(cfg.factor),
+        min_pixels=int(cfg.min_pixels),
+        max_pixels=int(cfg.max_pixels),
+        max_ratio=float(cfg.max_ratio),
+    )
+
+    if target_w == width and target_h == height:
+        return images, sample
+
+    scale_x = float(target_w) / float(width)
+    scale_y = float(target_h) / float(height)
+
+    resized_images = [
+        img.resize((target_w, target_h), resample=Image.BICUBIC)
+        for img in images
+    ]
+
+    objects = sample.get("objects", [])
+    new_objects: List[Dict[str, Any]] = []
+    for obj in objects:
+        new_obj = dict(obj)
+        if "bbox_2d" in obj:
+            bbox = [int(v) for v in obj["bbox_2d"]]
+            new_obj["bbox_2d"] = _scale_bbox(bbox, scale_x, scale_y, target_w, target_h)
+        elif "quad" in obj:
+            q = obj["quad"]
+            pts = [
+                (int(q[0]), int(q[1])),
+                (int(q[2]), int(q[3])),
+                (int(q[4]), int(q[5])),
+                (int(q[6]), int(q[7])),
+            ]
+            scaled_pts = _scale_points(pts, scale_x, scale_y, target_w, target_h)
+            flat: List[int] = []
+            for x, y in scaled_pts:
+                flat.extend([x, y])
+            new_obj["quad"] = flat
+        elif "line" in obj:
+            line = obj["line"]
+            pts = [(int(line[i]), int(line[i + 1])) for i in range(0, len(line), 2)]
+            scaled_pts = _scale_points(pts, scale_x, scale_y, target_w, target_h)
+            flat: List[int] = []
+            for x, y in scaled_pts:
+                flat.extend([x, y])
+            new_obj["line"] = flat
+        else:
+            raise ValueError(f"Unsupported geometry in object: keys={list(obj.keys())}")
+        new_objects.append(new_obj)
+
+    new_sample = dict(sample)
+    new_sample["objects"] = new_objects
+    new_sample["width"] = target_w
+    new_sample["height"] = target_h
+
+    if new_objects:
+        validate_sample_after_transform(new_sample, target_w, target_h)
+
+    return resized_images, new_sample
 
 
 def apply_image_geom(

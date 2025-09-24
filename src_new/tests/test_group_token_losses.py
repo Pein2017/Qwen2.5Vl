@@ -39,6 +39,9 @@ class FakeTokenizer:
         # Punctuation set
         for ch in ["[", "]", "{", "}", "(", ")", ",", ":", '"', "/"]:
             add(ch)
+        # Add digit tokens to simulate numeric labels inside geometry
+        for d in list("0123456789"):
+            add(d)
         # Coordinate tokens (provide a small slice)
         for n in [10, 20, 30, 40]:
             add(f"<|coord_{n}|>")
@@ -97,13 +100,13 @@ class TestGroupedTokenLosses(unittest.TestCase):
             t2id("<|object_ref_end|>"),
             t2id("<|box_start|>"),
             t2id("["),
-            t2id("<|coord_10|>"),
+            t2id("1"),
             t2id(","),
-            t2id("<|coord_20|>"),
+            t2id("2"),
             t2id(","),
-            t2id("<|coord_30|>"),
+            t2id("3"),
             t2id(","),
-            t2id("<|coord_40|>"),
+            t2id("4"),
             t2id("]"),
             t2id("<|box_end|>"),
             t2id("<|im_end|>"),
@@ -160,35 +163,40 @@ class TestGroupedTokenLosses(unittest.TestCase):
         # Category counts (known from synthetic sequence)
         # caption: one token "标签贴纸"
         self.assertEqual(int(gm.student_caption.sum().item()), 1)
-        # grounding: 2 wrappers + 4 coords = 6
-        self.assertEqual(int(gm.student_grounding.sum().item()), 6)
-        # formatting: remainder inside span after shift; at least brackets, commas, obj-ref wrappers, im_end
+        # grounding: ONLY numeric tokens inside geometry (4 digits here)
+        self.assertEqual(int(gm.student_grounding.sum().item()), 4)
+        # formatting: wrappers + brackets + commas + obj-ref wrappers + im_end (shifted)
         self.assertGreater(int(gm.student_formatting.sum().item()), 0)
 
-    def test_weighted_llm_aggregation_math(self):
-        labels, t_spans, s_spans = self._build_synthetic_labels_and_spans()
-        B, S = labels.shape
-        V = 200
-        logits = torch.randn(B, S, V)
-        out = self.lm._compute_granular_teacher_student_loss(
-            logits=logits,
-            labels=labels,
-            coord_mask=None,
-            teacher_spans=t_spans,
-            student_spans=s_spans,
-        )
-        # Presence of group diagnostics
-        for k in [
-            "teacher_llm_loss",
-            "student_llm_loss",
-            "teacher_caption_loss",
-            "teacher_grounding_loss",
-            "teacher_formatting_loss",
-            "student_caption_loss",
-            "student_grounding_loss",
-            "student_formatting_loss",
-        ]:
-            self.assertIn(k, out)
+    def test_grounding_counts_only_numeric_inside_geometry(self):
+        # Build a sequence that mixes coord tokens and digits inside geometry
+        # In src_new, coordinate tokens are deprecated; grouping should count only numeric digits.
+        t2id = self.tok.convert_tokens_to_ids
+        seq = [
+            t2id("EOS"),
+            t2id("<|object_ref_start|>"),
+            t2id("标签贴纸"),
+            t2id("<|object_ref_end|>"),
+            t2id("<|quad_start|>"),
+            t2id("["),
+            t2id("<|coord_10|>"),
+            t2id(","),
+            t2id("5"),
+            t2id(","),
+            t2id("<|coord_20|>"),
+            t2id("]"),
+            t2id("<|quad_end|>"),
+            t2id("<|im_end|>"),
+        ]
+        labels = torch.tensor([seq], dtype=torch.long)
+        t_spans = [[]]
+        s_spans = [[(1, len(seq)-1)]]  # include assistant content up to im_end
+
+        gm = self.plugin.build_group_masks(labels=labels, teacher_spans=t_spans, student_spans=s_spans)
+        # Expect grounding to include only one digit token within geometry
+        self.assertEqual(int(gm.student_grounding.sum().item()), 1)
+        # Formatting should include brackets/commas/wrappers and coord tokens
+        self.assertGreater(int(gm.student_formatting.sum().item()), 0)
 
 
 if __name__ == "__main__":

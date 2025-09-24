@@ -36,6 +36,7 @@
 
 3) Dataset & conversations
 - `Dataset` reads JSONL; validates per-sample structure; optional augmentation via `ObjectAwareAugmentationPipeline` with epoch-based presets; dynamic contrastive pairing per-epoch when `dynamic_pairing_enabled` (one context teacher max; eval forced single-turn). Text-only variants (currently `text_only`) bypass augmentation/teacher pairing and receive a sentinel image path that resolves to the cached 28×28 black patch, ensuring the conversation retains a single `<image>` placeholder and the vision tower gradients stay in sync across ranks.
+- Augmentation order (when enabled): **smart resize → geometry → photometric → line ops → criteria**. The smart-resize stage snaps every canvas to a Qwen2.5-VL-friendly grid (`factor=28`) and constrains total pixels to `[512×28², 768×28²]`, scaling every bbox/quad/line before rotation so that downstream processors see native aspect ratios and patch layouts without extra padding.
 - `ConversationProcessor.create_conversation(...)` builds teacher-student or simple conversations, applies HF chat template, threads `conversation_text` + `offset_mapping`, enforces image token consistency. The processor accepts user-spec dictionaries (`{"text": ..., "include_image": bool}`) letting variants decide whether placeholders are emitted. Summary variant uses precomputed `sample['summary']`.
 - Spans are computed once in the builder (`processing/span_builder.py`) and attached as token-aligned `teacher_assistant_spans`/`student_assistant_spans`. The dataset consumes these directly to build labels; `<|image_pad|>` is masked; span ends include immediate `<|im_end|>` when present.
 
@@ -49,7 +50,7 @@
 
 6) Loss computation (`models/loss_manager.py`)
 - Single‑pass CE once; apply teacher/student masks; grouped LLM losses (caption/grounding/formatting) via `losses/token_grouping.py` with weights from config (teacher/student weighted separately).
-- Coordinate auxiliary losses are optional and disabled by default. When enabled (`coord_aux_enabled: true`), LossManager computes per-group kernelized-KL and unlikelihood components only at positions where the label is a coordinate token, and logs diagnostics (window_mass, gt_prob, top1/top5, etc.).
+- Grouping categories (strict): caption = inside `<|object_ref_start|>...<|object_ref_end|>` excluding punctuation and geometry; grounding = numeric tokens only inside geometry spans (plain-number subwords like 0–9, 12, 3456); formatting = geometry wrappers + punctuation/separators + object‑ref wrappers + residual non‑numeric inside geometry. Coordinate tokens `<|coord_*|>` are deprecated by default.
 
 7) Phases & optimizer
 - `PhaseFreezeManager` applies `phase_name`; coordinate‑slice specific groups removed; use standard groups: `vision`, `merger`, `llm`.
@@ -93,7 +94,6 @@
 ## Loss Computation & Diagnostics (single source)
 
 - LLM loss: single CE pass (shifted), masks per role; grouped LLM masks from `TokenGroupingPlugin` (caption/grounding/formatting) with teacher/student role weights.
-- Coordinate auxiliary losses (kernelized‑KL + unlikelihood) are optional and off by default. Enable with `coord_aux_enabled: true` to compute per‑group aux at coordinate‑labeled targets and log diagnostics (window_mass, coord_slice_mass, gt_prob, expected_mae_bins, top1/top5, etc.).
 - Grouping policy keyed by variant:
   - `dense_caption`, `coords_to_desc`, `desc_to_coords`: require geometry/object-ref wrappers; fail fast if absent.
   - Plain JSON (when enabled): require strict JSON Lines layout for variants; fail fast if invalid.

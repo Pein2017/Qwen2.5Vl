@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 from transformers import Qwen2VLProcessor
 from src_new_json.processing.templates import SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT
 
-import json
-import os
+# import json  # removed: no longer reading table.json at runtime
+# import os    # removed: no longer resolving external table path
 
 
 STAGE_A_SYSTEM_PROMPT: str = SUMMARY_SYSTEM_PROMPT
@@ -29,27 +29,8 @@ def _normalize_desc_item(text: str) -> str:
     return "/".join(filtered)
 
 
-def _load_annotation_table(path: str) -> Dict[str, Dict[str, List[str]]]:
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Annotation table not found: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        rows = json.load(f)
-    mapping: Dict[str, Dict[str, List[str]]] = {}
-    for row in rows:
-        mission = _normalize_mission(row.get("mission"))
-        gp = str(row.get("global_pass", "")).strip()
-        items_raw = [str(x).strip() for x in (row.get("desc_summary") or []) if str(x).strip()]
-        items = [_normalize_desc_item(x) for x in items_raw if _normalize_desc_item(x)]
-        if mission not in mapping:
-            mapping[mission] = {"pass_items": [], "fail_items": []}
-        if gp == "通过":
-            mapping[mission]["pass_items"].extend(items)
-        elif gp == "不通过":
-            mapping[mission]["fail_items"].extend(items)
-    for m in list(mapping.keys()):
-        mapping[m]["pass_items"] = sorted(list({x for x in mapping[m]["pass_items"]}))
-        mapping[m]["fail_items"] = sorted(list({x for x in mapping[m]["fail_items"]}))
-    return mapping
+# def _load_annotation_table(path: str) -> Dict[str, Dict[str, List[str]]]:
+#     ... existing code ...
 
 
 def _find_best_mission_key(mapping: Dict[str, Any], mission: Optional[str]) -> Optional[str]:
@@ -66,7 +47,7 @@ def _find_best_mission_key(mapping: Dict[str, Any], mission: Optional[str]) -> O
 
 def _build_stage_b_system_prompt(mission: Optional[str], pass_items: List[str], fail_items: List[str]) -> str:
     lines: List[str] = [
-        "你是通信机房质检助手（仅依赖标注表进行判断）。",
+        "你是通信机房质检助手（仅依赖标注表进行判断）",
         "判定规则（只允许使用下方表内词项进行匹配，不得引入表外词项）：",
         "  1) 若摘要出现任意‘不通过类’词项 → 总评: 不通过",
         "  2) 否则，若‘通过类’词项全部出现（每项至少出现一次） → 总评: 通过",
@@ -88,7 +69,142 @@ def _build_stage_b_system_prompt(mission: Optional[str], pass_items: List[str], 
         lines.extend([f"    - {x}" for x in fail_items])
     else:
         lines.append("  不通过类：<无>")
+    # --- Mission-specific minimal detection constraints (highest priority) ---
+    nm = _normalize_mission(mission) if mission else ""
+    extra: List[str] = []
+    if "bbu安装方式检查" in nm:
+        extra.append(" - 至少检测到一个“BBU设备”，否则直接判定为“不通过”（挡风板描述不影响此条）。")
+    if "bbu接地线检查" in nm:
+        extra.append(" - 至少检测到一对以上的配对：同时包含“机柜处接地螺丝”和“地排处接地螺丝”（各≥1），否则直接判定为“不通过”。")
+    if ("bbu线缆布放" in nm) or ("bbu线缆布放要求" in nm):
+        extra.append(" - 至少检测到一对以上的配对：同时包含“BBU端光纤插头”和“ODF端光纤插头”（各≥1），否则直接判定为“不通过”。")
+    if "挡风板安装检查" in nm:
+        extra.append(" - 至少检测到一个“挡风板”，否则直接判定为“不通过”。")
+    if extra:
+        lines.append("附加最低检测要求（不满足直接判不通过）：")
+        lines.extend(extra)
     return "\n".join(lines)
+
+
+def _inline_annotation_items() -> Dict[str, Dict[str, List[str]]]:
+    """Inline mission→{pass_items, fail_items} table built from group_annotation/table.json.
+
+    Items are normalized by removing display variants like ‘显示完整’/‘只显示部分’.
+    """
+    rows: List[Dict[str, Any]] = [
+        {
+            "mission": "BBU安装方式检查（正装）",
+            "global_pass": "通过",
+            "desc_summary": [
+                "螺丝、光纤插头/BBU安装螺丝/显示完整/符合要求",
+                "螺丝、光纤插头/BBU安装螺丝/只显示部分/符合要求",
+            ],
+        },
+        {
+            "mission": "BBU安装方式检查（正装）",
+            "global_pass": "不通过",
+            "desc_summary": [
+                "螺丝、光纤插头/BBU安装螺丝/显示完整/不符合要求",
+                "螺丝、光纤插头/BBU安装螺丝/只显示部分/不符合要求",
+            ],
+        },
+        {
+            "mission": "BBU接地线检查",
+            "global_pass": "通过",
+            "desc_summary": [
+                "螺丝、光纤插头/机柜处接地螺丝/显示完整/符合要求",
+                "螺丝、光纤插头/机柜处接地螺丝/只显示部分/符合要求",
+                "螺丝、光纤插头/地排处接地螺丝/显示完整/符合要求",
+                "螺丝、光纤插头/地排处接地螺丝/只显示部分/符合要求",
+                "电线/捆扎整齐",
+            ],
+        },
+        {
+            "mission": "BBU接地线检查",
+            "global_pass": "不通过",
+            "desc_summary": [
+                "螺丝、光纤插头/机柜处接地螺丝/显示完整/不符合要求",
+                "螺丝、光纤插头/机柜处接地螺丝/只显示部分/不符合要求",
+                "螺丝、光纤插头/地排处接地螺丝/显示完整/不符合要求",
+                "螺丝、光纤插头/地排处接地螺丝/只显示部分/不符合要求",
+                "电线/分布散乱",
+            ],
+        },
+        {
+            "mission": "BBU线缆布放要求",
+            "global_pass": "通过",
+            "desc_summary": [
+                "螺丝、光纤插头/BBU端光纤插头/显示完整/符合要求",
+                "螺丝、光纤插头/BBU端光纤插头/只显示部分/符合要求",
+                "螺丝、光纤插头/ODF端光纤插头/显示完整/符合要求",
+                "螺丝、光纤插头/ODF端光纤插头/只显示部分/符合要求",
+                "光纤/有保护措施/蛇形管/弯曲半径合理",
+                "光纤/有保护措施/铠装/弯曲半径合理",
+                "光纤/有保护措施/同时有蛇形管和铠装/弯曲半径合理",
+            ],
+        },
+        {
+            "mission": "BBU线缆布放要求",
+            "global_pass": "不通过",
+            "desc_summary": [
+                "螺丝、光纤插头/BBU端光纤插头/显示完整/不符合要求",
+                "螺丝、光纤插头/BBU端光纤插头/只显示部分/不符合要求",
+                "螺丝、光纤插头/ODF端光纤插头/显示完整/不符合要求",
+                "螺丝、光纤插头/ODF端光纤插头/只显示部分/不符合要求",
+                "光纤/无保护措施/弯曲半径合理",
+                "光纤/无保护措施/弯曲半径不合理（弯曲半径<4cm或者成环）",
+                "光纤/有保护措施/蛇形管/弯曲半径不合理（弯曲半径<4cm或者成环）",
+                "光纤/有保护措施/铠装/弯曲半径不合理（弯曲半径<4cm或者成环）",
+                "光纤/有保护措施/同时有蛇形管和铠装/弯曲半径不合理（弯曲半径<4cm或者成环）",
+            ],
+        },
+        {
+            "mission": "挡风板安装检查",
+            "global_pass": "通过",
+            "desc_summary": [
+                "BBU设备/华为/显示完整/这个BBU设备按要求配备了挡风板",
+                "BBU设备/华为/只显示部分/这个BBU设备按要求配备了挡风板",
+                "BBU设备/中兴/显示完整/这个BBU设备按要求配备了挡风板",
+                "BBU设备/中兴/只显示部分/这个BBU设备按要求配备了挡风板",
+                "BBU设备/华为/显示完整/无需安装",
+                "BBU设备/华为/只显示部分/无需安装",
+                "BBU设备/中兴/显示完整/无需安装",
+                "BBU设备/中兴/只显示部分/无需安装",
+                "BBU设备/爱立信/显示完整/无需安装",
+                "BBU设备/爱立信/只显示部分/无需安装",
+                "挡风板/显示完整/安装方向正确",
+                "挡风板/只显示部分/安装方向正确",
+            ],
+        },
+        {
+            "mission": "挡风板安装检查",
+            "global_pass": "不通过",
+            "desc_summary": [
+                "BBU设备/华为/显示完整/这个BBU设备未按要求配备挡风板",
+                "BBU设备/华为/只显示部分/这个BBU设备未按要求配备挡风板",
+                "BBU设备/中兴/显示完整/这个BBU设备未按要求配备挡风板",
+                "BBU设备/中兴/只显示部分/这个BBU设备未按要求配备挡风板",
+                "挡风板/显示完整/安装方向错误",
+                "挡风板/只显示部分/安装方向错误",
+            ],
+        },
+    ]
+    mapping: Dict[str, Dict[str, List[str]]] = {}
+    for row in rows:
+        mission = _normalize_mission(row.get("mission"))
+        gp = str(row.get("global_pass", "")).strip()
+        items_raw = [str(x).strip() for x in (row.get("desc_summary") or []) if str(x).strip()]
+        items = [_normalize_desc_item(x) for x in items_raw if _normalize_desc_item(x)]
+        if mission not in mapping:
+            mapping[mission] = {"pass_items": [], "fail_items": []}
+        if gp == "通过":
+            mapping[mission]["pass_items"].extend(items)
+        elif gp == "不通过":
+            mapping[mission]["fail_items"].extend(items)
+    for m in list(mapping.keys()):
+        mapping[m]["pass_items"] = sorted(list({x for x in mapping[m]["pass_items"]}))
+        mapping[m]["fail_items"] = sorted(list({x for x in mapping[m]["fail_items"]}))
+    return mapping
 
 
 class GroupQCConversationBuilder:
@@ -100,22 +216,9 @@ class GroupQCConversationBuilder:
 
     def __init__(self, processor: Qwen2VLProcessor, annotation_path: Optional[str] = None) -> None:
         self.processor = processor
-        # Resolve annotation table path
-        root_guess = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        candidate_paths = [
-            (annotation_path or os.path.join(root_guess, "group_annotation", "table.json")),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "group_annotation", "table.json"),
-            os.path.join(os.getcwd(), "group_annotation", "table.json"),
-        ]
-        resolved = None
-        for p in candidate_paths:
-            if os.path.exists(p):
-                resolved = p
-                break
-        if not resolved:
-            raise FileNotFoundError("group_annotation/table.json not found in expected locations")
-        self._annotation_path = resolved
-        self._mission_items = _load_annotation_table(self._annotation_path)
+        # Inline annotation table (do not read external files)
+        self._annotation_path = "<inline>"
+        self._mission_items = _inline_annotation_items()
         self._last_mission_key: Optional[str] = None
         self._last_mission_name: Optional[str] = None
 

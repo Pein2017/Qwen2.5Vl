@@ -47,13 +47,6 @@ def _build_minimal_training_config(base_model) -> Any:
         max_coord_value=2047,
         merge_size=merge_size,
         use_cache=True,
-        coord_aux_enabled=False,
-        coord_aux_tau=None,
-        coord_aux_sigma_bins=None,
-        coord_aux_window_bins=None,
-        coord_aux_topk=None,
-        coord_aux_lambda_kce=None,
-        coord_aux_lambda_unlike=None,
     )
     return cfg
 

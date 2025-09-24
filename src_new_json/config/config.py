@@ -128,6 +128,31 @@ def _convert_scientific_notation(data: Dict[str, Any]) -> Dict[str, Any]:
     return converted_data
 
 
+def _normalize_smart_resize_mapping(mapping: Dict[str, Any]) -> Dict[str, Any]:
+    required = {"enabled", "factor", "min_pixels", "max_pixels", "max_ratio"}
+    missing = required.difference(mapping.keys())
+    if missing:
+        raise ValueError(
+            f"smart_resize mapping missing required keys: {sorted(missing)}"
+        )
+    normalized = {
+        "enabled": bool(mapping["enabled"]),
+        "factor": int(mapping["factor"]),
+        "min_pixels": int(mapping["min_pixels"]),
+        "max_pixels": int(mapping["max_pixels"]),
+        "max_ratio": float(mapping["max_ratio"]),
+    }
+    if normalized["factor"] <= 0:
+        raise ValueError("smart_resize.factor must be positive")
+    if normalized["min_pixels"] <= 0 or normalized["max_pixels"] <= 0:
+        raise ValueError("smart_resize min_pixels/max_pixels must be positive")
+    if normalized["min_pixels"] > normalized["max_pixels"]:
+        raise ValueError("smart_resize.min_pixels must be <= max_pixels")
+    if normalized["max_ratio"] <= 0:
+        raise ValueError("smart_resize.max_ratio must be positive")
+    return normalized
+
+
 def _is_value_of_type(value: Any, annotation: Any) -> bool:
     """Lightweight runtime type check for common typing annotations.
 
@@ -368,6 +393,7 @@ class Config:
     teacher_augmentation: Optional[AugmentationConfigType] = None
     use_aug: bool = False
     augmentation_schedule: Optional[List[Dict[str, Any]]] = None
+    augmentation_smart_resize_defaults: Optional[Dict[str, Any]] = None
     phase_name: str = "off"
 
     # Optional phase-freeze overrides (phase_3 selective unfreeze; unified keys)
@@ -647,6 +673,7 @@ class Config:
             raise ValueError("augmentation_schedule must be a list of dictionaries.")
 
         valid_presets = {"off", "conservative", "moderate", "aggressive"}
+        default_sr = getattr(self, "augmentation_smart_resize_defaults", None)
         for step in schedule:
             if not isinstance(step, dict):
                 raise ValueError(
@@ -669,6 +696,43 @@ class Config:
                 raise ValueError(
                     f"augmentation_schedule.preset must be one of {sorted(valid_presets)}, got {preset!r}"
                 )
+
+            sr_dict = step.get("smart_resize")
+            if sr_dict is not None:
+                if not isinstance(sr_dict, dict):
+                    raise ValueError(
+                        f"augmentation_schedule.smart_resize must be a mapping when provided (preset '{preset}')"
+                    )
+                step["smart_resize"] = _normalize_smart_resize_mapping(sr_dict)
+            elif preset != "off":
+                if default_sr is None:
+                    raise ValueError(
+                        f"augmentation_schedule entry for preset '{preset}' is missing smart_resize and no augmentation.smart_resize defaults are defined."
+                    )
+
+            sr_dict = step.get("smart_resize")
+            if preset != "off":
+                if sr_dict is None:
+                    raise ValueError(
+                        f"augmentation_schedule entry for preset '{preset}' must include a smart_resize block"
+                    )
+            if sr_dict is not None:
+                if not isinstance(sr_dict, dict):
+                    raise ValueError(
+                        f"augmentation_schedule.smart_resize must be a mapping when provided (preset '{preset}')"
+                    )
+                required_sr = {
+                    "enabled",
+                    "factor",
+                    "min_pixels",
+                    "max_pixels",
+                    "max_ratio",
+                }
+                missing_sr = required_sr.difference(sr_dict.keys())
+                if missing_sr:
+                    raise ValueError(
+                        f"augmentation_schedule.smart_resize for preset '{preset}' missing keys: {sorted(missing_sr)}"
+                    )
 
     def _validate_phase_name(self) -> None:
         # Accept off or explicit phase markers
@@ -813,6 +877,9 @@ def load_config(override_config_path: str) -> Config:
     # Convert numeric-like strings to floats based on annotations
     data = _convert_scientific_notation(data)
 
+    if "augmentation_smart_resize_defaults" not in data:
+        data["augmentation_smart_resize_defaults"] = None
+
     # Remove backward-compatible key normalization; enforce canonical keys upstream
     if "conversation_variant_ratios" in data and isinstance(data["conversation_variant_ratios"], dict):
         pass
@@ -933,6 +1000,15 @@ def load_config(override_config_path: str) -> Config:
                     f"augmentation must be a mapping when provided, got {type(aug_dict)}"
                 )
 
+            smart_resize_defaults = None
+            sr_dict = aug_dict.get("smart_resize")
+            if sr_dict is not None:
+                if not isinstance(sr_dict, dict):
+                    raise ValueError(
+                        "augmentation.smart_resize must be a mapping when provided"
+                    )
+                smart_resize_defaults = _normalize_smart_resize_mapping(sr_dict)
+
             # New: allow preset-based shorthand to drastically reduce hyperparameters
             if "preset" in aug_dict:
                 from src_new_json.augmentation.presets import (
@@ -964,6 +1040,36 @@ def load_config(override_config_path: str) -> Config:
                     if "debug_output_dir" in aug_dict
                     else None
                 )
+                if preset_value != "off" and smart_resize_defaults is None:
+                    raise ValueError(
+                        f"augmentation.smart_resize must be provided when using preset '{preset_value}'."
+                    )
+
+                sr_enabled = (
+                    smart_resize_defaults["enabled"]
+                    if smart_resize_defaults is not None
+                    else None
+                )
+                sr_factor = (
+                    smart_resize_defaults["factor"]
+                    if smart_resize_defaults is not None
+                    else None
+                )
+                sr_min = (
+                    smart_resize_defaults["min_pixels"]
+                    if smart_resize_defaults is not None
+                    else None
+                )
+                sr_max = (
+                    smart_resize_defaults["max_pixels"]
+                    if smart_resize_defaults is not None
+                    else None
+                )
+                sr_ratio = (
+                    smart_resize_defaults["max_ratio"]
+                    if smart_resize_defaults is not None
+                    else None
+                )
 
                 opts = _PresetOptions(
                     preset=preset_value,  # type: ignore[arg-type]
@@ -972,10 +1078,16 @@ def load_config(override_config_path: str) -> Config:
                     lines_policy=lines_policy,  # validated downstream
                     debug_visualization=debug_visualization,
                     debug_output_dir=debug_output_dir,
+                    smart_resize_enabled=sr_enabled,
+                    smart_resize_factor=sr_factor,
+                    smart_resize_min_pixels=sr_min,
+                    smart_resize_max_pixels=sr_max,
+                    smart_resize_max_ratio=sr_ratio,
                 )
                 aug_cfg = _build_from_preset(opts)
                 validate_augmentation_config_fn(aug_cfg)
                 data["augmentation"] = aug_cfg
+                data["augmentation_smart_resize_defaults"] = smart_resize_defaults
             else:
                 # Explicit object-aware config path (no legacy 'op' support)
                 from src_new_json.config.augmentation_config import (
@@ -997,8 +1109,21 @@ def load_config(override_config_path: str) -> Config:
                     PhotometricConfig as _PH,
                 )
                 from src_new_json.config.augmentation_config import (
+                    SmartResizeConfig as _SR,
+                )
+                from src_new_json.config.augmentation_config import (
                     TypePolicyConfig as _TP,
                 )
+
+                sr = None
+                if smart_resize_defaults is not None:
+                    sr = _SR(
+                        enabled=smart_resize_defaults["enabled"],
+                        factor=smart_resize_defaults["factor"],
+                        min_pixels=smart_resize_defaults["min_pixels"],
+                        max_pixels=smart_resize_defaults["max_pixels"],
+                        max_ratio=smart_resize_defaults["max_ratio"],
+                    )
 
                 ig = None
                 if "image_geom" in aug_dict and aug_dict["image_geom"] is not None:
@@ -1113,6 +1238,7 @@ def load_config(override_config_path: str) -> Config:
                     debug_visualization=bool(aug_dict.get("debug_visualization", False)),
                     debug_output_dir=aug_dict.get("debug_output_dir"),
                     criteria=cr,
+                    smart_resize=sr,
                     image_geom=ig,
                     photometric=ph,
                     lines=ln,
@@ -1121,6 +1247,18 @@ def load_config(override_config_path: str) -> Config:
                 )
                 validate_augmentation_config_fn(aug_cfg)
                 data["augmentation"] = aug_cfg
+                if smart_resize_defaults is not None:
+                    data["augmentation_smart_resize_defaults"] = smart_resize_defaults
+                elif aug_cfg.smart_resize is not None:
+                    data["augmentation_smart_resize_defaults"] = {
+                        "enabled": aug_cfg.smart_resize.enabled,
+                        "factor": aug_cfg.smart_resize.factor,
+                        "min_pixels": aug_cfg.smart_resize.min_pixels,
+                        "max_pixels": aug_cfg.smart_resize.max_pixels,
+                        "max_ratio": aug_cfg.smart_resize.max_ratio,
+                    }
+                else:
+                    data["augmentation_smart_resize_defaults"] = None
 
         # Optional: teacher_augmentation (photometric-only; simple mapping)
         if "teacher_augmentation" in data and data["teacher_augmentation"] is not None:

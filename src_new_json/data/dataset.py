@@ -25,6 +25,7 @@ from transformers import Qwen2VLImageProcessor, Qwen2VLProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src_new_json.config.config import Config
+from src_new_json.config.augmentation_config import SmartResizeConfig
 from src_new_json.data.teacher_pool import TeacherPoolManager
 from src_new_json.processing.conversation import ConversationBuilder
 from src_new_json.processing.special_tokens import (
@@ -196,6 +197,17 @@ class Dataset(TorchDataset):
 
         self.augmentation_pipeline = None
         self._augmentation_schedule = self.config.augmentation_schedule
+        self._smart_resize_defaults = _normalize_smart_resize_config(
+            getattr(self.config, "augmentation_smart_resize_defaults", None)
+        )
+        if (
+            self._smart_resize_defaults is None
+            and getattr(self.config, "augmentation", None) is not None
+            and hasattr(self.config.augmentation, "smart_resize")
+        ):
+            self._smart_resize_defaults = _normalize_smart_resize_config(
+                getattr(self.config.augmentation, "smart_resize", None)
+            )
 
         if bool(self.config.use_aug):
             # If a schedule is provided, set initial preset at epoch 0; else require augmentation block
@@ -226,12 +238,23 @@ class Dataset(TorchDataset):
                     # Expect attributes: preset, rng_seed, apply_to_teachers
                     from src_new_json.augmentation.wrappers import get_preset_config
 
+                    smart_resize_attr = _normalize_smart_resize_config(
+                        getattr(self.config.augmentation, "smart_resize", None)
+                    )
+                    if smart_resize_attr is None:
+                        smart_resize_attr = (
+                            dict(self._smart_resize_defaults)
+                            if self._smart_resize_defaults is not None
+                            else None
+                        )
+
                     cfg = get_preset_config(
                         self.config.augmentation.preset,
                         rng_seed=int(self.config.augmentation.rng_seed),
                         apply_to_teachers=bool(
                             self.config.augmentation.apply_to_teachers
                         ),
+                        smart_resize=smart_resize_attr,
                     )
                     self.augmentation_pipeline = (
                         ObjectAwareAugmentationPipeline.from_config(cfg)
@@ -267,8 +290,23 @@ class Dataset(TorchDataset):
                 if epoch_index >= int(entry["start_epoch"]):
                     active = entry
             if active is not None:
+                preset_name = str(active["preset"])
+                smart_resize_payload = _normalize_smart_resize_config(
+                    active.get("smart_resize")
+                )
+                if (
+                    smart_resize_payload is None
+                    and preset_name != "off"
+                ):
+                    if self._smart_resize_defaults is None:
+                        raise ValueError(
+                            f"No smart_resize defaults available for preset '{preset_name}'."
+                        )
+                    smart_resize_payload = dict(self._smart_resize_defaults)
                 cfg = get_preset_config(
-                    active["preset"], rng_seed=self.config.seed
+                    preset_name,
+                    rng_seed=self.config.seed,
+                    smart_resize=smart_resize_payload,
                 )
                 self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
                 logger.info(
@@ -942,3 +980,29 @@ __all__ = [
     "Dataset",
     "read_jsonl",
 ]
+def _normalize_smart_resize_config(value: Any) -> Optional[Dict[str, Any]]:
+    if value is None:
+        return None
+    if isinstance(value, SmartResizeConfig):
+        return {
+            "enabled": bool(value.enabled),
+            "factor": int(value.factor),
+            "min_pixels": int(value.min_pixels),
+            "max_pixels": int(value.max_pixels),
+            "max_ratio": float(value.max_ratio),
+        }
+    if isinstance(value, dict):
+        required = {"enabled", "factor", "min_pixels", "max_pixels", "max_ratio"}
+        missing = required.difference(value.keys())
+        if missing:
+            raise ValueError(
+                f"smart_resize mapping missing required keys: {sorted(missing)}"
+            )
+        return {
+            "enabled": bool(value["enabled"]),
+            "factor": int(value["factor"]),
+            "min_pixels": int(value["min_pixels"]),
+            "max_pixels": int(value["max_pixels"]),
+            "max_ratio": float(value["max_ratio"]),
+        }
+    raise ValueError(f"Unsupported smart_resize configuration type: {type(value)}")

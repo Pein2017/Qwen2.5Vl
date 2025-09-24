@@ -7,6 +7,24 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from PIL import Image, ImageDraw, ImageFilter
 
 
+def round_by_factor(number: int, factor: int) -> int:
+	if factor <= 0:
+		raise ValueError("factor must be positive")
+	return int(round(number / factor) * factor)
+
+
+def ceil_by_factor(number: int, factor: int) -> int:
+	if factor <= 0:
+		raise ValueError("factor must be positive")
+	return int(math.ceil(number / factor) * factor)
+
+
+def floor_by_factor(number: int, factor: int) -> int:
+	if factor <= 0:
+		raise ValueError("factor must be positive")
+	return int(math.floor(number / factor) * factor)
+
+
 @dataclass(frozen=True)
 class CanvasTransform:
 	"""Describes a rotation about the original image center and an optional translation.
@@ -89,6 +107,58 @@ def round_and_clamp_points(
 		yi = max(0, min(out_h - 1, yi))
 		rounded.append((xi, yi))
 	return rounded
+
+
+def smart_resize_dimensions(
+	width: int,
+	height: int,
+	factor: int,
+	min_pixels: int,
+	max_pixels: int,
+	max_ratio: float,
+) -> Tuple[int, int]:
+	if width <= 0 or height <= 0:
+		raise ValueError("Image dimensions must be positive")
+	if factor <= 0:
+		raise ValueError("factor must be positive")
+	if min_pixels <= 0 or max_pixels <= 0:
+		raise ValueError("Pixel thresholds must be positive")
+	if min_pixels > max_pixels:
+		raise ValueError("min_pixels must be <= max_pixels")
+	if max_ratio <= 0:
+		raise ValueError("max_ratio must be positive")
+	short_edge = min(width, height)
+	long_edge = max(width, height)
+	if short_edge == 0:
+		raise ValueError("Zero dimension encountered in smart resize")
+	ratio = long_edge / short_edge
+	if ratio > max_ratio:
+		raise ValueError(
+		f"Absolute aspect ratio must be <= {max_ratio}, got {ratio:.4f}"
+		)
+	# Initial rounding to factor
+	adj_w = max(factor, round_by_factor(width, factor))
+	adj_h = max(factor, round_by_factor(height, factor))
+	current_pixels = adj_w * adj_h
+	if current_pixels > max_pixels:
+		beta = math.sqrt((width * height) / max_pixels)
+		adj_w = max(factor, floor_by_factor(int(width / beta), factor))
+		adj_h = max(factor, floor_by_factor(int(height / beta), factor))
+		current_pixels = adj_w * adj_h
+		if current_pixels > max_pixels:
+			scale = math.sqrt(current_pixels / max_pixels)
+			adj_w = max(factor, floor_by_factor(int(adj_w / scale), factor))
+			adj_h = max(factor, floor_by_factor(int(adj_h / scale), factor))
+	elif current_pixels < min_pixels:
+		beta = math.sqrt(min_pixels / (width * height))
+		adj_w = max(factor, ceil_by_factor(int(width * beta), factor))
+		adj_h = max(factor, ceil_by_factor(int(height * beta), factor))
+		current_pixels = adj_w * adj_h
+		if current_pixels < min_pixels:
+			scale = math.sqrt(min_pixels / max(current_pixels, 1))
+			adj_w = max(factor, ceil_by_factor(int(adj_w * scale), factor))
+			adj_h = max(factor, ceil_by_factor(int(adj_h * scale), factor))
+	return adj_w, adj_h
 
 
 # ---- Reusable geometry/object helpers ----

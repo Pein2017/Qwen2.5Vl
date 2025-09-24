@@ -146,6 +146,15 @@ class ImageGeomConfig:
 
 
 @dataclass(frozen=True)
+class SmartResizeConfig:
+    enabled: bool
+    factor: int
+    min_pixels: int
+    max_pixels: int
+    max_ratio: float
+
+
+@dataclass(frozen=True)
 class PhotometricConfig:
     enabled: bool
     apply_prob: float
@@ -204,6 +213,7 @@ class AugmentationConfig:
     criteria: Optional[CriteriaConfig] = None
 
     # New object-aware blocks (optional)
+    smart_resize: Optional[SmartResizeConfig] = None
     image_geom: Optional[ImageGeomConfig] = None
     photometric: Optional[PhotometricConfig] = None
     lines: Optional[LineAugConfig] = None
@@ -223,6 +233,21 @@ def validate_image_geom_config(cfg: ImageGeomConfig) -> None:
         raise ValueError("ImageGeomConfig.scale_range must satisfy 0<min<=max")
     if cfg.perspective_pct < 0 or cfg.crop_pct < 0:
         raise ValueError("ImageGeomConfig perspective/crop must be >=0")
+
+
+def validate_smart_resize_config(cfg: SmartResizeConfig) -> None:
+    if not isinstance(cfg.enabled, bool):
+        raise ValueError(
+            f"SmartResizeConfig.enabled must be bool, got {type(cfg.enabled)}: {cfg.enabled!r}"
+        )
+    if cfg.factor <= 0:
+        raise ValueError("SmartResizeConfig.factor must be positive")
+    if cfg.min_pixels <= 0 or cfg.max_pixels <= 0:
+        raise ValueError("SmartResizeConfig min_pixels/max_pixels must be positive")
+    if cfg.min_pixels > cfg.max_pixels:
+        raise ValueError("SmartResizeConfig.min_pixels must be <= max_pixels")
+    if cfg.max_ratio <= 0:
+        raise ValueError("SmartResizeConfig.max_ratio must be positive")
 
 
 def validate_photometric2_config(cfg: PhotometricConfig) -> None:
@@ -323,6 +348,8 @@ def validate_augmentation_config(cfg: AugmentationConfig) -> None:
 
     if cfg.criteria is not None:
         validate_criteria_config(cfg.criteria)
+    if cfg.smart_resize is not None:
+        validate_smart_resize_config(cfg.smart_resize)
     if cfg.image_geom is not None:
         validate_image_geom_config(cfg.image_geom)
     if cfg.photometric is not None:

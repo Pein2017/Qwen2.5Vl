@@ -3,7 +3,7 @@
 ### Purpose
 - Separate assistant targets into three semantic groups and apply per‑group CE weights:
   - caption: natural‑language description of the object
-  - grounding: geometry type + coordinates
+  - grounding: geometry numeric coordinates (plain digits inside geometry spans)
   - formatting: structural glue (wrappers and punctuation)
 - Provide clearer gradient signals while preserving teacher/student weighting and coordinate auxiliary losses.
 
@@ -12,15 +12,16 @@
   - Tokens strictly inside the `<|object_ref_start|> ... <|object_ref_end|>` content
   - Excludes punctuation/brackets and any geometry tokens
 - **grounding**
-  - Coordinate value tokens: `<|coord_N|>` (N ∈ [0, max_coord_value])
-  - Geometry wrappers: `<|box_start|>`, `<|box_end|>`, `<|quad_start|>`, `<|quad_end|>`, `<|line_start|>`, `<|line_end|>`
+  - Only numeric tokens inside geometry spans (plain-number subwords like `0`–`9`, `12`, `3456`)
+  - Coordinate tokens `<|coord_N|>` are deprecated and ignored by default
 - **formatting**
-  - Punctuation/brackets: `[ ] { } ( ) , : " /`
+  - Geometry wrappers: `<|box_start|>`, `<|box_end|>`, `<|quad_start|>`, `<|quad_end|>`, `<|line_start|>`, `<|line_end|>`
+  - Punctuation/brackets/separators: `[ ] { } ( ) , : " /`
   - Object‑ref wrappers: `<|object_ref_start|>`, `<|object_ref_end|>`
   - Residual assistant tokens not covered by caption/grounding (e.g., the span terminator `<|im_end|>` included via residual assignment)
 
 Notes:
-- Geometry type prediction (bbox/quad/line) is considered part of grounding (classification about geometry).
+- Geometry type prediction (bbox/quad/line) is considered part of formatting (via geometry wrapper tokens).
 - “Taxonomy” words are not split as a separate group; they live inside caption.
 
 ### Span alignment and masks (offset‑mapping based)
@@ -31,8 +32,8 @@ Notes:
 Grouping masks are built in `src_new/losses/token_grouping.py`:
 - Construct unshifted masks by scanning label IDs:
   - caption scope: inside `<|object_ref_start|>...<|object_ref_end|>`, minus punctuation and geometry
-  - grounding scope: coord slice + geometry wrappers
-  - formatting scope: punctuation + object‑ref wrappers
+  - grounding scope: numeric tokens strictly inside geometry spans
+  - formatting scope: geometry wrappers + punctuation/separators + object‑ref wrappers + residual non‑numeric inside geometry
 - Intersect each scope with teacher/student assistant spans.
 - Shift to match next‑token CE: masks → `mask[:, 1:]` (aligns with `logits[:, :-1]` vs `labels[:, 1:]`).
 - Enforce disjointness and coverage:
@@ -49,7 +50,7 @@ Grouping masks are built in `src_new/losses/token_grouping.py`:
 - Apply existing outer weights as before in `LossManager`:
   - `teacher_loss_weight * regular_loss_weight * teacher_llm_loss`
   - `student_loss_weight * regular_loss_weight * student_llm_loss`
-- Coordinate auxiliary losses (Kernelized‑KL + Unlikelihood) are unchanged and added on top when enabled.
+- Coordinate auxiliary losses (Kernelized‑KL + Unlikelihood) are unchanged and added on top when enabled (legacy coord‑token mode only).
 
 ### Required config (strict)
 - `caption_loss_weight: float`
@@ -79,8 +80,8 @@ formatting_loss_weight: 0.2
 - Masks are aligned to the same shifted frame as CE (`[:, 1:]`).
 - Disjointness: no overlap between caption/grounding/formatting per side.
 - Coverage: union equals assistant masks (after shift) per side.
-- Coordinate labels inside assistant spans always fall under grounding masks.
-- Object‑ref wrappers fall under formatting.
+- Numeric tokens appearing inside geometry fall under grounding; coordinate tokens are deprecated and treated as formatting unless legacy coord‑token mode is explicitly enabled.
+- Object‑ref wrappers and geometry wrappers fall under formatting.
 
 ### Code reference
 - Grouping: `src_new/losses/token_grouping.py`

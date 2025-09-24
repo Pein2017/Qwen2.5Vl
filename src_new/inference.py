@@ -1549,6 +1549,31 @@ class InferenceEngine:
 
         return cleaned.strip()
 
+    def _normalize_punctuations(self, text: str) -> str:
+        """Normalize common full-width/Chinese punctuations and collapse spaces (non-destructive)."""
+        try:
+            import re as _re
+            mapping = {
+                "，": ", ",
+                "、": ", ",
+                "；": ";",
+                "：": ":",
+                "（": "(",
+                "）": ")",
+                "【": "[",
+                "】": "]",
+                "“": '"',
+                "”": '"',
+            }
+            for k, v in mapping.items():
+                if k in text:
+                    text = text.replace(k, v)
+            # collapse excessive spaces/tabs (keep single space)
+            text = _re.sub(r"[ \t]+", " ", text)
+            return text
+        except Exception:
+            return text
+
     def _parse_coordinate_token_response(self, response: str) -> List[Dict[str, Any]]:
         """
         Parse coordinate token response and convert to validation format (strict).
@@ -1678,16 +1703,19 @@ class InferenceEngine:
         objects: List[Dict[str, Any]] = []
         consumed_spans: List[Tuple[int, int]] = []
 
-        # Support both object_ref_* and obj_ref_* synonyms
+        # Support both object_ref_* and obj_ref_* synonyms, and tolerate missing ']' before *_end
         geometry_patterns = {
             "bbox": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|box_start\|>\[(.*?)\]<\|box_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|box_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|box_end\|>",
+                re.DOTALL,
             ),
             "quad": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|quad_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|quad_end\|>",
+                re.DOTALL,
             ),
             "line": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
+                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|line_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|line_end\|>",
+                re.DOTALL,
             ),
         }
 
@@ -1697,44 +1725,37 @@ class InferenceEngine:
                 span = m.span()
                 # Fail on overlap to surface ambiguous outputs early
                 if any(not (span[1] <= s or span[0] >= e) for s, e in consumed_spans):
-                    raise ValueError("Overlapping geometry spans detected in response")
+                    continue
 
                 desc, coords_section = m.group(1), m.group(2)
                 try:
-                    # Parse raw numbers (not coordinate tokens)
+                    # Parse raw numbers (tolerant to stray tokens and separators)
                     coords = self._extract_raw_numbers(coords_section)
                 except ValueError as e:
-                    # Log the problematic section for debugging
                     logger.warning(
                         f"Failed to extract coordinates from section '{coords_section}': {e}"
                     )
-                    continue  # Skip this geometry block but continue parsing others
+                    continue
 
                 clean_desc = self._sanitize_description(desc)
                 if not clean_desc:
-                    logger.warning("Discarding geometry block with empty description after sanitization")
-                    continue
+                    clean_desc = ""
 
                 if geom_type == "bbox":
-                    if len(coords) != 4:
-                        logger.warning(
-                            f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
-                        )
+                    if len(coords) < 4:
                         continue
+                    coords = coords[:4]
                     objects.append({"bbox_2d": coords, "desc": clean_desc})
                 elif geom_type == "quad":
-                    if len(coords) != 8:
-                        logger.warning(
-                            f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
-                        )
+                    if len(coords) < 8:
                         continue
+                    coords = coords[:8]
                     objects.append({"quad": coords, "desc": clean_desc})
                 elif geom_type == "line":
-                    if len(coords) < 4 or len(coords) % 2 != 0:
-                        logger.warning(
-                            f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
-                        )
+                    if len(coords) < 4:
                         continue
+                    if len(coords) % 2 == 1:
+                        coords = coords[:-1]
                     objects.append({"line": coords, "desc": clean_desc})
 
                 consumed_spans.append(span)
@@ -1742,10 +1763,77 @@ class InferenceEngine:
 
         # If no complete geometry blocks found, return empty list
         if not found_any or not objects:
-            logger.debug("No valid geometry blocks found in response")
+            logger.debug("No valid geometry blocks found in response (strict parse)")
             return []
 
-        return objects
+        return self._dedup_objects_by_geometry(objects)
+
+    def _parse_geometry_token_response_tolerant(self, response: str) -> List[Dict[str, Any]]:
+        """More tolerant geometry parsing: optional description, flexible closers, salvage integers."""
+        import re
+        objects: List[Dict[str, Any]] = []
+        # Optional desc group + geometry; capture up to *_end allowing ')' or missing ']' before end
+        patterns = {
+            "bbox": re.compile(
+                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|box_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|box_end\|>",
+                re.DOTALL,
+            ),
+            "quad": re.compile(
+                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|quad_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|quad_end\|>",
+                re.DOTALL,
+            ),
+            "line": re.compile(
+                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|line_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|line_end\|>",
+                re.DOTALL,
+            ),
+        }
+        for geom_type, pat in patterns.items():
+            for m in pat.finditer(response):
+                desc = m.group(1) if m.lastindex and m.lastindex >= 1 else None
+                coords_section = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
+                try:
+                    coords = self._extract_raw_numbers(coords_section)
+                except Exception:
+                    continue
+                clean_desc = self._sanitize_description(desc) if isinstance(desc, str) else ""
+                if geom_type == "bbox":
+                    if len(coords) < 4:
+                        continue
+                    coords = coords[:4]
+                    objects.append({"bbox_2d": coords, "desc": clean_desc})
+                elif geom_type == "quad":
+                    if len(coords) < 8:
+                        continue
+                    coords = coords[:8]
+                    objects.append({"quad": coords, "desc": clean_desc})
+                else:  # line
+                    if len(coords) < 4:
+                        continue
+                    if len(coords) % 2 == 1:
+                        coords = coords[:-1]
+                    objects.append({"line": coords, "desc": clean_desc})
+        return self._dedup_objects_by_geometry(objects)
+
+    def _dedup_objects_by_geometry(self, objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Deduplicate objects by geometry+coords+desc order preserving."""
+        seen = set()
+        unique: List[Dict[str, Any]] = []
+        for obj in objects:
+            key = None
+            if "bbox_2d" in obj:
+                key = ("bbox_2d", tuple(obj["bbox_2d"]), obj.get("desc", ""))
+            elif "quad" in obj:
+                key = ("quad", tuple(obj["quad"]), obj.get("desc", ""))
+            elif "line" in obj:
+                key = ("line", tuple(obj["line"]), obj.get("desc", ""))
+            if key is None:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(obj)
+        # limit to reasonable number to avoid runaway repetition
+        return unique[:50]
 
     def _extract_raw_numbers(self, coords_section: str) -> List[int]:
         """Extract raw numbers from coordinate section (not coordinate tokens)."""
@@ -2282,6 +2370,11 @@ class InferenceEngine:
                 text = text.replace('\r', '').replace('\n', '')
             except Exception:
                 pass
+        # Normalize common punctuations to ASCII
+        try:
+            text = self._normalize_punctuations(text)
+        except Exception:
+            pass
         # Coordinate-token strict path (only when enabled)
         if coordinate_tokens_enabled:
             logger.info("🎯 Attempting coordinate token parsing...")
@@ -2329,9 +2422,20 @@ class InferenceEngine:
                     )
                     return geometry_objects
                 else:
-                    logger.warning("❌ Geometry token parsing returned no objects")
+                    logger.warning("❌ Geometry token parsing returned no objects (strict)")
             except Exception as e:
                 logger.warning(f"❌ Geometry token parsing failed: {e}")
+
+            # Tolerant parse (optional desc)
+            try:
+                tolerant_objects = self._parse_geometry_token_response_tolerant(text)
+                if tolerant_objects:
+                    logger.info(
+                        f"✅ Tolerant geometry parsing successful: {len(tolerant_objects)} objects"
+                    )
+                    return tolerant_objects
+            except Exception as e:
+                logger.warning(f"❌ Tolerant geometry parsing failed: {e}")
 
         # Non-coordinate/standard parsing path
         logger.info("📝 Attempting standard JSON parsing...")
@@ -2366,7 +2470,7 @@ class InferenceEngine:
                 logger.info(
                     f"✅ Standard JSON parsing successful: {len(normalized_from_json)} objects"
                 )
-                return normalized_from_json
+                return self._dedup_objects_by_geometry(normalized_from_json)
             else:
                 logger.warning(f"❌ JSON parsed but not a list: {type(parsed_any)}")
         except Exception as e:
@@ -2402,7 +2506,7 @@ class InferenceEngine:
                     if any(k in merged for k in GEOMETRY_TOKENS.keys()):
                         unified.append(merged)
                 logger.info(f"✅ Fallback parsing successful: {len(unified)} objects")
-                return unified
+                return self._dedup_objects_by_geometry(unified)
             else:
                 logger.warning(
                     f"❌ Fallback converter returned non-list: {type(parsed_list)}"

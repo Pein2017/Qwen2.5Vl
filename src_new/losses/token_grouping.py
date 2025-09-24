@@ -8,11 +8,11 @@ computation aligned to the existing single-pass CE path in LossManager.
 
 - caption: natural-language description tokens strictly inside
   <|object_ref_start|> ... <|object_ref_end|>, excluding formatting punctuation.
-- grounding: geometry grounding tokens, i.e., coordinate value tokens
-  (<|coord_N|>) and geometry wrapper tokens (<|box_*|>, <|quad_*|>, <|line_*|>).
-  Object-ref wrappers are not grounding; they are formatting tokens.
-- formatting: structural glue: punctuation/brackets, object-ref wrappers,
-  and explicit terminators like <|im_end|> if present within assistant spans.
+- grounding: numeric coordinate value tokens strictly inside geometry wrappers
+  (line/box/quad). Geometry wrapper tokens themselves are not grounding.
+- formatting: structural glue: punctuation/brackets/separators, object-ref and
+  geometry wrapper tokens, and explicit terminators like <|im_end|> if present
+  within assistant spans.
 
 The plugin operates purely on label IDs and spans, without text decode, and
 returns masks already intersected with teacher/student assistant spans and
@@ -134,7 +134,6 @@ class TokenGroupingPlugin:
             labels=labels, ids=self._ids_core
         )
 
-        # Wrapper-based path only (plain-text mode removed)
         # Caption scopes: strictly inside object_ref content intervals
         inside_desc = self._compute_inside_ranges(
             labels,
@@ -160,19 +159,34 @@ class TokenGroupingPlugin:
         )
         inside_any_geom = inside_box | inside_quad | inside_line
 
+        # New: numeric-only grounding inside geometry; separators/wrappers go to formatting.
+        # Numeric token IDs have been precomputed in grouping_core.build_id_sets().
+        is_numeric = torch.zeros_like(labels, dtype=torch.bool)
+        try:
+            for tid in self._ids_core.numeric_ids:
+                is_numeric |= labels.eq(int(tid))
+        except Exception:
+            # Fallback: no numeric set available -> rely on coord tokens if present
+            is_numeric = torch.zeros_like(labels, dtype=torch.bool)
+
         # Category unshifted masks (global, not yet intersected with assistant spans)
         if isinstance(variant_key, str) and variant_key.strip().lower() == "summary":
             # Summary variant: treat all assistant tokens as caption except punctuation-only which is formatting.
-            # No grounding content in summary.
             caption_all = (~is_punct) & (~is_geom_wrapper) & (~is_coord)
             grounding_all = torch.zeros_like(labels, dtype=torch.bool)
             formatting_all = is_punct
         else:
             caption_all = inside_desc & ~is_punct & ~is_geom_wrapper & ~is_coord
-            # Grounding: ALL content inside geometry spans, regardless of coord-mode, minus separators
-            grounding_all = is_coord | is_geom_wrapper | (inside_any_geom & ~is_geom_sep)
-            # Formatting: object-ref wrappers and separators (punctuation is included; geom seps explicitly too)
-            formatting_all = is_objref_wrapper | is_geom_sep | (is_punct & ~is_geom_sep)
+            # Grounding: numeric tokens OR coordinate tokens inside geometry spans
+            grounding_all = inside_any_geom & (is_numeric | is_coord)
+            # Formatting: wrappers + separators + residual non-numeric/non-coord inside geometry
+            formatting_all = (
+                is_objref_wrapper
+                | is_geom_sep
+                | is_geom_wrapper
+                | (inside_any_geom & ~(is_numeric | is_coord))
+                | (is_punct & ~is_geom_sep)
+            )
 
         # Intersect with assistant masks and shift by one for CE alignment
         def _shift_intersect(

@@ -202,20 +202,6 @@ class TrainingStateManager:
 
         # Add loss components (only meaningful ones)
         logs.update(component_logs)
-
-        # Ensure diagnostic metrics handling respects strict mode
-        if self.config.coord_aux_enabled and self.config.coordinate_tokens_enabled:
-            missing = []
-            for group in ("teacher", "student"):
-                for name in DIAGNOSTIC_METRIC_NAMES:
-                    key = f"{group}_{name}"
-                    if key not in logs:
-                        missing.append(key)
-            if missing:
-                raise ValueError(
-                    "Missing coordinate diagnostics while coord_aux is enabled. "
-                    f"Absent keys: {missing}. This indicates an upstream computation issue (spans, labels, or tokenizer ranges)."
-                )
         # Verify loss decomposition if we have component losses
         self._verify_loss_decomposition(logs)
 

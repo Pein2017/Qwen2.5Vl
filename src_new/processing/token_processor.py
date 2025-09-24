@@ -27,7 +27,7 @@ class TokenConfig:
     """Configuration for token processing."""
 
     max_coord_value: int
-    coordinate_init_mode: str  # Required: "ms_mean" or "fourier_ramp"
+    coordinate_init_mode: str = "fourier_ramp"  # "ms_mean" or "fourier_ramp"
     coordinate_tokens_enabled: bool = False
     new_geometry_tokens: Optional[List[str]] = None
     # Make lazy initialization behavior explicit to avoid hasattr checks elsewhere

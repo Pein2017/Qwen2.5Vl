@@ -40,6 +40,17 @@ class ObjectAwareAugmentationPipeline:
         out_images = images
         out_sample = dict(sample)
 
+        # 0) smart resize
+        if (
+            self.config.smart_resize is not None
+            and self.config.smart_resize.enabled
+        ):
+            out_images, out_sample = image_ops.apply_smart_resize(
+                images=out_images,
+                sample=out_sample,
+                cfg=self.config.smart_resize,
+            )
+
         # 1) image_geom
         if self.config.image_geom is not None:
             out_images, out_sample = image_ops.apply_image_geom(

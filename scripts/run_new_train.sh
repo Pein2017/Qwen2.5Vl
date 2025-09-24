@@ -12,7 +12,7 @@ export PYTHONDONTWRITEBYTECODE=1
 # Project paths
 
 PROJECT_ROOT="."
-CONFIG_NAME="phase_3/standard"
+CONFIG_NAME="summary"
 ARCH="legacy"   # json | legacy | ref
 MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
 to_console=false
@@ -170,9 +170,15 @@ determine_deepspeed_usage() {
 validate_config() {
     echo "🔍 Validating configuration for new architecture..."
     
-    # Check if config file exists
-    if [[ ! -f "configs/${CONFIG_NAME}.yaml" ]]; then
-        echo "❌ Configuration file not found: configs/${CONFIG_NAME}.yaml"
+    # Resolve config path (support legacy phase_x/y names)
+    local config_file="configs/${CONFIG_NAME}.yaml"
+    local alt_config_file="configs/${CONFIG_NAME//\//_}.yaml"
+    if [[ -f "$config_file" ]]; then
+        RESOLVED_CONFIG_PATH="$config_file"
+    elif [[ -f "$alt_config_file" ]]; then
+        RESOLVED_CONFIG_PATH="$alt_config_file"
+    else
+        echo "❌ Configuration file not found: $config_file"
         echo "💡 Available configs:"
         ls -1 configs/*.yaml | sed 's/configs\///g' | sed 's/\.yaml//g' | sed 's/^/   - /'
         exit 1
@@ -184,7 +190,7 @@ validate_config() {
         "$PY" - <<EOF
 from src_new_json.config.config import load_config
 try:
-    config = load_config('configs/${CONFIG_NAME}.yaml')
+    config = load_config('${CONFIG_NAME}')
     print('✅ Config loading successful (src_new_json)')
     print(f'   Model path: {config.model_path}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
@@ -198,7 +204,7 @@ EOF
         "$PY" - <<EOF
 from src_new_reference.config.config import load_config
 try:
-    config = load_config('configs/${CONFIG_NAME}.yaml')
+    config = load_config('${CONFIG_NAME}')
     print('✅ Config loading successful (src_new_reference)')
     print(f'   Model path: {config.model_path}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
@@ -211,7 +217,7 @@ EOF
         "$PY" - <<EOF
 from src_new.config.config import load_config
 try:
-    config = load_config('configs/${CONFIG_NAME}.yaml')
+    config = load_config('${CONFIG_NAME}')
     print('✅ Config loading successful (src_new)')
     print(f'   Model path: {config.model_path}')
     print(f'   Teacher ratio: {config.teacher_ratio}')
@@ -356,7 +362,7 @@ try:
         from src_new_reference.config.config import load_config
     else:
         from src_new.config.config import load_config
-    cfg = load_config(f"configs/${CONFIG_NAME}.yaml")
+    cfg = load_config('${CONFIG_NAME}')
     print('1' if getattr(cfg, 'attn_implementation', 'eager') == 'flash_attention_2' else '0')
 except Exception:
     print('0')

@@ -25,6 +25,7 @@ from transformers import Qwen2VLImageProcessor, Qwen2_5_VLProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from src_new.config.config import Config
+from src_new.config.augmentation_config import SmartResizeConfig
 from src_new.data.teacher_pool import TeacherPoolManager
 from src_new.processing.conversation import ConversationBuilder
 from src_new.processing.special_tokens import (
@@ -205,6 +206,17 @@ class Dataset(TorchDataset):
         self._augmentation_schedule = getattr(
             self.config, "augmentation_schedule", None
         )
+        self._smart_resize_defaults = _normalize_smart_resize_config(
+            getattr(self.config, "augmentation_smart_resize_defaults", None)
+        )
+        if (
+            self._smart_resize_defaults is None
+            and getattr(self.config, "augmentation", None) is not None
+            and hasattr(self.config.augmentation, "smart_resize")
+        ):
+            self._smart_resize_defaults = _normalize_smart_resize_config(
+                getattr(self.config.augmentation, "smart_resize", None)
+            )
 
         if bool(self.config.use_aug):
             # If a schedule is provided, set initial preset at epoch 0; else require augmentation block
@@ -235,12 +247,22 @@ class Dataset(TorchDataset):
                     # Expect attributes: preset, rng_seed, apply_to_teachers
                     from src_new.augmentation.wrappers import get_preset_config
 
+                    smart_resize_attr = _normalize_smart_resize_config(
+                        getattr(self.config.augmentation, "smart_resize", None)
+                    )
+                    if smart_resize_attr is None:
+                        smart_resize_attr = (
+                            dict(self._smart_resize_defaults)
+                            if self._smart_resize_defaults is not None
+                            else None
+                        )
                     cfg = get_preset_config(
                         getattr(self.config.augmentation, "preset"),
                         rng_seed=int(getattr(self.config.augmentation, "rng_seed")),
                         apply_to_teachers=bool(
                             getattr(self.config.augmentation, "apply_to_teachers")
                         ),
+                        smart_resize=smart_resize_attr,
                     )
                     self.augmentation_pipeline = (
                         ObjectAwareAugmentationPipeline.from_config(cfg)
@@ -278,8 +300,23 @@ class Dataset(TorchDataset):
                 if epoch_index >= int(entry["start_epoch"]):
                     active = entry
             if active is not None:
+                preset_name = str(active["preset"])
+                smart_resize_payload = _normalize_smart_resize_config(
+                    active.get("smart_resize")
+                )
+                if (
+                    smart_resize_payload is None
+                    and preset_name != "off"
+                ):
+                    if self._smart_resize_defaults is None:
+                        raise ValueError(
+                            f"No smart_resize defaults available for preset '{preset_name}'."
+                        )
+                    smart_resize_payload = dict(self._smart_resize_defaults)
                 cfg = get_preset_config(
-                    active["preset"], rng_seed=getattr(self.config, "seed", 12345)
+                    preset_name,
+                    rng_seed=getattr(self.config, "seed", 12345),
+                    smart_resize=smart_resize_payload,
                 )
                 self.augmentation_pipeline = ObjectAwareAugmentationPipeline.from_config(cfg)
                 logger.info(
@@ -390,9 +427,8 @@ class Dataset(TorchDataset):
                 require_line_tokens = bool(getattr(self.config, "require_line_tokens"))
             require_geometry_tokens(tok, require_line=require_line_tokens)
             # Coordinate token coverage if enabled
-            if bool(getattr(self.config, "coordinate_tokens_enabled")):
+            if bool(getattr(self.config, "coordinate_tokens_enabled", False)):
                 max_coord_value = int(getattr(self.config, "max_coord_value"))
-                # Require at least max_coord_value+1 coord tokens present
                 require_coordinate_token_range(tok, min_count=max_coord_value + 1)
         except Exception as e:
             raise ValueError(f"Tokenizer special-token validation failed: {e}")
@@ -408,19 +444,13 @@ class Dataset(TorchDataset):
                 f"max_coord_value must be a positive integer, got {max_coord_value!r}"
             )
 
-        if not hasattr(self.config, "coordinate_tokens_enabled"):
-            raise ValueError(
-                "coordinate_tokens_enabled must be explicitly set in configuration (True/False)"
-            )
-        if not isinstance(self.config.coordinate_tokens_enabled, bool):
-            raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(self.config.coordinate_tokens_enabled)}: {self.config.coordinate_tokens_enabled!r}"
-            )
-
+        coordinate_tokens_enabled = bool(
+            getattr(self.config, "coordinate_tokens_enabled", False)
+        )
         self.conversation_processor = ConversationBuilder(
             processor=hf_processor,
             max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
+            coordinate_tokens_enabled=coordinate_tokens_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")
@@ -1124,3 +1154,30 @@ __all__ = [
     "Dataset",
     "read_jsonl",
 ]
+def _normalize_smart_resize_config(value: Any) -> Optional[Dict[str, Any]]:
+    if value is None:
+        return None
+    if isinstance(value, SmartResizeConfig):
+        return {
+            "enabled": bool(value.enabled),
+            "factor": int(value.factor),
+            "min_pixels": int(value.min_pixels),
+            "max_pixels": int(value.max_pixels),
+            "max_ratio": float(value.max_ratio),
+        }
+    if isinstance(value, dict):
+        required = {"enabled", "factor", "min_pixels", "max_pixels", "max_ratio"}
+        missing = required.difference(value.keys())
+        if missing:
+            raise ValueError(
+                f"smart_resize mapping missing required keys: {sorted(missing)}"
+            )
+        normalized = {
+            "enabled": bool(value["enabled"]),
+            "factor": int(value["factor"]),
+            "min_pixels": int(value["min_pixels"]),
+            "max_pixels": int(value["max_pixels"]),
+            "max_ratio": float(value["max_ratio"]),
+        }
+        return normalized
+    raise ValueError(f"Unsupported smart_resize configuration type: {type(value)}")
