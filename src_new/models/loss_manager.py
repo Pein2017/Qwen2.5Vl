@@ -83,8 +83,6 @@ class LossComponents:
     # New: coordinate learning diagnostics (metrics; not used in loss sum)
     teacher_window_mass: Optional[torch.Tensor] = None
     student_window_mass: Optional[torch.Tensor] = None
-    teacher_coord_slice_mass: Optional[torch.Tensor] = None
-    student_coord_slice_mass: Optional[torch.Tensor] = None
     teacher_gt_prob: Optional[torch.Tensor] = None
     student_gt_prob: Optional[torch.Tensor] = None
     teacher_expected_mae_bins: Optional[torch.Tensor] = None
@@ -186,10 +184,9 @@ class LossManager:
             tokenizer: Extended tokenizer with coordinate tokens
         """
         # Extract configuration parameters (strict, no fallbacks)
-        self.coordinate_loss_weight = config.coordinate_loss_weight
         self.teacher_loss_weight = config.teacher_loss_weight
         self.student_loss_weight = config.student_loss_weight
-        # Keep full config for feature flags (e.g., coordinate_tokens_enabled)
+        # Keep full config for feature flags required by grouped losses
         self.config = config
 
         self.last_loss_components = None

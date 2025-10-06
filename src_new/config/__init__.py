@@ -7,11 +7,14 @@ from src_new.config.config import (
     set_global_log_level,
 )
 from src_new.config.loader import load_layered_config
+from src_new.config.rl_config import EnhancedRLConfig, RLLoaderConfig
 from src_new.config.schema import TrainingConfig
 
 __all__ = [
     "Config",
     "TrainingConfig",
+    "EnhancedRLConfig",
+    "RLLoaderConfig",
     "load_config",
     "load_layered_config",
     "save_config",

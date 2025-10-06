@@ -6,6 +6,7 @@ support with the base Qwen2.5-VL model. It focuses on clean separation of concer
 compatibility with HuggingFace Trainer.
 """
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
@@ -18,7 +19,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
 if TYPE_CHECKING:
-    from src_new.config.config import Config
+    from src_new.config.schema import TrainingConfig
 
 from src_new.processing.special_tokens import IMAGE_PAD
 from src_new.types.shapes import (
@@ -36,164 +37,23 @@ logger = get_rank_aware_logger(__name__)
 
 
 class CoordinateProcessor:
-    """
-    Coordinate token processing utilities.
-
-    Handles coordinate token masking, vocabulary extension, and coordinate-specific
-    operations for the detection model.
-    """
-
-    # Non-trivial state annotations
-    config: "Config"
-    coordinate_tokens_enabled: bool
-    max_coord_value: int
-    original_vocab_size: Optional[int]
-    coordinate_token_range: Optional[tuple[int, int]]
-    _tokenizer: Optional[PreTrainedTokenizerBase]
-
-    def __init__(self, config: "Config") -> None:
-        """
-        Initialize coordinate processor.
-
-        Args:
-            config: Configuration object with coordinate settings
-        """
-        self.config = config
-        self.coordinate_tokens_enabled = config.coordinate_tokens_enabled
-        self.max_coord_value = config.max_coord_value
-        self.original_vocab_size = None  # Will be set when tokenizer is available
-
-        # Initialize coordinate token range as None - will be set when tokenizer is available
-        self.coordinate_token_range = None
-        self._tokenizer = None
-
-    def set_tokenizer(self, tokenizer) -> None:
-        """
-        Set tokenizer and update coordinate token range.
-
-        Args:
-            tokenizer: Tokenizer to use for coordinate token detection
-        """
-        if tokenizer is None:
-            raise ValueError("Tokenizer must not be None in set_tokenizer")
-
-        from src_new.processing.special_tokens import get_coord_token_range
-
-        rng = get_coord_token_range(tokenizer)
-        vocab = tokenizer.get_vocab()
-
-        if self.coordinate_tokens_enabled:
-            if rng.end_exclusive <= rng.start_id:
-                raise ValueError(
-                    "Coordinate tokens enabled but no valid coordinate token range detected"
-                )
-            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
-            self.original_vocab_size = int(rng.start_id)
-            logger.info(f"🎯 Coordinate token range: {self.coordinate_token_range}")
-        else:
-            # Coordinates disabled: record vocab size and zero range
-            self.original_vocab_size = len(vocab)
-            self.coordinate_token_range = (0, 0)
-
-    def update_after_extension(self, tokenizer) -> None:
-        """
-        Update coordinate processor after tokenizer vocabulary extension.
-
-        This method should be called after the tokenizer vocabulary has been extended
-        with coordinate tokens to properly detect and configure the coordinate token range.
-
-        Args:
-            tokenizer: Extended tokenizer with coordinate tokens
-        """
-        if tokenizer is None:
-            raise ValueError("Tokenizer must not be None in update_after_extension")
-
-        from src_new.processing.special_tokens import get_coord_token_range
-
-        rng = get_coord_token_range(tokenizer)
-        if self.coordinate_tokens_enabled:
-            if rng.end_exclusive <= rng.start_id:
-                raise ValueError(
-                    "Coordinate tokens enabled but no valid coordinate token range after extension"
-                )
-            self.original_vocab_size = int(rng.start_id)
-            self.coordinate_token_range = (int(rng.start_id), int(rng.end_exclusive))
-            logger.info(
-                f"🎯 Updated after extension: final coordinate token range: {self.coordinate_token_range}"
-            )
-        else:
-            vocab = tokenizer.get_vocab()
-            self.original_vocab_size = len(vocab)
-            self.coordinate_token_range = (0, 0)
-
-    def mask_coordinate_logits(
-        self,
-        logits: torch.Tensor,
-        input_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Mask coordinate-specific logits for non-coordinate positions.
-
-        Args:
-            logits: Model logits [batch_size, seq_len, vocab_size]
-            input_ids: Input token IDs [batch_size, seq_len]
-
-        Returns:
-            Masked logits tensor
-        """
-        if not self.coordinate_tokens_enabled or self.coordinate_token_range is None:
-            return logits
-
-        # Use the actual coordinate token range from tokenizer (end-exclusive)
-        start_idx, end_idx = self.coordinate_token_range
-
-        # Check if the range is valid
-        if start_idx >= end_idx or end_idx > logits.size(-1):
-            # Invalid range - return original logits
-            return logits
-
-        # Create coordinate mask
-        coord_mask = self.get_coordinate_mask(input_ids)
-
-        # Mask coordinate token logits for non-coordinate positions
-        masked_logits = logits.clone()
-
-        # Set coordinate token logits to very negative values where not expected
-        non_coord_positions = ~coord_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
-
-        # Work on the vocabulary slice separately to keep indexing simple and
-        # avoid type-checker complaints about complex tuple indices.
-        vocab_slice = masked_logits[..., start_idx:end_idx]
-
-        vocab_slice = torch.where(
-            non_coord_positions.expand_as(vocab_slice),
-            torch.full_like(vocab_slice, -1e9),
-            vocab_slice,
-        )
-
-        # Write the processed slice back into the logits tensor
-        masked_logits[..., start_idx:end_idx] = vocab_slice
-
-        return masked_logits
-
-    def get_coordinate_mask(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """
-        Get coordinate token mask from input IDs.
-
-        Args:
-            input_ids: Input token IDs [batch_size, seq_len]
-
-        Returns:
-            Boolean mask for coordinate tokens [batch_size, seq_len]
-        """
-        if not self.coordinate_tokens_enabled or self.coordinate_token_range is None:
-            return torch.zeros_like(input_ids, dtype=torch.bool)
-
-        # Create mask for coordinate value tokens based on the actual token range
-        start_idx, end_idx = self.coordinate_token_range
-        coord_mask = (input_ids >= start_idx) & (input_ids < end_idx)
-
-        return coord_mask
+    """Simplified coordinate processor without legacy coordinate tokens."""
+    
+    def __init__(self, config):
+        # Remove all coordinate token dependencies
+        pass
+    
+    def validate_coordinate_range(self, coordinates):
+        """Basic coordinate validation without token limits."""
+        return True
+    
+    def coord_to_token(self, coord):
+        """Direct coordinate conversion without special tokens."""
+        return str(coord)
+    
+    def token_to_coord(self, token_id):
+        """Direct token conversion without coordinate tokens."""
+        return None
 
 
 class DetectionModel(nn.Module):
@@ -210,7 +70,7 @@ class DetectionModel(nn.Module):
 
     # Non-trivial state annotations
     base_model: Qwen2_5_VLForConditionalGeneration
-    training_config: "Config"
+    training_config: "TrainingConfig"
     _config: Any
     tokenizer: Optional[PreTrainedTokenizerBase]
     _coordinate_mode: bool
@@ -222,157 +82,86 @@ class DetectionModel(nn.Module):
 
     def __init__(
         self,
-        base_model: Qwen2_5_VLForConditionalGeneration,
-        config: "Config",
-        tokenizer: Optional[PreTrainedTokenizerBase] = None,
-        skip_expansion: bool = False,
-    ) -> None:
-        """
-        Initialize detection model.
-
-        Args:
-            base_model: Base Qwen2.5-VL model
-            config: Configuration object with model settings
-            tokenizer: Tokenizer for text processing (optional)
-            skip_expansion: If True, skip tokenizer/model expansion (already done)
-        """
+        model_name_or_path: str = None,
+        config: "TrainingConfig" = None,
+        logger: Optional[logging.Logger] = None,
+        tokenizer=None,
+        processor=None,
+        base_model=None,
+        skip_expansion=False,
+        **kwargs,
+    ):
+        """Initialize DetectionModel without coordinate token dependencies."""
         super().__init__()
-        self.base_model = base_model
-        # Store training (custom) config separately to avoid HuggingFace trainer conflicts
-        self.training_config = config
-        # IMPORTANT: Keep `self.config` as the HF model config to maintain Trainer compatibility
-        self._config = self.base_model.config
-        self.tokenizer = tokenizer
-
-        # Initialize coordinate mode first
-        self._coordinate_mode = config.coordinate_tokens_enabled
-
-        # Initialize coordinate processor
+        
+        # Handle legacy parameters
+        if base_model is not None:
+            self.model = base_model
+            self.base_model = base_model  # Also set base_model for compatibility
+            model_name_or_path = getattr(base_model, 'name_or_path', model_name_or_path)
+        
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+        self._coordinate_mode = False  # Always disabled
+        
+        # Remove coordinate processor dependency
         self.coordinate_processor = CoordinateProcessor(config)
-
-        # Initialize token processor for vocabulary extension
-        from src_new.processing.token_processor import TokenConfig, TokenProcessor
-
-        # Validate required config attributes
-        if not hasattr(config, "new_geometry_tokens"):
-            raise ValueError(
-                "Config missing required attribute 'new_geometry_tokens'. Ensure config validation was run."
-            )
-
-        token_config = TokenConfig(
-            coordinate_tokens_enabled=config.coordinate_tokens_enabled,
-            max_coord_value=config.max_coord_value,
-            new_geometry_tokens=config.new_geometry_tokens or [],
-            coordinate_init_mode=config.coordinate_init_mode,
-        )
-        self.token_processor = TokenProcessor(token_config)
-
-        # Store tokenizer reference for coordinate processing
+        
+        # Load and configure the base model if not provided
+        if base_model is None and model_name_or_path:
+            self.model = self._load_model(model_name_or_path, config)
+            self.base_model = self.model  # Also set base_model for compatibility
+        
+        # Configure tokenizer/processor
+        self.tokenizer = tokenizer
         self._tokenizer = tokenizer
+        self._extended_tokenizer = None
+        self.processor = processor
+        self.training_config = config
+        self._config = self.model.config if hasattr(self, 'model') else None
+        
+        # Initialize loss manager
+        self.loss_manager = LossManager(config, None, tokenizer)
+        
+        # Add TRL compatibility attributes
+        self.warnings_issued = getattr(self.model, "warnings_issued", {})
+        
+        # Model configuration
+        vision_config = getattr(self.model.config, "vision_config", None)
+        self.merge_size = getattr(vision_config, "merge_size", 2) if vision_config else 2
+        
+        # Initialize image pad token cache
+        self._image_pad_token_id_cache = None
+        
+        self.logger.info(f"🎯 Using coordinate mode: disabled (coordinate tokens deprecated)")
 
-        # DISTRIBUTED TRAINING OPTIMIZATION: Skip expansion if already done
-        # Use module-level rank-aware logger for config messages
-        config_logger = logger
-
-        if skip_expansion:
-            config_logger.info(
-                "🚀 Skipping tokenizer/model expansion - already completed in pre-distributed phase"
-            )
-            # Set the extended tokenizer since expansion was already done
-            self._extended_tokenizer = tokenizer
-        elif tokenizer is not None and self._coordinate_mode:
-            # Original expansion logic would go here, but it's now handled in pre-distributed phase
-            config_logger.warning(
-                "⚠️ Tokenizer expansion should have been completed in pre-distributed phase"
-            )
-            self._extended_tokenizer = tokenizer
+    @property
+    def _image_pad_token_id(self):
+        """Get image pad token ID from tokenizer."""
+        if self._image_pad_token_id_cache is not None:
+            return self._image_pad_token_id_cache
+        
+        if self.tokenizer is not None:
+            vocab = self.tokenizer.get_vocab()
+            self._image_pad_token_id_cache = vocab.get(IMAGE_PAD, None)
         else:
-            # Store the tokenizer even if no expansion is needed
-            self._extended_tokenizer = tokenizer
+            self._image_pad_token_id_cache = None
+        
+        return self._image_pad_token_id_cache
 
-        # Set tokenizer for coordinate processor AFTER extension
-        # Use the extended tokenizer to ensure coordinate tokens are available
-        final_tokenizer = (
-            self._extended_tokenizer
-            if hasattr(self, "_extended_tokenizer")
-            else tokenizer
+    def _ensure_loss_manager(self):
+        """Ensure loss manager is initialized."""
+        if self.loss_manager is None:
+            self.loss_manager = LossManager(self.training_config, None, self.tokenizer)
+
+    def _load_model(self, model_name_or_path: str, config):
+        """Load the base model."""
+        from transformers import Qwen2_5_VLForConditionalGeneration
+        return Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_name_or_path,
+            torch_dtype=getattr(config, 'torch_dtype', 'auto'),
+            trust_remote_code=False,
         )
-        if final_tokenizer is not None:
-            from src_new.processing.special_tokens import get_coord_token_range
-
-            # Set tokenizer reference first
-            self.coordinate_processor._tokenizer = final_tokenizer
-
-            # Get coordinate token range - fail fast if tokenizer is invalid
-            rng = get_coord_token_range(final_tokenizer)
-            self.coordinate_processor.coordinate_token_range = (
-                rng.start_id,
-                rng.end_exclusive,
-            )
-
-            if skip_expansion and self._coordinate_mode:
-                # Re-validate coordinate range for skip_expansion mode
-                rng2 = get_coord_token_range(final_tokenizer)
-                if rng2.start_id == rng2.end_exclusive and self._coordinate_mode:
-                    raise ValueError(
-                        "Coordinate mode enabled but no coordinate tokens found in tokenizer. "
-                        "Ensure tokenizer was properly extended with coordinate tokens."
-                    )
-                self.coordinate_processor.coordinate_token_range = (
-                    rng2.start_id,
-                    rng2.end_exclusive,
-                )
-
-        # Cache IMAGE_PAD token id once for forward-time fast counting
-        self._image_pad_token_id = None
-        try:
-            cfg_id = getattr(self.base_model.config, "image_token_id", None)
-            if isinstance(cfg_id, int) and cfg_id >= 0:
-                self._image_pad_token_id = int(cfg_id)
-            elif final_tokenizer is not None:
-                vocab = final_tokenizer.get_vocab()
-                if isinstance(vocab, dict) and IMAGE_PAD in vocab:
-                    self._image_pad_token_id = int(vocab[IMAGE_PAD])
-        except Exception:
-            pass
-
-        # Initialize loss manager lazily to avoid requiring full loss config at construction time
-        self.loss_manager = None
-
-        def _init_loss_manager_if_needed():
-            if self.loss_manager is None:
-                self.loss_manager = LossManager(
-                    self.training_config,
-                    token_processor=self.token_processor,
-                    tokenizer=final_tokenizer,
-                )
-                # Enable grouped-LLM plugin unconditionally; weights control contribution
-                if final_tokenizer is None:
-                    raise ValueError(
-                        "Tokenizer must be available to initialize TokenGroupingPlugin"
-                    )
-                from src_new.losses.token_grouping import TokenGroupingPlugin
-
-                self.loss_manager.set_token_grouping_plugin(
-                    TokenGroupingPlugin(final_tokenizer)
-                )
-                # Laplacian regularizer removed: no embedding accessor needed
-
-        # Store initializer for later use
-        self._ensure_loss_manager = _init_loss_manager_if_needed
-
-        # Note: Embedding extension is now handled in the intelligent detection logic above
-        # This prevents double extension when loading from checkpoints
-
-        # Disable cache during training for better performance
-        self.base_model.config.use_cache = config.use_cache
-
-        # Apply any necessary patches
-        apply_comprehensive_qwen25_fixes()
-
-        # Ensure tied weights are properly set up
-        self.tie_weights()
-
     def get_extended_tokenizer(self) -> Optional[PreTrainedTokenizerBase]:
         """
         Get the extended tokenizer after vocabulary extension.
@@ -428,7 +217,7 @@ class DetectionModel(nn.Module):
     def from_pretrained(
         cls,
         model_path: str,
-        config: "Config",
+        config: "TrainingConfig",
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         **kwargs,
     ) -> "DetectionModel":
@@ -449,17 +238,10 @@ class DetectionModel(nn.Module):
         # OPTIMIZATION 1: Intelligent checkpoint detection
         is_extended_checkpoint = cls.detect_extended_checkpoint(model_path)
 
-        if is_extended_checkpoint and config.coordinate_tokens_enabled:
-            logger.info(
-                f"🚀 Fast loading - detected extended checkpoint at {model_path}"
-            )
-            # Extended checkpoint detected; vocabulary extension will be skipped by callers
-        elif not config.coordinate_tokens_enabled:
-            logger.info(f"📋 Loading base model - coordinate tokens disabled")
+        if is_extended_checkpoint:
+            logger.info(f"🚀 Detected checkpoint with extended vocabulary metadata at {model_path}")
         else:
-            logger.info(
-                f"🔧 Loading base model - will extend vocabulary for coordinate tokens"
-            )
+            logger.info("📋 Loading base model")
 
         # OPTIMIZATION 2: Load base model with optimized parameters
         dtype_map = {
@@ -780,12 +562,7 @@ class DetectionModel(nn.Module):
             # Debug logging for coordinate mode
             # Using module-level rank-aware logger
 
-            logger.debug(
-                f"🎯 Using coordinate mode: coordinate_tokens_enabled={self.coordinate_processor.coordinate_tokens_enabled}"
-            )
-            logger.debug(
-                f"🎯 Coordinate token range: {self.coordinate_processor.coordinate_token_range}"
-            )
+            logger.debug("🎯 Coordinate mode path active (legacy compatibility)")
 
             # Apply coordinate token processing
             return self._forward_with_coordinate_loss(
@@ -798,6 +575,17 @@ class DetectionModel(nn.Module):
             logger.debug(
                 f"🔍 Using standard mode: coordinate_mode={self._coordinate_mode}, input_ids={input_ids is not None}, labels={labels is not None}"
             )
+
+            # RL/Inference path: when no labels are provided, return base model outputs for logits-only usage
+            # This allows GRPO-style per-token log-prob computations without invoking the LossManager.
+            if labels is None:
+                # Ensure callers can access `.logits` attribute as expected by TRL
+                if hasattr(base_outputs, "loss"):
+                    try:
+                        base_outputs.loss = None
+                    except Exception:
+                        pass
+                return base_outputs
 
             # SOLUTION 1: Handle both official and bypassed loss computation
             if input_ids is not None and labels is not None:
@@ -1031,7 +819,7 @@ class DetectionModel(nn.Module):
         return self.base_model.config
 
     @config.setter
-    def config(self, config: "Config") -> None:
+    def config(self, config: "TrainingConfig") -> None:
         """
         Set configuration object.
 
@@ -1165,6 +953,14 @@ class DetectionModel(nn.Module):
         # NOTE: Tokenizer and coordinate config are now saved centrally by CheckpointSaver
         logger.info(f"Model saved to {save_directory}")
 
+    def add_model_tags(self, tags):
+        """Add model tags for TRL compatibility."""
+        if hasattr(self.model, 'add_model_tags'):
+            self.model.add_model_tags(tags)
+        elif hasattr(self.base_model, 'add_model_tags'):
+            self.base_model.add_model_tags(tags)
+        # If neither has the method, silently ignore (older transformers versions)
+
     def _detect_checkpoint_type(self, tokenizer, base_model, config):
         """
         Intelligently detect checkpoint type and determine if vocabulary extension is needed.
@@ -1277,20 +1073,6 @@ class DetectionModel(nn.Module):
         # Using module-level rank-aware logger
 
         if checkpoint_info["max_coord_detected"] is not None:
-            config_max_coord = config.max_coord_value
-            checkpoint_max_coord = checkpoint_info["max_coord_detected"]
-
-            if config_max_coord != checkpoint_max_coord:
-                logger.warning(f"⚠️ Configuration mismatch detected:")
-                logger.warning(f"   Config max_coord_value: {config_max_coord}")
-                logger.warning(f"   Checkpoint max_coord: {checkpoint_max_coord}")
-                logger.warning(
-                    "   This may cause issues with coordinate token processing"
-                )
-                logger.warning(
-                    "   Consider updating config to match checkpoint or vice versa"
-                )
-            else:
-                logger.info(
-                    f"✅ Configuration validated: max_coord_value = {config_max_coord}"
-                )
+            logger.info(
+                "ℹ️ Checkpoint reports legacy coordinate metadata; ignoring for current pipeline"
+            )

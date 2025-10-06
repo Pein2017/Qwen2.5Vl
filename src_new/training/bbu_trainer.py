@@ -109,7 +109,7 @@ class BBUTrainer(HFTrainer):
         self.processor = None
 
         # Initialize training state manager for local loss aggregation
-        # Use training_config (contains coordinate_tokens_enabled) instead of model.config (HF model config)
+        # Use training_config instead of model.config (HF model config)
         training_config = model.training_config
         self.training_state_manager = TrainingStateManager(
             config=training_config,
@@ -431,10 +431,6 @@ class BBUTrainer(HFTrainer):
                         deltas = (current - baseline).norm(dim=1)
                         # Log coord-slice LR if available
                         clr = None
-                        try:
-                            clr = getattr(self.model.training_config, "lr_coord_slice", None)
-                        except Exception:
-                            clr = None
                         try:
                             from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
                             _get("training.embedding_debug").debug(
@@ -1171,18 +1167,6 @@ class BBUTrainer(HFTrainer):
                     sample_input_ids, sample_labels, chat_text
                 )
 
-                # Create coordinate mask if available
-                coordinate_mask = None
-                if hasattr(self.detection_model, "token_processor"):
-                    try:
-                        coordinate_mask = (
-                            self.detection_model.token_processor.create_coordinate_mask(
-                                sample_input_ids, self.processing_class
-                            )
-                        )
-                    except Exception as e:
-                        logger.debug(f"Could not create coordinate mask: {e}")
-
                 # Log comprehensive conversation analysis with full text and span mapping
                 debug_logger.log_comprehensive_conversation_analysis(
                     full_conversation=chat_text,
@@ -1193,7 +1177,6 @@ class BBUTrainer(HFTrainer):
                     sample_id=f"trainer_{sample_id}",
                     is_training=is_training,
                     tokenizer=self.processing_class,
-                    coordinate_mask=coordinate_mask,
                 )
 
     def _identify_teacher_student_spans(

@@ -1,133 +1,83 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Focused coordinate token converter for Qwen2.5-VL.
+"""Simplified coordinate converter without legacy coordinate tokens."""
 
-This is the ONLY custom logic preserved from the 563-line templates.py.
-Everything else is handled by official HuggingFace components.
+from typing import Any, Dict, List
 
-Key Features:
-- ONLY coordinate token conversion (no chat formatting)
-- Supports bbox_2d, quad, line geometries
-- Fail-fast validation with explicit errors
-- Clean minimal implementation
-"""
-
-from typing import Any, Dict, List, Optional, Tuple
-
-from src_new.processing.special_tokens import GEOMETRY_TOKENS
+from .special_tokens import GEOMETRY_TOKENS
 
 
 class CoordinateTokenConverter:
-    """
-    Focused component that handles ONLY coordinate token conversion.
-
-    This replaces the _format_objects_for_response method from templates.py
-    and is the ONLY custom logic we need to preserve.
-    """
+    """Simplified coordinate token converter that only uses special tokens."""
 
     def __init__(
         self,
-        max_coord_value: int,
-        coordinate_tokens_enabled: bool,
         format_mode: str | None = None,
     ):
         """
-        Initialize coordinate token converter.
+        Initialize coordinate token converter without legacy coordinate tokens.
 
         Args:
-            max_coord_value: Maximum coordinate value for clamping (required)
-            coordinate_tokens_enabled: If False, emit raw numeric coordinates instead of <|coord_*|> tokens
-            format_mode: One of {"special_tokens", "coord_tokens"}. If provided, overrides the flag.
-
-        Raises:
-            ValueError: If max_coord_value is missing or invalid
+            format_mode: Only "special_tokens" is supported.
         """
-        if max_coord_value is None:
-            raise ValueError(
-                "max_coord_value is required and must be provided via configuration (YAML)."
-            )
-        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
-            )
-        if not isinstance(coordinate_tokens_enabled, bool):
-            raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}: {coordinate_tokens_enabled!r}"
-            )
-        if format_mode is not None and format_mode not in {"special_tokens", "coord_tokens"}:
+        if format_mode is not None and format_mode != "special_tokens":
             raise ValueError(f"Unsupported format_mode: {format_mode}")
 
-        self.max_coord_value = max_coord_value
-        self.coordinate_tokens_enabled = coordinate_tokens_enabled
         # Use centralized canonical geometry tokens
         self.geometry_tokens = GEOMETRY_TOKENS
         # Global rendering mode
-        if format_mode is not None:
-            self._mode = format_mode
-        else:
-            self._mode = "coord_tokens" if coordinate_tokens_enabled else "special_tokens"
+        self._mode = "special_tokens"
 
-    def _use_coord_tokens(self) -> bool:
-        """Return True iff coordinates should be rendered as <|coord_*|> tokens."""
-        return self._mode == "coord_tokens"
-
-    # ---------- Public API for assistant rendering ----------
-    def convert_objects_to_tokens(self, objects: List[Dict[str, Any]]):
-        """
-        Convert objects list to assistant text.
-
-        Always returns a wrapper-token string joining one object per line.
-
-        Raises on empty/invalid inputs.
-        """
+    def convert_objects_list(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert a list of objects to coordinate tokens format."""
         if not objects:
-            raise ValueError(
-                "Empty objects list encountered. This indicates a data preprocessing failure - "
-                "empty object lists should have been filtered out earlier in the pipeline."
-            )
-        if not isinstance(objects, list):
-            raise ValueError(f"objects must be a list, got {type(objects)}")
-
-        token_strings: List[str] = []
-        for i, obj in enumerate(objects):
-            if not isinstance(obj, dict):
-                raise ValueError(f"Object {i} must be a dict, got {type(obj)}")
-            token_string = self._convert_single_object(obj, i)
-            if token_string:
-                token_strings.append(token_string)
-        if not token_strings:
-            raise ValueError("No valid objects found after conversion")
-        return "\n".join(token_strings)
-
-    def convert_objects_to_desc_only(self, objects: List[Dict[str, Any]]):
-        """Assistant text: description-only using wrapper tokens."""
-        if not objects:
-            raise ValueError("Empty objects list encountered in convert_objects_to_desc_only")
-        out_lines: List[str] = []
-        ref_start, ref_end = self._get_ref_tokens()
-        for i, obj in enumerate(objects):
-            if not isinstance(obj, dict):
-                raise ValueError(f"Object {i} must be a dict, got {type(obj)}")
-            description = obj.get("desc", "")
-            out_lines.append(f"{ref_start}{description}{ref_end}")
-        return "\n".join(out_lines)
-
-    def convert_objects_to_geometry_only(self, objects: List[Dict[str, Any]]):
-        """Assistant text: geometry-only using wrapper tokens."""
-        if not objects:
-            raise ValueError("Empty objects list encountered in convert_objects_to_geometry_only")
+            return ""
+        
         out_lines: List[str] = []
         for i, obj in enumerate(objects):
+            # Extract geometry and description
             geometry_type, coordinates = self._extract_geometry(obj, i)
+            ref_start, ref_end = self._get_ref_tokens()
             geom_start, geom_end = self._get_geom_tokens(geometry_type)
             coord_texts: List[str] = []
             for j, coord in enumerate(coordinates):
                 int_coord = int(coord)
-                if int_coord < 0 or int_coord > self.max_coord_value:
-                    raise ValueError(
-                        f"Object {i} coordinate {j} value {int_coord} out of valid range [0, {self.max_coord_value}]"
-                    )
+                # Basic coordinate validation (no upper limit)
+                if int_coord < 0:
+                    raise ValueError(f"Object {i} coordinate {j} value {int_coord} must be non-negative")
+                coord_texts.append(str(int_coord))
+            coord_string = ", ".join(coord_texts)
+            out_lines.append(f"{geom_start}[{coord_string}]{geom_end}")
+        return "\n".join(out_lines)
+    
+    def convert_objects_to_tokens(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert objects to coordinate tokens format."""
+        return self.convert_objects_list(objects)
+    
+    def convert_objects_to_desc_only(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert objects to description-only format."""
+        if not objects:
+            return ""
+        
+        ref_start, ref_end = self._get_ref_tokens()
+        out_lines = []
+        for obj in objects:
+            description = obj.get("desc", "")
+            out_lines.append(f"{ref_start}{description}{ref_end}")
+        return "\n".join(out_lines)
+    
+    def convert_objects_to_geometry_only(self, objects: List[Dict[str, Any]]) -> str:
+        """Convert objects to geometry-only format."""
+        if not objects:
+            return ""
+        
+        out_lines = []
+        for i, obj in enumerate(objects):
+            geometry_type, coordinates = self._extract_geometry(obj, i)
+            geom_start, geom_end = self._get_geom_tokens(geometry_type)
+            coord_texts = []
+            for j, coord in enumerate(coordinates):
+                int_coord = int(coord)
+                if int_coord < 0:
+                    raise ValueError(f"Object {i} coordinate {j} value {int_coord} must be non-negative")
                 coord_texts.append(str(int_coord))
             coord_string = ", ".join(coord_texts)
             out_lines.append(f"{geom_start}[{coord_string}]{geom_end}")
@@ -173,14 +123,12 @@ class CoordinateTokenConverter:
         # Get tokens for this geometry type
         ref_start, ref_end, geom_start, geom_end = self.geometry_tokens[geometry_type]
 
-        # Convert coordinates either to tokens or to raw integers
+        # Convert coordinates to raw integers
         coord_texts: List[str] = []
         for i, coord in enumerate(coordinates):
             int_coord = int(coord)
-            if int_coord < 0 or int_coord > self.max_coord_value:
-                raise ValueError(
-                    f"Object {obj_index} coordinate {i} value {int_coord} out of valid range [0, {self.max_coord_value}]"
-                )
+            if int_coord < 0:
+                raise ValueError(f"Object {obj_index} coordinate {i} value {int_coord} must be non-negative")
             coord_texts.append(str(int_coord))
 
         coord_string = ", ".join(coord_texts)

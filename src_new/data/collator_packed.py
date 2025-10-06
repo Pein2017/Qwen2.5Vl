@@ -104,10 +104,8 @@ class PackedDataCollator:
             packed_labels[0, offset : offset + length] = lbl
             offsets.append(offset)
             offset += length
-        # Only emit segment_lengths if isolation is enabled in config
+        # segment_lengths not used (packed_segment_isolation feature removed)
         segment_lengths = None
-        if self.config and getattr(self.config, 'packed_segment_isolation', False):
-            segment_lengths = torch.tensor([int(t.size(0)) for t in input_ids_1d], dtype=torch.long)
 
         # Mask cross-sample boundaries to avoid learning transitions across samples
         # For next-token CE (shifted), mask the first token of each subsequent sample

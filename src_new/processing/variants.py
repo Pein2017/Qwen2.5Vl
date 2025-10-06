@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 import json
+import random
 
 from .geometry_text import format_geometry_for_user, format_object_ref
 from src_new.types import ConversationVariant
@@ -29,6 +30,9 @@ class VariantHandler(Protocol):
 
     def build_assistant_text(self, objects: List[Dict[str, Any]]) -> str:
         ...
+
+
+TEXT_ONLY_USER_NOISE_ENABLED = True
 
 
 class DenseCaptionHandler:
@@ -105,9 +109,38 @@ class TextOnlyHandler:
     def build_user_text(self, objects: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not objects:
             raise ValueError("Wrapper reconstruction variant requires non-empty objects list")
+
+        objects_for_user: List[Dict[str, Any]] = [
+            json.loads(json.dumps(obj, ensure_ascii=False))
+            for obj in objects
+        ]
+
+        if TEXT_ONLY_USER_NOISE_ENABLED:
+            max_coord = 8192
+            jitter = max(1, max_coord // 256)
+            rng = random
+            for obj in objects_for_user:
+                for key in ("bbox_2d", "quad", "line"):
+                    coords = obj.get(key)
+                    if isinstance(coords, list) and coords:
+                        noisy: List[int] = []
+                        for value in coords:
+                            try:
+                                base = int(value)
+                            except Exception:
+                                base = value
+                            if isinstance(base, int):
+                                offset = rng.randint(-jitter, jitter)
+                                base = max(0, min(max_coord, base + offset))
+                                noisy.append(base)
+                            else:
+                                noisy.append(value)
+                        obj[key] = noisy
+                        break
+            rng.shuffle(objects_for_user)
+
         lines: List[str] = []
-        for idx, obj in enumerate(objects, start=1):
-            # The model receives raw object JSON to rebuild wrappers exactly as dense captioning.
+        for idx, obj in enumerate(objects_for_user, start=1):
             raw_json = json.dumps(obj, ensure_ascii=False, separators=(",", ": "))
             lines.append(f"Object {idx}: {raw_json}")
         body = "\n".join(lines)

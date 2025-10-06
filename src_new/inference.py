@@ -53,16 +53,9 @@ initialize_logging_from_env()
 logger = get_rank_aware_logger("inference")
 
 # Import new architecture components
-from transformers import (
-    AutoTokenizer,
-    Qwen2VLImageProcessor,
-    Qwen2_5_VLProcessor,
-    Qwen2VLVideoProcessor,
-)
-
 from src_new.config.config import load_config
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
-from src_new.models.wrapper import DetectionModel
+from src_new.utils.hf_components import build_hf_components
 from src_new.processing.conversation import ConversationBuilder
 from src_new.processing.special_tokens import (
     ASSISTANT_HEADER,
@@ -72,12 +65,142 @@ from src_new.processing.special_tokens import (
     IM_START,
     IMAGE_PAD,
 )
-from src_new.processing.token_processor import TokenConfig, TokenProcessor
+from src_new.processing.parse_generated import (
+    convert_objects_to_vis,
+    convert_response_to_vis_json,
+    deduplicate_objects,
+    parse_geometry_response,
+)
 from src_new.utils.data_resolver import DataResolver
 from src_new.utils.path_manager import create_path_manager
 from src_new.utils.validation import PathValidationError
 # Import prompts from training pipeline to ensure consistency
 from src_new.processing.templates import CONSTANTS, get_system_prompt
+
+
+
+def _normalize_prediction_to_vis_objects_impl(engine: "InferenceEngine", text: str) -> List[Dict[str, Any]]:
+    """Normalize raw generated text into a list of visualization objects."""
+
+    logger.info("🔍 Parsing response text for geometry objects")
+    logger.info(f"   Response length: {len(text)} characters")
+    logger.info(
+        f"   Response preview: '{text[:200]}{'...' if len(text) > 200 else ''}'"
+    )
+
+    if "\n" in text or "\r" in text:
+        try:
+            text = text.replace("\r", "").replace("\n", "")
+        except Exception:
+            pass
+    try:
+        text = engine._normalize_punctuations(text)
+    except Exception:
+        pass
+
+    logger.info("📝 Using standard parsing (coordinate tokens removed)")
+
+    has_geometry_tokens = (
+        "<|object_ref_start|>" in text or "<|obj_ref_start|>" in text
+    ) and any(token in text for token in ["<|quad_start|>", "<|box_start|>", "<|line_start|>"])
+
+    if has_geometry_tokens:
+        logger.info("🔧 Detected geometry tokens - attempting strict geometry parsing...")
+        geometry_objects = parse_geometry_response(text, tolerant=False)
+        if geometry_objects:
+            logger.info(
+                f"✅ Geometry token parsing successful: {len(geometry_objects)} objects"
+            )
+            return geometry_objects
+        logger.warning("❌ Geometry token parsing returned no objects (strict)")
+
+        logger.info("🔄 Attempting tolerant geometry parsing...")
+        tolerant_objects = parse_geometry_response(text, tolerant=True)
+        if tolerant_objects:
+            logger.info(
+                f"✅ Tolerant geometry parsing successful: {len(tolerant_objects)} objects"
+            )
+            return tolerant_objects
+        logger.warning("❌ Tolerant geometry parsing failed or returned no objects")
+
+    logger.info("📝 Attempting standard JSON parsing...")
+    try:
+        parsed_any = json.loads(text)
+        if isinstance(parsed_any, list):
+            logger.info(
+                f"✅ Successfully parsed JSON list with {len(parsed_any)} items"
+            )
+            normalized_from_json: List[Dict[str, Any]] = []
+            for obj in parsed_any:
+                if not isinstance(obj, dict):
+                    logger.debug(f"   Skipping non-dict item: {type(obj)}")
+                    continue
+                desc_val = obj.get("desc")
+                if not isinstance(desc_val, str) or desc_val == "":
+                    lbl = obj.get("label")
+                    desc_val = lbl if isinstance(lbl, str) else ""
+                json_item: Dict[str, Any] = {"desc": desc_val}
+                for key in GEOMETRY_TOKENS:
+                    if key in obj and isinstance(obj[key], list):
+                        try:
+                            json_item[key] = [int(v) for v in obj[key]]
+                        except Exception:
+                            json_item[key] = obj[key]
+                        break
+                if any(k in json_item for k in GEOMETRY_TOKENS):
+                    normalized_from_json.append(json_item)
+                else:
+                    logger.debug(f"   Skipping item without geometry: {obj}")
+            logger.info(
+                f"✅ Standard JSON parsing successful: {len(normalized_from_json)} objects"
+            )
+            return deduplicate_objects(normalized_from_json)
+        else:
+            logger.warning(f"❌ JSON parsed but not a list: {type(parsed_any)}")
+    except Exception as exc:
+        logger.warning(f"❌ JSON parsing failed: {exc}")
+        logger.warning(
+            f"   Text that failed JSON parsing: '{text[:500]}{'...' if len(text) > 500 else ''}'"
+        )
+
+    logger.info("🔄 Attempting fallback converter parsing...")
+    try:
+        json_text = engine._convert_prediction_text_to_vis_json(text)
+        parsed_list = json.loads(json_text)
+        if isinstance(parsed_list, list):
+            logger.info(
+                f"✅ Fallback converter successful: {len(parsed_list)} items"
+            )
+            unified: List[Dict[str, Any]] = []
+            for obj in parsed_list:
+                if not isinstance(obj, dict):
+                    continue
+                desc = (
+                    obj.get("desc")
+                    if isinstance(obj.get("desc"), str)
+                    else obj.get("label", "")
+                )
+                merged: Dict[str, Any] = {"desc": desc}
+                for key in GEOMETRY_TOKENS:
+                    if key in obj and isinstance(obj[key], list):
+                        merged[key] = obj[key]
+                        break
+                if any(k in merged for k in GEOMETRY_TOKENS):
+                    unified.append(merged)
+            if unified:
+                logger.info(f"✅ Fallback parsing successful: {len(unified)} objects")
+                return deduplicate_objects(unified)
+            logger.warning("❌ Fallback parsing produced no valid objects")
+        else:
+            logger.warning(
+                f"❌ Fallback converter returned non-list: {type(parsed_list)}"
+            )
+    except Exception as exc:
+        logger.warning(f"❌ Fallback converter failed: {exc}")
+
+    logger.warning("❌ All parsing methods failed - returning empty list")
+    logger.warning(f"   Original text: '{text}'")
+    return []
 
 
 class InferenceEngine:
@@ -160,19 +283,10 @@ class InferenceEngine:
         # Load model and components
         self._load_model_and_processors()
 
-        # Cache coordinate token range once (prefer persisted range if available)
-        from src_new.processing.special_tokens import (
-            get_coord_token_range,
-            validate_geometry_tokens,
-        )
+        from src_new.processing.special_tokens import validate_geometry_tokens
 
         # Validate geometry tokens once - fail fast on invalid tokenizer
         validate_geometry_tokens(self.tokenizer)
-
-        # Derive range from tokenizer - fail fast if tokenizer is invalid
-        rng = get_coord_token_range(self.tokenizer)
-        self._coord_range = (int(rng.start_id), int(rng.end_exclusive))
-        logger.info(f"🎯 Cached coordinate token range: {self._coord_range}")
 
         # Load teacher pool manager only when teacher guidance is requested
         self.teacher_pool_manager = None
@@ -248,336 +362,91 @@ class InferenceEngine:
 
     def _load_model_and_processors(self):
         """Load model and processing components."""
-        logger.info("Loading model and processors...")
+        logger.info("Loading model and processors via shared HF loader...")
 
-        # Set up critical environment variables for fast loading (same as training)
-        import os
-
-        os.environ["HF_MODULES_CACHE"] = "./model_cache"
-        os.environ["HF_HOME"] = "./model_cache"
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-        # Only set Triton/FlashAttention-specific env when using FlashAttention v2
-        if self.config.attn_implementation == "flash_attention_2":
-            os.environ["TRITON_CACHE_DIR"] = "/tmp/triton_cache"
-            os.environ["TORCH_COMPILE_DISABLE"] = "1"
-            os.environ["FLASH_ATTENTION_FORCE_CUDNN"] = "0"
-
-        # Create token processor
-        token_config = TokenConfig(
-            coordinate_tokens_enabled=self.config.coordinate_tokens_enabled,
-            max_coord_value=self.config.max_coord_value,
-            new_geometry_tokens=self.config.new_geometry_tokens,
-            coordinate_init_mode=self.config.coordinate_init_mode,
-        )
-        self.token_processor = TokenProcessor(token_config)
-
-        # Fast checkpoint loading using DetectionModel.from_pretrained (same as training)
-        # This avoids double extension and weight reinitialization issues
-        logger.info(
-            "🚀 Loading checkpoint using DetectionModel.from_pretrained (training-compatible approach)"
-        )
-
-        # Load tokenizer and processor directly from checkpoint (contains expanded vocabulary)
-
-        logger.info(f"Loading tokenizer from checkpoint: {self._model_path}")
-        # Load tokenizer directly from checkpoint - this should contain the expanded vocabulary
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self._model_path,
-            trust_remote_code=True,
-            use_fast=True,
-        )
-        if not getattr(self.tokenizer, "is_fast", False):
-            raise RuntimeError("Fast tokenizer required for inference (use_fast=True)")
-        _enc = self.tokenizer(
-            "sanity",
-            return_offsets_mapping=True,
-            add_special_tokens=False,
-            return_tensors="pt",
-        )
-        if _enc.get("offset_mapping") is None:
-            raise RuntimeError(
-                "Fast tokenizer did not return offset_mapping in inference. Ensure tokenizer.json is valid."
-            )
-
-        # Load image processor from checkpoint
-        logger.info(f"Loading image processor from checkpoint: {self._model_path}")
-        self.image_processor = Qwen2VLImageProcessor.from_pretrained(
-            self._model_path, trust_remote_code=False, do_resize=False
-        )
-        # Apply overrides from config explicitly (fail-fast)
-        if hasattr(self.config, "max_pixels") and int(self.config.max_pixels) > 0:
-            if not hasattr(self.image_processor, "max_pixels"):
-                raise ValueError("Qwen2VLImageProcessor missing 'max_pixels' attribute")
-            self.image_processor.max_pixels = int(self.config.max_pixels)
-            logger.info(
-                f"🔧 (Inference) Set image_processor.max_pixels={self.image_processor.max_pixels}"
-            )
-
-        # Verify coordinate token checkpoint by checking vocabulary (derived, not fixed)
-        vocab = self.tokenizer.get_vocab()
-        current_vocab_size = len(vocab)
+        # Enforce bf16-only policy in inference
         try:
-            from src_new.processing.special_tokens import (
-                get_coord_token_range,
-                validate_geometry_tokens,
-            )
-
-            rng = get_coord_token_range(self.tokenizer)
-            has_coords = rng.end_exclusive > rng.start_id
-            if has_coords:
-                logger.info(
-                    f"🎯 Coordinate tokens detected: range=({rng.start_id}, {rng.end_exclusive})"
-                )
-                # Compare with saved coordinate_config.json if present
-                try:
-                    import json
-                    import os
-
-                    coord_cfg_path = os.path.join(
-                        self._model_path, "coordinate_config.json"
-                    )
-                    if os.path.exists(coord_cfg_path):
-                        with open(coord_cfg_path, "r") as f:
-                            coord_cfg = json.load(f)
-                        saved_range = coord_cfg.get("coordinate_token_range")
-                        if isinstance(saved_range, list) and len(saved_range) == 2:
-                            if [rng.start_id, rng.end_exclusive] != saved_range:
-                                logger.warning(
-                                    f"⚠️ Saved coordinate_token_range {saved_range} differs from tokenizer‑derived "
-                                    f"[{rng.start_id}, {rng.end_exclusive}]"
-                                )
-                            else:
-                                logger.info(
-                                    "✅ Saved coordinate_token_range matches tokenizer‑derived range"
-                                )
-                except Exception as _e:
-                    logger.debug(f"Coordinate config comparison skipped: {_e}")
-
-                validate_geometry_tokens(self.tokenizer)
-            else:
-                logger.info("ℹ️ No coordinate tokens detected in tokenizer")
+            if not bool(getattr(self.config, "bf16", True)):
+                raise ValueError("Inference requires bf16; set training.bf16: true in the config")
+            if bool(getattr(self.config, "fp16", False)):
+                raise ValueError("Inference disallows fp16; set training.fp16: false and use bf16")
+            dtype_norm = str(getattr(self.config, "torch_dtype", "")).lower()
+            if dtype_norm not in {"bfloat16", "bf16"}:
+                raise ValueError("Inference requires model.torch_dtype=bfloat16")
         except Exception as e:
-            logger.warning(f"Coordinate/geometry token validation warning: {e}")
+            raise
 
-        # Load model using DetectionModel.from_pretrained (EXACTLY like training)
-        # This prevents double extension and weight reinitialization issues
-        import time
+        if self.config.attn_implementation == "flash_attention_2":
+            os.environ.setdefault("TRITON_CACHE_DIR", "/tmp/triton_cache")
+            os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+            os.environ.setdefault("FLASH_ATTENTION_FORCE_CUDNN", "0")
 
+        device_map = {"": "cuda:0"} if torch.cuda.is_available() else {"": "cpu"}
+
+        max_pixels = getattr(self.config, "max_pixels", None)
+        max_pixels_int = None
+        if max_pixels is not None:
+            try:
+                max_pixels_int = int(max_pixels)
+            except (TypeError, ValueError):
+                max_pixels_int = None
+            else:
+                if max_pixels_int <= 0:
+                    max_pixels_int = None
+
+        attn_impl = getattr(self.config, "attn_implementation", None)
+        if not attn_impl:
+            attn_impl = "flash_attention_2"
+        components = build_hf_components(
+            model_path=self._model_path,
+            model_config=self.config,
+            attn_implementation=attn_impl,
+            image_max_pixels=max_pixels_int,
+            bf16=bool(getattr(self.config, "bf16", True)),
+            force_eager_attention=bool(self.force_eager_attention),
+            device_map=device_map,
+        )
+
+        self.tokenizer = components.tokenizer
+        self.image_processor = components.image_processor
+        self.processor = components.processor
+        self.model = components.model
+
+        param = next(self.model.parameters())
         logger.info(
-            "Loading model using DetectionModel.from_pretrained (training approach)..."
-        )
-        model_load_start = time.time()
-
-        # Use fast loading for inference - skip vocab extension if checkpoint already has it
-        vocab_size = len(self.tokenizer.get_vocab())
-        try:
-            from src_new.processing.special_tokens import get_coord_token_range
-
-            rng_probe = get_coord_token_range(self.tokenizer)
-            has_coordinate_tokens = rng_probe.end_exclusive > rng_probe.start_id
-        except Exception:
-            has_coordinate_tokens = False
-
-        # Check if SafeTensors format is available for even faster loading
-        # COMPATIBILITY FIX: Support both single and sharded SafeTensors
-        safetensors_path = os.path.join(self._model_path, "model.safetensors")
-        safetensors_index_path = os.path.join(
-            self._model_path, "model.safetensors.index.json"
+            "Loaded tokenizer/model parity | device=%s | dtype=%s | bf16=%s",
+            param.device,
+            param.dtype,
+            components.bf16_enabled,
         )
 
-        has_single_safetensors = os.path.exists(safetensors_path)
-        has_sharded_safetensors = os.path.exists(safetensors_index_path)
-
-        if has_single_safetensors:
-            logger.info(
-                f"🚀 Ultra-fast SafeTensors loading detected - using single model.safetensors"
-            )
-        elif has_sharded_safetensors:
-            logger.info(
-                f"🚀 SafeTensors loading detected - using sharded SafeTensors format"
-            )
-
-        if has_coordinate_tokens:
-            logger.info(
-                f"🚀 Fast inference loading - checkpoint has extended vocab ({vocab_size} tokens)"
-            )
-            self.model = DetectionModel.from_pretrained_fast(
-                model_path=self._model_path,
-                config=self.config,
-                tokenizer=self.tokenizer,
-                skip_vocab_extension=True,  # Skip for speed
-                # Inference-specific optimizations
-                torch_dtype=torch.bfloat16,
-                attn_implementation="eager",  # Stable attention for inference
-                device_map={"": "cuda:0"},  # Direct GPU placement
-                trust_remote_code=False,
-                use_cache=True,  # Enable KV cache for inference
-                low_cpu_mem_usage=True,  # Reduce CPU memory during loading
-            )
-        else:
-            logger.info(
-                f"🔧 Standard loading - extending vocab from base model ({vocab_size} tokens)"
-            )
-            self.model = DetectionModel.from_pretrained(
-                model_path=self._model_path,
-                config=self.config,
-                tokenizer=self.tokenizer,
-                # Inference-specific optimizations
-                torch_dtype=torch.bfloat16,
-                attn_implementation="eager",  # Stable attention for inference
-                device_map={"": "cuda:0"},  # Direct GPU placement
-                trust_remote_code=False,
-                use_cache=True,  # Enable KV cache for inference
-                low_cpu_mem_usage=True,  # Reduce CPU memory during loading
-            )
-
-        model_load_time = time.time() - model_load_start
-        logger.info(f"⏱️ Model loading completed in {model_load_time:.2f} seconds")
-
-        # Set to evaluation mode
-        self.model.eval()
-
-        # Verify model loading
-        model_device = next(self.model.parameters()).device
-        model_dtype = next(self.model.parameters()).dtype
+        current_vocab_size = len(self.tokenizer.get_vocab())
         model_vocab_size = self.model.get_input_embeddings().num_embeddings
-
-        logger.info("✅ Model loading completed successfully")
-        logger.info(f"📍 Device: {model_device}")
-        logger.info(f"🔢 Dtype: {model_dtype}")
-        logger.info(f"� Model vocab size: {model_vocab_size}")
-        logger.info(f"� Tokenizer vocab size: {current_vocab_size}")
-
-        # Verify vocabulary consistency (DetectionModel should handle any mismatches)
-        if model_vocab_size == current_vocab_size:
-            logger.info("✅ Vocabulary sizes match - checkpoint consistency verified")
-        else:
-            logger.info(
-                f"ℹ️ Vocabulary size difference: model={model_vocab_size}, tokenizer={current_vocab_size}"
-            )
-            logger.info(
-                "DetectionModel wrapper handles vocabulary adjustments automatically"
-            )
-
-        # Check for ms-swift vocabulary padding optimization (multiples of 128)
-        if current_vocab_size % 128 == 0:
-            logger.info(
-                f"✅ Vocabulary is optimally padded to multiple of 128: {current_vocab_size}"
-            )
-        else:
-            logger.info(
-                f"ℹ️ Vocabulary size {current_vocab_size} not padded to 128 (legacy checkpoint)"
-            )
-
-        logger.info("✅ Vocabulary consistency verified")
-        # Prefer tokenizer-derived range to decide presence of coord tokens
-        try:
-            from src_new.processing.special_tokens import get_coord_token_range
-
-            rng_flag = get_coord_token_range(self.tokenizer)
-            self.coordinate_tokens_enabled = rng_flag.end_exclusive > rng_flag.start_id
-        except Exception:
-            self.coordinate_tokens_enabled = False
-
-        # Validate configuration consistency
-        config_expects_coords = self.config.coordinate_tokens_enabled
-        tokenizer_has_coords = self.coordinate_tokens_enabled
-
-        if config_expects_coords and not tokenizer_has_coords:
-            logger.warning(
-                f"⚠️ Configuration expects coordinate tokens but tokenizer has none detected; coordinate parsing will be disabled."
-            )
-        elif not config_expects_coords and tokenizer_has_coords:
-            logger.info(
-                f"ℹ️ Tokenizer has coordinate tokens but config has coordinate_tokens_enabled=False. Using standard parsing mode."
-            )
-
-        # Log coordinate token optimization status
-        if self.coordinate_tokens_enabled and config_expects_coords:
-            logger.info(
-                "🎯 Coordinate tokens detected in tokenizer; optimized parsing active"
-            )
-            logger.info("🚀 Ready for optimized coordinate token inference")
-        elif not config_expects_coords:
-            logger.info(
-                "📝 Using standard inference mode (coordinate tokens disabled in config)"
-            )
-
-        # Create conversation processor using new architecture
-        # Create unified processor from tokenizer, image processor, and video processor
-        try:
-            # Try to load from checkpoint for consistency
-            proc_from_ckpt = Qwen2_5_VLProcessor.from_pretrained(
-                self.config.model_path, trust_remote_code=True
-            )
-            video_processor = (
-                getattr(proc_from_ckpt, "video_processor", None)
-                or Qwen2VLVideoProcessor()
-            )
-        except Exception:
-            video_processor = Qwen2VLVideoProcessor()
-
-        unified_processor = Qwen2_5_VLProcessor(
-            image_processor=self.image_processor,
-            tokenizer=self.tokenizer,
-            video_processor=video_processor,
+        logger.info(
+            "Tokenizer vocab=%d | Model vocab=%d",
+            current_vocab_size,
+            model_vocab_size,
         )
 
-        # Align tokenizer runtime settings with training (parity)
-        try:
-            if getattr(self.tokenizer, "pad_token", None) is None and getattr(self.tokenizer, "eos_token", None) is not None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
-            if hasattr(self.tokenizer, "padding_side"):
-                self.tokenizer.padding_side = "left"
-            cfg = getattr(self.model, "config", None)
-            if cfg is not None:
-                if getattr(self.tokenizer, "pad_token_id", None) is not None:
-                    cfg.pad_token_id = self.tokenizer.pad_token_id
-                if getattr(self.tokenizer, "eos_token_id", None) is not None:
-                    cfg.eos_token_id = self.tokenizer.eos_token_id
-                if getattr(self.model, "generation_config", None) is not None:
-                    self.model.generation_config.pad_token_id = cfg.pad_token_id
-                    self.model.generation_config.eos_token_id = cfg.eos_token_id
-        except Exception as _e:
-            logger.debug(f"Tokenizer parity adjustments skipped: {_e}")
+        from src_new.processing.special_tokens import validate_geometry_tokens
 
-        # CRITICAL FIX: Ensure chat template is properly inherited from tokenizer
-        # The Qwen2_5_VLProcessor doesn't automatically inherit chat_template from tokenizer
-        chat_template = (
-            self.tokenizer.chat_template
-            if hasattr(self.tokenizer, "chat_template")
-            else None
-        )
-        if chat_template:
-            unified_processor.chat_template = chat_template
-            logger.info("✅ Chat template inherited from tokenizer to processor")
-        else:
-            raise ValueError(
-                "Tokenizer is missing a required chat_template. Ensure your checkpoint tokenizer.json contains a valid chat_template or provide one via preprocessing."
-            )
+        validate_geometry_tokens(self.tokenizer)
 
-        # Expose processor on self for any legacy helpers and cache the system prompt from training templates
-        self.processor = unified_processor
         try:
             self.system_prompt = get_system_prompt(
-                coordinate_tokens_enabled=bool(self.config.coordinate_tokens_enabled), format_mode="special_tokens"
+                format_mode="special_tokens",
             )
             logger.info("✅ Cached system prompt from training templates for inference")
-        except Exception as _e:
+        except Exception as exc:
             self.system_prompt = None
-            logger.warning(f"Failed to build system prompt from training templates: {_e}")
+            logger.warning("Failed to build system prompt from training templates: %s", exc)
 
         self.conversation_processor = ConversationBuilder(
-            processor=unified_processor,
-            max_coord_value=self.config.max_coord_value,
-            coordinate_tokens_enabled=bool(self.config.coordinate_tokens_enabled),
+            processor=self.processor,
         )
 
-        # Set model to evaluation mode
         self.model.eval()
 
-        # Apply torch.compile if requested
         if self.use_torch_compile and torch.__version__ >= "2.0.0":
             try:
                 logger.info("Applying torch.compile optimization...")
@@ -593,7 +462,7 @@ class InferenceEngine:
     ) -> List[Dict[str, Any]]:
         """Load teacher samples from JSONL file."""
         if teacher_pool_path is None:
-            teacher_pool_path = self.teacher_pool_file
+            teacher_pool_path = str(self.teacher_pool_file) if self.teacher_pool_file is not None else None
         if not teacher_pool_path:
             return []
 
@@ -1115,15 +984,9 @@ class InferenceEngine:
                     raise ValueError("Tokenizer missing IM_END token id for generation")
                 eos_tokens.add(int(im_end_id))
 
-                # Log generation mode
-                if self.config.coordinate_tokens_enabled:
-                    logger.debug(
-                        "🎯 Generation mode: Coordinate tokens enabled (will parse <|coord_*|> tokens)"
-                    )
-                else:
-                    logger.debug(
-                        "📝 Generation mode: Standard mode (no coordinate token parsing)"
-                    )
+                logger.debug(
+                    "📝 Generation mode: standard geometry tokens (coordinate tokens removed)"
+                )
 
                 # No decode-time token bans; allow full vocabulary per user request
 
@@ -1249,10 +1112,6 @@ class InferenceEngine:
         logger.info(f"🧹 CLEANED RESPONSE FOR PARSING:")
         logger.info(f"   Length: {len(cleaned_response)} characters")
         logger.info(f"   Content: '{cleaned_response}'")
-        logger.info(
-            f"   Coordinate tokens enabled: {self.config.coordinate_tokens_enabled}"
-        )
-
         # Normalize to visualization object list
         objects_list: List[Dict[str, Any]] = self._normalize_prediction_to_vis_objects(
             cleaned_response
@@ -1445,427 +1304,39 @@ class InferenceEngine:
             return None
         return None
 
-    def _convert_prediction_text_to_vis_json(self, response: str) -> str:
-        """Convert model response text to a JSON string for visualization format.
 
-        Ensures objects contain 'label' (from 'desc') and geometry keys.
-        """
-        # Best-effort parse to objects list
-        objects_list: List[Dict[str, Any]] = []
-
-        parsed = self._try_parse_json_list(response)
-        if parsed is None:
-            # Only try coordinate token parsing if enabled
-            if self.config.coordinate_tokens_enabled:
-                try:
-                    parsed = self._parse_coordinate_token_response(response)
-                except Exception:
-                    parsed = []
-            else:
-                # For non-coordinate mode, try other parsing methods
-                parsed = []
-
-        # Normalize to vis schema (desc -> label)
-        if isinstance(parsed, list):
-            for obj in parsed:
-                if not isinstance(obj, dict):
-                    continue
-                vis = {}
-                # label from desc/label
-                if "desc" in obj:
-                    if "desc" not in obj:
-                        raise ValueError("Object missing required 'desc' label field")
-                    vis["label"] = obj["desc"]
-                else:
-                    if "label" not in obj:
-                        raise ValueError("Object missing required 'label' field")
-                    vis["label"] = obj["label"]
-                # geometry copy
-                for key in GEOMETRY_TOKENS.keys():
-                    if key in obj and isinstance(obj[key], list):
-                        try:
-                            vis[key] = [int(c) for c in obj[key]]
-                        except Exception:
-                            vis[key] = obj[key]
-                        break
-                if any(k in vis for k in GEOMETRY_TOKENS.keys()):
-                    objects_list.append(vis)
-
-        try:
-            return json.dumps(objects_list, ensure_ascii=False)
-        except Exception:
-            # If all fails, return original response to avoid data loss
-            return response
-
-    def _process_coordinate_response(self, response: str) -> str:
-        """Process response based on coordinate token configuration."""
-        if not self.config.coordinate_tokens_enabled:
-            logger.debug(
-                "🔍 Using standard response parsing (coordinate tokens disabled)"
-            )
-            return self._parse_standard_response(response)
-
-        # Coordinate token mode: strict parsing
-        logger.debug("🔍 Using coordinate token parsing (coordinate tokens enabled)")
-        try:
-            parsed_objects = self._parse_coordinate_token_response(response)
-            import json
-
-            return json.dumps(parsed_objects, ensure_ascii=False)
-        except Exception as e:
-            logger.warning(f"Coordinate token parsing failed: {e}")
-            # Fallback to standard parsing for robustness
-            logger.debug("🔄 Falling back to standard response parsing")
-            return self._parse_standard_response(response)
-
-    def _sanitize_description(self, desc: object) -> str:
-        """Remove stray wrapper tokens and retain the innermost description."""
-
-        if not isinstance(desc, str):
-            return ""
-
-        cleaned = desc.strip()
-
-        # If upstream output duplicated object_ref_start, keep the suffix after the last occurrence.
-        for token in ("<|object_ref_start|>", "<|obj_ref_start|>"):
-            if token in cleaned:
-                cleaned = cleaned.split(token)[-1]
-
-        # Truncate anything after a closing wrapper (common when spans bleed together).
-        for token in ("<|object_ref_end|>", "<|obj_ref_end|>"):
-            if token in cleaned:
-                cleaned = cleaned.split(token)[0]
-
-        # Remove any leftover geometry container markers.
-        for token in (
-            "<|quad_start|>",
-            "<|quad_end|>",
-            "<|box_start|>",
-            "<|box_end|>",
-            "<|line_start|>",
-            "<|line_end|>",
-        ):
-            cleaned = cleaned.replace(token, "")
-
-        return cleaned.strip()
-
-    def _normalize_punctuations(self, text: str) -> str:
-        """Normalize common full-width/Chinese punctuations and collapse spaces (non-destructive)."""
-        try:
-            import re as _re
-            mapping = {
-                "，": ", ",
-                "、": ", ",
-                "；": ";",
-                "：": ":",
-                "（": "(",
-                "）": ")",
-                "【": "[",
-                "】": "]",
-                "“": '"',
-                "”": '"',
-            }
-            for k, v in mapping.items():
-                if k in text:
-                    text = text.replace(k, v)
-            # collapse excessive spaces/tabs (keep single space)
-            text = _re.sub(r"[ \t]+", " ", text)
-            return text
-        except Exception:
-            return text
-
-    def _parse_coordinate_token_response(self, response: str) -> List[Dict[str, Any]]:
-        """
-        Parse coordinate token response and convert to validation format (strict).
-
-        This method should ONLY be called when coordinate_tokens_enabled=True.
-
-        Strict requirements:
-        - Geometry blocks must use training-format tokens with <|object_ref_start|> / <|object_ref_end|>
-          or synonyms <|obj_ref_start|> / <|obj_ref_end|>
-        - Coordinates must be expressed as <|coord_N|> tokens (no raw number fallback)
-        - Geometry lengths must be exact (bbox: 4, quad: 8, line: even >= 4)
-        - No overlapping geometry spans
-        """
-        # Validate that coordinate tokens are enabled
-        if not self.config.coordinate_tokens_enabled:
-            raise ValueError(
-                "_parse_coordinate_token_response called but coordinate tokens are disabled"
-            )
-        import re
-
-        objects: List[Dict[str, Any]] = []
-        consumed_spans: List[Tuple[int, int]] = []
-
-        # Support both object_ref_* and obj_ref_* synonyms as mentioned in docs
-        # Training uses object_ref_*, but inference accepts obj_ref_* synonymously
-        geometry_patterns = {
-            "bbox": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|box_start\|>\[(.*?)\]<\|box_end\|>"
-            ),
-            "quad": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|quad_start\|>\[(.*?)\]<\|quad_end\|>"
-            ),
-            "line": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|><\|line_start\|>\[(.*?)\]<\|line_end\|>"
-            ),
-        }
-
-        found_any = False
-        for geom_type, pattern in geometry_patterns.items():
-            for m in pattern.finditer(response):
-                span = m.span()
-                # Fail on overlap to surface ambiguous outputs early
-                if any(not (span[1] <= s or span[0] >= e) for s, e in consumed_spans):
-                    raise ValueError("Overlapping geometry spans detected in response")
-
-                desc, coords_section = m.group(1), m.group(2)
-                try:
-                    coord_tokens = self._extract_coordinate_tokens(
-                        coords_section
-                    )  # strict; raises if none
-                    coords = [int(token) for token in coord_tokens]
-                except ValueError as e:
-                    # Log the problematic section for debugging
-                    logger.warning(
-                        f"Failed to extract coordinates from section '{coords_section}': {e}"
-                    )
-                    continue  # Skip this geometry block but continue parsing others
-
-                clean_desc = self._sanitize_description(desc)
-                if not clean_desc:
-                    logger.warning("Discarding geometry block with empty description after sanitization")
-                    continue
-
-                if geom_type == "bbox":
-                    if len(coords) != 4:
-                        logger.warning(
-                            f"Invalid bbox length: expected 4, got {len(coords)} in '{coords_section}'"
-                        )
-                        continue
-                    objects.append({"bbox_2d": coords, "desc": clean_desc})
-                elif geom_type == "quad":
-                    if len(coords) != 8:
-                        logger.warning(
-                            f"Invalid quad length: expected 8, got {len(coords)} in '{coords_section}'"
-                        )
-                        continue
-                    objects.append({"quad": coords, "desc": clean_desc})
-                elif geom_type == "line":
-                    if len(coords) < 4 or len(coords) % 2 != 0:
-                        logger.warning(
-                            f"Invalid line length: expected even number >= 4, got {len(coords)} in '{coords_section}'"
-                        )
-                        continue
-                    objects.append({"line": coords, "desc": clean_desc})
-
-                consumed_spans.append(span)
-                found_any = True
-
-        # If no complete geometry blocks found, try to extract partial information
-        # This helps with debugging and provides more informative error messages
-        if not found_any or not objects:
-            # Check if there are any partial geometry patterns that might indicate issues
-            partial_patterns = [
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>",  # Description only
-                r"<\|(?:box_start|quad_start|line_start)\|>\[(.*?)\]",  # Coordinates only
-                r"<\|coord_\d+\|>",  # Any coordinate tokens
-            ]
-
-            partial_matches = []
-            for pattern in partial_patterns:
-                matches = re.findall(pattern, response)
-                if matches:
-                    partial_matches.extend(matches)
-
-            if partial_matches:
-                logger.warning(
-                    f"Found partial geometry patterns but no complete blocks: {partial_matches[:3]}"
-                )
-                logger.warning(f"Full response for debugging: '{response}'")
-
-            # Return empty list to handle invalid/partial geometry gracefully
-            return []
-
-        return objects
-
-    def _parse_geometry_token_response(self, response: str) -> List[Dict[str, Any]]:
-        """
-        Parse geometry token response with raw numbers (not coordinate tokens).
-
-        This method handles responses like:
-        <|object_ref_start|>description<|object_ref_end|><|quad_start|>[x1, y1, x2, y2, x3, y3, x4, y4]<|quad_end|>
-
-        Works regardless of coordinate_tokens_enabled setting.
-        """
-        import re
-
-        objects: List[Dict[str, Any]] = []
-        consumed_spans: List[Tuple[int, int]] = []
-
-        # Support both object_ref_* and obj_ref_* synonyms, and tolerate missing ']' before *_end
-        geometry_patterns = {
-            "bbox": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|box_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|box_end\|>",
-                re.DOTALL,
-            ),
-            "quad": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|quad_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|quad_end\|>",
-                re.DOTALL,
-            ),
-            "line": re.compile(
-                r"<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>\s*<\|line_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|line_end\|>",
-                re.DOTALL,
-            ),
-        }
-
-        found_any = False
-        for geom_type, pattern in geometry_patterns.items():
-            for m in pattern.finditer(response):
-                span = m.span()
-                # Fail on overlap to surface ambiguous outputs early
-                if any(not (span[1] <= s or span[0] >= e) for s, e in consumed_spans):
-                    continue
-
-                desc, coords_section = m.group(1), m.group(2)
-                try:
-                    # Parse raw numbers (tolerant to stray tokens and separators)
-                    coords = self._extract_raw_numbers(coords_section)
-                except ValueError as e:
-                    logger.warning(
-                        f"Failed to extract coordinates from section '{coords_section}': {e}"
-                    )
-                    continue
-
-                clean_desc = self._sanitize_description(desc)
-                if not clean_desc:
-                    clean_desc = ""
-
-                if geom_type == "bbox":
-                    if len(coords) < 4:
-                        continue
-                    coords = coords[:4]
-                    objects.append({"bbox_2d": coords, "desc": clean_desc})
-                elif geom_type == "quad":
-                    if len(coords) < 8:
-                        continue
-                    coords = coords[:8]
-                    objects.append({"quad": coords, "desc": clean_desc})
-                elif geom_type == "line":
-                    if len(coords) < 4:
-                        continue
-                    if len(coords) % 2 == 1:
-                        coords = coords[:-1]
-                    objects.append({"line": coords, "desc": clean_desc})
-
-                consumed_spans.append(span)
-                found_any = True
-
-        # If no complete geometry blocks found, return empty list
-        if not found_any or not objects:
-            logger.debug("No valid geometry blocks found in response (strict parse)")
-            return []
-
-        return self._dedup_objects_by_geometry(objects)
-
-    def _parse_geometry_token_response_tolerant(self, response: str) -> List[Dict[str, Any]]:
-        """More tolerant geometry parsing: optional description, flexible closers, salvage integers."""
-        import re
-        objects: List[Dict[str, Any]] = []
-        # Optional desc group + geometry; capture up to *_end allowing ')' or missing ']' before end
-        patterns = {
-            "bbox": re.compile(
-                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|box_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|box_end\|>",
-                re.DOTALL,
-            ),
-            "quad": re.compile(
-                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|quad_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|quad_end\|>",
-                re.DOTALL,
-            ),
-            "line": re.compile(
-                r"(?:<\|(?:object_ref_start|obj_ref_start)\|>(.*?)<\|(?:object_ref_end|obj_ref_end)\|>)?\s*<\|line_start\|>\s*\[(.*?)\s*(?:\]|\))?\s*<\|line_end\|>",
-                re.DOTALL,
-            ),
-        }
-        for geom_type, pat in patterns.items():
-            for m in pat.finditer(response):
-                desc = m.group(1) if m.lastindex and m.lastindex >= 1 else None
-                coords_section = m.group(2) if m.lastindex and m.lastindex >= 2 else ""
-                try:
-                    coords = self._extract_raw_numbers(coords_section)
-                except Exception:
-                    continue
-                clean_desc = self._sanitize_description(desc) if isinstance(desc, str) else ""
-                if geom_type == "bbox":
-                    if len(coords) < 4:
-                        continue
-                    coords = coords[:4]
-                    objects.append({"bbox_2d": coords, "desc": clean_desc})
-                elif geom_type == "quad":
-                    if len(coords) < 8:
-                        continue
-                    coords = coords[:8]
-                    objects.append({"quad": coords, "desc": clean_desc})
-                else:  # line
-                    if len(coords) < 4:
-                        continue
-                    if len(coords) % 2 == 1:
-                        coords = coords[:-1]
-                    objects.append({"line": coords, "desc": clean_desc})
-        return self._dedup_objects_by_geometry(objects)
-
-    def _dedup_objects_by_geometry(self, objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate objects by geometry+coords+desc order preserving."""
-        seen = set()
-        unique: List[Dict[str, Any]] = []
-        for obj in objects:
-            key = None
-            if "bbox_2d" in obj:
-                key = ("bbox_2d", tuple(obj["bbox_2d"]), obj.get("desc", ""))
-            elif "quad" in obj:
-                key = ("quad", tuple(obj["quad"]), obj.get("desc", ""))
-            elif "line" in obj:
-                key = ("line", tuple(obj["line"]), obj.get("desc", ""))
-            if key is None:
+def _convert_prediction_text_to_vis_json(self, response: str) -> str:
+    """Convert model response text to a JSON string for visualization format."""
+    parsed = self._try_parse_json_list(response)
+    if isinstance(parsed, list):
+        normalized: List[Dict[str, Any]] = []
+        for obj in parsed:
+            if not isinstance(obj, dict):
                 continue
-            if key in seen:
+            label = obj.get("desc") or obj.get("label")
+            if label is None:
                 continue
-            seen.add(key)
-            unique.append(obj)
-        # limit to reasonable number to avoid runaway repetition
-        return unique[:50]
-
-    def _extract_raw_numbers(self, coords_section: str) -> List[int]:
-        """Extract raw numbers from coordinate section (not coordinate tokens)."""
-        import re
-
-        # Remove any whitespace and split by comma
-        coords_section = coords_section.strip()
-
-        # Extract all numbers (integers) from the section
-        number_pattern = r"-?\d+"
-        number_matches = re.findall(number_pattern, coords_section)
-
-        if not number_matches:
-            raise ValueError("No numbers found in coordinates section")
-
-        try:
-            coords = [int(match) for match in number_matches]
-            return coords
-        except ValueError as e:
-            raise ValueError(f"Failed to convert numbers to integers: {e}")
-
-    def _extract_coordinate_tokens(self, coords_section: str) -> List[str]:
-        """Extract coordinate values from coordinate tokens only (strict)."""
-        import re
-
-        coord_pattern = r"<\|coord_(\d+)\|>"
-        coord_matches = re.findall(coord_pattern, coords_section)
-        if not coord_matches:
-            raise ValueError(
-                "No coordinate tokens found in geometry coordinates section"
-            )
-        return coord_matches
+            normalized_obj: Dict[str, Any] = {"desc": label}
+            for key in GEOMETRY_TOKENS:
+                if key in obj and isinstance(obj[key], list):
+                    try:
+                        normalized_obj[key] = [int(c) for c in obj[key]]
+                    except Exception:
+                        normalized_obj[key] = obj[key]
+                    break
+            if any(k in normalized_obj for k in GEOMETRY_TOKENS):
+                normalized.append(normalized_obj)
+        if normalized:
+            vis_objects = convert_objects_to_vis(normalized)
+            try:
+                return json.dumps(vis_objects, ensure_ascii=False)
+            except Exception:
+                return response
+    return convert_response_to_vis_json(
+        response,
+        coordinate_mode=False,
+        tolerant_geometry=True,
+    )
 
     def validate_image_token_alignment(
         self, inputs: Dict[str, torch.Tensor]
@@ -2251,9 +1722,7 @@ class InferenceEngine:
 
             # Use training-consistent prompts: system from get_system_prompt, user from CONSTANTS
             user_prompt = CONSTANTS.get("BASE_USER_PROMPT", "")
-            sys_prompt = self.system_prompt or get_system_prompt(
-                coordinate_tokens_enabled=bool(getattr(self.config, "coordinate_tokens_enabled", False))
-            )
+            sys_prompt = self.system_prompt or get_system_prompt()
 
             # Build messages exactly like ConversationProcessor.create_inference_conversation
             messages = [
@@ -2305,10 +1774,6 @@ class InferenceEngine:
             response_tokens = outputs[0][input_len:]
             response = self.tokenizer.decode(response_tokens, skip_special_tokens=True)
 
-            # Process coordinate response if needed
-            if self.config.coordinate_tokens_enabled:
-                response = self._process_coordinate_response(response)
-
             return response.strip()
 
         except Exception as e:
@@ -2348,175 +1813,8 @@ class InferenceEngine:
             return response
 
 
-    def _normalize_prediction_to_vis_objects(self, text: str) -> List[Dict[str, Any]]:
-        """Normalize raw generated text into a list of visualization objects.
 
-        Preferred schema per object: one geometry key in {'bbox_2d','quad','line'} and a 'desc' string.
-        """
-        # Check if coordinate tokens are enabled
-        coordinate_tokens_enabled = self.config.coordinate_tokens_enabled
-
-        logger.info(
-            f"🔍 Parsing response with coordinate_tokens_enabled={coordinate_tokens_enabled}"
-        )
-        logger.info(f"   Response length: {len(text)} characters")
-        logger.info(
-            f"   Response preview: '{text[:200]}{'...' if len(text) > 200 else ''}'"
-        )
-
-        # Normalize trivial whitespace/newlines to make regex parsing robust
-        if '\n' in text or '\r' in text:
-            try:
-                text = text.replace('\r', '').replace('\n', '')
-            except Exception:
-                pass
-        # Normalize common punctuations to ASCII
-        try:
-            text = self._normalize_punctuations(text)
-        except Exception:
-            pass
-        # Coordinate-token strict path (only when enabled)
-        if coordinate_tokens_enabled:
-            logger.info("🎯 Attempting coordinate token parsing...")
-            try:
-                coord_objects = self._parse_coordinate_token_response(text)
-                normalized_from_coords: List[Dict[str, Any]] = []
-                for obj in coord_objects:
-                    if not isinstance(obj, dict):
-                        continue
-                    coords_norm_item: Dict[str, Any] = {"desc": obj.get("desc", "")}
-                    for key in GEOMETRY_TOKENS.keys():
-                        if key in obj and isinstance(obj[key], list):
-                            try:
-                                coords_norm_item[key] = [int(v) for v in obj[key]]
-                            except Exception:
-                                coords_norm_item[key] = obj[key]
-                            break
-                    if any(k in coords_norm_item for k in GEOMETRY_TOKENS.keys()):
-                        normalized_from_coords.append(coords_norm_item)
-                logger.info(
-                    f"✅ Coordinate token parsing successful: {len(normalized_from_coords)} objects"
-                )
-                return normalized_from_coords
-            except Exception as e:
-                logger.warning(
-                    f"❌ Coordinate response parsing failed; falling back to standard parsing: {e}"
-                )
-                logger.warning(f"   Response that failed coordinate parsing: '{text}'")
-        else:
-            logger.info("📝 Using standard parsing (coordinate tokens disabled)")
-
-        # Check if response contains geometry tokens (regardless of coordinate token setting)
-        if ("<|object_ref_start|>" in text or "<|obj_ref_start|>" in text) and any(
-            token in text
-            for token in ["<|quad_start|>", "<|box_start|>", "<|line_start|>"]
-        ):
-            logger.info(
-                "🔧 Detected geometry tokens - attempting geometry token parsing..."
-            )
-            try:
-                geometry_objects = self._parse_geometry_token_response(text)
-                if geometry_objects:
-                    logger.info(
-                        f"✅ Geometry token parsing successful: {len(geometry_objects)} objects"
-                    )
-                    return geometry_objects
-                else:
-                    logger.warning("❌ Geometry token parsing returned no objects (strict)")
-            except Exception as e:
-                logger.warning(f"❌ Geometry token parsing failed: {e}")
-
-            # Tolerant parse (optional desc)
-            try:
-                tolerant_objects = self._parse_geometry_token_response_tolerant(text)
-                if tolerant_objects:
-                    logger.info(
-                        f"✅ Tolerant geometry parsing successful: {len(tolerant_objects)} objects"
-                    )
-                    return tolerant_objects
-            except Exception as e:
-                logger.warning(f"❌ Tolerant geometry parsing failed: {e}")
-
-        # Non-coordinate/standard parsing path
-        logger.info("📝 Attempting standard JSON parsing...")
-        # Try best-effort JSON list parse
-        try:
-            parsed_any = json.loads(text)
-            if isinstance(parsed_any, list):
-                logger.info(
-                    f"✅ Successfully parsed JSON list with {len(parsed_any)} items"
-                )
-                normalized_from_json: List[Dict[str, Any]] = []
-                for obj in parsed_any:
-                    if not isinstance(obj, dict):
-                        logger.debug(f"   Skipping non-dict item: {type(obj)}")
-                        continue
-                    desc_val = obj.get("desc")
-                    if not isinstance(desc_val, str) or desc_val == "":
-                        lbl = obj.get("label")
-                        desc_val = lbl if isinstance(lbl, str) else ""
-                    json_item: Dict[str, Any] = {"desc": desc_val}
-                    for key in GEOMETRY_TOKENS.keys():
-                        if key in obj and isinstance(obj[key], list):
-                            try:
-                                json_item[key] = [int(v) for v in obj[key]]
-                            except Exception:
-                                json_item[key] = obj[key]
-                            break
-                    if any(k in json_item for k in GEOMETRY_TOKENS.keys()):
-                        normalized_from_json.append(json_item)
-                    else:
-                        logger.debug(f"   Skipping item without geometry: {obj}")
-                logger.info(
-                    f"✅ Standard JSON parsing successful: {len(normalized_from_json)} objects"
-                )
-                return self._dedup_objects_by_geometry(normalized_from_json)
-            else:
-                logger.warning(f"❌ JSON parsed but not a list: {type(parsed_any)}")
-        except Exception as e:
-            logger.warning(f"❌ JSON parsing failed: {e}")
-            logger.warning(
-                f"   Text that failed JSON parsing: '{text[:500]}{'...' if len(text) > 500 else ''}'"
-            )
-            pass
-
-        # Try using existing converter that returns JSON and then load
-        logger.info("🔄 Attempting fallback converter parsing...")
-        try:
-            json_text = self._convert_prediction_text_to_vis_json(text)
-            parsed_list = json.loads(json_text)
-            if isinstance(parsed_list, list):
-                logger.info(
-                    f"✅ Fallback converter successful: {len(parsed_list)} items"
-                )
-                unified: List[Dict[str, Any]] = []
-                for obj in parsed_list:
-                    if not isinstance(obj, dict):
-                        continue
-                    desc = (
-                        obj.get("desc")
-                        if isinstance(obj.get("desc"), str)
-                        else obj.get("label", "")
-                    )
-                    merged: Dict[str, Any] = {"desc": desc}
-                    for k in GEOMETRY_TOKENS.keys():
-                        if k in obj:
-                            merged[k] = obj[k]
-                            break
-                    if any(k in merged for k in GEOMETRY_TOKENS.keys()):
-                        unified.append(merged)
-                logger.info(f"✅ Fallback parsing successful: {len(unified)} objects")
-                return self._dedup_objects_by_geometry(unified)
-            else:
-                logger.warning(
-                    f"❌ Fallback converter returned non-list: {type(parsed_list)}"
-                )
-        except Exception as e:
-            logger.warning(f"❌ Fallback converter failed: {e}")
-
-        logger.warning("❌ All parsing methods failed - returning empty list")
-        logger.warning(f"   Original text: '{text}'")
-        return []
+    _normalize_prediction_to_vis_objects = staticmethod(_normalize_prediction_to_vis_objects_impl)
 
     def _filter_generate_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Keep only keys accepted by generate/forward and move tensors to device.
@@ -2799,3 +2097,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Backward compatibility alias
+InferenceEngine._normalize_prediction_to_vis_objects = staticmethod(_normalize_prediction_to_vis_objects_impl)

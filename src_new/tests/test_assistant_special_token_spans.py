@@ -54,7 +54,7 @@ class TestAssistantSpecialTokenSpans(unittest.TestCase):
         vocab: Dict[str, int] = tok.get_vocab()
 
         prompts = [
-            get_system_prompt(coordinate_tokens_enabled=False, format_mode="special_tokens"),
+            get_system_prompt(format_mode="special_tokens"),
             SUMMARY_SYSTEM_PROMPT,
             SUMMARY_USER_PROMPT,
         ]
@@ -96,8 +96,6 @@ class TestAssistantSpecialTokenSpans(unittest.TestCase):
 
         conv = ConversationProcessor(
             processor=self.processor,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=False,
         )
         out = conv.create_simple_conversation(sample=sample, images=[img])
 
@@ -180,8 +178,6 @@ class TestAssistantSpecialTokenSpans(unittest.TestCase):
         all_inputs = []
         conv = ConversationProcessor(
             processor=self.processor,
-            max_coord_value=4096,
-            coordinate_tokens_enabled=False,
         )
         for sample in lines:
             w = int(sample.get("width", 256))

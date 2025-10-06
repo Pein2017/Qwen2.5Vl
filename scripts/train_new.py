@@ -154,7 +154,7 @@ def create_training_arguments_with_deepspeed(config: "Config", max_steps=None):
         disable_tqdm=config.disable_tqdm,
         # Performance settings
         dataloader_num_workers=config.dataloader_num_workers,
-        dataloader_pin_memory=config.pin_memory,
+        dataloader_pin_memory=config.dataloader_pin_memory,
         dataloader_prefetch_factor=config.prefetch_factor
         if config.dataloader_num_workers > 0
         else None,
@@ -308,6 +308,36 @@ def create_trainer_with_new_architecture(
             raise ValueError("Qwen2VLImageProcessor missing 'max_pixels' attribute")
         image_processor.max_pixels = int(config.max_pixels)
         logger.info(f"🔧 Set image_processor.max_pixels={image_processor.max_pixels}")
+
+    # Auto-resolve data paths if they are null
+    from src_new.utils.data_resolver import DataResolver
+    
+    # Check if any data paths need to be resolved
+    needs_resolution = (
+        getattr(config.data, 'train_data_path', None) is None or
+        getattr(config.data, 'val_data_path', None) is None or 
+        getattr(config.data, 'teacher_pool_file', None) is None
+    )
+    
+    if needs_resolution:
+        if not hasattr(config.data, 'data_root') or config.data.data_root is None:
+            raise ValueError(
+                "Data paths are null but no data_root provided. "
+                "Either specify explicit paths or provide data_root for auto-resolution."
+            )
+        
+        logger.info(f"🔍 Auto-resolving data paths from data_root: {config.data.data_root}")
+        resolved_paths = DataResolver.resolve_dataset_paths(config.data.data_root)
+        
+        # Update config with resolved paths if they were null (using object.__setattr__ for frozen dataclass)
+        if getattr(config.data, 'train_data_path', None) is None:
+            object.__setattr__(config.data, 'train_data_path', str(resolved_paths.train_data_path))
+        
+        if getattr(config.data, 'val_data_path', None) is None:
+            object.__setattr__(config.data, 'val_data_path', str(resolved_paths.val_data_path))
+            
+        if getattr(config.data, 'teacher_pool_file', None) is None:
+            object.__setattr__(config.data, 'teacher_pool_file', str(resolved_paths.teacher_pool_file))
 
     # Create teacher pool manager (optional; dynamic pairing can avoid fixed pool)
     teacher_pool_manager = None

@@ -83,7 +83,6 @@ prog_unfreeze_coord_slice_only: true  # apply row-wise coord slice masking
 
 # LR overrides per stage/group (optional but recommended)
 lr_merger: 1.0e-5
-lr_coord_slice: 3.0e-5
 lr_top_layers: 6.0e-6
 lr_full_model: 5.0e-6
 ```
@@ -183,7 +182,6 @@ prog_unfreeze_epoch_stage1_end: 3
 prog_unfreeze_top_k_layers: 4
 prog_unfreeze_coord_slice_only: true
 lr_merger: 1.0e-5
-lr_coord_slice: 3.0e-5
 lr_top_layers: 6.0e-6
 lr_full_model: 5.0e-6
 ```

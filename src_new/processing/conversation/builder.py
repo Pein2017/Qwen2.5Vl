@@ -15,13 +15,9 @@ class ConversationBuilder:
     def __init__(
         self,
         processor: Any,
-        max_coord_value: int,
-        coordinate_tokens_enabled: bool,
     ) -> None:
         self._impl = ConversationProcessor(
             processor=processor,
-            max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
         )
 
     # Simple delegations to preserve behavior

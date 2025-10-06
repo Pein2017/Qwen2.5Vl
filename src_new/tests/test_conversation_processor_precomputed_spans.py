@@ -50,8 +50,8 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         raise unittest.SkipTest(f"No processor/tokenizer available: {last_exc}")
 
     def _run_variant(self, variant_key: str):
-        converter = CoordinateTokenConverter(max_coord_value=4096, coordinate_tokens_enabled=False, format_mode="special_tokens")
-        conv = ConversationProcessor(processor=self.processor, max_coord_value=4096, coordinate_tokens_enabled=False)
+        converter = CoordinateTokenConverter(format_mode="special_tokens")
+        conv = ConversationProcessor(processor=self.processor)
         # Fake a 1x1 white image for simplicity
         img = Image.new("RGB", (64, 64), color=(255, 255, 255))
         sample = _toy_sample()

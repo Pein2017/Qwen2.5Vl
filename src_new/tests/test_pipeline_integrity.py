@@ -92,8 +92,6 @@ class _DummyConfig(SimpleNamespace):
             dynamic_pairing_enabled=dynamic_pairing_enabled,
             dynamic_pair_cross_bucket_explore_prob=0.0,
             seed=123,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=False,
             require_line_tokens=True,
             max_dataset_size=-1,
             conversation_variant_ratios={"dense_caption": 1.0},
@@ -111,8 +109,6 @@ class TestPipelineIntegrity(unittest.TestCase):
         cls.processor = _load_processor()
         cls.conversation = ConversationProcessor(
             processor=cls.processor,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=False,
         )
 
     # ------------------------------------------------------------------
@@ -341,7 +337,7 @@ class TestPipelineIntegrity(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_inference_parser_skips_truncated_objects(self) -> None:
         engine = object.__new__(InferenceEngine)
-        engine.config = SimpleNamespace(coordinate_tokens_enabled=False)
+        engine.config = SimpleNamespace()
 
         broken = "<|object_ref_start|>bad object<|quad_start|>[0, 0, 1, 1, 2, 2, 3, 3]<|quad_end|>"
         valid = (

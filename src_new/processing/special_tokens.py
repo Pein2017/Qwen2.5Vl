@@ -130,7 +130,7 @@ def require_coordinate_token_range(tokenizer, *, min_count: Optional[int] = None
     """Fail fast if coordinate token range is absent or too small.
 
     Args:
-        min_count: when provided, require at least this many coord tokens present (e.g., max_coord_value+1)
+        min_count: optional minimum count when checking for coordinate token ranges
     """
     rng = get_coord_token_range(tokenizer)
     if rng.end_exclusive <= rng.start_id:
@@ -140,7 +140,7 @@ def require_coordinate_token_range(tokenizer, *, min_count: Optional[int] = None
         if count < min_count:
             raise ValueError(
                 f"Coordinate token range too small: found {count}, required >= {min_count}. "
-                f"Ensure the checkpoint includes <|coord_0|>.. tokens for your configured max_coord_value."
+                "Ensure the checkpoint includes <|coord_0|>.. tokens for the expected coordinate range."
             )
 
 

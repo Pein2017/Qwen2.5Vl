@@ -219,42 +219,27 @@ class ConversationProcessor:
     """
 
     processor: Qwen2_5_VLProcessor
-    coordinate_tokens_enabled: bool
     coordinate_converter: CoordinateTokenConverter
 
     def __init__(
         self,
         processor: Qwen2_5_VLProcessor,
-        max_coord_value: int,
-        coordinate_tokens_enabled: bool,
     ) -> None:
         if processor is None:
             raise ValueError("processor cannot be None")
-        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
-            )
-        if not isinstance(coordinate_tokens_enabled, bool):
-            raise ValueError(
-                f"coordinate_tokens_enabled must be a bool, got {type(coordinate_tokens_enabled)}"
-            )
         self.processor = processor
-        self.coordinate_tokens_enabled = coordinate_tokens_enabled
-        self._format_mode: str = (
-            FormatMode.COORD_TOKENS.value if self.coordinate_tokens_enabled else FormatMode.SPECIAL_TOKENS.value
-        )
+        self._format_mode: str = FormatMode.SPECIAL_TOKENS.value
         self.coordinate_converter = CoordinateTokenConverter(
-            max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
             format_mode=self._format_mode,
         )
-        # Cache system prompt once (stable per instance)
-        self._system_prompt: str = get_system_prompt(
-            coordinate_tokens_enabled=self.coordinate_tokens_enabled,
-            format_mode=self._format_mode,
-        )
-        # Variant registry
+        
+        # Initialize variant registry for conversation variants
         self._variant_registry = create_default_variant_registry(self.coordinate_converter)
+        
+        # Initialize system prompt
+        self._system_prompt = get_system_prompt(
+            format_mode=self._format_mode,
+        )
 
     # ---------------- Variant user-text helpers are centralized in geometry_text/variants ----------------
 

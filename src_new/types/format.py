@@ -7,7 +7,6 @@ from enum import Enum
 
 class FormatMode(str, Enum):
 	SPECIAL_TOKENS = "special_tokens"
-	COORD_TOKENS = "coord_tokens"
 
 
 class ConversationVariant(str, Enum):

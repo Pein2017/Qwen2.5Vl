@@ -5,7 +5,6 @@ from typing import Any, List, Optional, Tuple
 
 import torch
 
-from src_new.processing.special_tokens import get_coord_token_range
 from src_new.utils.debug_logging import get_rank_aware_logger
 
 
@@ -31,34 +30,12 @@ logger = get_rank_aware_logger(__name__)
 # - phase_1: train only the aligner (`visual.merger`) + optional coord-slice on embeddings/LM head; LLM and vision backbone frozen.
 # - phase_2: phase_1 plus unfreeze the last K (=6) LLM layers; vision backbone remains frozen; aligner trainable.
 # - phase_3: unfreeze all by default; keep `visual.patch_embed` frozen unless overridden; optionally limit to last K vision blocks.
-PHASE_DEFAULTS = {
-    "phase_1": {
-        "llm_top_k_block": 0,
-        "vision_top_k_block": 0,
-        "coord_slice_only": True,
-        "freeze_patch_embed": True,
-    },
-    "phase_2": {
-        "llm_top_k_block": 6,
-        "vision_top_k_block": 0,
-        "coord_slice_only": True,
-        "freeze_patch_embed": True,
-    },
-    "phase_3": {
-        "llm_top_k_block": 0,
-        "vision_top_k_block": 0,
-        "coord_slice_only": True,
-        "freeze_patch_embed": True,
-    },
-}
 
 
 @dataclass
 class FreezeSummary:
     phase: str
     num_trainable_params: int
-    coord_slice_enabled: bool
-    coord_range: Optional[Tuple[int, int]]
     top_k_llm_layers: int
     top_k_vision_blocks: int
     patch_embed_frozen: bool
@@ -107,7 +84,6 @@ class PhaseFreezeManager:
         *,
         llm_top_k_block: Optional[int] = None,
         vision_top_k_block: Optional[int] = None,
-        coord_slice_only: Optional[bool] = None,
         freeze_patch_embed: Optional[bool] = None,
         trainable_token_strings: Optional[List[str]] = None,
     ) -> FreezeSummary:
@@ -134,22 +110,12 @@ class PhaseFreezeManager:
         # Resolve effective settings directly from arguments (no phase-derived defaults)
         eff_top_k_layers = int(llm_top_k_block) if llm_top_k_block is not None else 0
         eff_vision_top_k_blocks = int(vision_top_k_block) if vision_top_k_block is not None else 0
-        eff_coord_slice_only = bool(coord_slice_only) if coord_slice_only is not None else False
+
         eff_freeze_patch_embed = bool(freeze_patch_embed) if freeze_patch_embed is not None else True
 
         # Reset any prior hooks
         self.clear()
-
-        # Determine coordinate token range from tokenizer
-        coord_rng = None
-        coord_slice_enabled = False
-        try:
-            rng = get_coord_token_range(tokenizer)
-            if rng is not None and int(rng.end_exclusive) > int(rng.start_id):
-                coord_rng = (int(rng.start_id), int(rng.end_exclusive))
-        except Exception as e:
-            logger.warning(f"[PhaseFreeze] Failed to derive coord token range: {e}")
-
+      
         # 1) Freeze everything
         for _, p in model.named_parameters():
             p.requires_grad = False
@@ -228,26 +194,6 @@ class PhaseFreezeManager:
             except Exception as e:
                 logger.warning(f"[PhaseFreeze] trainable_token_strings handling failed: {e}")
 
-        # 3b) Optionally unfreeze coord-token slices of embeddings/LM head in phase_1/2
-        if (
-            coord_rng is not None
-            and eff_coord_slice_only
-            and phase in ("phase_1", "phase_2")
-            and not token_slice_enabled
-        ):
-            emb, lm_head = self._find_embedding_and_lm_head(model)
-            if emb is not None and lm_head is not None:
-                emb.requires_grad = True
-                lm_head.requires_grad = True
-                self._apply_coord_slice_grad_masks(
-                    emb, lm_head, coord_rng[0], coord_rng[1]
-                )
-                coord_slice_enabled = True
-            else:
-                logger.warning(
-                    "[PhaseFreeze] Could not access embeddings/LM head for coord-slice masking"
-                )
-
         # 4) Unified unfreezing controlled solely by top-k settings
         # LLM control: 0=frozen, -1=all, k=last-k
         if eff_top_k_layers == -1:
@@ -297,8 +243,7 @@ class PhaseFreezeManager:
         summary = FreezeSummary(
             phase=phase,
             num_trainable_params=num_trainable,
-            coord_slice_enabled=coord_slice_enabled,
-            coord_range=coord_rng,
+
             top_k_llm_layers=int(eff_top_k_layers or 0),
             top_k_vision_blocks=int(eff_vision_top_k_blocks or 0),
             patch_embed_frozen=bool(eff_freeze_patch_embed),

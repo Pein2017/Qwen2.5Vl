@@ -12,8 +12,6 @@ from src_new.augmentation import ObjectAwareAugmentationPipeline
 from src_new.config.augmentation_config import AugmentationConfig
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.span_builder import build_assistant_spans_token_aligned
-from src_new.processing.special_tokens import get_coord_token_range
-from src_new.processing.token_processor import TokenConfig, TokenProcessor
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -80,8 +78,6 @@ class TestProcessingIntegration(unittest.TestCase):
         # 2) Build conversation and tokenize (numeric mode)
         conv = ConversationProcessor(
             processor=self.processor,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=False,
         )
         inputs = conv.create_simple_conversation(sample=sample_out, images=imgs_out)
         input_ids = inputs["input_ids"][0].tolist()
@@ -112,42 +108,6 @@ class TestProcessingIntegration(unittest.TestCase):
         )
         self.assertIn(expected_snippet, assistant_text)
         # Coord tokens deprecated; assistant content is numeric only
-
-    @unittest.skip("Coordinate tokens deprecated: skipping coord-token mode test")
-    def test_coordinate_token_mode_text_and_token_ids(self) -> None:
-        assert self.processor is not None
-        sample = _simple_sample()
-        img = _make_image((sample["width"], sample["height"]))
-
-        # 1) Apply augmentation (identity geometry)
-        aug = ObjectAwareAugmentationPipeline.from_config(_aug_cfg_identity())
-        imgs_out, sample_out = aug.apply(copy.deepcopy(sample), [img], sample_index=0)
-
-        # 2) Extend tokenizer with coordinate tokens
-        tok_proc = TokenProcessor(
-            TokenConfig(
-                max_coord_value=2048,
-                coordinate_init_mode="fourier_ramp",
-                coordinate_tokens_enabled=True,
-            )
-        )
-        tok_proc.extend_tokenizer_vocabulary(self.processor.tokenizer)
-
-        # 3) Build conversation and tokenize (coordinate-token mode)
-        conv = ConversationProcessor(
-            processor=self.processor,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=True,
-        )
-        inputs = conv.create_simple_conversation(sample=sample_out, images=imgs_out)
-        ids = inputs["input_ids"][0].tolist()
-        coord_rng = get_coord_token_range(self.processor.tokenizer)
-
-        # Expect at least the 8 coord tokens for the quad
-        num_coord_ids = sum(
-            1 for t in ids if coord_rng.start_id <= t < coord_rng.end_exclusive
-        )
-        self.assertGreaterEqual(num_coord_ids, 8)
 
 
 if __name__ == "__main__":

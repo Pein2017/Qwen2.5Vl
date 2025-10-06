@@ -13,8 +13,6 @@ from src_new.augmentation import ObjectAwareAugmentationPipeline
 from src_new.config.augmentation_config import AugmentationConfig, ImageGeomConfig
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
-from src_new.processing.special_tokens import get_coord_token_range
-from src_new.processing.token_processor import TokenConfig, TokenProcessor
 from src_new.utils.path_manager import create_path_manager
 
 
@@ -117,18 +115,14 @@ class TestProcessingIntegrationReal(unittest.TestCase):
         for idx, s in enumerate(samples):
             imgs = _load_images_for_sample(s, self.data_root)
             # BEFORE augmentation: expected assistant content (numeric)
-            converter_before = CoordinateTokenConverter(
-                max_coord_value=2048, coordinate_tokens_enabled=False
-            )
+            converter_before = CoordinateTokenConverter()
             expected_before = converter_before.convert_objects_to_tokens(s["objects"])
             print(f"[NUMERIC] idx={idx} BEFORE assistant content:\n{expected_before}")
 
             imgs_aug, s_aug = aug.apply(sample=s.copy(), images=imgs, sample_index=idx)
 
             # Build expected assistant content from augmented objects (numeric)
-            converter = CoordinateTokenConverter(
-                max_coord_value=2048, coordinate_tokens_enabled=False
-            )
+            converter = CoordinateTokenConverter()
             expected_content = converter.convert_objects_to_tokens(
                 s_aug["objects"]
             )  # multi-line string
@@ -136,8 +130,6 @@ class TestProcessingIntegrationReal(unittest.TestCase):
 
             conv = ConversationProcessor(
                 processor=self.processor,
-                max_coord_value=2048,
-                coordinate_tokens_enabled=False,
             )
             inputs = conv.create_simple_conversation(sample=s_aug, images=imgs_aug)
             text = self.processor.tokenizer.decode(
@@ -149,64 +141,7 @@ class TestProcessingIntegrationReal(unittest.TestCase):
             self.assertIn(expected_content, text)
             self.assertNotIn("<|coord_", text)
 
-    @unittest.skip("Coordinate tokens deprecated: skipping coord-token mode real integration test")
-    def test_real_coordinate_mode_expected_text_and_token_count(self) -> None:
-        assert self.processor is not None
-        samples = _load_samples(self.jsonl_path, limit=3)
-        aug = ObjectAwareAugmentationPipeline.from_config(_aug_cfg_small_rotation())
-
-        # Extend tokenizer once
-        tok_proc = TokenProcessor(
-            TokenConfig(
-                max_coord_value=2048,
-                coordinate_init_mode="fourier_ramp",
-                coordinate_tokens_enabled=True,
-            )
-        )
-        tok_proc.extend_tokenizer_vocabulary(self.processor.tokenizer)
-
-        for idx, s in enumerate(samples):
-            imgs = _load_images_for_sample(s, self.data_root)
-            # BEFORE augmentation: expected assistant content (coord-token mode)
-            converter_before = CoordinateTokenConverter(
-                max_coord_value=2048, coordinate_tokens_enabled=True
-            )
-            expected_before = converter_before.convert_objects_to_tokens(s["objects"])
-            print(f"[COORD]  idx={idx} BEFORE assistant content:\n{expected_before}")
-
-            imgs_aug, s_aug = aug.apply(sample=s.copy(), images=imgs, sample_index=idx)
-
-            # Expected assistant content (coordinate-token mode)
-            converter = CoordinateTokenConverter(
-                max_coord_value=2048, coordinate_tokens_enabled=True
-            )
-            expected_content = converter.convert_objects_to_tokens(
-                s_aug["objects"]
-            )  # contains <|coord_N|>
-            print(f"[COORD]  idx={idx} AFTER  assistant content:\n{expected_content}")
-
-            conv = ConversationProcessor(
-                processor=self.processor,
-                max_coord_value=2048,
-                coordinate_tokens_enabled=True,
-            )
-            inputs = conv.create_simple_conversation(sample=s_aug, images=imgs_aug)
-            input_ids = inputs["input_ids"][0]
-            text = self.processor.tokenizer.decode(input_ids, skip_special_tokens=False)
-            preview = text[:400].replace("\n", " ")
-            print(f"[COORD]  idx={idx} decoded preview: {preview}...")
-
-            # Assistant content should include our expected snippet
-            self.assertIn(expected_content, text)
-
-            # Count coord tokens equals or exceeds expected (robust to extra tokens from other fields)
-            expected_coord_tokens = expected_content.count("<|coord_")
-            coord_rng = get_coord_token_range(self.processor.tokenizer)
-            ids: List[int] = input_ids.tolist()
-            num_coord_ids = sum(
-                1 for t in ids if coord_rng.start_id <= t < coord_rng.end_exclusive
-            )
-            self.assertGreaterEqual(num_coord_ids, expected_coord_tokens)
+    # Coordinate-token mode removed; legacy tests omitted.
 
 
 if __name__ == "__main__":

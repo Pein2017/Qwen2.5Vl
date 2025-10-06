@@ -10,11 +10,8 @@ class TestTextOnlyUserNoise(unittest.TestCase):
 	def setUp(self) -> None:
 		# Deterministic randomness for repeatable assertions
 		random.seed(1337)
-		self.max_coord_value = 4096
-		self.converter = CoordinateTokenConverter(
-			max_coord_value=self.max_coord_value,
-			coordinate_tokens_enabled=False,
-		)
+		self.coord_limit = 4096
+		self.converter = CoordinateTokenConverter()
 		self.handler = TextOnlyHandler(self.converter)
 		# Simple three-object sample covering bbox, quad, and line
 		self.objects = [
@@ -84,7 +81,7 @@ class TestTextOnlyUserNoise(unittest.TestCase):
 		for gtype, coords in user_geoms:
 			self.assertIn(gtype, {"bbox_2d", "quad", "line"})
 			self.assertTrue(all(isinstance(c, int) for c in coords))
-			self.assertTrue(all(0 <= int(c) <= self.max_coord_value for c in coords))
+			self.assertTrue(all(0 <= int(c) <= self.coord_limit for c in coords))
 			if gtype == "bbox_2d":
 				self.assertEqual(len(coords), 4)
 			elif gtype == "quad":

@@ -75,11 +75,9 @@ class TestGroupedTokenLosses(unittest.TestCase):
     def setUp(self):
         # Config stub with only fields used by LossManager
         class Cfg:
-            coordinate_loss_weight = 1.0
             regular_loss_weight = 1.0
             teacher_loss_weight = 1.0
             student_loss_weight = 1.0
-            coordinate_tokens_enabled = False
             # group weights (required)
             caption_loss_weight = 0.5
             grounding_loss_weight = 1.0

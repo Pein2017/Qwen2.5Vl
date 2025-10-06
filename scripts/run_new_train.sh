@@ -1,64 +1,136 @@
 #!/bin/bash
 
+# =============================================================================
+# 🚀 Qwen2.5-VL SFT Training Launcher
+# =============================================================================
+# 
+# USAGE:
+#   bash scripts/run_new_train.sh
+#   CONFIG_NAME=phase_3/standard bash scripts/run_new_train.sh
+#   DEBUG_MODE=true CONFIG_NAME=debug bash scripts/run_new_train.sh
+#
+# FEATURES:
+#   - Auto-selects single GPU vs multi-GPU training
+#   - Debug mode for quick validation (DEBUG_MODE=true)
+#   - Uses standard architecture (src_new)
+#   - Flexible GPU selection and logging options
+#   - All settings tunable via environment variables
+#
+# ENVIRONMENT VARIABLES:
+#   DEBUG_MODE      true|false - Enable debug mode (default: false)
+#   CONFIG_NAME     Config file name without .yaml (default: summary)
+#   MAX_STEPS      Override max training steps (default: from config)
+#   GPU_DEVICES    GPUs to use, e.g. "0,1,2,3" (default: auto-select)
+#   LOG_LEVEL      Log level: DEBUG|INFO|WARN|ERROR (default: auto-select)
+#   to_console     true|false - Output to console vs log file (default: false)
+#   LOG_NAME       Log file name (default: run.log)
+# =============================================================================
+
 set -euo pipefail
 
+show_help() {
+    cat << EOF
+🚀 Qwen2.5-VL SFT Training Launcher
+
+USAGE:
+    $0
+    CONFIG_NAME=phase_3/standard $0
+    DEBUG_MODE=true CONFIG_NAME=debug $0
+
+ENVIRONMENT VARIABLES:
+    DEBUG_MODE         Enable debug mode: true|false (default: false)
+    CONFIG_NAME        Config file name without .yaml (default: summary)
+    MAX_STEPS         Override max training steps (default: from config)
+    GPU_DEVICES       GPUs to use, e.g. "0,1,2,3" (default: auto-select)
+    LOG_LEVEL         Log level: DEBUG|INFO|WARN|ERROR (default: auto-select)
+    to_console        Output to console: true|false (default: false)
+    LOG_NAME          Log file name (default: run.log)
+
+EXAMPLES:
+    $0                                        # Default training (summary config)
+    DEBUG_MODE=true $0                        # Debug mode training
+    CONFIG_NAME=phase_3/standard $0           # Use phase 3 standard config
+    GPU_DEVICES=0,1 LOG_LEVEL=INFO $0         # Multi-GPU with custom log level
+
+FEATURES:
+    🎯 Auto-selects single GPU vs multi-GPU training
+    🐛 Debug mode for quick validation (10 steps, console output)
+    🏗️  Standard architecture (src_new)
+    🖥️  Flexible GPU selection and logging options
+    ⚙️  All settings tunable via environment variables
+    📊 Distributed training with DeepSpeed for multi-GPU
+EOF
+}
+
+# Parse help argument
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    show_help
+    exit 0
+fi
+
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION - TUNABLE VIA ENVIRONMENT VARIABLES
 # =============================================================================
 
 export PYTHONPATH=.
 export PYTHONDONTWRITEBYTECODE=1
 
-# Project paths
+# ==================== MAIN CONFIGURATION ====================
+# These settings can be overridden via environment variables:
 
-PROJECT_ROOT="."
-CONFIG_NAME="summary"
-ARCH="legacy"   # json | legacy | ref
-MAX_STEPS=""  # e.g., 10 for quick sanity; empty means use config default
-to_console=false
+# Training mode
+DEBUG_MODE="${DEBUG_MODE:-false}"              # true: single GPU, DEBUG logs, 10 steps | false: full training
 
-# Python interpreter - use ms environment directly
-PY="/root/miniconda3/envs/ms/bin/python"
+# Training configuration  
+CONFIG_NAME="${CONFIG_NAME:-summary}"         # Config file to use (without .yaml extension)
+                                             # Examples: "summary", "phase_3/standard", "debug"
+ARCH="${ARCH:-standard}"                      # Architecture: always standard (src_new)
+MAX_STEPS="${MAX_STEPS:-}"                    # Override max steps (empty = use config default)
+                                             # Examples: "10", "100", "1000"
 
+# GPU configuration
+GPU_DEVICES="${GPU_DEVICES:-}"                # GPUs to use (empty = auto-select)
+                                             # Examples: "0", "0,1", "0,1,2,3"
 
-# Set configuration based on experiment number (skipped if GPU_DEVICES provided via env)
-if [[ -z "${GPU_DEVICES:-}" ]]; then
-    if [[ $# -eq 0 ]]; then
-        # Default configuration when no arguments provided
-        GPU_DEVICES="0,1,2,3,4,5,6,7"
-        LOG_NAME="${LOG_NAME:-run.log}"
-        echo "🚀 Default run: GPUs 0,1,2,3,4,5,6,7 → ${LOG_NAME}"
-    else
-        EXP_NUM="$1"
-        case "$EXP_NUM" in
-            1)
-                GPU_DEVICES="0,1,2,3"
-                LOG_NAME="${LOG_NAME:-run_exp_1.log}"
-                echo "🚀 Experiment 1: GPUs 0,1,2,3 → ${LOG_NAME}"
-                ;;
-            2)
-                GPU_DEVICES="4,5,6,7"
-                LOG_NAME="${LOG_NAME:-run_exp_2.log}"
-                echo "🚀 Experiment 2: GPUs 4,5,6,7 → ${LOG_NAME}"
-                ;;
-            *)
-                echo "❌ Invalid experiment number: $EXP_NUM"
-                echo "💡 Usage: $0 [1|2]"
-                echo "  Default: GPUs 1,2,3,4 → run.log"
-                echo "  1: GPUs 0,1,2,3 → run_exp_1.log"
-                echo "  2: GPUs 4,5,6,7 → run_exp_2.log"
-                exit 1
-                ;;
-        esac
-    fi
+# Logging configuration
+LOG_LEVEL="${LOG_LEVEL:-}"                    # Log level (empty = auto-select based on mode)
+                                             # Options: DEBUG, INFO, WARN, ERROR
+to_console="${to_console:-false}"             # Output to console vs log file
+LOG_NAME="${LOG_NAME:-run.log}"               # Log file name
+
+# ==================== DERIVED CONFIGURATION ====================
+# Auto-configuration based on DEBUG_MODE
+
+if [[ "$DEBUG_MODE" == "true" ]]; then
+    echo "🐛 DEBUG MODE ENABLED"
+    
+    # Auto-configure for debug mode
+    [[ -z "$GPU_DEVICES" ]] && GPU_DEVICES="0"
+    [[ -z "$LOG_LEVEL" ]] && LOG_LEVEL="DEBUG"
+    [[ -z "$MAX_STEPS" ]] && MAX_STEPS="10"
+    to_console="true"
+    
+    echo "   📄 Config: $CONFIG_NAME"
+    echo "   🏗️  Architecture: standard (src_new)"
+    echo "   🖥️  GPUs: $GPU_DEVICES"
+    echo "   📊 Log Level: $LOG_LEVEL"
+    echo "   ⏱️  Max Steps: $MAX_STEPS"
+    echo "   📺 Console Output: enabled"
 else
-    echo "🧰 Using GPU devices from environment: $GPU_DEVICES"
-    LOG_NAME="${LOG_NAME:-run.log}"
+    echo "🚀 PRODUCTION MODE"
+    
+    # Set defaults for production mode
+    [[ -z "$GPU_DEVICES" ]] && GPU_DEVICES="0,1,2,3,4,5,6,7"
+    [[ -z "$LOG_LEVEL" ]] && LOG_LEVEL="INFO"
+    
+    echo "   📄 Config: $CONFIG_NAME"
+    echo "   🏗️  Architecture: standard (src_new)"
+    echo "   🖥️  GPUs: $GPU_DEVICES"
+    echo "   📊 Log Level: $LOG_LEVEL"
 fi
 
 # Fixed configuration
 DEEPSPEED_CONFIG="scripts/zero2.json"
-LOG_LEVEL="INFO"
 
 
 # =============================================================================
@@ -66,7 +138,11 @@ LOG_LEVEL="INFO"
 # =============================================================================
 
 setup_environment() {
-    echo "🌍 Setting up environment for new architecture..."
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "🌍 Setting up DEBUG environment..."
+    else
+        echo "🌍 Setting up environment for new architecture..."
+    fi
 
     # Ensure Python path is available
     if [[ ! -x "$PY" ]]; then
@@ -110,10 +186,17 @@ setup_environment() {
     fi
 
     # CPU Threading Optimization (56 cores, 8 GPUs)
-    export OMP_NUM_THREADS=4                    # OpenMP threading (vs restrictive 1)
-    export MKL_NUM_THREADS=4                    # Intel MKL threading
-    export OPENBLAS_NUM_THREADS=4               # OpenBLAS threading
-    export NUMBA_NUM_THREADS=4                  # Numba threading
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        export OMP_NUM_THREADS=2                    # Reduced for debug mode
+        export MKL_NUM_THREADS=2
+        export OPENBLAS_NUM_THREADS=2
+        export NUMBA_NUM_THREADS=2
+    else
+        export OMP_NUM_THREADS=4                    # OpenMP threading (vs restrictive 1)
+        export MKL_NUM_THREADS=4                    # Intel MKL threading
+        export OPENBLAS_NUM_THREADS=4               # OpenBLAS threading
+        export NUMBA_NUM_THREADS=4                  # Numba threading
+    fi
 
     # I/O and System Optimization
     export PYTHONUNBUFFERED=1                  # Immediate stdout/stderr (already set)
@@ -123,15 +206,23 @@ setup_environment() {
     export TORCH_CPP_LOG_LEVEL=${TORCH_CPP_LOG_LEVEL:-ERROR}
     export TORCH_DISTRIBUTED_DEBUG=${TORCH_DISTRIBUTED_DEBUG:-OFF}
     # Keep NCCL_DEBUG at WARN by default to avoid massive logs; set INFO only when debugging
-    export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        export NCCL_DEBUG=${NCCL_DEBUG:-INFO}  # More verbose for debug
+    else
+        export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+    fi
 
     # Create Triton cache directory if it doesn't exist
     mkdir -p "$TRITON_CACHE_DIR"
 
     cd "$PROJECT_ROOT"
 
-    echo "✅ Environment configured for new architecture (Python: $PY)"
-    echo "🚀 Optimized setup - removed performance-limiting environment variables"
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "✅ DEBUG environment configured (Python: $PY)"
+    else
+        echo "✅ Environment configured for new architecture (Python: $PY)"
+        echo "🚀 Optimized setup - removed performance-limiting environment variables"
+    fi
 }
 
 # =============================================================================
@@ -168,7 +259,7 @@ determine_deepspeed_usage() {
 }
 
 validate_config() {
-    echo "🔍 Validating configuration for new architecture..."
+    echo "🔍 Validating configuration for standard architecture..."
     
     # Resolve config path (support legacy phase_x/y names)
     local config_file="configs/${CONFIG_NAME}.yaml"
@@ -184,37 +275,9 @@ validate_config() {
         exit 1
     fi
     
-    # Test config loading with selected architecture
-    if [[ "$ARCH" == "json" ]]; then
-        echo "🧪 Testing config loading with src_new_json..."
-        "$PY" - <<EOF
-from src_new_json.config.config import load_config
-try:
-    config = load_config('${CONFIG_NAME}')
-    print('✅ Config loading successful (src_new_json)')
-    print(f'   Model path: {config.model_path}')
-    print(f'   Teacher ratio: {config.teacher_ratio}')
-except Exception as e:
-    print(f'❌ Config loading failed (src_new_json): {e}')
-    raise
-EOF
-        else
-        if [[ "$ARCH" == "ref" ]]; then
-        echo "🧪 Testing config loading with src_new_reference..."
-        "$PY" - <<EOF
-from src_new_reference.config.config import load_config
-try:
-    config = load_config('${CONFIG_NAME}')
-    print('✅ Config loading successful (src_new_reference)')
-    print(f'   Model path: {config.model_path}')
-    print(f'   Teacher ratio: {config.teacher_ratio}')
-except Exception as e:
-    print(f'❌ Config loading failed (src_new_reference): {e}')
-    raise
-EOF
-        else
-        echo "🧪 Testing config loading with src_new..."
-        "$PY" - <<EOF
+    # Test config loading with src_new
+    echo "🧪 Testing config loading with src_new..."
+    "$PY" - <<EOF
 from src_new.config.config import load_config
 try:
     config = load_config('${CONFIG_NAME}')
@@ -225,8 +288,6 @@ except Exception as e:
     print(f'❌ Config loading failed (src_new): {e}')
     raise
 EOF
-        fi
-    fi
     
     # Check if DeepSpeed config exists (if enabled)
     if [[ $DEEPSPEED_ENABLED == true ]]; then
@@ -238,7 +299,7 @@ EOF
         echo "✅ DeepSpeed config validated: $DEEPSPEED_CONFIG"
     fi
     
-    echo "✅ Configuration validation passed for new architecture"
+    echo "✅ Configuration validation passed for standard architecture"
 }
 
 
@@ -248,37 +309,27 @@ EOF
 # =============================================================================
 
 launch_single_gpu() {
-    echo "🖥️  Single GPU Training with New Architecture (GPU: ${GPU_DEVICES%%,*})"
-    
-    if [[ "$ARCH" == "json" ]]; then
-        if [[ -n "$MAX_STEPS" ]]; then
-            "$PY" "${PROJECT_ROOT}/scripts/train_new_json.py" \
-                --config "$CONFIG_NAME" \
-                --log_level "$LOG_LEVEL" \
-                --max_steps "$MAX_STEPS"
-        else
-            "$PY" "${PROJECT_ROOT}/scripts/train_new_json.py" \
-                --config "$CONFIG_NAME" \
-                --log_level "$LOG_LEVEL"
-        fi
-    elif [[ "$ARCH" == "ref" ]]; then
-        # Reference pipeline (src_new_reference)
-        if [[ -n "$MAX_STEPS" ]]; then
-            "$PY" "${PROJECT_ROOT}/scripts/train_new_ref.py" \
-                --config "$CONFIG_NAME" \
-                --log_level "$LOG_LEVEL" \
-                --max_steps "$MAX_STEPS"
-        else
-            "$PY" "${PROJECT_ROOT}/scripts/train_new_ref.py" \
-                --config "$CONFIG_NAME" \
-                --log_level "$LOG_LEVEL"
-        fi
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "🐛 DEBUG: Single GPU Training (GPU: ${GPU_DEVICES%%,*})"
     else
-        # Legacy/new pipeline (src_new)
-        "$PY" "${PROJECT_ROOT}/scripts/train_new.py" \
-            --config "$CONFIG_NAME" \
-            --log_level "$LOG_LEVEL"
+        echo "🖥️  Single GPU Training with Standard Architecture (GPU: ${GPU_DEVICES%%,*})"
     fi
+    
+    # Use standard training script (src_new)
+    local TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new.py"
+    
+    # Build command with conditional max_steps
+    local cmd_args=(
+        "$TRAIN_SCRIPT"
+        --config "$CONFIG_NAME"
+        --log_level "$LOG_LEVEL"
+    )
+    
+    if [[ -n "$MAX_STEPS" ]]; then
+        cmd_args+=(--max_steps "$MAX_STEPS")
+    fi
+    
+    "$PY" "${cmd_args[@]}"
 }
 
 launch_deepspeed() {
@@ -286,34 +337,38 @@ launch_deepspeed() {
     IFS=',' read -ra GPU_ARRAY <<< "$GPU_DEVICES"
     NUM_GPUS=${#GPU_ARRAY[@]}
     
-    echo " Multi-GPU Training with New Architecture + DeepSpeed"
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "🐛 DEBUG: Multi-GPU Training + DeepSpeed"
+    else
+        echo "🚀 Multi-GPU Training with Standard Architecture + DeepSpeed"
+    fi
     echo "   🖥️  GPUs: $NUM_GPUS devices ($GPU_DEVICES)"
     echo "   ⚙️  DeepSpeed Config: $DEEPSPEED_CONFIG"
     echo "   📄 Training Config: $CONFIG_NAME"
     echo "   📊 Log Level: $LOG_LEVEL"
     echo "   🔗 Master Port: $MASTER_PORT"
-    
-    # Select script based on ARCH
-    local TRAIN_SCRIPT
-    if [[ "$ARCH" == "json" ]]; then
-        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new_json.py"
-    elif [[ "$ARCH" == "ref" ]]; then
-        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new_ref.py"
-    else
-        TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new.py"
+    if [[ -n "$MAX_STEPS" ]]; then
+        echo "   ⏱️  Max Steps: $MAX_STEPS"
     fi
-
-    # No BBU_ARCH env needed when selecting explicit TRAIN_SCRIPT
-    :
     
-    # Launch with Python distributed run (torch.distributed.run)
-    "$PY" -m torch.distributed.run \
-        --master_port "$MASTER_PORT" \
-        --nproc_per_node "$NUM_GPUS" \
-        "$TRAIN_SCRIPT" \
-        --config "$CONFIG_NAME" \
-        --log_level "$LOG_LEVEL" \
-        ${MAX_STEPS:+--max_steps "$MAX_STEPS"}
+    # Use standard training script (src_new)
+    local TRAIN_SCRIPT="${PROJECT_ROOT}/scripts/train_new.py"
+
+    # Build distributed command with conditional max_steps
+    local dist_args=(
+        -m torch.distributed.run
+        --master_port "$MASTER_PORT"
+        --nproc_per_node "$NUM_GPUS"
+        "$TRAIN_SCRIPT"
+        --config "$CONFIG_NAME"
+        --log_level "$LOG_LEVEL"
+    )
+    
+    if [[ -n "$MAX_STEPS" ]]; then
+        dist_args+=(--max_steps "$MAX_STEPS")
+    fi
+    
+    "$PY" "${dist_args[@]}"
 }
 
 # =============================================================================
@@ -321,30 +376,27 @@ launch_deepspeed() {
 # =============================================================================
 
 main() {
-    # Redirect output to log file
+    # Redirect output to log file based on configuration
     if [[ "$to_console" == "false" ]]; then
         exec > $LOG_NAME 2>&1
     fi
     
-    echo "🚀 New Architecture Training Launcher (src_new)"
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "🐛 DEBUG MODE: Standard Architecture Training Launcher (src_new)"
+    else
+        echo "🚀 Standard Architecture Training Launcher (src_new)"
+    fi
     echo "   📄 Config: $CONFIG_NAME"
     echo "   🖥️  GPUs: $GPU_DEVICES"
-    echo "   📄 Log file: $LOG_NAME"
     echo "   📊 Log level: $LOG_LEVEL"
-    if [[ "$ARCH" == "json" ]]; then
-        echo "   🏗️  Architecture: src_new_json (pure JSON geometry)"
-    elif [[ "$ARCH" == "ref" ]]; then
-        echo "   🏗️  Architecture: src_new_reference (reference SFT)"
-    else
-        echo "   🏗️  Architecture: src_new (legacy)"
-    fi
+    echo "   🏗️  Architecture: src_new (standard)"
     if [[ -n "$MAX_STEPS" ]]; then
         echo "   ⏱️  Max steps override: $MAX_STEPS"
     fi
     if [[ "$to_console" == "true" ]]; then
-        echo "   🐛 Console output enabled"
+        echo "   📺 Console output enabled"
     else
-        echo "   📄 Output will be redirected to $LOG_NAME"   
+        echo "   📄 Log file: $LOG_NAME"
     fi
     echo ""
     
@@ -354,14 +406,8 @@ main() {
     
     # After validation, decide whether to keep FlashAttention/Triton-specific env
     FLASH_ATTENTION_ENABLED=$("$PY" - <<EOF
-arch = "$ARCH".strip()
 try:
-    if arch == "json":
-        from src_new_json.config.config import load_config
-    elif arch == "ref":
-        from src_new_reference.config.config import load_config
-    else:
-        from src_new.config.config import load_config
+    from src_new.config.config import load_config
     cfg = load_config('${CONFIG_NAME}')
     print('1' if getattr(cfg, 'attn_implementation', 'eager') == 'flash_attention_2' else '0')
 except Exception:
@@ -386,7 +432,11 @@ EOF
         launch_single_gpu
     fi
     
-    echo "✅ New architecture training completed successfully!"
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        echo "✅ DEBUG training completed successfully!"
+    else
+        echo "✅ Standard architecture training completed successfully!"
+    fi
 }
 
 # =============================================================================

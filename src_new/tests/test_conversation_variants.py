@@ -64,7 +64,7 @@ class TestConversationVariants(unittest.TestCase):
             )
         cls.processor = Qwen2_5_VLProcessor.from_pretrained(str(model_path))
         # Build a converter matching production defaults (tokens disabled in this test)
-        cls.converter = CoordinateTokenConverter(max_coord_value=1024, coordinate_tokens_enabled=False)
+        cls.converter = CoordinateTokenConverter()
 
         # Set up file logger at repo root
         log_path = repo_root / "conversation_variants.log"
@@ -93,7 +93,7 @@ class TestConversationVariants(unittest.TestCase):
 
     def _dense_caption_messages(self) -> List[Dict[str, Any]]:
         # Image-only user; system shows the real instruction prompt
-        system_text = get_system_prompt(coordinate_tokens_enabled=False)
+        system_text = get_system_prompt()
         return [
             {"role": "system", "content": system_text},
             {"role": "user", "content": [{"type": "image"}]},

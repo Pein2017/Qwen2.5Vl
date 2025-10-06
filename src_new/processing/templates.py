@@ -169,15 +169,12 @@ def _to_coord_token(match: re.Match) -> str:
 
 
 def get_system_prompt(
-    coordinate_tokens_enabled: bool = False,
     format_mode: object | None = None,
 ) -> str:
     """Return a system prompt from a single numeric base, differing only in formatting.
 
     - Always start from SYSTEM_PROMPT_BASE so background/business rules are identical.
-    - Mode selection (exclusive):
-      - format_mode = 'special_tokens' | 'coord_tokens'
-    - For coord_tokens, tweak wording for counts and convert example digits to coord tokens.
+    - Mode selection (exclusive): currently only 'special_tokens' is supported.
     """
     text = SYSTEM_PROMPT_BASE
 
@@ -185,13 +182,10 @@ def get_system_prompt(
     if format_mode is not None:
         fm = getattr(format_mode, "value", format_mode)
         mode = str(fm).strip().lower()
-        if mode not in {"special_tokens", "coord_tokens"}:
-            raise ValueError(f"Unsupported format_mode: {format_mode}")
-    else:
-        mode = "coord_tokens" if coordinate_tokens_enabled else "special_tokens"
-
-    # Coordinate-token mode: wording tweaks + convert numeric examples in wrapper-based lines
-    # Coord-token mode deprecated; no transformation performed.
+        if mode != "special_tokens":
+            raise ValueError(
+                "Only special-token formatting is supported now that coordinate tokens are removed"
+            )
 
     return text
 

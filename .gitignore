@@ -20,6 +20,9 @@
 !CLAUDE.md
 !LICENSE
 !pyrightconfig.json
+!.specify
+!RL-refactoring-plan
+!RL-refactoring-plan/**
 
 
 # 5) Exclude temporary/experimental and large output directories (even if they contain .py/.md)

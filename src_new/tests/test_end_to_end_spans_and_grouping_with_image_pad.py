@@ -10,8 +10,6 @@ from PIL import Image
 from transformers import Qwen2_5_VLProcessor
 
 from src_new.processing.conversation_processor import ConversationProcessor
-from src_new.processing.coordinate_converter import CoordinateTokenConverter
-from src_new.processing.special_tokens import get_coord_token_range
 from src_new.data.dataset import Dataset
 from src_new.losses.token_grouping import TokenGroupingPlugin
 
@@ -51,11 +49,9 @@ class TestEndToEndSpansAndGroupingWithImagePad(unittest.TestCase):
             raise unittest.SkipTest(f"Model not found at: {model_path}")
         cls.processor = Qwen2_5_VLProcessor.from_pretrained(str(model_path))
 
-    def _build_conversation(self, coordinate_tokens_enabled: bool):
+    def _build_conversation(self):
         conv = ConversationProcessor(
             processor=self.processor,
-            max_coord_value=2048,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
         )
         student, teachers = _student_teacher_samples()
         student_img = _make_image((student["width"], student["height"]))
@@ -118,7 +114,7 @@ class TestEndToEndSpansAndGroupingWithImagePad(unittest.TestCase):
         self.assertTrue((union_s == s_assist).all())
 
     def test_end_to_end_numeric_mode(self):
-        out = self._build_conversation(coordinate_tokens_enabled=False)
+        out = self._build_conversation()
         self._assert_spans_and_masks(out)
 
     @unittest.skip("Coordinate tokens deprecated")

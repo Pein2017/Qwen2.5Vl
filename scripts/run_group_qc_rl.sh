@@ -1,46 +1,80 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
+# =============================================================================
+# 🤖 Group QC RL Training Launcher
+# =============================================================================
+#
+# USAGE:
+#   bash scripts/run_group_qc_rl.sh
+#   RL_CONFIG_PATH=configs/rl/custom_grpo.yaml bash scripts/run_group_qc_rl.sh
+#   RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true bash scripts/run_group_qc_rl.sh
+#
+# ENVIRONMENT VARIABLES:
+#   RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
+#   RL_GPU_DEVICES       GPUs to use (default: 0)
+#   RL_TO_CONSOLE       Output to console: true|false (default: false)
+#   RL_MASTER_PORT      Master port for distributed training (default: 29511)
+#   RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
+#   RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
+#   RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
+# =============================================================================
+
+show_help() {
+    cat << EOF
+🤖 Group QC RL Training Launcher
+
+USAGE:
+    $0
+    RL_CONFIG_PATH=configs/rl/custom_grpo.yaml $0
+    RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true $0
+
+ENVIRONMENT VARIABLES:
+    RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
+    RL_GPU_DEVICES       GPUs to use (default: 0)
+    RL_TO_CONSOLE       Output to console: true|false (default: false)
+    RL_MASTER_PORT      Master port for distributed training (default: 29511)
+    RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
+    RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
+    RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
+
+EXAMPLES:
+    $0                                        # Default training
+    RL_CONFIG_PATH=configs/rl/custom_grpo.yaml $0  # Custom config
+    RL_GPU_DEVICES=0,1,2,3 $0                 # Multi-GPU training
+    RL_TO_CONSOLE=true $0                     # Output to console
+
+FEATURES:
+    🎯 Group-level quality control RL training
+    🚀 Multi-GPU distributed training support
+    📊 Configurable logging and output options
+    ⚙️  Environment-aware configuration
+EOF
+}
+
+# Parse help argument
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    show_help
+    exit 0
+fi
+
 # =====================
-# Fixed, self-contained configuration (edit here if needed)
-# Also accepts optional CLI args:
-#   $1 = CONFIG_PATH (file path) OR TO_CONSOLE when set to 'true'/'false'
-#   $2 = TO_CONSOLE (true|false) when $1 is a config path
+# Configuration with environment variables and sensible defaults
 # =====================
-CONFIG_PATH="configs/rl/group_qc_grpo.yaml"
-GPU_DEVICES="${GPU_DEVICES:-0}"                   # e.g. "0" for single GPU; "0,1,2,3" for 4 GPUs; use "cpu" to force CPU
-TO_CONSOLE="${1:-false}"            # true to output to console, false to output to log file
-MASTER_PORT=29511
-PY="/root/miniconda3/envs/ms/bin/python"
-LOG_NAME="run_group_qc_rl.log"
+CONFIG_PATH="${RL_CONFIG_PATH:-configs/rl/group_qc_grpo.yaml}"
+GPU_DEVICES="${RL_GPU_DEVICES:-0}"                   # e.g. "0" for single GPU; "0,1,2,3" for 4 GPUs; use "cpu" to force CPU
+TO_CONSOLE="${RL_TO_CONSOLE:-false}"                 # true to output to console, false to output to log file
+MASTER_PORT="${RL_MASTER_PORT:-29511}"
+PY="${RL_PYTHON_BIN:-/root/miniconda3/envs/ms/bin/python}"
+LOG_NAME="${RL_LOG_NAME:-run_group_qc_rl.log}"
 DS_CONFIG="scripts/zero2.json"
 # Runtime toggles
-SKIP_SAVE=1             # 1 to skip saving checkpoints; 0 to save
-
-# CLI parsing: allow first arg to be a config path
-if [[ -n "${1:-}" ]]; then
-  if [[ -f "$1" ]]; then
-    CONFIG_PATH="$1"
-    # Shift positional args so $2 becomes $1 for TO_CONSOLE detection
-    shift
-    if [[ -n "${1:-}" ]]; then
-      TO_CONSOLE="$1"
-    else
-      TO_CONSOLE="false"
-    fi
-  else
-    # If $1 is not a file, interpret it strictly as TO_CONSOLE flag
-    case "${1,,}" in
-      true|false) TO_CONSOLE="$1" ;;
-      *) echo "[WARN] First arg '$1' is not a file; treating it as TO_CONSOLE (true|false)." ;;
-    esac
-  fi
-fi
+SKIP_SAVE="${RL_SKIP_SAVE:-1}"             # 1 to skip saving checkpoints; 0 to save
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "[ERROR] Config file not found: $CONFIG_PATH" >&2
-  echo "Hint: pass an absolute path as the first argument or edit CONFIG_PATH at the top of scripts/run_group_qc_rl.sh." >&2
+  echo "Hint: set RL_CONFIG_PATH environment variable to an absolute path." >&2
   exit 1
 fi
 

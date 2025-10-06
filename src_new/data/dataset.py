@@ -426,31 +426,12 @@ class Dataset(TorchDataset):
             if hasattr(self.config, "require_line_tokens"):
                 require_line_tokens = bool(getattr(self.config, "require_line_tokens"))
             require_geometry_tokens(tok, require_line=require_line_tokens)
-            # Coordinate token coverage if enabled
-            if bool(getattr(self.config, "coordinate_tokens_enabled", False)):
-                max_coord_value = int(getattr(self.config, "max_coord_value"))
-                require_coordinate_token_range(tok, min_count=max_coord_value + 1)
         except Exception as e:
             raise ValueError(f"Tokenizer special-token validation failed: {e}")
 
-        # Fail-fast: max_coord_value must come from YAML (no defaults allowed)
-        if not hasattr(self.config, "max_coord_value"):
-            raise ValueError(
-                "max_coord_value is required in configuration (YAML) but was not found on Config."
-            )
-        max_coord_value = self.config.max_coord_value
-        if not isinstance(max_coord_value, int) or max_coord_value <= 0:
-            raise ValueError(
-                f"max_coord_value must be a positive integer, got {max_coord_value!r}"
-            )
-
-        coordinate_tokens_enabled = bool(
-            getattr(self.config, "coordinate_tokens_enabled", False)
-        )
+        # Simplified conversation processor without coordinate token dependencies
         self.conversation_processor = ConversationBuilder(
             processor=hf_processor,
-            max_coord_value=max_coord_value,
-            coordinate_tokens_enabled=coordinate_tokens_enabled,
         )
 
         logger.info("✅ HuggingFace processor and conversation processor initialized")

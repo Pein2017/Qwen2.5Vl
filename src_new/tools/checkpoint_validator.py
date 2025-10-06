@@ -156,71 +156,10 @@ class CheckpointValidator:
 
     def _validate_coordinate_tokens(self, results: Dict):
         """Validate coordinate token configuration."""
-        coord_config_path = self.checkpoint_path / "coordinate_config.json"
-
-        if coord_config_path.exists():
-            try:
-                with open(coord_config_path, "r") as f:
-                    coord_config = json.load(f)
-
-                results["coordinate_tokens"]["config_exists"] = True
-                results["coordinate_tokens"]["enabled"] = coord_config.get(
-                    "coordinate_tokens_enabled", False
-                )
-                results["coordinate_tokens"]["max_coord_value"] = coord_config.get(
-                    "max_coord_value"
-                )
-                results["coordinate_tokens"]["vocab_size_extended"] = coord_config.get(
-                    "vocab_size_extended"
-                )
-
-                # Validate tokenizer has extended vocabulary
-                tokenizer_config_path = self.checkpoint_path / "tokenizer_config.json"
-                if tokenizer_config_path.exists():
-                    with open(tokenizer_config_path, "r") as f:
-                        tokenizer_config = json.load(f)
-
-                    vocab_size = tokenizer_config.get("vocab_size")
-                    # Consider tokenizer extended if coordinate token range is present
-                    try:
-                        from transformers import AutoTokenizer
-
-                        from ..processing.special_tokens import (
-                            get_coord_token_range,
-                        )
-
-                        tok = AutoTokenizer.from_pretrained(
-                            str(self.checkpoint_path),
-                            trust_remote_code=False,
-                            use_fast=True,
-                        )
-                        if not getattr(tok, "is_fast", False):
-                            raise RuntimeError("Fast tokenizer required for checkpoint validation")
-                        _enc = tok(
-                            "sanity",
-                            return_offsets_mapping=True,
-                            add_special_tokens=False,
-                            return_tensors="pt",
-                        )
-                        if _enc.get("offset_mapping") is None:
-                            raise RuntimeError("Fast tokenizer did not return offset_mapping in validator")
-                        rng = get_coord_token_range(tok)
-                        has_coords = rng.end_exclusive > rng.start_id
-                    except Exception:
-                        has_coords = bool(
-                            vocab_size and vocab_size % 128 == 0 and vocab_size > 0
-                        )
-                    if has_coords:
-                        results["coordinate_tokens"]["tokenizer_extended"] = True
-                    else:
-                        results["warnings"].append(
-                            "Coordinate tokens enabled but tokenizer not extended (no coord range detected)"
-                        )
-
-            except Exception as e:
-                results["errors"].append(f"Failed to parse coordinate_config.json: {e}")
-        else:
-            results["coordinate_tokens"]["config_exists"] = False
+        results["coordinate_tokens"]["config_exists"] = False
+        results["coordinate_tokens"]["enabled"] = False
+        results["coordinate_tokens"]["vocab_size_extended"] = None
+        results["coordinate_tokens"]["tokenizer_extended"] = False
 
     def _validate_configs(self, results: Dict):
         """Validate configuration files."""
@@ -294,7 +233,7 @@ class CheckpointValidator:
             coord_info = results["coordinate_tokens"]
             logger.info(f"   ✅ Configuration found")
             logger.info(f"   📊 Enabled: {coord_info.get('enabled')}")
-            logger.info(f"   📊 Max coord value: {coord_info.get('max_coord_value')}")
+            logger.info("   📊 Coordinate-token metadata no longer produced")
             logger.info(
                 f"   📊 Extended vocab size: {coord_info.get('vocab_size_extended')}"
             )

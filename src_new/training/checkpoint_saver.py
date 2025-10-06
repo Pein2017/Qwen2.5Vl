@@ -73,7 +73,6 @@ class CheckpointSaver:
 
     - Saves inference‑ready checkpoints (SafeTensors, sharded) on rank 0
     - Handles tokenizer, processor, generation config
-    - Writes coordinate_config.json when coordinate mode is enabled
     - Integrates with UnifiedCheckpointManager for best checkpoints
     - Supports DeepSpeed and non-DeepSpeed models
     - Performs checkpoint rotation based on save_total_limit
@@ -601,40 +600,9 @@ class CheckpointSaver:
         unwrapped_model: torch.nn.Module,
         processing_class: Optional[Any],
     ) -> None:
-        try:
-            if hasattr(unwrapped_model, "training_config") and getattr(
-                unwrapped_model.training_config, "coordinate_tokens_enabled", False
-            ):
-                # Try to derive coordinate token range from tokenizer
-                coord_range = [None, None]
-                try:
-                    from src_new.processing.special_tokens import get_coord_token_range
-
-                    if processing_class is not None:
-                        rng = get_coord_token_range(processing_class)
-                        if rng is not None and rng.end_exclusive > rng.start_id:
-                            coord_range = [rng.start_id, rng.end_exclusive]
-                except Exception:
-                    coord_range = [None, None]
-
-                coord_config = {
-                    "coordinate_tokens_enabled": True,
-                    "max_coord_value": getattr(
-                        unwrapped_model.training_config, "max_coord_value", None
-                    ),
-                    "vocab_size_extended": len(processing_class.get_vocab())
-                    if processing_class is not None
-                    and hasattr(processing_class, "get_vocab")
-                    else None,
-                    "coordinate_token_range": coord_range,
-                }
-                with open(
-                    os.path.join(checkpoint_dir, "coordinate_config.json"), "w"
-                ) as f:
-                    json.dump(coord_config, f, indent=2)
-                logger.info("✅ [RANK 0] Coordinate config saved")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to write coordinate_config.json: {e}")
+        # Coordinate-specific metadata is no longer emitted. The helper is
+        # preserved solely for interface compatibility with older callers.
+        return
 
     def _ensure_auxiliary_files(
         self,

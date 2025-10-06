@@ -32,7 +32,6 @@ from .schema import (
     DataConfig,
     EvaluationConfig,
     FeaturesConfig,
-    GeometryConfig,
     GroupLossWeights,
     LoggingConfig,
     LossConfig,
@@ -191,6 +190,7 @@ def _derive_phase_name(config: Mapping[str, Any]) -> Optional[str]:
 def _validate_raw_config(config: Dict[str, Any]) -> None:
     errors: List[str] = []
 
+    # Basic validation
     errors.extend(
         requires_if(
             config,
@@ -199,21 +199,10 @@ def _validate_raw_config(config: Dict[str, Any]) -> None:
             [
                 "features.augmentation.config",
                 "features.augmentation.config.rng_seed",
-                "features.augmentation.config.apply_to_teachers",
-                "features.augmentation.config.lines_policy",
-                "features.augmentation.config.debug_visualization",
-            ],
-        )
-    )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.teacher_augmentation.enabled",
-            True,
-            [
-                "features.teacher_augmentation.config",
-                "features.teacher_augmentation.config.photometric",
+                "features.augmentation.config.smart_resize",
+                "features.augmentation.config.geometric_transforms",
+                "features.augmentation.config.photometric_transforms",
+                "features.augmentation.config.line_operations",
             ],
         )
     )
@@ -224,92 +213,14 @@ def _validate_raw_config(config: Dict[str, Any]) -> None:
             "features.teacher_pairing.enabled",
             True,
             [
+                "features.teacher_pairing.teacher_pool_file",
                 "features.teacher_pairing.teacher_ratio",
-                "features.teacher_pairing.dynamic_pairing_enabled",
             ],
         )
     )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.teacher_pairing.dynamic_pairing_enabled",
-            True,
-            ["features.teacher_pairing.dynamic_pair_cross_bucket_explore_prob"],
-        )
-    )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.phase.enabled",
-            True,
-            ["features.phase.name"],
-        )
-    )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.checkpoint.enabled",
-            True,
-            [
-                "features.checkpoint.save_steps",
-                "features.checkpoint.save_total_limit",
-                "features.checkpoint.metric_for_best_model",
-                "features.checkpoint.greater_is_better",
-                "features.checkpoint.save_strategy",
-                "features.checkpoint.load_best_model_at_end",
-            ],
-        )
-    )
-
-    checkpoint_section = config.get("features", {}).get("checkpoint", {})
-    if isinstance(checkpoint_section, Mapping) and checkpoint_section.get("enabled"):
-        errors.extend(
-            exactly_one(
-                config,
-                [
-                    "features.checkpoint.min_interval_steps",
-                    "features.checkpoint.interval_multiplier_of_eval_steps",
-                ],
-            )
-        )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.logging.enabled",
-            True,
-            [
-                "features.logging.logging_steps",
-                "features.logging.report_to",
-                "features.logging.disable_tqdm",
-            ],
-        )
-    )
-
-    errors.extend(
-        requires_if(
-            config,
-            "features.evaluation.enabled",
-            True,
-            ["features.evaluation.strategy", "features.evaluation.eval_steps"],
-        )
-    )
-
-    errors.extend(non_negative(config, "loss.teacher_loss_weight"))
-    errors.extend(non_negative(config, "loss.student_loss_weight"))
-    errors.extend(non_negative(config, "loss.coordinate_loss_weight"))
-    errors.extend(non_negative(config, "loss.grouped.caption"))
-    errors.extend(non_negative(config, "loss.grouped.grounding"))
-    errors.extend(non_negative(config, "loss.grouped.formatting"))
-    errors.extend(non_negative(config, "training.weight_decay"))
-    errors.extend(probability(config, "training.warmup_ratio"))
 
     if errors:
-        message = "Configuration validation failed:\n" + "\n".join(f" - {err}" for err in errors)
-        raise SchemaError(message)
+        raise SchemaError("\n".join(errors))
 
 
 def _normalize_paths(config: Dict[str, Any]) -> None:
@@ -653,25 +564,13 @@ def _build_training_config(config: Dict[str, Any]) -> TrainingConfig:
 
     loss_dict = config["loss"]
     grouped = loss_dict["grouped"]
-    geometry = loss_dict["geometry"]
     loss = LossConfig(
         teacher_loss_weight=float(loss_dict["teacher_loss_weight"]),
         student_loss_weight=float(loss_dict["student_loss_weight"]),
-        coordinate_loss_weight=float(loss_dict.get("coordinate_loss_weight", 0.0)),
         grouped=GroupLossWeights(
             caption=float(grouped["caption"]),
             grounding=float(grouped["grounding"]),
             formatting=float(grouped["formatting"]),
-        ),
-        geometry=GeometryConfig(
-            max_coord_value=int(geometry["max_coord_value"]),
-            coordinate_tokens_enabled=bool(
-                geometry.get("coordinate_tokens_enabled", False)
-            ),
-            coordinate_init_mode=str(
-                geometry.get("coordinate_init_mode", "fourier_ramp")
-            ),
-            new_geometry_tokens=tuple(geometry.get("new_geometry_tokens", []) or []),
         ),
     )
 
@@ -688,9 +587,6 @@ def _build_training_config(config: Dict[str, Any]) -> TrainingConfig:
             advanced_payload.get("span_include_im_end_in_labels", True)
         ),
         debug_alignment=bool(advanced_payload.get("debug_alignment", False)),
-        packed_segment_isolation=bool(
-            advanced_payload.get("packed_segment_isolation", False)
-        ),
         augmentation_smart_resize_defaults=_build_smart_resize(
             advanced_payload.get("augmentation_smart_resize_defaults"),
             "advanced.augmentation_smart_resize_defaults",
@@ -699,7 +595,6 @@ def _build_training_config(config: Dict[str, Any]) -> TrainingConfig:
             advanced_payload.get("trainable_token_strings", []) or []
         )
         or None,
-        save_on_each_node=bool(advanced_payload.get("save_on_each_node", False)),
     )
 
     runtime_payload = config.get("runtime", {})
@@ -721,11 +616,11 @@ def load_layered_config(config_name: str) -> TrainingConfig:
     root = _project_root()
     configs_dir = _configs_dir(root)
 
-    base_path = configs_dir / "base.yaml"
-    if not base_path.exists():
-        raise FileNotFoundError(f"Global base configuration missing: {base_path}")
-
-    base_data = _load_yaml(base_path)
+    # Remove the requirement for global base.yaml since we use extends mechanism
+    # base_path = configs_dir / "base.yaml"
+    # if not base_path.exists():
+    #     raise FileNotFoundError(f"Global base configuration missing: {base_path}")
+    # base_data = _load_yaml(base_path)
 
     config_key = config_name
     if config_key.startswith('configs/'):
@@ -756,7 +651,8 @@ def load_layered_config(config_name: str) -> TrainingConfig:
             raise err
     layers = _gather_layers(config_path, configs_dir)
 
-    merged = copy.deepcopy(base_data)
+    # Start with empty dict instead of base_data since extends mechanism handles inheritance
+    merged: Dict[str, Any] = {}
     for _, data in layers:
         merged = _deep_merge(merged, data)
 
@@ -768,9 +664,8 @@ def load_layered_config(config_name: str) -> TrainingConfig:
             layer_paths = [layer_path for layer_path, _ in layers]
             if phase_base not in layer_paths:
                 phase_data = _load_yaml(phase_base)
-                merged = _deep_merge(base_data, phase_data)
-                for _, data in layers:
-                    merged = _deep_merge(merged, data)
+                # Merge phase base first, then apply layers
+                merged = _deep_merge(phase_data, merged)
 
     _validate_raw_config(merged)
     _normalize_paths(merged)

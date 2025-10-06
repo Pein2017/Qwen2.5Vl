@@ -388,7 +388,6 @@ class TrainingStateManager:
         """Get comprehensive training statistics."""
         return {
             "step_count": self._step_count,
-            "coordinate_tokens_enabled": bool(self.config.coordinate_tokens_enabled),
             "accumulated_components": len(self._loss_components_accumulator),
             "components_count": self._loss_components_count,
         }

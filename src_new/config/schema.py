@@ -73,12 +73,12 @@ class TrainingConfigSection:
     fp16: bool
     collator_type: str
     dataloader_num_workers: int
-    pin_memory: bool
+    dataloader_pin_memory: bool  # Fixed field name to match config
     prefetch_factor: int
     remove_unused_columns: bool
+    max_steps: int = -1  # Add missing max_steps field
     conversation_variant_ratios: Optional[Dict[str, float]] = None
     lr_merger: Optional[float] = None
-    lr_coord_slice: Optional[float] = None
     lr_full_model: Optional[float] = None
 
     def __post_init__(self) -> None:
@@ -99,16 +99,8 @@ class TrainingConfigSection:
             raise SchemaError("training.weight_decay must be >= 0")
         if self.prefetch_factor < 0:
             raise SchemaError("training.prefetch_factor must be >= 0")
-        if self.conversation_variant_ratios is not None:
-            if not self.conversation_variant_ratios:
-                raise SchemaError(
-                    "training.conversation_variant_ratios must not be empty when provided"
-                )
-            for name, weight in self.conversation_variant_ratios.items():
-                if weight < 0:
-                    raise SchemaError(
-                        f"training.conversation_variant_ratios.{name} must be >= 0"
-                    )
+        if self.dataloader_num_workers < 0:
+            raise SchemaError("training.dataloader_num_workers must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -121,39 +113,17 @@ class GroupLossWeights:
         if self.caption < 0 or self.grounding < 0 or self.formatting < 0:
             raise SchemaError("loss.grouped weights must be >= 0")
 
-
-@dataclass(frozen=True)
-class GeometryConfig:
-    max_coord_value: int
-    coordinate_tokens_enabled: bool = False
-    coordinate_init_mode: str = "fourier_ramp"
-    new_geometry_tokens: Tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if self.max_coord_value <= 0:
-            raise SchemaError("loss.geometry.max_coord_value must be > 0")
-        allowed_modes = {"fourier_ramp", "ms_mean"}
-        if self.coordinate_init_mode not in allowed_modes:
-            raise SchemaError(
-                "loss.geometry.coordinate_init_mode must be one of fourier_ramp|ms_mean"
-            )
-
-
 @dataclass(frozen=True)
 class LossConfig:
     teacher_loss_weight: float
     student_loss_weight: float
     grouped: GroupLossWeights
-    geometry: GeometryConfig
-    coordinate_loss_weight: float = field(default=0.0)
 
     def __post_init__(self) -> None:
         if self.teacher_loss_weight < 0:
             raise SchemaError("loss.teacher_loss_weight must be >= 0")
         if self.student_loss_weight < 0:
             raise SchemaError("loss.student_loss_weight must be >= 0")
-        if self.coordinate_loss_weight < 0:
-            raise SchemaError("loss.coordinate_loss_weight must be >= 0")
         if self.teacher_loss_weight + self.student_loss_weight <= 0:
             raise SchemaError(
                 "loss.teacher_loss_weight + loss.student_loss_weight must be > 0"
@@ -401,10 +371,14 @@ class RuntimeConfig:
 class AdvancedConfig:
     span_include_im_end_in_labels: bool
     debug_alignment: bool
-    packed_segment_isolation: bool
     augmentation_smart_resize_defaults: Optional[SmartResizeConfig]
     trainable_token_strings: Optional[Tuple[str, ...]] = None
-    save_on_each_node: bool = False
+    # Legacy loss weights (disabled in src_new)
+    teacher_loss_weight: float = 0.5
+    student_loss_weight: float = 1.0
+    caption_loss_weight: float = 1.0
+    grounding_loss_weight: float = 1.0
+    formatting_loss_weight: float = 1.0  # Use new geometry tokens format
 
 
 @dataclass(frozen=True)
@@ -449,23 +423,18 @@ class TrainingConfig:
         "fp16": ("training", "fp16"),
         "collator_type": ("training", "collator_type"),
         "dataloader_num_workers": ("training", "dataloader_num_workers"),
-        "pin_memory": ("training", "pin_memory"),
+        "dataloader_pin_memory": ("training", "dataloader_pin_memory"),
+        "max_steps": ("training", "max_steps"),
         "prefetch_factor": ("training", "prefetch_factor"),
         "remove_unused_columns": ("training", "remove_unused_columns"),
         "conversation_variant_ratios": ("training", "conversation_variant_ratios"),
         "lr_merger": ("training", "lr_merger"),
-        "lr_coord_slice": ("training", "lr_coord_slice"),
         "lr_full_model": ("training", "lr_full_model"),
         "teacher_loss_weight": ("loss", "teacher_loss_weight"),
         "student_loss_weight": ("loss", "student_loss_weight"),
-        "coordinate_loss_weight": ("loss", "coordinate_loss_weight"),
         "caption_loss_weight": ("loss", "grouped", "caption"),
         "grounding_loss_weight": ("loss", "grouped", "grounding"),
         "formatting_loss_weight": ("loss", "grouped", "formatting"),
-        "max_coord_value": ("loss", "geometry", "max_coord_value"),
-        "coordinate_tokens_enabled": ("loss", "geometry", "coordinate_tokens_enabled"),
-        "coordinate_init_mode": ("loss", "geometry", "coordinate_init_mode"),
-        "new_geometry_tokens": ("loss", "geometry", "new_geometry_tokens"),
         "output_dir": ("output", "output_dir"),
         "run_name": ("output", "run_name"),
         "tb_dir": ("output", "tb_dir"),
@@ -525,15 +494,31 @@ class TrainingConfig:
             "span_include_im_end_in_labels",
         ),
         "debug_alignment": ("advanced", "debug_alignment"),
-        "packed_segment_isolation": (
-            "advanced",
-            "packed_segment_isolation",
-        ),
         "trainable_token_strings": (
             "advanced",
             "trainable_token_strings",
         ),
-        "save_on_each_node": ("advanced", "save_on_each_node"),
+        "teacher_loss_weight": (
+            "advanced",
+            "teacher_loss_weight",
+        ),
+        "student_loss_weight": (
+            "advanced",
+            "student_loss_weight",
+        ),
+        "caption_loss_weight": (
+            "advanced",
+            "caption_loss_weight",
+        ),
+        "grounding_loss_weight": (
+            "advanced",
+            "grounding_loss_weight",
+        ),
+        "formatting_loss_weight": (
+            "advanced",
+            "formatting_loss_weight",
+        ),
+
     }
 
     def __getattr__(self, name: str) -> object:
@@ -544,6 +529,16 @@ class TrainingConfig:
         for attr in mapping:
             value = getattr(value, attr)
         return value
+
+    def __post_init__(self) -> None:  # type: ignore[override]
+        # Enforce bf16-only policy at structured config level
+        dtype_norm = str(self.model.torch_dtype).lower()
+        if dtype_norm not in {"bfloat16", "bf16"}:
+            raise SchemaError("model.torch_dtype must be 'bfloat16'")
+        if not bool(self.training.bf16):
+            raise SchemaError("training.bf16 must be true")
+        if bool(self.training.fp16):
+            raise SchemaError("training.fp16 must be false (bf16-only policy)")
 
     @property
     def run_output_dir(self) -> str:
@@ -564,7 +559,6 @@ __all__ = [
     "DataConfig",
     "TrainingConfigSection",
     "GroupLossWeights",
-    "GeometryConfig",
     "LossConfig",
     "AugmentationScheduleItem",
     "AugmentationFeatures",
