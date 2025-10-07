@@ -460,7 +460,14 @@ def train(config_path: str) -> None:
         param_names = set(sig.parameters.keys())
         threshold_params = param_names & {"tau_iou", "tau_quad", "tau_line"}
         # Pass-through hyperparameters for length_vs_gt
-        lvgt_params = param_names & {"lower", "upper", "gamma", "tail_numeric_weight", "alpha", "estimator"}
+        lvgt_params = param_names & {
+            "lower",
+            "upper",
+            "gamma",
+            "tail_numeric_weight",
+            "alpha",
+            "estimator",
+        }
 
         def _wrap(
             fn: Callable[..., float],

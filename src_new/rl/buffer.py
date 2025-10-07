@@ -38,6 +38,13 @@ def generate_and_score(
     scale_rewards: bool,
     max_advantage_magnitude: Optional[float],
     reward_clip_sigma: Optional[float] = None,
+    # Dynamic length options
+    dyn_enabled: bool = True,
+    dyn_alpha: float = 1.1,
+    dyn_eos_margin: int = 16,
+    dyn_min_cap: int = 32,
+    dyn_max_cap: Optional[int] = None,
+    dyn_mask_overflow_only: bool = False,
 ) -> Dict[str, Any]:
     if not inputs:
         raise ValueError("inputs must be a non-empty sequence")
@@ -97,15 +104,6 @@ def generate_and_score(
     if min_new_tokens is not None:
         gen_kwargs["min_new_tokens"] = int(min_new_tokens)
 
-    # Dynamic length config from raw YAML (if available via env in runner)
-    dyn_cfg = None
-    try:
-        import os as _os
-        # Runner passes raw YAML; we access via env json is non-trivial. Fallback to mask_overflow_only flag via model attribute
-        dyn_cfg = None  # placeholder for external wiring if needed
-    except Exception:
-        dyn_cfg = None
-
     dynamic_caps: List[int] = []
 
     for sample_idx, (ids_t, mask_t, pv_t, thw_t) in enumerate(
@@ -123,33 +121,37 @@ def generate_and_score(
         # Default cap from arguments; can be overridden per-sample below
         per_sample_cap = int(max_new_tokens)
 
-        # Compute dynamic cap if configured outside (we infer via presence of meta objects)
+        # Compute dynamic cap only when enabled
         meta = metas[sample_idx] if sample_idx < len(metas) else None
-        try:
-            if isinstance(meta, dict):
-                from src_new.processing.coordinate_converter import (
-                    CoordinateTokenConverter as _Conv,
-                )
+        if dyn_enabled:
+            try:
+                if isinstance(meta, dict):
+                    from src_new.processing.coordinate_converter import (
+                        CoordinateTokenConverter as _Conv,
+                    )
 
-                conv = _Conv()
-                objs = meta.get("objects") or []
-                gt_text = conv.convert_objects_to_tokens(objs)
-                # Tokenizer-aligned count
-                gt_ids = tokenizer(
-                    gt_text, add_special_tokens=False, return_attention_mask=False
-                ).get("input_ids", [])
-                gt_len = int(len(gt_ids)) if isinstance(gt_ids, list) else int(gt_ids.shape[0])
-                # Defaults aligned with YAML base; runner may override via raw_config
-                alpha = 1.1
-                eos_margin = 16
-                min_cap_val = 32
-                max_cap_val = int(max_new_tokens)
-                # Derive cap
-                est = int(round(alpha * gt_len + eos_margin))
-                per_sample_cap = max(int(min_cap_val), min(int(max_cap_val), est))
+                    conv = _Conv()
+                    objs = meta.get("objects") or []
+                    gt_text = conv.convert_objects_to_tokens(objs)
+                    # Tokenizer-aligned count
+                    gt_ids = tokenizer(
+                        gt_text, add_special_tokens=False, return_attention_mask=False
+                    ).get("input_ids", [])
+                    gt_len = (
+                        int(len(gt_ids))
+                        if isinstance(gt_ids, list)
+                        else int(gt_ids.shape[0])
+                    )
+                    max_cap_val = (
+                        int(dyn_max_cap)
+                        if dyn_max_cap is not None
+                        else int(max_new_tokens)
+                    )
+                    est = int(round(float(dyn_alpha) * gt_len + float(dyn_eos_margin)))
+                    per_sample_cap = max(int(dyn_min_cap), min(int(max_cap_val), est))
+                    dynamic_caps.append(per_sample_cap)
+            except Exception:
                 dynamic_caps.append(per_sample_cap)
-        except Exception:
-            dynamic_caps.append(per_sample_cap)
 
         seqs = generation.sample_k(
             model=model,
@@ -208,9 +210,11 @@ def generate_and_score(
 
             # Optional: mask only overflow tokens beyond per-sample cap if requested
             try:
-                # Heuristic: when mask_truncated_completions is false, allow optional overflow-only masking via env flag
-                mask_overflow_only = False
-                if mask_overflow_only and per_sample_cap > 0 and completion.numel() > per_sample_cap:
+                if (
+                    dyn_mask_overflow_only
+                    and per_sample_cap > 0
+                    and completion.numel() > per_sample_cap
+                ):
                     overflow = completion.numel() - int(per_sample_cap)
                     if overflow > 0:
                         mask_vec[-overflow:] = 0

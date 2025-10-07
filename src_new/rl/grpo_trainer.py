@@ -742,6 +742,9 @@ class BBUGRPOTrainer:
                 slow_generation = False
                 for sample in batch:
                     gen_start_time = time.time()
+                    # Dynamic length options from YAML
+                    dyn = (self.raw_config.get("grpo") or {}).get("dynamic_length", {})
+                    dyn_enabled = bool(dyn.get("enabled", True))
                     single_generation = buffer.generate_and_score(
                         model=self.model,
                         tokenizer=self.tokenizer,
@@ -763,6 +766,12 @@ class BBUGRPOTrainer:
                         reward_clip_sigma=self.raw_config.get("rewards_config", {}).get(
                             "clip_sigma"
                         ),
+                        dyn_enabled=dyn_enabled,
+                        dyn_alpha=float(dyn.get("alpha", 1.1)),
+                        dyn_eos_margin=int(dyn.get("eos_margin", 16)),
+                        dyn_min_cap=int(dyn.get("min_cap", 32)),
+                        dyn_max_cap=int(dyn.get("max_cap", self.manual_cfg.max_new_tokens)),
+                        dyn_mask_overflow_only=bool(dyn.get("mask_overflow_only", False)),
                     )
                     single_generation["temperature"] = gen_cfg["temperature"]
                     gen_duration = time.time() - gen_start_time
@@ -1323,9 +1332,15 @@ class BBUGRPOTrainer:
                     "eta_minutes": eta_minutes,
                     "epoch": epoch_progress,
                     # dynamic cap stats if provided by buffer
-                    "dynamic_length/mean_cap": float(generation_result.get("dynamic_length/mean_cap", 0.0)),
-                    "dynamic_length/min_cap": float(generation_result.get("dynamic_length/min_cap", 0.0)),
-                    "dynamic_length/max_cap": float(generation_result.get("dynamic_length/max_cap", 0.0)),
+                    "dynamic_length/mean_cap": float(
+                        generation_result.get("dynamic_length/mean_cap", 0.0)
+                    ),
+                    "dynamic_length/min_cap": float(
+                        generation_result.get("dynamic_length/min_cap", 0.0)
+                    ),
+                    "dynamic_length/max_cap": float(
+                        generation_result.get("dynamic_length/max_cap", 0.0)
+                    ),
                 }
             )
 
