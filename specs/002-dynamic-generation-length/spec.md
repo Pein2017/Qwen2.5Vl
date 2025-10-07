@@ -1,6 +1,6 @@
 # Feature Specification: Dynamic GT‑Aware Generation Length for Dense RL
 
-**Feature Branch**: `dynamic-generation-length`  
+**Feature Branch**: `002-dynamic-generation-length`  
 **Created**: [DATE]  
 **Status**: Draft  
 **Input**: User description: "I want to implement the plan in @DYNAMIC_GENERATION_LENGTH.md"
@@ -62,7 +62,7 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 ### Key Entities (include if feature involves data)
 - **Sample Metadata (meta)**: Contains `objects` used to reconstruct canonical assistant text for GT‑based length estimation.
 - **Dynamic Length Config**: User‑facing knobs (enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap, masking policy).
-- **Rewards Config**: User‑facing knobs for `length_vs_gt` (estimator, lower, upper, gamma, tail_numeric_weight).
+- **Rewards Config**: User‑facing knobs for `length_vs_gt` (estimator=tokenizer, lower, upper, gamma, tail_numeric_weight).
 
 ---
 
@@ -94,3 +94,9 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 - [ ] Review checklist passed
 
 ---
+
+## Clarifications
+
+### Session 2025-10-07
+- Q: Which length estimator should we use for both the per-sample cap and the length_vs_gt reward? → A: Tokenizer token count (strict alignment)
+
