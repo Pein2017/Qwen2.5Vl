@@ -9,33 +9,13 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from src_new.rl import generation
+from src_new.rl import logprobs as rl_logprobs
 from src_new.rl import validators as rl_validators
 from src_new.rl.rewards.standardizer import RewardStandardizer
 from src_new.rl.utils import resolve_im_end_id
 
 
 _LOGGER = logging.getLogger("rl.buffer")
-
-
-def _resolve_eos_id(tokenizer: Any) -> Optional[int]:
-    return resolve_im_end_id(tokenizer)
-
-
-def _normalize_thw(thw: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-    if thw is None:
-        return None
-    if not torch.is_tensor(thw):
-        thw = torch.tensor(thw)
-    if thw.numel() == 0:
-        return None
-    thw = thw.detach()
-    if thw.dim() == 1 and thw.numel() == 3:
-        return thw.view(1, 3)
-    if thw.dim() == 3 and thw.size(0) == 1:
-        return thw.squeeze(0)
-    if thw.dim() == 2 and thw.size(-1) == 3:
-        return thw
-    return thw.view(-1, 3)
 
 
 def generate_and_score(
@@ -58,11 +38,19 @@ def generate_and_score(
     scale_rewards: bool,
     max_advantage_magnitude: Optional[float],
     reward_clip_sigma: Optional[float] = None,
+    # Dynamic length options
+    dyn_enabled: bool = True,
+    dyn_alpha: float = 1.1,
+    dyn_eos_margin: int = 16,
+    dyn_min_cap: int = 32,
+    dyn_max_cap: Optional[int] = None,
+    dyn_estimator: str = "tokenizer",
+    dyn_hard_cap: bool = True,
 ) -> Dict[str, Any]:
     if not inputs:
         raise ValueError("inputs must be a non-empty sequence")
     device = reward_weights.device
-    eos_token_id = _resolve_eos_id(tokenizer)
+    eos_token_id = resolve_im_end_id(tokenizer)
 
     prompts: List[str] = []
     metas: List[Any] = []
@@ -96,7 +84,9 @@ def generate_and_score(
             pixel_values_list.append(None)
 
         thw = sample.get("image_grid_thw")
-        thw_list.append(_normalize_thw(thw) if thw is not None else None)
+        from src_new.rl.tensor_utils import normalize_thw  # late import
+
+        thw_list.append(normalize_thw(thw) if thw is not None else None)
 
     prompt_ids = pad_sequence(
         input_ids_list, batch_first=True, padding_value=pad_token_id
@@ -110,10 +100,19 @@ def generate_and_score(
     completion_truncated: List[int] = []
     prompt_index_repeat: List[int] = []
     completions_per_sample: List[List[str]] = []
+    # Enriched per-completion meta aligned with completions_raw
+    meta_per_completion: List[Dict[str, Any]] = []
+
+    # Token-length aggregates
+    gen_len_tok_list: List[int] = []
+    gt_len_tok_list: List[int] = []
+    cap_hit_flags: List[int] = []
 
     gen_kwargs = {"top_p": float(top_p)}
     if min_new_tokens is not None:
         gen_kwargs["min_new_tokens"] = int(min_new_tokens)
+
+    dynamic_caps: List[int] = []
 
     for sample_idx, (ids_t, mask_t, pv_t, thw_t) in enumerate(
         zip(input_ids_list, attention_masks_list, pixel_values_list, thw_list)
@@ -127,12 +126,65 @@ def generate_and_score(
         if thw_t is not None:
             batch_dict["image_grid_thw"] = thw_t
 
+        # Default cap from arguments; can be overridden per-sample below
+        per_sample_cap = int(max_new_tokens)
+        gt_len_tok: Optional[int] = None
+
+        # Compute dynamic cap only when enabled
+        meta = metas[sample_idx] if sample_idx < len(metas) else None
+        if dyn_enabled:
+            if str(dyn_estimator).lower() != "tokenizer":
+                _LOGGER.warning(
+                    "Unsupported dynamic_length.estimator=%s; falling back to tokenizer",
+                    dyn_estimator,
+                )
+            try:
+                if isinstance(meta, dict):
+                    from src_new.processing.coordinate_converter import (
+                        CoordinateTokenConverter as _Conv,
+                    )
+
+                    conv = _Conv()
+                    objs = meta.get("objects") or []
+                    gt_text = conv.convert_objects_to_tokens(objs)
+                    # Tokenizer-aligned count for GT
+                    gt_ids = tokenizer(
+                        gt_text, add_special_tokens=False, return_attention_mask=False
+                    ).get("input_ids", [])
+                    gt_len_tok = (
+                        int(len(gt_ids))
+                        if isinstance(gt_ids, list)
+                        else int(gt_ids.shape[0])
+                    )
+                    max_cap_val = (
+                        int(dyn_max_cap)
+                        if dyn_max_cap is not None
+                        else int(max_new_tokens)
+                    )
+                    est_val = int(
+                        round(
+                            float(dyn_alpha) * int(gt_len_tok or 0)
+                            + float(dyn_eos_margin)
+                        )
+                    )
+                    per_sample_cap = max(
+                        int(dyn_min_cap), min(int(max_cap_val), est_val)
+                    )
+                    dynamic_caps.append(per_sample_cap)
+            except Exception:
+                dynamic_caps.append(per_sample_cap)
+
+        # Choose generate cap based on hard_cap
+        gen_cap_to_use = (
+            int(per_sample_cap) if dyn_enabled and dyn_hard_cap else int(max_new_tokens)
+        )
+
         seqs = generation.sample_k(
             model=model,
             tokenizer=tokenizer,
             batch=batch_dict,
             k=sample_k,
-            max_new_tokens=int(max_new_tokens),
+            max_new_tokens=gen_cap_to_use,
             temperature=float(temperature),
             repetition_penalty=float(repetition_penalty),
             **gen_kwargs,
@@ -154,6 +206,19 @@ def generate_and_score(
                 else:
                     completion = torch.tensor([pad_token_id], dtype=torch.long)
 
+            # Force completion tokens to CPU for consistent concatenation below
+            if completion.device.type != "cpu":
+                completion = completion.to("cpu")
+
+            # gen length from tokenizer perspective = number of generated token ids
+            gen_len_tok = int(completion.numel())
+            gen_len_tok_list.append(gen_len_tok)
+            if gt_len_tok is not None:
+                gt_len_tok_list.append(int(gt_len_tok))
+            else:
+                # keep lists aligned
+                gt_len_tok_list.append(0)
+
             mask_vec = torch.ones_like(completion, dtype=torch.long)
             if eos_token_id is not None:
                 eos_positions = (completion == eos_token_id).nonzero(as_tuple=True)
@@ -169,10 +234,38 @@ def generate_and_score(
                     )
                 else:
                     completion_has_eos.append(0)
-                    completion_truncated.append(0)
+                    if mask_truncated_completions:
+                        mask_vec[:] = 0
+                        completion_truncated.append(1)
+                    else:
+                        completion_truncated.append(0)
             else:
                 completion_has_eos.append(0)
                 completion_truncated.append(0)
+
+            # When hard_cap is disabled, mask overflow tokens beyond per-sample cap
+            try:
+                if (
+                    dyn_enabled
+                    and (not dyn_hard_cap)
+                    and per_sample_cap > 0
+                    and completion.numel() > per_sample_cap
+                ):
+                    overflow = completion.numel() - int(per_sample_cap)
+                    if overflow > 0:
+                        mask_vec[-overflow:] = 0
+            except Exception:
+                pass
+
+            # Cap-hit flag when hard cap is active
+            try:
+                if dyn_enabled and dyn_hard_cap and per_sample_cap > 0:
+                    cap_hit_flags.append(1 if gen_len_tok >= int(gen_cap_to_use) else 0)
+                else:
+                    cap_hit_flags.append(0)
+            except Exception:
+                cap_hit_flags.append(0)
+
             completion_masks.append(mask_vec)
             completions_raw.append(completion)
             completion_lengths.append(int(mask_vec.long().sum().item()))
@@ -180,13 +273,23 @@ def generate_and_score(
             completions_text_sample.append(
                 tokenizer.decode(completion, skip_special_tokens=False)
             )
+
+            # Enrich meta for this completion with tokenizer lengths if available
+            base_meta = metas[sample_idx] if sample_idx < len(metas) else {}
+            try:
+                m = dict(base_meta) if isinstance(base_meta, dict) else {}
+            except Exception:
+                m = {}
+            if gt_len_tok is not None:
+                m["gt_len_tokenizer"] = int(gt_len_tok)
+            m["gen_len_tokenizer"] = int(gen_len_tok)
+            meta_per_completion.append(m)
+
         completions_per_sample.append(completions_text_sample)
         # Proactively free per-sample GPU memory to prevent accumulation across samples
-        # Each sample's generation tensors are now on CPU, but we still clear any GPU cache
         try:
             del seqs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            rl_logprobs.clear_gpu_memory()
         except Exception:
             pass
 
@@ -194,7 +297,6 @@ def generate_and_score(
     # Store log-probs from the policy that GENERATED the completions.
     # This enables proper ratio = π_current / π_generation in GRPO loss.
     # Without this, ratio is always 1.0 and trust region clipping is ineffective.
-    from src_new.rl import logprobs as rl_logprobs
 
     generation_logps_list: List[torch.Tensor] = []
 
@@ -209,8 +311,9 @@ def generate_and_score(
             )
             continue
 
-        comp_ids_eff = comp_ids[:effective_len]
-        prompt_ids_single = input_ids_list[p_idx]
+        # Ensure prompt/completion are on CPU before concatenation
+        comp_ids_eff = comp_ids[:effective_len].to("cpu")
+        prompt_ids_single = input_ids_list[p_idx].to("cpu")
 
         # Concatenate prompt + completion
         full_ids = torch.cat([prompt_ids_single, comp_ids_eff], dim=0).unsqueeze(0)
@@ -253,11 +356,7 @@ def generate_and_score(
                 )
 
         # Free memory after each logprob computation
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        rl_logprobs.clear_gpu_memory()
 
     # Pad generation logprobs to same length
     max_logp_len = (
@@ -375,6 +474,10 @@ def generate_and_score(
     ) as _e:  # keep non-fatal in buffer; trainer does strict checks later
         _LOGGER.debug("Vision alignment validation warning: %s", _e)
 
+    # Prepare outputs
+    # Build repeated prompts aligned with per-completion arrays
+    prompts_repeated = [prompts[idx] for idx in prompt_index_repeat]
+
     result: Dict[str, Any] = {
         "prompt_ids": prompt_ids.long(),
         "prompt_mask": prompt_mask.long(),
@@ -385,7 +488,7 @@ def generate_and_score(
         "reward_names": list(reward_names),
         "prompts": prompts_repeated,
         "completions": completions_text,
-        "meta": meta_repeated,
+        "meta": meta_per_completion,
         "pixel_values": pixel_values,
         "image_grid_thw": image_grid_thw,
         "images_per_sample": images_per_sample_tensor,
@@ -402,6 +505,32 @@ def generate_and_score(
             device
         ),  # Log-probs from generation policy
     }
+    # Aggregate dynamic cap statistics for logging
+    try:
+        if dynamic_caps:
+            caps_t = torch.tensor(dynamic_caps, dtype=torch.float32, device=device)
+            result["dynamic_length/mean_cap"] = float(caps_t.mean().item())
+            result["dynamic_length/min_cap"] = float(caps_t.min().item())
+            result["dynamic_length/max_cap"] = float(caps_t.max().item())
+    except Exception:
+        pass
+
+    # Aggregate tokenizer-based length stats and cap-hit ratio
+    try:
+        if gen_len_tok_list:
+            v = torch.tensor(gen_len_tok_list, dtype=torch.float32, device=device)
+            result["completions/mean_len_tok"] = float(v.mean().item())
+        if gt_len_tok_list:
+            u = torch.tensor(gt_len_tok_list, dtype=torch.float32, device=device)
+            # zeros may be placeholders; compute mean over nonzeros
+            if (u > 0).any():
+                result["gt/mean_len_tok"] = float(u[u > 0].mean().item())
+        if cap_hit_flags:
+            c = torch.tensor(cap_hit_flags, dtype=torch.float32, device=device)
+            result["completions/cap_hit_ratio"] = float(c.mean().item())
+    except Exception:
+        pass
+
     if rewards_per_func is not None:
         result["rewards_per_func"] = rewards_per_func.to(device)
     return result
@@ -455,8 +584,10 @@ def split_buffer(
         "completion_lengths",
         "terminated_with_eos",
         "truncated_flags",
+        "generation_logps",
     ]
     list_keys = ["prompts", "completions", "meta"]
+    scalar_keys = ["temperature"]
 
     chunks: List[Dict[str, Any]] = []
     for idx in range(steps_per_generation):
@@ -515,6 +646,10 @@ def split_buffer(
 
         if "reward_names" in buffer:
             chunk_dict["reward_names"] = buffer["reward_names"]
+
+        for key in scalar_keys:
+            if key in buffer and key not in chunk_dict:
+                chunk_dict[key] = buffer[key]
 
         chunks.append(chunk_dict)
 

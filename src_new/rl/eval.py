@@ -24,12 +24,6 @@ from src_new.rl.data.dataset import RLDenseJSONLDataset
 from src_new.rl.prompting.conversation import (
     RLConversationContext,
 )
-from src_new.rl.rewards.format_rewards import (
-    check_ascii_separators,
-    check_banned_vocab,
-    check_coords_counts,
-    check_wrappers,
-)
 from src_new.rl.rewards.registry import REGISTRY, combine
 from src_new.rl.runner import _load_yaml, build_components
 from src_new.rl.utils import create_builder
@@ -62,6 +56,13 @@ def _generate(
     payload: Dict[str, Any] = {}
     for k, v in inputs.items():
         if k in allowed and torch.is_tensor(v):
+            if k == "image_grid_thw":
+                try:
+                    from src_new.rl.tensor_utils import normalize_thw
+
+                    v = normalize_thw(v)
+                except Exception:
+                    pass
             payload[k] = v.to(device)
     if payload["input_ids"].dim() == 1:
         payload["input_ids"] = payload["input_ids"].unsqueeze(0)
@@ -109,25 +110,30 @@ def evaluate(config_path: str) -> Dict[str, Any]:
     ctx = RLConversationContext(builder=builder, data_root=data_root)
 
     rewards_w: Dict[str, float] = cfg.get("rewards", {})
+    observe_rewards_raw = cfg.get("observe_rewards", [])
+    if not isinstance(observe_rewards_raw, list):
+        observe_rewards_raw = []
+
+    # Build dynamic reward keys from config
+    active_keys = [k for k, w in rewards_w.items() if float(w) != 0.0 and k in REGISTRY]
+    observe_keys = [
+        k
+        for k in observe_rewards_raw
+        if isinstance(k, str) and k in REGISTRY and k not in active_keys
+    ]
+    eval_keys = sorted(set(active_keys) | set(observe_keys))
+
     ds = RLDenseJSONLDataset(jsonl_path, ctx)
     gen_kwargs = _prepare_gen_kwargs(tok, cfg)
 
     n = 0
-    sums = {
-        "parse_reward": 0.0,
-        "wrappers": 0.0,
-        "coords": 0.0,
-        "separators": 0.0,
-        "vocab": 0.0,
-        "reward": 0.0,
-        # detection metrics
-        "bbox_giou": 0.0,
-        "quad_l1": 0.0,
-        "line_l1": 0.0,
-        "ordering": 0.0,
-        "coverage": 0.0,
-        "geometry_sanity": 0.0,
-    }
+    sums = {key: 0.0 for key in eval_keys}
+    sums.update(
+        {
+            "parse_reward": 0.0,
+            "reward": 0.0,
+        }
+    )
 
     def _safe_call(name: str, text: str, meta: Dict[str, Any] | None) -> float:
         fn = REGISTRY.get(name)
@@ -143,27 +149,15 @@ def evaluate(config_path: str) -> Dict[str, Any]:
     for batch in ds:
         text = _generate(model, tok, batch, gen_kwargs)
         meta = batch.get("meta") if isinstance(batch, dict) else None
-        # Component formatting metrics
-        w = check_wrappers(text)
-        c = check_coords_counts(text)
-        s = check_ascii_separators(text)
-        v = check_banned_vocab(text)
         r = combine(text, rewards_w, meta=meta)
         n += 1
-        sums["wrappers"] += w
-        sums["coords"] += c
-        sums["separators"] += s
-        sums["vocab"] += v
         sums["reward"] += r
         # parse success approximated by presence of any geometry wrapper in combine
         sums["parse_reward"] += 1.0 if r > 0 else 0.0
-        # Detection metrics
-        sums["bbox_giou"] += _safe_call("bbox_giou", text, meta)
-        sums["quad_l1"] += _safe_call("quad_l1", text, meta)
-        sums["line_l1"] += _safe_call("line_l1", text, meta)
-        sums["ordering"] += _safe_call("ordering", text, meta)
-        sums["coverage"] += _safe_call("coverage", text, meta)
-        sums["geometry_sanity"] += _safe_call("geometry_sanity", text, meta)
+
+        # Dynamic reward evaluation
+        for key in eval_keys:
+            sums[key] += _safe_call(key, text, meta)
 
     def _avg(x: float) -> float:
         return float(x / max(n, 1))
@@ -171,19 +165,12 @@ def evaluate(config_path: str) -> Dict[str, Any]:
     report = {
         "samples": n,
         "valid_parse_rate": _avg(sums["parse_reward"]),
-        "wrapper_ok_rate": _avg(sums["wrappers"]),
-        "coords_ok_rate": _avg(sums["coords"]),
-        "ascii_sep_rate": _avg(sums["separators"]),
-        "banned_vocab_pass_rate": _avg(sums["vocab"]),
         "avg_reward": _avg(sums["reward"]),
-        # detection summary (means)
-        "bbox_giou_mean": _avg(sums["bbox_giou"]),
-        "quad_l1_mean": _avg(sums["quad_l1"]),
-        "line_l1_mean": _avg(sums["line_l1"]),
-        "ordering_ok_rate": _avg(sums["ordering"]),
-        "coverage_mean": _avg(sums["coverage"]),
-        "geometry_sanity_rate": _avg(sums["geometry_sanity"]),
     }
+
+    # Add dynamic reward metrics
+    for key in eval_keys:
+        report[f"{key}_mean"] = _avg(sums[key])
 
     output_file = cfg.get("eval_output_file")
     if isinstance(output_file, str) and output_file:

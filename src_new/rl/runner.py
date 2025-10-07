@@ -9,10 +9,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import torch
-import torch.distributed as dist
 
 from src_new.config.rl_config import EnhancedRLConfig
 from src_new.processing.special_tokens import (
@@ -30,34 +29,6 @@ from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 
 _LOGGER = get_rank_aware_logger("rl.runner")
-
-
-def _maybe_init_distributed(ddp_backend: str = "nccl") -> None:
-    """Initialize torch.distributed from environment if available and not initialized."""
-    try:
-        if dist.is_available() and not dist.is_initialized():
-            dist.init_process_group(backend=ddp_backend, init_method="env://")
-            _LOGGER.info(
-                "Initialized distributed: rank=%s world_size=%s backend=%s",
-                str(dist.get_rank()),
-                str(dist.get_world_size()),
-                ddp_backend,
-            )
-    except Exception as exc:
-        _LOGGER.warning("Distributed init failed or skipped: %s", exc)
-
-
-def _maybe_finalize_distributed() -> None:
-    try:
-        if dist.is_available() and dist.is_initialized():
-            try:
-                dist.barrier()
-            except Exception:
-                pass
-            dist.destroy_process_group()
-            _LOGGER.info("Destroyed distributed process group")
-    except Exception:
-        pass
 
 
 @dataclass(frozen=True)
@@ -433,14 +404,7 @@ def build_datasets(cfg_path: str) -> Dict[str, Any]:
 def train(config_path: str) -> None:
     """Orchestrate a GRPO training run using the manual BBU trainer."""
 
-    # Initialize distributed early so samplers and K-splitting are configured per-rank
-    try:
-        raw_cfg = _load_yaml(config_path)
-        runtime_cfg = raw_cfg.get("runtime", {}) if isinstance(raw_cfg, dict) else {}
-        backend = runtime_cfg.get("ddp_backend", "nccl")
-        _maybe_init_distributed(ddp_backend=str(backend))
-    except Exception:
-        _maybe_init_distributed(ddp_backend="nccl")
+    # Using Accelerate: avoid manual process group init and device selection
 
     bundles = build_datasets(config_path)
     cfg = bundles["cfg"]
@@ -466,16 +430,52 @@ def train(config_path: str) -> None:
             + str(list(REGISTRY.keys()))
         )
 
+    # Support observe_rewards: compute/log metrics even when weight=0
+    observe_rewards_raw = cfg.get("observe_rewards", [])
+    if not isinstance(observe_rewards_raw, list):
+        observe_rewards_raw = []
+    observe_keys: List[str] = []
+    for key in observe_rewards_raw:
+        if isinstance(key, str) and key in REGISTRY and key not in active_keys:
+            observe_keys.append(key)
+
+    # Combine active + observe (unique, sorted for deterministic order)
+    all_keys = sorted(set(active_keys) | set(observe_keys))
+    reward_names: List[str] = all_keys
+
     reward_funcs: List[Callable[..., List[float]]] = []
     reward_weights: List[float] = []
 
-    for key in active_keys:
+    # Optional rewards_config for thresholds/hyperparams
+    rewards_config = cfg.get("rewards_config", {})
+    if not isinstance(rewards_config, dict):
+        rewards_config = {}
+
+    for key in all_keys:
         base_fn = REGISTRY[key]
         sig = inspect.signature(base_fn)
         expects_meta = "meta" in sig.parameters
 
+        # Check if function expects threshold/config params (e.g., grounding_acc)
+        param_names = set(sig.parameters.keys())
+        threshold_params = param_names & {"tau_iou", "tau_quad", "tau_line"}
+        # Pass-through hyperparameters for length_vs_gt
+        lvgt_params = param_names & {
+            "lower",
+            "upper",
+            "gamma",
+            "tail_numeric_weight",
+            "alpha",
+            "estimator",
+        }
+
         def _wrap(
-            fn: Callable[..., float], *, wants_meta: bool
+            fn: Callable[..., float],
+            *,
+            wants_meta: bool,
+            threshold_keys: Set[str],
+            lvgt_keys: Set[str],
+            cfg_dict: Dict[str, Any],
         ) -> Callable[..., List[float]]:
             def _inner(
                 prompts: List[Any], completions: List[str], **kwargs
@@ -489,6 +489,17 @@ def train(config_path: str) -> None:
                             call_kwargs["meta"] = metas[idx]
                         else:
                             call_kwargs["meta"] = None
+                    # Inject thresholds from rewards_config if function expects them
+                    for t_key in threshold_keys:
+                        if t_key in cfg_dict:
+                            call_kwargs[t_key] = cfg_dict[t_key]
+                    # Inject length_vs_gt params if present
+                    if "length_vs_gt" in cfg_dict and lvgt_keys:
+                        lvgt_cfg = cfg_dict["length_vs_gt"]
+                        if isinstance(lvgt_cfg, dict):
+                            for p in lvgt_keys:
+                                if p in lvgt_cfg:
+                                    call_kwargs[p] = lvgt_cfg[p]
                     try:
                         out.append(float(fn(text, **call_kwargs)))
                     except TypeError:
@@ -497,8 +508,17 @@ def train(config_path: str) -> None:
 
             return _inner
 
-        reward_funcs.append(_wrap(base_fn, wants_meta=expects_meta))
-        reward_weights.append(float(weights[key]))
+        reward_funcs.append(
+            _wrap(
+                base_fn,
+                wants_meta=expects_meta,
+                threshold_keys=threshold_params,
+                lvgt_keys=lvgt_params,
+                cfg_dict=rewards_config,
+            )
+        )
+        # Weight: original if in active_keys, else 0.0 (observe-only)
+        reward_weights.append(float(weights.get(key, 0.0)))
 
     train_ds = bundles["train"]
     val_ds = bundles["val"]
@@ -530,33 +550,7 @@ def train(config_path: str) -> None:
         str(summary.patch_embed_frozen),
     )
 
-    # Wrap with DDP if distributed is initialized
-    try:
-        import os as _os
-
-        import torch as _torch
-
-        if _torch.distributed.is_available() and _torch.distributed.is_initialized():
-            local_rank_str = _os.getenv("LOCAL_RANK", "0")
-            local_rank = int(local_rank_str) if str(local_rank_str).isdigit() else 0
-            hf_model.to(f"cuda:{local_rank}")
-            from torch.nn.parallel import DistributedDataParallel as _DDP
-
-            hf_model = _DDP(
-                module=hf_model,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=False,
-                broadcast_buffers=False,
-            )
-            _LOGGER.info("Model wrapped with DDP on cuda:%d", local_rank)
-    except Exception as _e:
-        _LOGGER.warning("Failed to wrap model with DDP: %s", _e)
-
-    if cfg.get("use_manual_trainer", True) is False:
-        _LOGGER.warning(
-            "use_manual_trainer=false is no longer supported; proceeding with manual trainer"
-        )
+    # No manual DDP wrapping when using Accelerate
 
     output_dir = cfg.get("output_dir") or enhanced_cfg.output_dir
     if not output_dir:
@@ -570,7 +564,7 @@ def train(config_path: str) -> None:
         train_dataset=train_ds,
         val_dataset=val_ds,
         reward_functions=reward_funcs,
-        reward_names=active_keys,
+        reward_names=reward_names,
         reward_weights=reward_weights,
         enhanced_cfg=enhanced_cfg,
         raw_config=cfg,
@@ -582,10 +576,12 @@ def train(config_path: str) -> None:
     except Exception:
         pass
     try:
+        # Ensure training mode after DDP wrapping
+        if hasattr(hf_model, "train"):
+            hf_model.train()
         manual_trainer.train()
     finally:
         manual_trainer.close()
-        _maybe_finalize_distributed()
 
 
 def main() -> None:
