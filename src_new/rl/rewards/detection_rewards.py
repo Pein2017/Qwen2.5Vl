@@ -14,7 +14,7 @@ from src_new.processing.parse_generated import parse_geometry_response
 try:  # Optional dependency for optimal assignment
     from scipy.optimize import linear_sum_assignment as _lsa  # type: ignore
 except Exception:  # pragma: no cover - SciPy optional
-    _lsa = None  # type: ignore
+    raise ImportError("scipy is not installed")
 
 
 def parse_dense_caption(text: str) -> List[Dict[str, object]]:
@@ -149,13 +149,13 @@ def _greedy_match(
 
 
 def _hungarian_assign(costs: List[List[float]]) -> Optional[List[Tuple[int, int]]]:
-    """Run Hungarian assignment if SciPy is available; otherwise return None."""
+    """Run Hungarian assignment; SciPy is required and fallback is disallowed."""
     if _lsa is None:
-        return None
+        raise RuntimeError("Hungarian matching is required but SciPy is unavailable")
     try:
         import numpy as np  # type: ignore
     except Exception:  # pragma: no cover
-        return None
+        raise RuntimeError("Hungarian matching is required but NumPy is unavailable")
     cm = np.asarray(costs, dtype=float)
     if cm.size == 0:
         return []
@@ -183,20 +183,9 @@ def _assign_pairs(
         for g in gts:
             row.append(float(cost_fn(p, g)))
         costs.append(row)
-    # Try Hungarian
+    # Hungarian assignment only (fallback disabled)
     pairs = _hungarian_assign(costs)
-    if pairs is not None:
-        return pairs
-
-    # Fallback to greedy on precomputed matrix
-    def _dist_from_matrix(pi: int, gi: int) -> float:
-        return float(costs[pi][gi])
-
-    return _greedy_match(
-        list(range(len(preds))),
-        list(range(len(gts))),
-        lambda pi, gi: _dist_from_matrix(pi, gi),
-    )
+    return pairs
 
 
 # ------------------- Rewards -------------------

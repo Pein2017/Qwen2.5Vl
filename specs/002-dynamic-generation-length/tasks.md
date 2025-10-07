@@ -38,18 +38,18 @@
 - [X] T012 Add logging of dynamic caps in trainer step in `src_new/rl/grpo_trainer.py` (e.g., `dynamic_length/mean_cap|min_cap|max_cap`)
 
 ## Phase 3.4: Distributed Consistency (Accelerate)
-- [ ] T013 Ensure shared dataset index and synchronized buffer refresh already present in `src_new/rl/grpo_trainer.py` (verify gather/reduce flow)
-- [ ] T014 Pad/trim variable-length tensors before cross-rank collectives (rewards/advantages lengths) — verify paths in `src_new/rl/grpo_trainer.py`
+- [X] T013 Ensure shared dataset index and synchronized buffer refresh already present in `src_new/rl/grpo_trainer.py` (verify gather/reduce flow)
+- [X] T014 Pad/trim variable-length tensors before cross-rank collectives (rewards/advantages lengths) — verify paths in `src_new/rl/grpo_trainer.py`
 - [ ] T015 [P] Add per-rank generation timing + cap diagnostics; resample guard remains active; ensure identical caps across ranks by computing from `meta.objects`
 
 ## Phase 3.5: YAML & Docs
-- [ ] T016 Update `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml` with dynamic_length defaults (alpha, margins, bounds, masking policy) and `length_vs_gt` defaults; remove mask_overflow_only knob from docs/config if present
-- [ ] T017 [P] Update `src_new/rl/DYNAMIC_GENERATION_LENGTH.md` with final knobs and log tags summary
+- [X] T016 Update `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml` with dynamic_length defaults (alpha, margins, bounds, masking policy) and `length_vs_gt` defaults; remove mask_overflow_only knob from docs/config if present
+- [X] T017 [P] Update `src_new/rl/DYNAMIC_GENERATION_LENGTH.md` with final knobs and log tags summary
 
 ## Phase 3.6: Polish & Validation
-- [ ] T018 [P] Add unit tests for `length_vs_gt` scoring (short/within/overflow/tail-numeric cases)
-- [ ] T019 [P] Add small integration test to assert cap is applied and logs contain `dynamic_length/*` keys (single-GPU smoke)
-- [ ] T020 Run multi-GPU smoke via `scripts/run_dense_grpo.sh` with 2 GPUs and debug config; confirm no slow-rank timeouts; capture logs in `run_dense.log`
+- [X] T018 [P] Add unit tests for `length_vs_gt` scoring (short/within/overflow/tail-numeric cases)
+- [X] T019 [P] Add small integration test to assert cap is applied and logs contain `dynamic_length/*` keys (single-GPU smoke)
+- [X] T020 Run multi-GPU smoke via `scripts/run_dense_grpo.sh` with 2 GPUs and debug config; confirm no slow-rank timeouts; capture logs in `run_dense.log`
 - [ ] T021 Finalize docs: update `quickstart.md` with troubleshooting tips (cap vs tokenizer drift, sync guards)
 - [ ] T022 Implement disabled-mode fallback in `src_new/rl/buffer.py` and `src_new/rl/grpo_trainer.py`: when `grpo.dynamic_length.enabled=false`, bypass per-sample cap and use fixed `grpo.max_new_tokens`; add an integration check in logs
 - [ ] T023 [P] Add regression test to ensure formatting rewards (wrappers/coords/separators) remain computed/logged unchanged after enabling dynamic length (single-GPU smoke)

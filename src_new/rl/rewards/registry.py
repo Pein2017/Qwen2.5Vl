@@ -21,9 +21,7 @@ from .format_rewards import (
     check_banned_vocab,
     check_coords_counts,
     check_wrappers,
-    length_score,
     length_vs_gt,
-    length_window,
     parse_reward,
     separators_score,
 )
@@ -35,8 +33,6 @@ REGISTRY: Dict[str, Callable[[str], float]] = {
     "coords": check_coords_counts,
     "separators": separators_score,
     "vocab": check_banned_vocab,
-    "length": length_score,
-    "length_window": length_window,
     "coverage": reward_coverage,
     "geometry_sanity": reward_geometry_sanity,
     # Only expose GIoU-based reward
@@ -61,8 +57,6 @@ REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
     "coords": {"category": "format", "description": "Coordinate count correctness"},
     "separators": {"category": "format", "description": "Separator formatting quality"},
     "vocab": {"category": "format", "description": "Vocabulary compliance"},
-    "length": {"category": "format", "description": "Length scoring"},
-    "length_window": {"category": "format", "description": "Length window scoring"},
     # Detection rewards
     "coverage": {"category": "detection", "description": "Object count coverage"},
     "geometry_sanity": {

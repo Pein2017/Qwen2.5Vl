@@ -44,7 +44,8 @@ def generate_and_score(
     dyn_eos_margin: int = 16,
     dyn_min_cap: int = 32,
     dyn_max_cap: Optional[int] = None,
-    dyn_mask_overflow_only: bool = False,
+    dyn_estimator: str = "tokenizer",
+    dyn_hard_cap: bool = True,
 ) -> Dict[str, Any]:
     if not inputs:
         raise ValueError("inputs must be a non-empty sequence")
@@ -99,6 +100,13 @@ def generate_and_score(
     completion_truncated: List[int] = []
     prompt_index_repeat: List[int] = []
     completions_per_sample: List[List[str]] = []
+    # Enriched per-completion meta aligned with completions_raw
+    meta_per_completion: List[Dict[str, Any]] = []
+
+    # Token-length aggregates
+    gen_len_tok_list: List[int] = []
+    gt_len_tok_list: List[int] = []
+    cap_hit_flags: List[int] = []
 
     gen_kwargs = {"top_p": float(top_p)}
     if min_new_tokens is not None:
@@ -120,10 +128,16 @@ def generate_and_score(
 
         # Default cap from arguments; can be overridden per-sample below
         per_sample_cap = int(max_new_tokens)
+        gt_len_tok: Optional[int] = None
 
         # Compute dynamic cap only when enabled
         meta = metas[sample_idx] if sample_idx < len(metas) else None
         if dyn_enabled:
+            if str(dyn_estimator).lower() != "tokenizer":
+                _LOGGER.warning(
+                    "Unsupported dynamic_length.estimator=%s; falling back to tokenizer",
+                    dyn_estimator,
+                )
             try:
                 if isinstance(meta, dict):
                     from src_new.processing.coordinate_converter import (
@@ -133,11 +147,11 @@ def generate_and_score(
                     conv = _Conv()
                     objs = meta.get("objects") or []
                     gt_text = conv.convert_objects_to_tokens(objs)
-                    # Tokenizer-aligned count
+                    # Tokenizer-aligned count for GT
                     gt_ids = tokenizer(
                         gt_text, add_special_tokens=False, return_attention_mask=False
                     ).get("input_ids", [])
-                    gt_len = (
+                    gt_len_tok = (
                         int(len(gt_ids))
                         if isinstance(gt_ids, list)
                         else int(gt_ids.shape[0])
@@ -147,18 +161,30 @@ def generate_and_score(
                         if dyn_max_cap is not None
                         else int(max_new_tokens)
                     )
-                    est = int(round(float(dyn_alpha) * gt_len + float(dyn_eos_margin)))
-                    per_sample_cap = max(int(dyn_min_cap), min(int(max_cap_val), est))
+                    est_val = int(
+                        round(
+                            float(dyn_alpha) * int(gt_len_tok or 0)
+                            + float(dyn_eos_margin)
+                        )
+                    )
+                    per_sample_cap = max(
+                        int(dyn_min_cap), min(int(max_cap_val), est_val)
+                    )
                     dynamic_caps.append(per_sample_cap)
             except Exception:
                 dynamic_caps.append(per_sample_cap)
+
+        # Choose generate cap based on hard_cap
+        gen_cap_to_use = (
+            int(per_sample_cap) if dyn_enabled and dyn_hard_cap else int(max_new_tokens)
+        )
 
         seqs = generation.sample_k(
             model=model,
             tokenizer=tokenizer,
             batch=batch_dict,
             k=sample_k,
-            max_new_tokens=int(per_sample_cap),
+            max_new_tokens=gen_cap_to_use,
             temperature=float(temperature),
             repetition_penalty=float(repetition_penalty),
             **gen_kwargs,
@@ -184,6 +210,15 @@ def generate_and_score(
             if completion.device.type != "cpu":
                 completion = completion.to("cpu")
 
+            # gen length from tokenizer perspective = number of generated token ids
+            gen_len_tok = int(completion.numel())
+            gen_len_tok_list.append(gen_len_tok)
+            if gt_len_tok is not None:
+                gt_len_tok_list.append(int(gt_len_tok))
+            else:
+                # keep lists aligned
+                gt_len_tok_list.append(0)
+
             mask_vec = torch.ones_like(completion, dtype=torch.long)
             if eos_token_id is not None:
                 eos_positions = (completion == eos_token_id).nonzero(as_tuple=True)
@@ -208,10 +243,11 @@ def generate_and_score(
                 completion_has_eos.append(0)
                 completion_truncated.append(0)
 
-            # Optional: mask only overflow tokens beyond per-sample cap if requested
+            # When hard_cap is disabled, mask overflow tokens beyond per-sample cap
             try:
                 if (
-                    dyn_mask_overflow_only
+                    dyn_enabled
+                    and (not dyn_hard_cap)
                     and per_sample_cap > 0
                     and completion.numel() > per_sample_cap
                 ):
@@ -221,6 +257,15 @@ def generate_and_score(
             except Exception:
                 pass
 
+            # Cap-hit flag when hard cap is active
+            try:
+                if dyn_enabled and dyn_hard_cap and per_sample_cap > 0:
+                    cap_hit_flags.append(1 if gen_len_tok >= int(gen_cap_to_use) else 0)
+                else:
+                    cap_hit_flags.append(0)
+            except Exception:
+                cap_hit_flags.append(0)
+
             completion_masks.append(mask_vec)
             completions_raw.append(completion)
             completion_lengths.append(int(mask_vec.long().sum().item()))
@@ -228,9 +273,20 @@ def generate_and_score(
             completions_text_sample.append(
                 tokenizer.decode(completion, skip_special_tokens=False)
             )
+
+            # Enrich meta for this completion with tokenizer lengths if available
+            base_meta = metas[sample_idx] if sample_idx < len(metas) else {}
+            try:
+                m = dict(base_meta) if isinstance(base_meta, dict) else {}
+            except Exception:
+                m = {}
+            if gt_len_tok is not None:
+                m["gt_len_tokenizer"] = int(gt_len_tok)
+            m["gen_len_tokenizer"] = int(gen_len_tok)
+            meta_per_completion.append(m)
+
         completions_per_sample.append(completions_text_sample)
         # Proactively free per-sample GPU memory to prevent accumulation across samples
-        # Each sample's generation tensors are now on CPU, but we still clear any GPU cache
         try:
             del seqs
             rl_logprobs.clear_gpu_memory()
@@ -418,6 +474,10 @@ def generate_and_score(
     ) as _e:  # keep non-fatal in buffer; trainer does strict checks later
         _LOGGER.debug("Vision alignment validation warning: %s", _e)
 
+    # Prepare outputs
+    # Build repeated prompts aligned with per-completion arrays
+    prompts_repeated = [prompts[idx] for idx in prompt_index_repeat]
+
     result: Dict[str, Any] = {
         "prompt_ids": prompt_ids.long(),
         "prompt_mask": prompt_mask.long(),
@@ -428,7 +488,7 @@ def generate_and_score(
         "reward_names": list(reward_names),
         "prompts": prompts_repeated,
         "completions": completions_text,
-        "meta": meta_repeated,
+        "meta": meta_per_completion,
         "pixel_values": pixel_values,
         "image_grid_thw": image_grid_thw,
         "images_per_sample": images_per_sample_tensor,
@@ -454,6 +514,23 @@ def generate_and_score(
             result["dynamic_length/max_cap"] = float(caps_t.max().item())
     except Exception:
         pass
+
+    # Aggregate tokenizer-based length stats and cap-hit ratio
+    try:
+        if gen_len_tok_list:
+            v = torch.tensor(gen_len_tok_list, dtype=torch.float32, device=device)
+            result["completions/mean_len_tok"] = float(v.mean().item())
+        if gt_len_tok_list:
+            u = torch.tensor(gt_len_tok_list, dtype=torch.float32, device=device)
+            # zeros may be placeholders; compute mean over nonzeros
+            if (u > 0).any():
+                result["gt/mean_len_tok"] = float(u[u > 0].mean().item())
+        if cap_hit_flags:
+            c = torch.tensor(cap_hit_flags, dtype=torch.float32, device=device)
+            result["completions/cap_hit_ratio"] = float(c.mean().item())
+    except Exception:
+        pass
+
     if rewards_per_func is not None:
         result["rewards_per_func"] = rewards_per_func.to(device)
     return result

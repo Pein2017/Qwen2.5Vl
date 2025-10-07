@@ -773,9 +773,8 @@ class BBUGRPOTrainer:
                         dyn_max_cap=int(
                             dyn.get("max_cap", self.manual_cfg.max_new_tokens)
                         ),
-                        dyn_mask_overflow_only=bool(
-                            dyn.get("mask_overflow_only", False)
-                        ),
+                        dyn_estimator=str(dyn.get("estimator", "tokenizer")),
+                        dyn_hard_cap=bool(dyn.get("hard_cap", True)),
                     )
                     single_generation["temperature"] = gen_cfg["temperature"]
                     gen_duration = time.time() - gen_start_time
@@ -1329,7 +1328,6 @@ class BBUGRPOTrainer:
                     "reward": reward_mean,
                     "reward_std": reward_std,
                     "temperature": float(generation_result.get("temperature", 0.0)),
-                    "elapsed_min": (time.time() - self._start_time) / 60.0,
                     "learning_rate": current_lr,
                     "beta": generation_result.get("beta", 0.0),
                     "grad_norm": self._last_grad_norm,
@@ -1337,6 +1335,10 @@ class BBUGRPOTrainer:
                     "epoch": epoch_progress,
                 }
             )
+            # Remove redundant time metrics from RL logs to reduce clutter
+            logs.pop("train_runtime", None)
+            logs.pop("train_samples_per_second", None)
+            logs.pop("remaining_hrs", None)
 
             # dynamic length status and stats
             try:
@@ -1358,14 +1360,49 @@ class BBUGRPOTrainer:
                     except Exception:
                         pass
 
-            comp_lengths = generation_result.get("completion_lengths")
-            if comp_lengths is not None:
-                comp_lengths_det = comp_lengths.detach().float()
-                if self.world_size > 1:
-                    comp_lengths_det = self.accelerator.gather(comp_lengths_det)
-                logs["completions/mean_length"] = float(comp_lengths_det.mean().item())
-                logs["completions/min_length"] = float(comp_lengths_det.min().item())
-                logs["completions/max_length"] = float(comp_lengths_det.max().item())
+            # GT-aligned length diagnostics: ratio_to_gt_mean, over/under tolerance ratios
+            try:
+                meta_list = generation_result.get("meta") or []
+                ratios: list[float] = []
+                for m in meta_list:
+                    if not isinstance(m, dict):
+                        continue
+                    gt_len = m.get("gt_len_tokenizer")
+                    gen_len = m.get("gen_len_tokenizer")
+                    if (
+                        isinstance(gt_len, int)
+                        and gt_len > 0
+                        and isinstance(gen_len, int)
+                        and gen_len >= 0
+                    ):
+                        ratios.append(float(gen_len) / float(gt_len))
+                if ratios:
+                    # Resolve tolerance from YAML (defaults align with format_rewards.length_vs_gt)
+                    lvgt_cfg = (self.raw_config.get("rewards_config", {}) or {}).get(
+                        "length_vs_gt", {}
+                    )
+                    lower = float(lvgt_cfg.get("lower", 0.7))
+                    upper = float(lvgt_cfg.get("upper", 1.2))
+                    arr = torch.tensor(ratios, dtype=torch.float32)
+                    logs["completions/ratio_to_gt_mean"] = float(arr.mean().item())
+                    over = (arr > upper).float().mean().item()
+                    under = (arr < lower).float().mean().item()
+                    logs["completions/over_upper_ratio"] = float(over)
+                    logs["completions/under_lower_ratio"] = float(under)
+            except Exception:
+                pass
+
+            # Tokenizer-based length stats and cap-hit ratio if provided
+            for key in (
+                "completions/mean_len_tok",
+                "gt/mean_len_tok",
+                "completions/cap_hit_ratio",
+            ):
+                if key in generation_result:
+                    try:
+                        logs[key] = float(generation_result.get(key, 0.0))
+                    except Exception:
+                        pass
 
             terminated_flags = generation_result.get("terminated_with_eos")
             if terminated_flags is not None:
@@ -1467,22 +1504,22 @@ class BBUGRPOTrainer:
                     "beta", logs.get("beta", 0.0), self._global_step
                 )
                 self._tb_writer.add_scalar(
-                    "eta_minutes", eta_minutes, self._global_step
+                    "train/eta_minutes", eta_minutes, self._global_step
                 )
                 self._tb_writer.add_scalar("step", self._global_step, self._global_step)
-                # Diversity metric (optional)
-                try:
-                    # Compute unique_ratio on first chunk for preview
-                    completions_list = generation_result.get("completions") or []
-                    if completions_list:
-                        distinct = len(set(completions_list))
-                        total = len(completions_list)
-                        unique_ratio = float(distinct) / float(max(total, 1))
+                # Additional length metrics (tokenizer-based only)
+                for tb_key in (
+                    "completions/mean_len_tok",
+                    "gt/mean_len_tok",
+                    "completions/cap_hit_ratio",
+                    "completions/ratio_to_gt_mean",
+                    "completions/over_upper_ratio",
+                    "completions/under_lower_ratio",
+                ):
+                    if tb_key in logs:
                         self._tb_writer.add_scalar(
-                            "completions/unique_ratio", unique_ratio, self._global_step
+                            tb_key, logs[tb_key], self._global_step
                         )
-                except Exception:
-                    pass
 
                 # Automatic per-reward metrics logging via unified logger
                 self._reward_logger.log_to_tensorboard(

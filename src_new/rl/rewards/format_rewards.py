@@ -218,30 +218,7 @@ def parse_reward(text: str) -> float:
     return 0.0
 
 
-def length_score(text: str, min_tokens: int = 16, max_tokens: int = 320) -> float:
-    # Cheap proxy: count numbers + wrapper tokens occurrences
-    tokens_like = len(_NUM.findall(text)) + text.count(OBJ_S)
-    if tokens_like < min_tokens:
-        return max(0.0, tokens_like / float(min_tokens))
-    if tokens_like > max_tokens:
-        return max(0.0, 1.0 - (tokens_like - max_tokens) / float(max_tokens))
-    return 1.0
-
-
-def length_window(text: str, target_min: int = 200, target_max: int = 800) -> float:
-    """Soft window reward on dense length using token-like count.
-
-    Returns 1.0 inside [target_min, target_max]. Outside the window, linearly
-    decays to 0.0 at 0 and at 2*target_max.
-    """
-    tokens_like = len(_NUM.findall(text)) + text.count(OBJ_S)
-    if target_min <= target_max and target_min <= tokens_like <= target_max:
-        return 1.0
-    if tokens_like < target_min:
-        return max(0.0, tokens_like / float(max(target_min, 1)))
-    # tokens_like > target_max: decay over an equal span beyond target_max
-    span = max(target_max, 1)
-    return max(0.0, 1.0 - (tokens_like - target_max) / float(2 * span))
+## Removed legacy proxy length rewards (length_score, length_window)
 
 
 def length_vs_gt(
@@ -259,8 +236,9 @@ def length_vs_gt(
 ) -> float:
     """Length-to-GT reward in [0,1] with strong overflow penalty.
 
-    Uses tokenizer-aligned lengths when provided via gen_len/gt_len or meta; otherwise
-    falls back to proxy (numbers + wrapper count).
+    Always prefers tokenizer-aligned lengths injected via meta keys
+    `gen_len_tokenizer` and `gt_len_tokenizer`. Falls back to simple
+    numeric proxy only if unavailable.
     """
     # Prefer tokenizer-based lengths if meta provides them
     if gen_len is None and isinstance(meta, dict):
@@ -285,15 +263,7 @@ def length_vs_gt(
     if gen_len is None:
         gen_len = _proxy_len(text)
     if gt_len is None:
-        # Build proxy from meta if missing explicit GT length
-        if isinstance(meta, dict):
-            try:
-                objs = meta.get("objects") or []
-                gt_len = max(1, int(len(objs)))
-            except Exception:
-                gt_len = _proxy_len(text)
-        else:
-            gt_len = _proxy_len(text)
+        gt_len = _proxy_len(text)
 
     gt_len = int(max(1, int(gt_len)))
     gen_len = int(max(0, int(gen_len)))
@@ -331,8 +301,7 @@ def compute_reward(text: str, weights: Dict[str, float]) -> float:
         "coords": check_coords_counts(text),
         "separators": check_ascii_separators(text),
         "vocab": check_banned_vocab(text),
-        "length": length_score(text),
-        "length_window": length_window(text),
+        # legacy length proxies removed
     }
     total_w = 0.0
     score = 0.0
@@ -353,8 +322,6 @@ __all__ = [
     "check_coords_counts",
     "check_banned_vocab",
     "parse_reward",
-    "length_score",
-    "length_window",
     "length_vs_gt",
     "compute_reward",
 ]
