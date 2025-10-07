@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Tuple
+import re
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from data_conversion.coordinate_manager import CoordinateManager
 from src_new.augmentation.utils import bbox_from_quad_flat
@@ -473,6 +474,221 @@ def reward_ordering(
     return float(sum(1.0 for c in checks if c) / float(len(checks)))
 
 
+# ------------------- Caption & Grounding Accuracy -------------------
+
+
+def _tokenize_desc(s: str) -> Set[str]:
+    """Tokenize description into non-empty tokens (CJK chars + alphanumeric words)."""
+    tokens: Set[str] = set()
+    # Split on non-alphanumeric, non-CJK
+    pattern = r"[0-9A-Za-z\u4e00-\u9fa5]+"
+    for m in re.finditer(pattern, s):
+        tok = m.group(0).strip()
+        if tok:
+            tokens.add(tok)
+    return tokens
+
+
+def _desc_f1(pred: str, gt: str) -> float:
+    """Compute token-level F1 between two descriptions."""
+    pred_tokens = _tokenize_desc(pred)
+    gt_tokens = _tokenize_desc(gt)
+    if not gt_tokens:
+        return 1.0 if not pred_tokens else 0.0
+    if not pred_tokens:
+        return 0.0
+    intersection = pred_tokens & gt_tokens
+    precision = len(intersection) / len(pred_tokens) if pred_tokens else 0.0
+    recall = len(intersection) / len(gt_tokens) if gt_tokens else 0.0
+    if precision + recall == 0.0:
+        return 0.0
+    return float(2.0 * precision * recall / (precision + recall))
+
+
+def caption_f1(
+    text: str, *, meta: Optional[Dict[str, object]] = None, **_: object
+) -> float:
+    """Caption F1: token-level F1 averaged over matched object pairs.
+
+    Uses Hungarian/greedy matching on geometry (bbox/quad), then computes F1 for descriptions.
+    Returns mean F1 in [0,1].
+    """
+    pred = parse_dense_caption(text)
+    if not pred:
+        return 0.0
+    gt_objects = meta.get("objects", []) if isinstance(meta, dict) else []
+    if not isinstance(gt_objects, list) or not gt_objects:
+        return 0.0
+
+    # Build pred and GT boxes for matching
+    pred_boxes = _iter_gt_boxes(pred)
+    gt_boxes = _iter_gt_boxes(gt_objects)
+    if not pred_boxes or not gt_boxes:
+        return 0.0
+
+    # Match using bbox GIoU
+    def _mapped_giou(
+        a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]
+    ) -> float:
+        g = giou_bbox(a, b)
+        return 0.5 * (g + 1.0)
+
+    pairs = _assign_pairs(pred_boxes, gt_boxes, lambda a, b: 1.0 - _mapped_giou(a, b))
+    if not pairs:
+        return 0.0
+
+    # Compute F1 for each matched pair
+    f1_scores: List[float] = []
+    for pred_idx, gt_idx in pairs:
+        pred_desc = pred[pred_idx].get("desc", "")
+        gt_desc = gt_objects[gt_idx].get("desc", "")
+        if not isinstance(pred_desc, str):
+            pred_desc = ""
+        if not isinstance(gt_desc, str):
+            gt_desc = ""
+        f1_scores.append(_desc_f1(pred_desc, gt_desc))
+
+    return float(sum(f1_scores) / len(f1_scores)) if f1_scores else 0.0
+
+
+def grounding_acc(
+    text: str,
+    *,
+    meta: Optional[Dict[str, object]] = None,
+    tau_iou: float = 0.5,
+    tau_quad: float = 0.02,
+    tau_line: float = 0.02,
+    **_: object,
+) -> float:
+    """Grounding accuracy: fraction of matched pairs passing geometry thresholds.
+
+    For bbox/quad matches, use mapped GIoU >= tau_iou.
+    For line matches, use normalized L1 <= tau_line.
+    For quad L1, use normalized L1 <= tau_quad.
+    Returns mean pass ratio in [0,1].
+    """
+    pred = parse_dense_caption(text)
+    if not pred:
+        return 0.0
+    gt_objects = meta.get("objects", []) if isinstance(meta, dict) else []
+    if not isinstance(gt_objects, list) or not gt_objects:
+        return 0.0
+
+    # Extract geometry from both pred and GT
+    pred_boxes = _iter_gt_boxes(pred)
+    gt_boxes = _iter_gt_boxes(gt_objects)
+
+    # Extract quads
+    pred_quads: List[List[int]] = []
+    for o in pred:
+        if "quad" in o and isinstance(o["quad"], list) and len(o["quad"]) >= 8:
+            pred_quads.append([int(v) for v in o["quad"][:8]])
+
+    gt_quads: List[List[int]] = []
+    for o in gt_objects:
+        if (
+            isinstance(o, dict)
+            and "quad" in o
+            and isinstance(o["quad"], list)
+            and len(o["quad"]) >= 8
+        ):
+            gt_quads.append([int(v) for v in o["quad"][:8]])
+
+    # Extract lines
+    pred_lines: List[List[int]] = []
+    for o in pred:
+        if (
+            "line" in o
+            and isinstance(o["line"], list)
+            and len(o["line"]) >= 4
+            and len(o["line"]) % 2 == 0
+        ):
+            pred_lines.append([int(v) for v in o["line"]])
+
+    gt_lines: List[List[int]] = []
+    for o in gt_objects:
+        if (
+            isinstance(o, dict)
+            and "line" in o
+            and isinstance(o["line"], list)
+            and len(o["line"]) >= 4
+            and len(o["line"]) % 2 == 0
+        ):
+            gt_lines.append([int(v) for v in o["line"]])
+
+    passes: List[bool] = []
+
+    # Match boxes
+    if pred_boxes and gt_boxes:
+
+        def _mapped_giou(
+            a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]
+        ) -> float:
+            g = giou_bbox(a, b)
+            return 0.5 * (g + 1.0)
+
+        pairs = _assign_pairs(
+            pred_boxes, gt_boxes, lambda a, b: 1.0 - _mapped_giou(a, b)
+        )
+        for i, j in pairs:
+            giou_val = _mapped_giou(pred_boxes[i], gt_boxes[j])
+            passes.append(giou_val >= tau_iou)
+
+    # Match quads
+    if pred_quads and gt_quads:
+
+        def _canon(points_flat: List[int]) -> List[int]:
+            pts = [
+                (int(points_flat[i]), int(points_flat[i + 1])) for i in range(0, 8, 2)
+            ]
+            ordered = CoordinateManager._canonical_quad_ordering(pts)
+            out: List[int] = []
+            for x, y in ordered:
+                out.extend([int(x), int(y)])
+            return out
+
+        pred_canon = [_canon(q) for q in pred_quads]
+        gt_canon = [_canon(q) for q in gt_quads]
+        scale = _normalization_scale(meta)
+
+        def _dist(a: List[int], b: List[int]) -> float:
+            return _l1_distance(a, b) / scale
+
+        pairs = _assign_pairs(pred_canon, gt_canon, _dist)
+        for i, j in pairs:
+            err = _dist(pred_canon[i], gt_canon[j])
+            passes.append(err <= tau_quad)
+
+    # Match lines
+    if pred_lines and gt_lines:
+
+        def _endpoints(points_flat: List[int]) -> List[int]:
+            pts = [
+                (int(points_flat[i]), int(points_flat[i + 1]))
+                for i in range(0, len(points_flat), 2)
+            ]
+            ordered = CoordinateManager._canonical_line_ordering(pts)
+            a = ordered[0]
+            b = ordered[-1]
+            return [int(a[0]), int(a[1]), int(b[0]), int(b[1])]
+
+        pred_end = [_endpoints(p) for p in pred_lines]
+        gt_end = [_endpoints(g) for g in gt_lines]
+        scale = _normalization_scale(meta)
+
+        def _dist(a: List[int], b: List[int]) -> float:
+            return _l1_distance(a, b) / scale
+
+        pairs = _assign_pairs(pred_end, gt_end, _dist)
+        for i, j in pairs:
+            err = _dist(pred_end[i], gt_end[j])
+            passes.append(err <= tau_line)
+
+    if not passes:
+        return 0.0
+    return float(sum(1.0 for p in passes if p) / len(passes))
+
+
 __all__ = [
     "parse_dense_caption",
     "reward_coverage",
@@ -482,4 +698,6 @@ __all__ = [
     "reward_quad_l1",
     "reward_line_l1",
     "reward_ordering",
+    "caption_f1",
+    "grounding_acc",
 ]

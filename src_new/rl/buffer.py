@@ -9,33 +9,13 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from src_new.rl import generation
+from src_new.rl import logprobs as rl_logprobs
 from src_new.rl import validators as rl_validators
 from src_new.rl.rewards.standardizer import RewardStandardizer
 from src_new.rl.utils import resolve_im_end_id
 
 
 _LOGGER = logging.getLogger("rl.buffer")
-
-
-def _resolve_eos_id(tokenizer: Any) -> Optional[int]:
-    return resolve_im_end_id(tokenizer)
-
-
-def _normalize_thw(thw: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-    if thw is None:
-        return None
-    if not torch.is_tensor(thw):
-        thw = torch.tensor(thw)
-    if thw.numel() == 0:
-        return None
-    thw = thw.detach()
-    if thw.dim() == 1 and thw.numel() == 3:
-        return thw.view(1, 3)
-    if thw.dim() == 3 and thw.size(0) == 1:
-        return thw.squeeze(0)
-    if thw.dim() == 2 and thw.size(-1) == 3:
-        return thw
-    return thw.view(-1, 3)
 
 
 def generate_and_score(
@@ -62,7 +42,7 @@ def generate_and_score(
     if not inputs:
         raise ValueError("inputs must be a non-empty sequence")
     device = reward_weights.device
-    eos_token_id = _resolve_eos_id(tokenizer)
+    eos_token_id = resolve_im_end_id(tokenizer)
 
     prompts: List[str] = []
     metas: List[Any] = []
@@ -96,7 +76,9 @@ def generate_and_score(
             pixel_values_list.append(None)
 
         thw = sample.get("image_grid_thw")
-        thw_list.append(_normalize_thw(thw) if thw is not None else None)
+        from src_new.rl.tensor_utils import normalize_thw  # late import
+
+        thw_list.append(normalize_thw(thw) if thw is not None else None)
 
     prompt_ids = pad_sequence(
         input_ids_list, batch_first=True, padding_value=pad_token_id
@@ -115,6 +97,17 @@ def generate_and_score(
     if min_new_tokens is not None:
         gen_kwargs["min_new_tokens"] = int(min_new_tokens)
 
+    # Dynamic length config from raw YAML (if available via env in runner)
+    dyn_cfg = None
+    try:
+        import os as _os
+        # Runner passes raw YAML; we access via env json is non-trivial. Fallback to mask_overflow_only flag via model attribute
+        dyn_cfg = None  # placeholder for external wiring if needed
+    except Exception:
+        dyn_cfg = None
+
+    dynamic_caps: List[int] = []
+
     for sample_idx, (ids_t, mask_t, pv_t, thw_t) in enumerate(
         zip(input_ids_list, attention_masks_list, pixel_values_list, thw_list)
     ):
@@ -127,12 +120,43 @@ def generate_and_score(
         if thw_t is not None:
             batch_dict["image_grid_thw"] = thw_t
 
+        # Default cap from arguments; can be overridden per-sample below
+        per_sample_cap = int(max_new_tokens)
+
+        # Compute dynamic cap if configured outside (we infer via presence of meta objects)
+        meta = metas[sample_idx] if sample_idx < len(metas) else None
+        try:
+            if isinstance(meta, dict):
+                from src_new.processing.coordinate_converter import (
+                    CoordinateTokenConverter as _Conv,
+                )
+
+                conv = _Conv()
+                objs = meta.get("objects") or []
+                gt_text = conv.convert_objects_to_tokens(objs)
+                # Tokenizer-aligned count
+                gt_ids = tokenizer(
+                    gt_text, add_special_tokens=False, return_attention_mask=False
+                ).get("input_ids", [])
+                gt_len = int(len(gt_ids)) if isinstance(gt_ids, list) else int(gt_ids.shape[0])
+                # Defaults aligned with YAML base; runner may override via raw_config
+                alpha = 1.1
+                eos_margin = 16
+                min_cap_val = 32
+                max_cap_val = int(max_new_tokens)
+                # Derive cap
+                est = int(round(alpha * gt_len + eos_margin))
+                per_sample_cap = max(int(min_cap_val), min(int(max_cap_val), est))
+                dynamic_caps.append(per_sample_cap)
+        except Exception:
+            dynamic_caps.append(per_sample_cap)
+
         seqs = generation.sample_k(
             model=model,
             tokenizer=tokenizer,
             batch=batch_dict,
             k=sample_k,
-            max_new_tokens=int(max_new_tokens),
+            max_new_tokens=int(per_sample_cap),
             temperature=float(temperature),
             repetition_penalty=float(repetition_penalty),
             **gen_kwargs,
@@ -154,6 +178,10 @@ def generate_and_score(
                 else:
                     completion = torch.tensor([pad_token_id], dtype=torch.long)
 
+            # Force completion tokens to CPU for consistent concatenation below
+            if completion.device.type != "cpu":
+                completion = completion.to("cpu")
+
             mask_vec = torch.ones_like(completion, dtype=torch.long)
             if eos_token_id is not None:
                 eos_positions = (completion == eos_token_id).nonzero(as_tuple=True)
@@ -169,10 +197,26 @@ def generate_and_score(
                     )
                 else:
                     completion_has_eos.append(0)
-                    completion_truncated.append(0)
+                    if mask_truncated_completions:
+                        mask_vec[:] = 0
+                        completion_truncated.append(1)
+                    else:
+                        completion_truncated.append(0)
             else:
                 completion_has_eos.append(0)
                 completion_truncated.append(0)
+
+            # Optional: mask only overflow tokens beyond per-sample cap if requested
+            try:
+                # Heuristic: when mask_truncated_completions is false, allow optional overflow-only masking via env flag
+                mask_overflow_only = False
+                if mask_overflow_only and per_sample_cap > 0 and completion.numel() > per_sample_cap:
+                    overflow = completion.numel() - int(per_sample_cap)
+                    if overflow > 0:
+                        mask_vec[-overflow:] = 0
+            except Exception:
+                pass
+
             completion_masks.append(mask_vec)
             completions_raw.append(completion)
             completion_lengths.append(int(mask_vec.long().sum().item()))
@@ -185,8 +229,7 @@ def generate_and_score(
         # Each sample's generation tensors are now on CPU, but we still clear any GPU cache
         try:
             del seqs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            rl_logprobs.clear_gpu_memory()
         except Exception:
             pass
 
@@ -194,7 +237,6 @@ def generate_and_score(
     # Store log-probs from the policy that GENERATED the completions.
     # This enables proper ratio = π_current / π_generation in GRPO loss.
     # Without this, ratio is always 1.0 and trust region clipping is ineffective.
-    from src_new.rl import logprobs as rl_logprobs
 
     generation_logps_list: List[torch.Tensor] = []
 
@@ -209,8 +251,9 @@ def generate_and_score(
             )
             continue
 
-        comp_ids_eff = comp_ids[:effective_len]
-        prompt_ids_single = input_ids_list[p_idx]
+        # Ensure prompt/completion are on CPU before concatenation
+        comp_ids_eff = comp_ids[:effective_len].to("cpu")
+        prompt_ids_single = input_ids_list[p_idx].to("cpu")
 
         # Concatenate prompt + completion
         full_ids = torch.cat([prompt_ids_single, comp_ids_eff], dim=0).unsqueeze(0)
@@ -253,11 +296,7 @@ def generate_and_score(
                 )
 
         # Free memory after each logprob computation
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        rl_logprobs.clear_gpu_memory()
 
     # Pad generation logprobs to same length
     max_logp_len = (
@@ -402,6 +441,15 @@ def generate_and_score(
             device
         ),  # Log-probs from generation policy
     }
+    # Aggregate dynamic cap statistics for logging
+    try:
+        if dynamic_caps:
+            caps_t = torch.tensor(dynamic_caps, dtype=torch.float32, device=device)
+            result["dynamic_length/mean_cap"] = float(caps_t.mean().item())
+            result["dynamic_length/min_cap"] = float(caps_t.min().item())
+            result["dynamic_length/max_cap"] = float(caps_t.max().item())
+    except Exception:
+        pass
     if rewards_per_func is not None:
         result["rewards_per_func"] = rewards_per_func.to(device)
     return result
@@ -455,8 +503,10 @@ def split_buffer(
         "completion_lengths",
         "terminated_with_eos",
         "truncated_flags",
+        "generation_logps",
     ]
     list_keys = ["prompts", "completions", "meta"]
+    scalar_keys = ["temperature"]
 
     chunks: List[Dict[str, Any]] = []
     for idx in range(steps_per_generation):
@@ -515,6 +565,10 @@ def split_buffer(
 
         if "reward_names" in buffer:
             chunk_dict["reward_names"] = buffer["reward_names"]
+
+        for key in scalar_keys:
+            if key in buffer and key not in chunk_dict:
+                chunk_dict[key] = buffer[key]
 
         chunks.append(chunk_dict)
 

@@ -8,11 +8,19 @@ import torch
 from torch import nn
 
 
-def clear_gpu_cache() -> None:
-    """Free CUDA cache to mitigate fragmentation during sequential passes."""
+def clear_gpu_memory() -> None:
+    """Comprehensive GPU memory cleanup with error handling.
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    Safe to call multiple times. Clears cache and synchronizes to ensure
+    cleanup completes before continuing.
+    """
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        # Silently ignore cleanup errors to avoid disrupting training
+        pass
 
 
 def slice_packed_vision_for_sample(
@@ -81,7 +89,9 @@ def get_per_token_logps(
     if input_ids.dim() != 2 or attention_mask.dim() != 2:
         raise ValueError("input_ids and attention_mask must be 2D tensors")
     if input_ids.size(0) != attention_mask.size(0):
-        raise ValueError("Batch dimension mismatch between input_ids and attention_mask")
+        raise ValueError(
+            "Batch dimension mismatch between input_ids and attention_mask"
+        )
 
     total = int(input_ids.size(0))
     if total == 0:
@@ -138,9 +148,13 @@ def get_per_token_logps(
             logps = logps.detach()
         all_logps.append(logps)
 
-        clear_gpu_cache()
+        clear_gpu_memory()
 
     return torch.cat(all_logps, dim=0)
 
 
-__all__ = ["slice_packed_vision_for_sample", "get_per_token_logps", "clear_gpu_cache"]
+__all__ = [
+    "slice_packed_vision_for_sample",
+    "get_per_token_logps",
+    "clear_gpu_memory",
+]

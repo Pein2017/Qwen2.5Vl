@@ -14,3 +14,4 @@ Thumbs.db
 .ruff_cache/
 .mypy_cache/
 node_modules/
+.history/

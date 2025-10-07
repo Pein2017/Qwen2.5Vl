@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Literal, Sequence
+from typing import Literal, Sequence
 
 
 ScheduleType = Literal["constant", "linear", "cosine"]

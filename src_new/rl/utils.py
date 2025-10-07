@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import torch
+from torch import nn
+
 from src_new.processing.conversation.builder import ConversationBuilder
 from src_new.processing.special_tokens import IM_END
 
@@ -40,3 +43,15 @@ def create_builder(processor: Any) -> ConversationBuilder:
     Keeping this centralized avoids duplication across runner/eval.
     """
     return ConversationBuilder(processor=processor)
+
+
+def get_model_device(model: nn.Module) -> torch.device:
+    """Return the device of the model's parameters; CPU if no parameters.
+
+    Kept here for reuse across RL helpers (generation/eval/etc.).
+    """
+    try:
+        param = next(model.parameters())
+        return param.device
+    except StopIteration:
+        return torch.device("cpu")

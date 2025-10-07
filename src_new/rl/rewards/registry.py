@@ -5,9 +5,11 @@ Reward registry for RL runs.
 
 from __future__ import annotations
 
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 
 from .detection_rewards import (
+    caption_f1,
+    grounding_acc,
     reward_bbox_giou,
     reward_coverage,
     reward_geometry_sanity,
@@ -16,13 +18,14 @@ from .detection_rewards import (
     reward_quad_l1,
 )
 from .format_rewards import (
-    check_ascii_separators,
     check_banned_vocab,
     check_coords_counts,
     check_wrappers,
     length_score,
     length_window,
+    length_vs_gt,
     parse_reward,
+    separators_score,
 )
 
 
@@ -30,7 +33,7 @@ REGISTRY: Dict[str, Callable[[str], float]] = {
     "parse": parse_reward,
     "wrappers": check_wrappers,
     "coords": check_coords_counts,
-    "separators": check_ascii_separators,
+    "separators": separators_score,
     "vocab": check_banned_vocab,
     "length": length_score,
     "length_window": length_window,
@@ -43,6 +46,41 @@ REGISTRY: Dict[str, Callable[[str], float]] = {
     "line_l1": reward_line_l1,
     # Ordering constraint reward
     "ordering": reward_ordering,
+    # New accuracy-style rewards
+    "caption_f1": caption_f1,
+    "grounding_acc": grounding_acc,
+    "length_vs_gt": length_vs_gt,
+}
+
+
+# Metadata for reward display and categorization
+REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
+    # Format rewards
+    "parse": {"category": "format", "description": "Parse success rate"},
+    "wrappers": {"category": "format", "description": "Geometry wrapper correctness"},
+    "coords": {"category": "format", "description": "Coordinate count correctness"},
+    "separators": {"category": "format", "description": "Separator formatting quality"},
+    "vocab": {"category": "format", "description": "Vocabulary compliance"},
+    "length": {"category": "format", "description": "Length scoring"},
+    "length_window": {"category": "format", "description": "Length window scoring"},
+    # Detection rewards
+    "coverage": {"category": "detection", "description": "Object count coverage"},
+    "geometry_sanity": {
+        "category": "detection",
+        "description": "Geometry sanity checks",
+    },
+    "bbox_giou": {"category": "detection", "description": "Bbox GIoU accuracy"},
+    "quad_l1": {"category": "detection", "description": "Quad L1 proximity"},
+    "line_l1": {"category": "detection", "description": "Line L1 proximity"},
+    "ordering": {
+        "category": "detection",
+        "description": "Geometry ordering correctness",
+    },
+    "caption_f1": {"category": "detection", "description": "Caption token F1"},
+    "grounding_acc": {
+        "category": "detection",
+        "description": "Grounding threshold accuracy",
+    },
 }
 
 
@@ -68,4 +106,4 @@ def combine(text: str, weights: Dict[str, float], meta: dict | None = None) -> f
     return float(score / total_w) if total_w > 0.0 else 0.0
 
 
-__all__ = ["REGISTRY", "combine"]
+__all__ = ["REGISTRY", "REGISTRY_METADATA", "combine"]

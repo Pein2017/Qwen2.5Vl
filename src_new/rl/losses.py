@@ -8,11 +8,12 @@ import torch
 
 
 def compute_kl(policy_logps: torch.Tensor, ref_logps: torch.Tensor) -> torch.Tensor:
-    """Return per-token KL divergence estimate (log-prob difference)."""
+    """Return TRL-style per-token KL proxy: exp(ref - policy) - (ref - policy) - 1."""
 
     if ref_logps.shape != policy_logps.shape:
         raise ValueError("policy_logps and ref_logps must share the same shape")
-    return policy_logps - ref_logps
+    diff = ref_logps - policy_logps
+    return torch.exp(diff) - diff - 1.0
 
 
 def compute_grpo_loss(

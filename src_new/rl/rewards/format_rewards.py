@@ -7,6 +7,7 @@ All functions are side-effect free and deterministic.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Dict, List
 
@@ -75,35 +76,125 @@ def check_ascii_separators(text: str) -> float:
     return 1.0
 
 
+def _iter_coord_sections_within_wrappers(text: str) -> List[str]:
+    """Return only the coordinate list contents inside geometry wrappers.
+
+    This is stricter than global bracket search and avoids counting JSON-like
+    fragments outside geometry tokens.
+    """
+    sections: List[str] = []
+    # box
+    for m in re.finditer(
+        re.escape(BOX_S) + r"\s*\[(.*?)\]\s*" + re.escape(BOX_E), text, re.DOTALL
+    ):
+        sections.append(m.group(1))
+    # quad
+    for m in re.finditer(
+        re.escape(QUAD_S) + r"\s*\[(.*?)\]\s*" + re.escape(QUAD_E), text, re.DOTALL
+    ):
+        sections.append(m.group(1))
+    # line
+    for m in re.finditer(
+        re.escape(LINE_S) + r"\s*\[(.*?)\]\s*" + re.escape(LINE_E), text, re.DOTALL
+    ):
+        sections.append(m.group(1))
+    return sections
+
+
+def separators_score(
+    text: str,
+    *,
+    chinese_penalty_alpha: float = 0.15,
+    w_space: float = 0.6,
+    w_completeness: float = 0.4,
+) -> float:
+    """Continuous separators reward in [0,1] with soft penalties.
+
+    - Requires geometry wrappers present; otherwise returns 0.0
+    - Scores only coordinate lists inside wrappers
+    - Per-list score combines:
+        * space-after-comma ratio: count(', ')/count(',')
+        * comma completeness: observed_commas / expected_commas, expected=max(nums-1, 0)
+    - Applies soft global penalty for Chinese punctuation occurrences
+    """
+
+    if not _has_any_geometry(text):
+        return 0.0
+
+    # Global soft penalty for Chinese punctuation occurrences (not hard zero)
+    cn = len(_CHINESE_PUNCT.findall(text))
+    global_penalty = math.exp(-float(chinese_penalty_alpha) * float(cn))
+
+    lists = _iter_coord_sections_within_wrappers(text)
+    if not lists:
+        return 0.0
+
+    per_list_scores: List[float] = []
+    for sec in lists:
+        # numbers and commas in the section
+        nums = _NUM.findall(sec)
+        num_numbers = len(nums)
+        comma_count = sec.count(",")
+        comma_space_count = sec.count(", ")
+
+        # Space-after-comma ratio
+        space_ratio = (
+            1.0
+            if comma_count == 0
+            else float(comma_space_count) / float(max(comma_count, 1))
+        )
+
+        # Expected comma completeness ≈ (numbers - 1)
+        expected_commas = max(num_numbers - 1, 0)
+        completeness = (
+            1.0
+            if expected_commas == 0
+            else min(1.0, float(comma_count) / float(expected_commas))
+        )
+
+        list_score = float(w_space) * space_ratio + float(w_completeness) * completeness
+        per_list_scores.append(list_score)
+
+    base = sum(per_list_scores) / float(len(per_list_scores))
+    score = max(0.0, min(1.0, base * global_penalty))
+    return float(score)
+
+
 def check_coords_counts(text: str) -> float:
-    # Require at least one geometry wrapper present
-    found_any = False
-    score = 1.0
+    """Continuous coordinate count correctness reward in [0,1].
+
+    Returns the fraction of coordinate lists with correct counts:
+    - bbox: exactly 4 ints
+    - quad: exactly 8 ints
+    - line: even count >= 4
+
+    Provides smoother RL signal than binary all-or-nothing.
+    """
+    checks: List[bool] = []
+
     # box: 4 ints
     for m in re.finditer(
         re.escape(BOX_S) + r"\s*\[(.*?)\]\s*" + re.escape(BOX_E), text, re.DOTALL
     ):
-        found_any = True
-        if len(_extract_coord_values(m.group(1))) != 4:
-            score *= 0.0
+        checks.append(len(_extract_coord_values(m.group(1))) == 4)
+
     # quad: 8 ints
     for m in re.finditer(
         re.escape(QUAD_S) + r"\s*\[(.*?)\]\s*" + re.escape(QUAD_E), text, re.DOTALL
     ):
-        found_any = True
-        if len(_extract_coord_values(m.group(1))) != 8:
-            score *= 0.0
+        checks.append(len(_extract_coord_values(m.group(1))) == 8)
+
     # line: even >= 4
     for m in re.finditer(
         re.escape(LINE_S) + r"\s*\[(.*?)\]\s*" + re.escape(LINE_E), text, re.DOTALL
     ):
-        found_any = True
         vals = _extract_coord_values(m.group(1))
-        if len(vals) < 4 or len(vals) % 2 != 0:
-            score *= 0.0
-    if not found_any:
+        checks.append(len(vals) >= 4 and len(vals) % 2 == 0)
+
+    if not checks:
         return 0.0
-    return float(score)
+
+    return float(sum(1.0 for c in checks if c) / len(checks))
 
 
 _BANNED_TERMS = ["PPDU", "DCDU", "CPRI", "ODF", "光分路器"]
@@ -153,6 +244,75 @@ def length_window(text: str, target_min: int = 200, target_max: int = 800) -> fl
     return max(0.0, 1.0 - (tokens_like - target_max) / float(2 * span))
 
 
+def length_vs_gt(
+    text: str,
+    *,
+    meta: Dict | None = None,
+    gen_len: int | None = None,
+    gt_len: int | None = None,
+    estimator: str = "tokenizer",
+    lower: float = 0.7,
+    upper: float = 1.2,
+    gamma: float = 3.0,
+    tail_numeric_weight: float = 0.4,
+    alpha: float = 1.1,
+) -> float:
+    """Length-to-GT reward in [0,1] with strong overflow penalty.
+
+    Uses tokenizer-aligned lengths when provided via gen_len/gt_len; otherwise
+    falls back to proxy (numbers + wrapper count).
+    """
+
+    # Fallback estimators when explicit lengths not provided
+    def _proxy_len(txt: str) -> int:
+        return int(len(_NUM.findall(txt)) + txt.count(OBJ_S))
+
+    if gen_len is None:
+        gen_len = _proxy_len(text)
+    if gt_len is None:
+        # Build proxy from meta if missing explicit GT length
+        if isinstance(meta, dict):
+            try:
+                # Proxy: count expected wrapper occurrences
+                objs = meta.get("objects") or []
+                # Rough proxy: each object contributes at least one wrapper line
+                gt_len = max(1, int(len(objs)))
+            except Exception:
+                gt_len = _proxy_len(text)
+        else:
+            gt_len = _proxy_len(text)
+
+    gt_len = int(max(1, int(gt_len)))
+    gen_len = int(max(0, int(gen_len)))
+
+    r = float(gen_len) / float(gt_len)
+    if r < float(lower):
+        base = max(0.0, r / float(max(lower, 1e-6)))
+    elif r <= float(upper):
+        base = 1.0
+    else:
+        base = math.exp(-float(gamma) * (r - float(upper)))
+
+    # Tail numeric penalty beyond alpha*gt_len
+    tail_pen = 0.0
+    try:
+        cutoff = int(math.ceil(float(alpha) * float(gt_len)))
+        # Build a cheap proxy of numeric density in tail region using regex
+        tail_text = text  # We don't have token alignment here; use full text density
+        if gen_len > cutoff and float(tail_numeric_weight) > 0.0:
+            nums = len(_NUM.findall(tail_text))
+            digits = sum(ch.isdigit() for ch in tail_text)
+            total = max(1, len(tail_text))
+            frac_num = max(
+                float(nums) / float(max(1, gen_len)), float(digits) / float(total)
+            )
+            tail_pen = float(tail_numeric_weight) * max(0.0, min(1.0, frac_num))
+    except Exception:
+        tail_pen = 0.0
+
+    return max(0.0, min(1.0, float(base) - float(tail_pen)))
+
+
 def compute_reward(text: str, weights: Dict[str, float]) -> float:
     comps = {
         "parse": parse_reward(text),
@@ -178,10 +338,12 @@ def compute_reward(text: str, weights: Dict[str, float]) -> float:
 __all__ = [
     "check_wrappers",
     "check_ascii_separators",
+    "separators_score",
     "check_coords_counts",
     "check_banned_vocab",
     "parse_reward",
     "length_score",
     "length_window",
+    "length_vs_gt",
     "compute_reward",
 ]

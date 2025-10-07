@@ -3,26 +3,26 @@
 from __future__ import annotations
 
 import copy
+import os
 import random
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 import torch
-import torch.distributed as dist
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs, InitProcessGroupKwargs
 from torch import nn
-from torch.amp.autocast_mode import autocast
-from torch.cuda.amp import GradScaler
-from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 from transformers.optimization import get_scheduler
 
 from src_new.config.rl_config import EnhancedRLConfig
 from src_new.rl import buffer, logprobs, losses, schedules, validators
-from src_new.rl import distributed as dist_utils
+from src_new.rl.reward_logger import RewardLogger
 from src_new.rl.rewards.standardizer import RewardStandardizer
 from src_new.training.checkpoint_saver import BestCheckpointManager, CheckpointSaver
 from src_new.training.training_state_manager import TrainingStateManager
@@ -120,6 +120,9 @@ class BBUGRPOTrainer:
         self.reward_weight_list = [float(w) for w in reward_weights]
         self.enhanced_cfg = enhanced_cfg
         self.raw_config = raw_config
+
+        # Initialize unified reward logger
+        self._reward_logger = RewardLogger(reward_names=self.reward_func_names)
         self.output_dir = output_dir
 
         self.manual_cfg = self._build_manual_cfg(enhanced_cfg, raw_config)
@@ -128,8 +131,57 @@ class BBUGRPOTrainer:
         self.checkpoint_cfg = enhanced_cfg.checkpoint_config
         self.logging_cfg = enhanced_cfg.logging_config
 
+        # Sampling configuration (derive before Accelerator so we can set accumulation)
+        self._sample_k_per_rank = bool(
+            (self.raw_config.get("grpo") or {}).get("sample_k_per_rank", False)
+        )
+        # Resolve world size and rank from env (works before process group init)
+        try:
+            _ws_env = int(os.getenv("WORLD_SIZE", "1"))
+        except Exception:
+            _ws_env = 1
+        try:
+            _rank_env = int(os.getenv("RANK", "0"))
+        except Exception:
+            _rank_env = 0
+
+        # Temporarily set placeholders; will be updated after Accelerator creation
+        self.world_size = _ws_env
+        self.rank = _rank_env
+        self._distributed = self.world_size > 1
+
+        # Compute local sample_k for accumulation boundary
+        k_total = int(self.manual_cfg.sample_k)
+        if self._sample_k_per_rank or self.world_size <= 1:
+            _local_k_for_acc = k_total
+        else:
+            _base = k_total // self.world_size
+            _rem = k_total % self.world_size
+            _local_k_for_acc = _base + (1 if self.rank < _rem else 0)
+
+        # Instantiate Accelerator with YAML-driven precision and accumulation boundary
+        mp = "bf16" if self.manual_cfg.bf16 else "no"
+
+        # Configure NCCL timeout for collective operations (default: 120 seconds)
+        nccl_timeout_seconds = int(os.getenv("NCCL_COLLECTIVE_TIMEOUT", "120"))
+        init_pg_kwargs = InitProcessGroupKwargs(
+            timeout=timedelta(seconds=nccl_timeout_seconds)
+        )
+        ddp_kwargs = DistributedDataParallelKwargs()
+
+        self.accelerator = Accelerator(
+            mixed_precision=mp,
+            gradient_accumulation_steps=max(1, int(_local_k_for_acc)),
+            kwargs_handlers=[init_pg_kwargs, ddp_kwargs],
+        )
+
+        # After Accelerator is ready, update distributed attributes
+        self.rank = getattr(self.accelerator.state, "process_index", 0)
+        self.world_size = getattr(self.accelerator.state, "num_processes", 1)
+        self._distributed = self.world_size > 1
+
         # Training utilities
-        self._device = next(self.model.parameters()).device
+        self._device = self.accelerator.device
         self._pad_token_id = _get_pad_token_id(tokenizer, model)
         self._reward_weights_tensor = torch.tensor(
             self.reward_weight_list, dtype=torch.float32, device=self._device
@@ -161,25 +213,12 @@ class BBUGRPOTrainer:
             RewardStandardizer() if self.manual_cfg.standardize_rewards else None
         )
 
-        self._distributed = dist.is_available() and dist.is_initialized()
-        self.rank = dist.get_rank() if self._distributed else 0
-        self.world_size = dist.get_world_size() if self._distributed else 1
+        # Sampling window (based on current world_size)
 
-        # Derive accumulation strictly from sample_k: one optimizer update per generation
-        # Set per-device micro-batch to 1 and use sample_k as micro-steps per update
-        # Use local_k (per-rank K) to set accumulation when cross-rank sampling is enabled
-        per_rank = max(1, int(self._local_sample_k()))
-        self.manual_cfg.per_device_train_batch_size = 1
-        self.manual_cfg.gradient_accumulation_steps = per_rank
-        self.manual_cfg.steps_per_generation = per_rank
-        if self.rank == 0:
-            _LOGGER.info(
-                "Using local_k=%d (from sample_k=%d, world_size=%d) to set grad_accum=steps_per_generation=%d",
-                per_rank,
-                self.manual_cfg.sample_k,
-                self.world_size,
-                per_rank,
-            )
+        # Derive accumulation strictly from the sampling configuration so each
+        # optimizer step always corresponds to a consistent set of completions
+        # (one per rank when sample_k_per_rank=false).
+        self._configure_sampling_window()
 
         self.ref_model: Optional[nn.Module] = None
         if self.manual_cfg.beta_start > 0.0:
@@ -187,12 +226,11 @@ class BBUGRPOTrainer:
             for param in self.ref_model.parameters():
                 param.requires_grad_(False)
 
-        self._sampler: Optional[DistributedSampler] = None
+        self._sampler = None
         self._sampler_epoch: int = 0
         self._temperature_scale: float = 1.0
         self._temperature_history: List[float] = []
         self._reward_history: List[float] = []
-        self._clip_ratio_history: List[float] = []
         self._adv_std_history: List[float] = []
         self._adv_max_history: List[float] = []
         self._reward_component_history: Dict[str, List[float]] = {
@@ -205,10 +243,18 @@ class BBUGRPOTrainer:
         self._logged_ratio_diagnostic: bool = (
             False  # One-time verification of GRPO ratio fix
         )
+        self._warned_rewards_mismatch: bool = False
+        self._debug_timing: bool = bool(int(os.environ.get("RL_DEBUG_TIMING", "0")))
+        try:
+            self._generation_warn_threshold = float(
+                os.environ.get("RL_GENERATION_WARN_S", "30.0")
+            )
+        except ValueError:
+            self._generation_warn_threshold = 30.0
 
         # TensorBoard writer (rank 0 only)
         self._tb_writer: Optional[Any] = None
-        if self.rank == 0 and SummaryWriter is not None:
+        if self.accelerator.is_main_process and SummaryWriter is not None:
             # Extract run_name from output section first, then fallback to root level
             output_section = raw_config.get("output", {})
             run_name = output_section.get("run_name") or raw_config.get(
@@ -220,10 +266,11 @@ class BBUGRPOTrainer:
             _LOGGER.info(f"TensorBoard logging to: {tb_path}")
 
         _LOGGER.info(
-            "Manual GRPO trainer ready | sample_k=%d | lr=%.2e | max_steps=%d",
+            "Manual GRPO trainer ready | sample_k=%d | lr=%.2e | max_steps=%d | nccl_timeout=%ds",
             self.manual_cfg.sample_k,
             float(self.optimizer_cfg.base_lr),
             self.manual_cfg.max_steps,
+            nccl_timeout_seconds,
         )
 
         if (
@@ -417,6 +464,7 @@ class BBUGRPOTrainer:
             )
 
         # Prefer PyTorch fused AdamW kernels when available; fallback to foreach, then standard
+        # Note: fused and foreach cannot both be True (runtime error in PyTorch)
         try:
             optimizer = AdamW(
                 param_groups,
@@ -425,11 +473,10 @@ class BBUGRPOTrainer:
                 eps=self.optimizer_cfg.adam_epsilon,
                 weight_decay=self.optimizer_cfg.weight_decay,
                 fused=True,
-                foreach=True,
             )
-            _LOGGER.info("Optimizer: using fused AdamW (foreach=True)")
-        except TypeError:
-            # Older PyTorch may not support fused
+            _LOGGER.info("Optimizer: using fused AdamW")
+        except (TypeError, RuntimeError):
+            # Older PyTorch may not support fused, or fused+foreach conflict
             try:
                 optimizer = AdamW(
                     param_groups,
@@ -443,7 +490,7 @@ class BBUGRPOTrainer:
                     foreach=True,
                 )
                 _LOGGER.info("Optimizer: using AdamW (foreach=True)")
-            except TypeError:
+            except (TypeError, RuntimeError):
                 optimizer = AdamW(
                     param_groups,
                     lr=lr_llm,
@@ -484,28 +531,15 @@ class BBUGRPOTrainer:
         )
 
     def _dataloader(self) -> DataLoader:
-        sampler: Optional[DistributedSampler] = None
-        if self._distributed:
-            sampler = DistributedSampler(
-                self.train_dataset,
-                num_replicas=self.world_size,
-                rank=self.rank,
-                shuffle=True,
-                drop_last=False,
-            )
-            self._sampler = sampler
-        else:
-            self._sampler = None
-
+        # Let Accelerate inject its own distributed sampler during prepare()
         return DataLoader(
             self.train_dataset,
             batch_size=self.manual_cfg.per_device_train_batch_size
             * self.manual_cfg.steps_per_generation,
-            shuffle=not self._distributed,
+            shuffle=True,
             num_workers=self.training_cfg.dataloader_num_workers,
             pin_memory=self.training_cfg.pin_memory,
             collate_fn=lambda batch: batch,
-            sampler=sampler,
         )
 
     def _next_generation_batch(
@@ -514,7 +548,7 @@ class BBUGRPOTrainer:
         try:
             batch = next(iterator)
         except StopIteration:
-            iterator = iter(self._dataloader())
+            iterator = iter(self._train_dataloader)
             batch = next(iterator)
         if not isinstance(batch, list) or not batch:
             raise ValueError(
@@ -547,9 +581,68 @@ class BBUGRPOTrainer:
             anneal=self.manual_cfg.beta_schedule,
         )
 
+    def _configure_sampling_window(self) -> None:
+        """Resolve per-rank sampling/accumulation configuration."""
+        # Prefer env-provided world size/rank when process group may not be initialized
+        try:
+            _ws_env = int(os.getenv("WORLD_SIZE", "1"))
+        except Exception:
+            _ws_env = 1
+        try:
+            _rank_env = int(os.getenv("RANK", "0"))
+        except Exception:
+            _rank_env = 0
+        if self.world_size <= 1 and _ws_env > 1:
+            self.world_size = _ws_env
+            self.rank = _rank_env
+
+        raw_local_k = int(self._local_sample_k())
+        if raw_local_k <= 0:
+            raise ValueError(
+                "Computed per-rank sample_k is 0. Ensure grpo.sample_k >= world_size"
+                " when grpo.sample_k_per_rank is false, or enable sample_k_per_rank."
+            )
+
+        if (
+            not self._sample_k_per_rank
+            and self.world_size > 1
+            and self.manual_cfg.sample_k % self.world_size != 0
+        ):
+            raise ValueError(
+                "grpo.sample_k must be divisible by world_size when sample_k_per_rank=false"
+            )
+
+        self.global_sample_k = int(self.manual_cfg.sample_k)
+        self.local_sample_k = raw_local_k
+        if self._sample_k_per_rank:
+            completions_per_update = self.local_sample_k * max(self.world_size, 1)
+        else:
+            completions_per_update = self.global_sample_k
+        self.global_completions_per_update = completions_per_update
+
+        self.manual_cfg.per_device_train_batch_size = 1
+        self.manual_cfg.gradient_accumulation_steps = self.local_sample_k
+        self.manual_cfg.steps_per_generation = self.local_sample_k
+        self.manual_cfg.update_steps = self.local_sample_k
+
+        if self.rank == 0:
+            _LOGGER.info(
+                "Sampling window | sample_k=%d | world_size=%d | per_rank_k=%d | completions_per_update=%d",
+                self.global_sample_k,
+                self.world_size,
+                self.local_sample_k,
+                self.global_completions_per_update,
+            )
+
     def _local_sample_k(self) -> int:
-        """Compute per-rank sample_k when cross-rank sampling is enabled."""
+        """Compute per-rank sample_k.
+
+        If grpo.sample_k_per_rank is true (YAML), interpret sample_k as per-rank K.
+        Otherwise, split global K across ranks (legacy behavior).
+        """
         k_total = int(self.manual_cfg.sample_k)
+        if self._sample_k_per_rank:
+            return k_total
         if not (self.world_size > 1):
             return k_total
         # Cross-rank sampling: each rank produces ceil(sample_k / world_size)
@@ -559,7 +652,7 @@ class BBUGRPOTrainer:
 
     def train(self) -> None:
         base_seed = int(self.enhanced_cfg.seed)
-        rank_seed = dist_utils.seed_for_rank(base_seed)
+        rank_seed = base_seed + int(getattr(self.accelerator.state, "process_index", 0))
         torch.manual_seed(rank_seed)
         random.seed(rank_seed)
         np.random.seed(rank_seed % (2**32 - 1))
@@ -567,51 +660,88 @@ class BBUGRPOTrainer:
             torch.cuda.manual_seed_all(rank_seed)
 
         dataloader = self._dataloader()
-        dataloader_iter = iter(dataloader)
 
         optimizer = self._build_optimizer()
+        # Prepare model, optimizer, and dataloader with Accelerator
+        self.model, optimizer, dataloader = self.accelerator.prepare(
+            self.model, optimizer, dataloader
+        )
+        # Keep prepared dataloader for iterator resets
+        self._train_dataloader = dataloader
         scheduler = self._build_scheduler(optimizer)
         optimizer.zero_grad(set_to_none=True)
 
+        # Move reference model to device (no DDP wrap)
+        if self.ref_model is not None:
+            try:
+                self.ref_model.to(self._device).eval()
+            except Exception:
+                pass
+
+        dataloader_iter = iter(self._train_dataloader)
+
         self.model.train()
-        scaler = GradScaler(enabled=False)
-        use_autocast = bool(self.manual_cfg.bf16)
-        autocast_dtype = torch.bfloat16 if use_autocast else torch.float32
 
         self._buffer_chunks = []
         self._buffer_chunk_idx = 0
 
         while self._global_step < self.manual_cfg.max_steps:
-            # Determine reuse window: generate once per accumulation window and reuse
-            reuse_window = max(1, int(self.manual_cfg.steps_per_generation))
-            if self._buffer_chunk_idx >= len(self._buffer_chunks):
-                if self._distributed and isinstance(self._sampler, DistributedSampler):
-                    self._sampler.set_epoch(self._sampler_epoch)
-                    self._sampler_epoch += 1
+            # Determine whether any rank needs to refresh the shared buffer
+            need_new_buffer = self._buffer_chunk_idx >= len(self._buffer_chunks)
+            if self.world_size > 1:
+                flag_tensor = torch.tensor(
+                    [1 if need_new_buffer else 0],
+                    dtype=torch.int32,
+                    device=self._device,
+                )
+                flags_all = self.accelerator.gather(flag_tensor)
+                if flags_all.device.type != "cpu":
+                    flags_all = flags_all.cpu()
+                flags_all = flags_all.view(-1)
+                need_new_buffer = bool(int(flags_all.max().item()))
+
+            if need_new_buffer:
+                # Force all ranks to regenerate in lockstep to keep collectives aligned
+                self._buffer_chunks = []
+                self._buffer_chunk_idx = 0
+
                 batch, dataloader_iter = self._next_generation_batch(dataloader_iter)
                 # Cross-rank sampling: force all ranks to use the same dataset index when world_size > 1
                 if self.world_size > 1:
-                    try:
-                        # On rank 0, pick an index from the dataset; broadcast to others
-                        if self.rank == 0:
-                            import random as _rnd
+                    # Rank 0 selects an index; gather across ranks and use rank-0's value
+                    import random as _rnd
 
-                            idx_val = int(_rnd.randrange(len(self.train_dataset)))
-                        else:
-                            idx_val = 0
-                        idx_tensor = torch.tensor([idx_val], dtype=torch.long)
-                        idx_tensor = dist_utils.broadcast_indices(idx_tensor, src=0)
-                        idx_b = int(idx_tensor.item())
-                        # Rebuild a single-sample batch shared across ranks
-                        shared_sample = self.train_dataset[idx_b]
-                        batch = [shared_sample]
-                    except Exception:
-                        pass
+                    idx_val = (
+                        int(_rnd.randrange(len(self.train_dataset)))
+                        if self.accelerator.is_main_process
+                        else 0
+                    )
+                    idx_tensor = torch.tensor(
+                        [idx_val], dtype=torch.long, device=self._device
+                    )
+                    gathered_idx = self.accelerator.gather(idx_tensor)
+                    idx_b = (
+                        int(gathered_idx[0].item())
+                        if gathered_idx.numel() > 0
+                        else int(idx_tensor.item())
+                    )
+                    shared_sample = self.train_dataset[idx_b]
+                    batch = [shared_sample]
+                    if self._debug_timing:
+                        _LOGGER.warning(
+                            "Rank %d step %d using dataset index %d (world_size=%d)",
+                            self.rank,
+                            self._global_step,
+                            idx_b,
+                            self.world_size,
+                        )
                 gen_cfg = self._prepare_generation_config(self._global_step)
-                local_k = self._local_sample_k()
+                local_k = self.local_sample_k
                 # Generate once for the current mini-batch, then reuse for next `reuse_window` micro-steps
                 chunks: List[Dict[str, Any]] = []
+                slow_generation = False
                 for sample in batch:
+                    gen_start_time = time.time()
                     single_generation = buffer.generate_and_score(
                         model=self.model,
                         tokenizer=self.tokenizer,
@@ -635,13 +765,187 @@ class BBUGRPOTrainer:
                         ),
                     )
                     single_generation["temperature"] = gen_cfg["temperature"]
+                    gen_duration = time.time() - gen_start_time
+                    if (
+                        gen_duration > self._generation_warn_threshold
+                        or self._debug_timing
+                    ):
+                        _LOGGER.warning(
+                            "Rank %d generation took %.2fs at step %d (threshold=%.2fs)",
+                            self.rank,
+                            gen_duration,
+                            self._global_step,
+                            self._generation_warn_threshold,
+                        )
+                    if gen_duration > self._generation_warn_threshold:
+                        slow_generation = True
+                    if self._debug_timing:
+                        comp_lengths = single_generation.get("completion_lengths")
+                        if isinstance(comp_lengths, torch.Tensor):
+                            try:
+                                lengths_list = comp_lengths.detach().cpu().tolist()
+                            except Exception:
+                                lengths_list = []
+                        else:
+                            lengths_list = []
+                        _LOGGER.warning(
+                            "Rank %d step %d completion lengths %s",
+                            self.rank,
+                            self._global_step,
+                            lengths_list,
+                        )
                     chunks.append(single_generation)
-                # Build a small ring-buffer of length `reuse_window` by repeating the same chunk
-                # This allows reusing generation outputs across micro-steps within the window
-                self._buffer_chunks = []
-                for _ in range(reuse_window):
-                    self._buffer_chunks.extend(chunks)
+
+                if self.world_size > 1:
+                    slow_flag = torch.tensor(
+                        [1 if slow_generation else 0],
+                        dtype=torch.int32,
+                        device=self._device,
+                    )
+                    flags = self.accelerator.gather(slow_flag)
+                    if flags.device.type != "cpu":
+                        flags = flags.cpu()
+                    flags = flags.view(-1)
+                    slow_generation = bool(int(flags.max().item()))
+
+                if slow_generation:
+                    _LOGGER.warning(
+                        "Slow generation detected at step %d; resampling new prompt",
+                        self._global_step,
+                    )
+                    if self.world_size > 1:
+                        self.accelerator.wait_for_everyone()
+                    self._buffer_chunks = []
+                    self._buffer_chunk_idx = 0
+                    continue
+
+                # Compute cross-rank advantages ONCE for all samples AFTER generation completes
+                if self.manual_cfg.cross_rank_advantages and self.world_size > 1:
+                    # Clear memory before cross-rank computation
+                    logprobs.clear_gpu_memory()
+                    if not chunks and self._debug_timing:
+                        _LOGGER.warning(
+                            "Rank %d has no chunks to normalize at step %d",
+                            self.rank,
+                            self._global_step,
+                        )
+                    for single_generation in chunks:
+                        rewards_local = single_generation.get("rewards")
+                        if rewards_local is None:
+                            continue
+                        rewards_local = (
+                            rewards_local.detach().to(self._device).flatten()
+                        )
+                        rewards_local = rewards_local.contiguous()
+                        rewards_len = int(rewards_local.numel())
+                        length_tensor = torch.tensor(
+                            [rewards_len], dtype=torch.int32, device=self._device
+                        )
+                        lengths_all = self.accelerator.gather(length_tensor)
+                        if lengths_all.device.type != "cpu":
+                            lengths_all = lengths_all.cpu()
+                        lengths_all = lengths_all.view(-1)
+                        max_len = (
+                            int(lengths_all.max().item())
+                            if lengths_all.numel() > 0
+                            else rewards_len
+                        )
+                        if self._debug_timing:
+                            _LOGGER.warning(
+                                "Rank %d step %d reward lengths local=%d gathered=%s max=%d",
+                                self.rank,
+                                self._global_step,
+                                rewards_len,
+                                lengths_all.tolist() if lengths_all.numel() > 0 else [],
+                                max_len,
+                            )
+                        if rewards_len != max_len and not self._warned_rewards_mismatch:
+                            _LOGGER.warning(
+                                "Rank %d rewards length %d mismatched (max_len=%d) at step %d; padding/trimming",
+                                self.rank,
+                                rewards_len,
+                                max_len,
+                                self._global_step,
+                            )
+                            self._warned_rewards_mismatch = True
+
+                        if max_len > 0:
+                            if rewards_local.size(0) < max_len:
+                                pad = torch.zeros(
+                                    max_len - rewards_local.size(0),
+                                    dtype=rewards_local.dtype,
+                                    device=self._device,
+                                )
+                                rewards_padded = torch.cat([rewards_local, pad], dim=0)
+                            else:
+                                rewards_padded = rewards_local[:max_len]
+
+                            gathered_rewards = self.accelerator.gather(rewards_padded)
+                            if gathered_rewards.device.type != "cpu":
+                                gathered_rewards = gathered_rewards.cpu()
+                            gathered_rewards = gathered_rewards.view(
+                                self.world_size, max_len
+                            )
+                            lengths_cpu = lengths_all.view(self.world_size)
+                            arange_vec = torch.arange(
+                                max_len, device=lengths_cpu.device
+                            ).unsqueeze(0)
+                            mask = arange_vec < lengths_cpu.unsqueeze(1)
+                            if mask.any():
+                                masked_vals = gathered_rewards[mask]
+                                global_mean = masked_vals.mean()
+                                global_std = masked_vals.std(unbiased=False)
+                            else:
+                                global_mean = torch.tensor(0.0)
+                                global_std = torch.tensor(1.0)
+                            if self._debug_timing:
+                                _LOGGER.warning(
+                                    "Rank %d step %d global_mean=%.4f global_std=%.4f valid=%d",
+                                    self.rank,
+                                    self._global_step,
+                                    float(global_mean),
+                                    float(global_std),
+                                    int(mask.sum().item()),
+                                )
+                        else:
+                            global_mean = torch.tensor(0.0)
+                            global_std = torch.tensor(1.0)
+
+                        global_std = torch.clamp(global_std, min=1e-4)
+                        adv_local = rewards_local.detach().cpu() - global_mean
+                        if self.manual_cfg.scale_rewards:
+                            adv_local = adv_local / global_std
+                        if (
+                            self.manual_cfg.max_advantage_magnitude is not None
+                            and self.manual_cfg.max_advantage_magnitude > 0
+                        ):
+                            mag = float(self.manual_cfg.max_advantage_magnitude)
+                            adv_local = torch.clamp(adv_local, min=-mag, max=mag)
+                        single_generation["advantages"] = adv_local.to(self._device)
+                    # Clear memory after cross-rank computation
+                    logprobs.clear_gpu_memory()
+
+                # Split local_k completions into micro-step chunks to avoid duplication
+                split_chunks_final: List[Dict[str, Any]] = []
+                for single_generation in chunks:
+                    split_parts = buffer.split_buffer(
+                        single_generation, steps_per_generation=max(1, int(local_k))
+                    )
+                    for ch in split_parts:
+                        split_chunks_final.append(ch)
+                # Replace reuse ring with direct sliced chunks across micro-steps
+                self._buffer_chunks = split_chunks_final
                 self._buffer_chunk_idx = 0
+                if not self._buffer_chunks:
+                    _LOGGER.warning(
+                        "Rank %d produced no completions at step %d; resampling",
+                        self.rank,
+                        self._global_step,
+                    )
+                    if self.world_size > 1:
+                        self.accelerator.wait_for_everyone()
+                    # Resample on next loop iteration
+                    continue
 
             generation_result = self._buffer_chunks[self._buffer_chunk_idx]
             self._buffer_chunk_idx += 1
@@ -679,38 +983,16 @@ class BBUGRPOTrainer:
                 image_grid_thw=image_grid_thw,
             )
 
-            if self.manual_cfg.cross_rank_advantages and self.world_size > 1:
-                # Recompute advantages across ranks using gathered rewards for the same sample
-                try:
-                    rewards_local = generation_result.get("rewards")
-                    if rewards_local is not None:
-                        rewards_local = rewards_local.detach()
-                        # Gather all rewards across ranks and concatenate
-                        gathered_rewards = dist_utils.all_gather_rewards(rewards_local)
-                        global_mean = gathered_rewards.mean()
-                        global_std = gathered_rewards.std(unbiased=False)
-                        global_std = torch.clamp(global_std, min=1e-4)
-                        # Use global statistics to normalize local rewards
-                        local_adv = rewards_local - global_mean
-                        if self.manual_cfg.scale_rewards:
-                            local_adv = local_adv / global_std
-                        if (
-                            self.manual_cfg.max_advantage_magnitude is not None
-                            and self.manual_cfg.max_advantage_magnitude > 0
-                        ):
-                            mag = float(self.manual_cfg.max_advantage_magnitude)
-                            local_adv = torch.clamp(local_adv, min=-mag, max=mag)
-                        advantages_all = local_adv.to(self._device)
-                        generation_result["advantages"] = advantages_all
-                except Exception:
-                    pass
+            # Cross-rank advantages were computed once after generation and stored in the buffer.
+            # Skip per-micro-step recomputation to avoid inconsistent normalization across chunks.
+            # If needed, this block can be re-enabled with a guard flag.
+            # if self.manual_cfg.cross_rank_advantages and self.world_size > 1:
+            #     ...
 
             current_beta = self._beta_for_step(self._global_step)
             generation_result["beta"] = current_beta
 
-            with autocast(
-                device_type="cuda", enabled=use_autocast, dtype=autocast_dtype
-            ):
+            with self.accelerator.autocast():
                 # Prepare single prompt row
                 if prompt_ids_all.dim() == 2:
                     prompt_ids_row = prompt_ids_all[0]
@@ -723,6 +1005,11 @@ class BBUGRPOTrainer:
                 # Accumulate only a CPU scalar for logging; stream backward per completion
                 loss_value_for_log = 0.0
                 non_finite = False
+                # Clipping diagnostics counters
+                _clip_low_tokens = 0
+                _clip_high_tokens = 0
+                _clip_region_tokens = 0
+                _clip_total_tokens = 0
                 for k in range(num_completions):
                     comp_ids_row = completion_ids_all[k]
                     comp_mask_row = completion_mask_all[k]
@@ -816,6 +1103,31 @@ class BBUGRPOTrainer:
                                 "⚠️  GRPO fallback: using current policy as old_logps (ratio will be ~1.0)"
                             )
 
+                    # Token-level clipping diagnostics accumulation
+                    adv_k = advantages_all[k : k + 1]
+                    coef_1 = torch.exp(per_token_logps_k - old_logps_k)
+                    adv_is_neg = (adv_k < 0).view(1, 1).expand_as(coef_1)
+                    adv_is_pos = (adv_k > 0).view(1, 1).expand_as(coef_1)
+                    is_low_clipped = (
+                        coef_1 < (1.0 - self.manual_cfg.epsilon_low)
+                    ) & adv_is_neg
+                    is_high_clipped = (
+                        coef_1 > (1.0 + self.manual_cfg.epsilon_high)
+                    ) & adv_is_pos
+                    token_mask_bool = comp_mask_eff > 0
+                    _clip_low_tokens += int(
+                        (is_low_clipped & token_mask_bool).sum().item()
+                    )
+                    _clip_high_tokens += int(
+                        (is_high_clipped & token_mask_bool).sum().item()
+                    )
+                    _clip_region_tokens += int(
+                        ((is_low_clipped | is_high_clipped) & token_mask_bool)
+                        .sum()
+                        .item()
+                    )
+                    _clip_total_tokens += int(token_mask_bool.sum().item())
+
                     per_token_kl_k = None
                     if current_beta > 0.0 and self.ref_model is not None:
                         with torch.no_grad():
@@ -853,7 +1165,7 @@ class BBUGRPOTrainer:
 
                     # Stream backward per completion to free graphs; average across K
                     scaled_part = loss_k / float(max(num_completions, 1))
-                    scaler.scale(scaled_part).backward()
+                    self.accelerator.backward(scaled_part)
                     try:
                         loss_value_for_log += float(
                             loss_k.detach().float().item()
@@ -871,41 +1183,68 @@ class BBUGRPOTrainer:
                         )
                         if "ref_logps_k" in locals():
                             del ref_logps_k
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                        logprobs.clear_gpu_memory()
                     except Exception:
                         pass
 
-            if "non_finite" in locals() and non_finite:
+            # Compute and store policy clipping ratios
+            try:
+                if _clip_total_tokens > 0:
+                    generation_result["policy_clip_low_ratio"] = float(
+                        _clip_low_tokens
+                    ) / float(_clip_total_tokens)
+                    generation_result["policy_clip_high_ratio"] = float(
+                        _clip_high_tokens
+                    ) / float(_clip_total_tokens)
+                    generation_result["policy_clip_region_ratio"] = float(
+                        _clip_region_tokens
+                    ) / float(_clip_total_tokens)
+                else:
+                    generation_result["policy_clip_low_ratio"] = 0.0
+                    generation_result["policy_clip_high_ratio"] = 0.0
+                    generation_result["policy_clip_region_ratio"] = 0.0
+            except Exception:
+                pass
+
+            # Synchronize decision across ranks to avoid asymmetric collectives
+            local_flag = 1 if ("non_finite" in locals() and non_finite) else 0
+            flag_tensor = torch.tensor(
+                [local_flag], dtype=torch.int32, device=self._device
+            )
+            if self.world_size > 1:
+                flags = self.accelerator.gather(flag_tensor)
+                if flags.device.type != "cpu":
+                    flags = flags.cpu()
+                flags = flags.view(-1)
+                any_nonfinite = bool(int(flags.max().item()))
+            else:
+                any_nonfinite = bool(local_flag)
+
+            if any_nonfinite:
                 _LOGGER.warning(
-                    "Non-finite loss detected at step %d; reducing temperature scale",
-                    self._global_step,
+                    "Non-finite loss detected; reducing temperature scale and resampling window"
                 )
                 optimizer.zero_grad(set_to_none=True)
-                scaler.update()
                 self._temperature_scale = max(0.1, self._temperature_scale * 0.9)
                 self._buffer_chunks = []
                 self._buffer_chunk_idx = 0
+                # Clear memory after non-finite loss
+                logprobs.clear_gpu_memory()
+                if self.world_size > 1:
+                    self.accelerator.wait_for_everyone()
                 continue
 
-            self._micro_step += 1
-
-            if self._micro_step % self.manual_cfg.gradient_accumulation_steps == 0:
-                scaler.unscale_(optimizer)
-                grad_norm_tensor = clip_grad_norm_(
-                    self.model.parameters(), self.manual_cfg.max_grad_norm
-                )
+            # Optimizer step at accumulation boundary determined by Accelerator
+            if self.accelerator.sync_gradients:
                 try:
                     self._last_grad_norm = float(
-                        getattr(grad_norm_tensor, "item", lambda: grad_norm_tensor)()
+                        self.accelerator.clip_grad_norm_(
+                            self.model.parameters(), self.manual_cfg.max_grad_norm
+                        )
                     )
                 except Exception:
-                    # Fallback: best-effort float conversion
-                    self._last_grad_norm = (
-                        float(grad_norm_tensor) if grad_norm_tensor is not None else 0.0
-                    )
-                scaler.step(optimizer)
-                scaler.update()
+                    self._last_grad_norm = 0.0
+                optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 if scheduler is not None:
                     scheduler.step()
@@ -913,11 +1252,12 @@ class BBUGRPOTrainer:
                 else:
                     current_lr = optimizer.param_groups[0]["lr"]
                 self._global_step += 1
-                self._micro_step = 0
 
                 self._log_step(loss_value_for_log, generation_result, current_lr)
                 self._maybe_checkpoint(generation_result)
                 self._temperature_scale = min(1.0, self._temperature_scale * 1.01)
+                # Clear memory after optimizer step
+                logprobs.clear_gpu_memory()
 
         _LOGGER.info("Manual GRPO training finished at step %d", self._global_step)
 
@@ -929,7 +1269,7 @@ class BBUGRPOTrainer:
             rewards = torch.zeros(1, device=self._device)
         rewards_for_log = rewards.detach()
         if self.world_size > 1:
-            rewards_for_log = dist_utils.all_gather_rewards(rewards_for_log)
+            rewards_for_log = self.accelerator.gather(rewards_for_log)
         reward_mean = float(rewards_for_log.mean().item())
         reward_std = float(rewards_for_log.std(unbiased=False).item())
 
@@ -947,7 +1287,7 @@ class BBUGRPOTrainer:
             if adv_tensor is not None:
                 adv_det = adv_tensor.detach()
                 if self.world_size > 1:
-                    adv_det = dist_utils.all_gather_rewards(adv_det)
+                    adv_det = self.accelerator.gather(adv_det)
                 adv_std = float(adv_det.std(unbiased=False).item())
                 adv_max = float(adv_det.abs().max().item())
 
@@ -982,6 +1322,10 @@ class BBUGRPOTrainer:
                     "grad_norm": self._last_grad_norm,
                     "eta_minutes": eta_minutes,
                     "epoch": epoch_progress,
+                    # dynamic cap stats if provided by buffer
+                    "dynamic_length/mean_cap": float(generation_result.get("dynamic_length/mean_cap", 0.0)),
+                    "dynamic_length/min_cap": float(generation_result.get("dynamic_length/min_cap", 0.0)),
+                    "dynamic_length/max_cap": float(generation_result.get("dynamic_length/max_cap", 0.0)),
                 }
             )
 
@@ -989,30 +1333,47 @@ class BBUGRPOTrainer:
             if comp_lengths is not None:
                 comp_lengths_det = comp_lengths.detach().float()
                 if self.world_size > 1:
-                    comp_lengths_det = dist_utils.all_gather_rewards(comp_lengths_det)
+                    comp_lengths_det = self.accelerator.gather(comp_lengths_det)
                 logs["completions/mean_length"] = float(comp_lengths_det.mean().item())
                 logs["completions/min_length"] = float(comp_lengths_det.min().item())
                 logs["completions/max_length"] = float(comp_lengths_det.max().item())
-
-            truncated_flags = generation_result.get("truncated_flags")
-            if truncated_flags is not None:
-                trunc = truncated_flags.detach().float()
-                if self.world_size > 1:
-                    trunc = dist_utils.all_gather_rewards(trunc)
-                logs["completions/clipped_ratio"] = float(trunc.mean().item())
 
             terminated_flags = generation_result.get("terminated_with_eos")
             if terminated_flags is not None:
                 term = terminated_flags.detach().float()
                 if self.world_size > 1:
-                    term = dist_utils.all_gather_rewards(term)
+                    term = self.accelerator.gather(term)
                 logs["completions/terminated_ratio"] = float(term.mean().item())
+
+            # Policy clipping diagnostics (token-level)
+            try:
+                _clip_low = generation_result.get("policy_clip_low_ratio")
+                _clip_high = generation_result.get("policy_clip_high_ratio")
+                _clip_region = generation_result.get("policy_clip_region_ratio")
+                if (
+                    _clip_low is not None
+                    and _clip_high is not None
+                    and _clip_region is not None
+                ):
+                    _vals = torch.tensor(
+                        [_clip_low, _clip_high, _clip_region],
+                        dtype=torch.float32,
+                        device=self._device,
+                    )
+                    if self.world_size > 1:
+                        _vals = self.accelerator.gather(_vals)
+                    _vals_mean = _vals.mean(dim=0)
+                    logs["clip_ratio/low_mean"] = float(_vals_mean[0].item())
+                    logs["clip_ratio/high_mean"] = float(_vals_mean[1].item())
+                    logs["clip_ratio/region_mean"] = float(_vals_mean[2].item())
+            except Exception:
+                pass
 
             rewards_per_func = generation_result.get("rewards_per_func")
             if rewards_per_func is not None:
                 values = rewards_per_func.detach()
                 if self.world_size > 1:
-                    values = dist_utils.all_gather_rewards(values)
+                    values = self.accelerator.gather(values)
                 reward_names = generation_result.get(
                     "reward_names", self.reward_func_names
                 )
@@ -1044,22 +1405,18 @@ class BBUGRPOTrainer:
                 summary_parts.append(
                     f"term_ratio={logs['completions/terminated_ratio']:.3f}"
                 )
-            if "completions/clipped_ratio" in logs:
-                summary_parts.append(
-                    f"clip_ratio={logs['completions/clipped_ratio']:.3f}"
-                )
-            # Include a couple of key reward components if present
-            for key in ("parse", "wrappers", "coords", "separators"):
-                mk = f"rewards/{key}/mean"
-                if mk in logs:
-                    summary_parts.append(f"{key}={logs[mk]:.3f}")
+
+            # Automatic reward logging via unified logger
+            reward_summary = self._reward_logger.format_console_summary(logs)
+            if reward_summary:
+                summary_parts.append(reward_summary)
 
             self._last_console_summary = "[" + " ".join(summary_parts) + "]"
             _LOGGER.info(self._last_console_summary)
             self._state_manager.reset_metrics_state()
 
-            # Log to TensorBoard with conventional tags (rank 0 only)
-            if self.rank == 0 and self._tb_writer is not None:
+            # Log to TensorBoard with conventional tags (main process only)
+            if self.accelerator.is_main_process and self._tb_writer is not None:
                 # Core training metrics (without loss)
                 self._tb_writer.add_scalar(
                     "train/learning_rate", current_lr, self._global_step
@@ -1098,23 +1455,12 @@ class BBUGRPOTrainer:
                 except Exception:
                     pass
 
-                # Per-reward metrics under /rewards
-                reward_names = generation_result.get(
-                    "reward_names", self.reward_func_names
+                # Automatic per-reward metrics logging via unified logger
+                self._reward_logger.log_to_tensorboard(
+                    self._tb_writer, logs, self._global_step
                 )
-                for name in reward_names:
-                    mean_key = f"rewards/{name}/mean"
-                    std_key = f"rewards/{name}/std"
-                    if mean_key in logs:
-                        self._tb_writer.add_scalar(
-                            mean_key, logs[mean_key], self._global_step
-                        )
-                    if std_key in logs:
-                        self._tb_writer.add_scalar(
-                            std_key, logs[std_key], self._global_step
-                        )
 
-            if self.rank == 0:
+            if self.accelerator.is_main_process:
                 prompts = generation_result.get("prompts") or []
                 completions = generation_result.get("completions") or []
                 if prompts and completions:
@@ -1125,10 +1471,8 @@ class BBUGRPOTrainer:
                         self._sample_completion = str(completions[0])
 
             temperature_logged = float(generation_result.get("temperature", 0.0))
-            clip_ratio = float(logs.get("completions/clipped_ratio", 0.0))
             self._temperature_history.append(temperature_logged)
             self._reward_history.append(reward_mean)
-            self._clip_ratio_history.append(clip_ratio)
             self._adv_std_history.append(adv_std)
             self._adv_max_history.append(adv_max)
             for name in self.reward_func_names:
@@ -1144,19 +1488,20 @@ class BBUGRPOTrainer:
         if self._global_step % self.manual_cfg.save_steps != 0:
             return
 
-        # Only rank 0 saves, but all ranks must wait at barrier
-        if self.rank == 0:
+        # Sync before saving
+        self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process:
             rewards = generation_result.get("rewards")
             mean_reward = 0.0
             if rewards is not None:
                 rewards_for_ckpt = rewards.detach()
                 if self.world_size > 1:
-                    rewards_for_ckpt = dist_utils.all_gather_rewards(rewards_for_ckpt)
+                    rewards_for_ckpt = self.accelerator.gather(rewards_for_ckpt)
                 mean_reward = float(rewards_for_ckpt.mean().item())
             metrics = {"reward": mean_reward}
             try:
-                # Unwrap DDP if present to save underlying model
-                model_to_save = getattr(self.model, "module", self.model)
+                # Unwrap Accelerate/DP wrapper before saving
+                model_to_save = self.accelerator.unwrap_model(self.model)
                 self._checkpoint_saver.save_checkpoint(
                     model=model_to_save,
                     processing_class=self.tokenizer,
@@ -1173,9 +1518,8 @@ class BBUGRPOTrainer:
                     "Checkpoint save failed at step %d: %s", self._global_step, exc
                 )
 
-        # Barrier: all ranks wait for rank 0 to finish saving before continuing
-        if self._distributed:
-            dist_utils.barrier()
+        # Barrier: all ranks wait for save to complete
+        self.accelerator.wait_for_everyone()
 
     @property
     def temperature_history(self) -> List[float]:
@@ -1184,10 +1528,6 @@ class BBUGRPOTrainer:
     @property
     def reward_history(self) -> List[float]:
         return list(self._reward_history)
-
-    @property
-    def clip_ratio_history(self) -> List[float]:
-        return list(self._clip_ratio_history)
 
     @property
     def adv_std_history(self) -> List[float]:

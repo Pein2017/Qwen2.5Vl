@@ -43,7 +43,7 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 - What happens when GT length is extremely small (near zero)?
   - The cap still respects a configured minimum; reward uses safe denominators.
 - How does the system behave if tokenization variability across ranks is possible?
-  - [NEEDS CLARIFICATION: enforce deterministic tokenizer settings across ranks and versions]
+  - Tokenizer determinism enforced: pin tokenizer version; verify cross-rank hash equality at startup; abort on mismatch.
 
 ## Requirements (mandatory)
 
@@ -61,7 +61,7 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 
 ### Key Entities (include if feature involves data)
 - **Sample Metadata (meta)**: Contains `objects` used to reconstruct canonical assistant text for GT‑based length estimation.
-- **Dynamic Length Config**: User‑facing knobs (enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap, masking policy).
+- **Dynamic Length Config**: User‑facing knobs (enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap, mask_truncated_completions, mask_overflow_only).
 - **Rewards Config**: User‑facing knobs for `length_vs_gt` (estimator=tokenizer, lower, upper, gamma, tail_numeric_weight).
 
 ---

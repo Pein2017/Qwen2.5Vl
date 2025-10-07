@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 import torch
 
@@ -32,7 +31,9 @@ def debug_validate_image_alignment(
         try:
             decoded = tokenizer.decode(ids_row, skip_special_tokens=False)
         except Exception as exc:  # pragma: no cover - diagnostic path
-            _LOGGER.debug("Failed to decode prompt %d for alignment check: %s", idx, exc)
+            _LOGGER.debug(
+                "Failed to decode prompt %d for alignment check: %s", idx, exc
+            )
             continue
 
         image_token_count = decoded.count(IMAGE_PAD)
@@ -92,7 +93,9 @@ def assert_patches_match_thw(
             f"images_per_sample sum {total_images} does not match image_grid_thw rows {image_grid_thw.size(0)}"
         )
 
-    patches_per_image = image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
+    patches_per_image = (
+        image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
+    )
     if int(patches_per_image.sum().item()) != int(pixel_values.size(0)):
         raise ValueError(
             "Packed pixel_values row count does not match THW-derived patch total"
@@ -108,13 +111,21 @@ def assert_patches_match_thw(
         if start < 0 or end > len(images_per_sample) or start >= end:
             raise ValueError(f"Invalid chunk range {idx}: ({start}, {end})")
 
-        img_start = image_cumsum[start - 1] if start > 0 else torch.tensor(0, device=image_cumsum.device)
+        img_start = (
+            image_cumsum[start - 1]
+            if start > 0
+            else torch.tensor(0, device=image_cumsum.device)
+        )
         img_end = image_cumsum[end - 1]
 
         patch_start_idx = int(img_start.item()) - 1 if img_start.item() > 0 else -1
         patch_end_idx = int(img_end.item()) - 1
 
-        patch_start = patch_cumsum[patch_start_idx] if patch_start_idx >= 0 else torch.tensor(0, device=patch_cumsum.device)
+        patch_start = (
+            patch_cumsum[patch_start_idx]
+            if patch_start_idx >= 0
+            else torch.tensor(0, device=patch_cumsum.device)
+        )
         patch_end = patch_cumsum[patch_end_idx]
         expected = int(patch_end.item()) - int(patch_start.item())
         if expected < 0:
@@ -123,27 +134,7 @@ def assert_patches_match_thw(
             )
 
 
-def check_completion_masks(mask: torch.Tensor) -> None:
-    """Basic sanity checks for completion masks before loss computation."""
-
-    if not torch.is_tensor(mask):
-        raise ValueError("completion_mask must be a tensor")
-    if mask.dim() != 2:
-        raise ValueError("completion_mask must be 2D")
-    if mask.dtype not in (torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
-        raise ValueError("completion_mask must be an integer or boolean tensor")
-    if mask.numel() == 0:
-        raise ValueError("Empty completion_mask provided")
-
-    row_sums = mask.sum(dim=1)
-    if torch.any(row_sums == 0):
-        logging.getLogger(__name__).warning(
-            "At least one completion has zero valid tokens after masking"
-        )
-
-
 __all__ = [
     "debug_validate_image_alignment",
     "assert_patches_match_thw",
-    "check_completion_masks",
 ]
