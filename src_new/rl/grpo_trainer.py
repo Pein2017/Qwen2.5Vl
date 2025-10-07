@@ -770,8 +770,12 @@ class BBUGRPOTrainer:
                         dyn_alpha=float(dyn.get("alpha", 1.1)),
                         dyn_eos_margin=int(dyn.get("eos_margin", 16)),
                         dyn_min_cap=int(dyn.get("min_cap", 32)),
-                        dyn_max_cap=int(dyn.get("max_cap", self.manual_cfg.max_new_tokens)),
-                        dyn_mask_overflow_only=bool(dyn.get("mask_overflow_only", False)),
+                        dyn_max_cap=int(
+                            dyn.get("max_cap", self.manual_cfg.max_new_tokens)
+                        ),
+                        dyn_mask_overflow_only=bool(
+                            dyn.get("mask_overflow_only", False)
+                        ),
                     )
                     single_generation["temperature"] = gen_cfg["temperature"]
                     gen_duration = time.time() - gen_start_time
@@ -1331,18 +1335,24 @@ class BBUGRPOTrainer:
                     "grad_norm": self._last_grad_norm,
                     "eta_minutes": eta_minutes,
                     "epoch": epoch_progress,
-                    # dynamic cap stats if provided by buffer
-                    "dynamic_length/mean_cap": float(
-                        generation_result.get("dynamic_length/mean_cap", 0.0)
-                    ),
-                    "dynamic_length/min_cap": float(
-                        generation_result.get("dynamic_length/min_cap", 0.0)
-                    ),
-                    "dynamic_length/max_cap": float(
-                        generation_result.get("dynamic_length/max_cap", 0.0)
-                    ),
                 }
             )
+
+            # dynamic length status and stats
+            try:
+                dyn_enabled_cfg = (
+                    (self.raw_config.get("grpo") or {}).get("dynamic_length", {})
+                ).get("enabled", True)
+                logs["dynamic_length/enabled"] = 1.0 if bool(dyn_enabled_cfg) else 0.0
+            except Exception:
+                logs["dynamic_length/enabled"] = 0.0
+
+            for key in ("dynamic_length/mean_cap", "dynamic_length/min_cap", "dynamic_length/max_cap"):
+                if key in generation_result:
+                    try:
+                        logs[key] = float(generation_result.get(key, 0.0))
+                    except Exception:
+                        pass
 
             comp_lengths = generation_result.get("completion_lengths")
             if comp_lengths is not None:

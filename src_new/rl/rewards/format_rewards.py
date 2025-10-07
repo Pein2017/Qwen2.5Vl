@@ -259,9 +259,24 @@ def length_vs_gt(
 ) -> float:
     """Length-to-GT reward in [0,1] with strong overflow penalty.
 
-    Uses tokenizer-aligned lengths when provided via gen_len/gt_len; otherwise
+    Uses tokenizer-aligned lengths when provided via gen_len/gt_len or meta; otherwise
     falls back to proxy (numbers + wrapper count).
     """
+    # Prefer tokenizer-based lengths if meta provides them
+    if gen_len is None and isinstance(meta, dict):
+        try:
+            val = meta.get("gen_len_tokenizer")
+            if isinstance(val, int):
+                gen_len = int(val)
+        except Exception:
+            pass
+    if gt_len is None and isinstance(meta, dict):
+        try:
+            val = meta.get("gt_len_tokenizer")
+            if isinstance(val, int):
+                gt_len = int(val)
+        except Exception:
+            pass
 
     # Fallback estimators when explicit lengths not provided
     def _proxy_len(txt: str) -> int:
@@ -273,9 +288,7 @@ def length_vs_gt(
         # Build proxy from meta if missing explicit GT length
         if isinstance(meta, dict):
             try:
-                # Proxy: count expected wrapper occurrences
                 objs = meta.get("objects") or []
-                # Rough proxy: each object contributes at least one wrapper line
                 gt_len = max(1, int(len(objs)))
             except Exception:
                 gt_len = _proxy_len(text)
@@ -297,12 +310,10 @@ def length_vs_gt(
     tail_pen = 0.0
     try:
         cutoff = int(math.ceil(float(alpha) * float(gt_len)))
-        # Build a cheap proxy of numeric density in tail region using regex
-        tail_text = text  # We don't have token alignment here; use full text density
         if gen_len > cutoff and float(tail_numeric_weight) > 0.0:
-            nums = len(_NUM.findall(tail_text))
-            digits = sum(ch.isdigit() for ch in tail_text)
-            total = max(1, len(tail_text))
+            nums = len(_NUM.findall(text))
+            digits = sum(ch.isdigit() for ch in text)
+            total = max(1, len(text))
             frac_num = max(
                 float(nums) / float(max(1, gen_len)), float(digits) / float(total)
             )

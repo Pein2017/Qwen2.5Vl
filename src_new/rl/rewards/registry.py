@@ -22,8 +22,8 @@ from .format_rewards import (
     check_coords_counts,
     check_wrappers,
     length_score,
-    length_window,
     length_vs_gt,
+    length_window,
     parse_reward,
     separators_score,
 )
