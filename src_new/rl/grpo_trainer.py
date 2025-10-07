@@ -1347,7 +1347,11 @@ class BBUGRPOTrainer:
             except Exception:
                 logs["dynamic_length/enabled"] = 0.0
 
-            for key in ("dynamic_length/mean_cap", "dynamic_length/min_cap", "dynamic_length/max_cap"):
+            for key in (
+                "dynamic_length/mean_cap",
+                "dynamic_length/min_cap",
+                "dynamic_length/max_cap",
+            ):
                 if key in generation_result:
                     try:
                         logs[key] = float(generation_result.get(key, 0.0))

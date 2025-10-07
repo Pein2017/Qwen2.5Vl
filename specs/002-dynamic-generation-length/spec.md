@@ -50,7 +50,7 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 ### Functional Requirements
 - **FR-001**: The system MUST compute a per‑sample generation length cap from GT (configurable: estimator, alpha, margins, min/max bounds).
 - **FR-002**: The system MUST apply the computed cap as the `max_new_tokens` for all completions of that sample within the step.
-- **FR-003**: The system MUST provide a continuous `length_vs_gt` reward that returns high scores within a tolerance window and penalizes overflows strongly.
+- **FR-003**: The system MUST provide a continuous `length_vs_gt` reward that returns high scores within a tolerance window and penalizes overflows strongly, using tokenizer token counts for both GT and generation (persisted in meta).
 - **FR-004**: The system MUST allow truncated completions (no EOS) to contribute gradients; it MUST NOT zero the entire completion mask by default.
 - **FR-005**: The system MUST provide configuration to optionally mask only tokens beyond the dynamic cap, while keeping earlier tokens trainable.
 - **FR-006**: The system MUST log per‑iteration stats for completion lengths and dynamic caps (min/mean/max), and expose `length_vs_gt` in console and TensorBoard.
@@ -61,7 +61,7 @@ As an RL practitioner training dense captioning with GRPO, I want generation len
 
 ### Key Entities (include if feature involves data)
 - **Sample Metadata (meta)**: Contains `objects` used to reconstruct canonical assistant text for GT‑based length estimation.
-- **Dynamic Length Config**: User‑facing knobs (enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap, mask_truncated_completions, mask_overflow_only).
+- **Dynamic Length Config**: User‑facing knobs (enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap, mask_truncated_completions).
 - **Rewards Config**: User‑facing knobs for `length_vs_gt` (estimator=tokenizer, lower, upper, gamma, tail_numeric_weight).
 
 ---

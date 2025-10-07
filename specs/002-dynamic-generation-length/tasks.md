@@ -16,26 +16,26 @@
 - Include exact file paths in descriptions
 
 ## Phase 3.1: Setup
-- [ ] T001 Ensure branch is `002-dynamic-generation-length` and entrypoint is `scripts/run_dense_grpo.sh` (update run docs if needed)
-- [ ] T002 Add YAML knobs in configs: `grpo.dynamic_length` (incl. `mask_overflow_only`) and `rewards_config.length_vs_gt` in `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml`
-- [ ] T003 [P] Pin tokenizer and environment determinism notes in `scripts/run_dense_grpo.sh` (ensure identical tokenizer across ranks)
+- [X] T001 Ensure branch is `002-dynamic-generation-length` and entrypoint is `scripts/run_dense_grpo.sh` (update run docs if needed)
+- [X] T002 Add YAML knobs in configs: `grpo.dynamic_length` (incl. `mask_overflow_only`) and `rewards_config.length_vs_gt` in `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml`
+- [X] T003 [P] Pin tokenizer and environment determinism notes in `scripts/run_dense_grpo.sh` (ensure identical tokenizer across ranks)
 
 ## Phase 3.2: Tests First (TDD)
 - [ ] T004 Create config contract tests for dynamic_length keys in `specs/002-dynamic-generation-length/contracts/config_contract.md` (keys, types, required/optional)
 - [ ] T005 Create logging contract tests in `specs/002-dynamic-generation-length/contracts/logging_contract.md` (metric tags: `dynamic_length/*`, completion lengths, truncation flags)
-- [ ] T006 [P] Integration test plan in `specs/002-dynamic-generation-length/quickstart.md`: steps to enable dynamic cap and verify logs + no slow-rank timeout under multi-GPU
+- [X] T006 [P] Integration test plan in `specs/002-dynamic-generation-length/quickstart.md`: steps to enable dynamic cap and verify logs + no slow-rank timeout under multi-GPU
 
 ## Phase 3.3: Core Implementation (ONLY after tests are failing)
 - [ ] T007 Implement tokenizer-based GT length estimation (builder reuse) in `src_new/processing/coordinate_converter.py` usage path notes (no code change here; used by buffer)
-- [ ] T008 Implement per-sample cap in `src_new/rl/buffer.py`:
+- [X] T008 Implement per-sample cap in `src_new/rl/buffer.py`:
   - Compute GT assistant text from `meta.objects` via `CoordinateTokenConverter.convert_objects_to_tokens`
   - Tokenize once to get `gt_len`; derive `cap = clamp(round(alpha*gt_len + eos_margin), min_cap, max_cap)`
   - Pass `cap` as `max_new_tokens` to `generation.sample_k` for that sample
   - Collect `dynamic_length/cap` for logging
-- [ ] T009 Adjust masking policy in `src_new/rl/buffer.py` to keep truncated completions in loss; optionally mask only tokens beyond the cap (guarded by YAML)
-- [ ] T010 Add `length_vs_gt` reward in `src_new/rl/rewards/format_rewards.py` using tokenizer-based estimator and exponential overflow penalty; register in `src_new/rl/rewards/registry.py`
-- [ ] T011 Plumb `rewards_config.length_vs_gt` params through `src_new/rl/runner.py` wrapper to the reward function
-- [ ] T012 Add logging of dynamic caps in trainer step in `src_new/rl/grpo_trainer.py` (e.g., `dynamic_length/mean_cap|min_cap|max_cap`)
+- [X] T009 Adjust masking policy in `src_new/rl/buffer.py` to keep truncated completions in loss; optionally mask only tokens beyond the cap (guarded by YAML)
+- [X] T010 Add `length_vs_gt` reward in `src_new/rl/rewards/format_rewards.py` using tokenizer-based estimator and exponential overflow penalty; register in `src_new/rl/rewards/registry.py`
+- [X] T011 Plumb `rewards_config.length_vs_gt` params through `src_new/rl/runner.py` wrapper to the reward function
+- [X] T012 Add logging of dynamic caps in trainer step in `src_new/rl/grpo_trainer.py` (e.g., `dynamic_length/mean_cap|min_cap|max_cap`)
 
 ## Phase 3.4: Distributed Consistency (Accelerate)
 - [ ] T013 Ensure shared dataset index and synchronized buffer refresh already present in `src_new/rl/grpo_trainer.py` (verify gather/reduce flow)
@@ -43,7 +43,7 @@
 - [ ] T015 [P] Add per-rank generation timing + cap diagnostics; resample guard remains active; ensure identical caps across ranks by computing from `meta.objects`
 
 ## Phase 3.5: YAML & Docs
-- [ ] T016 Update `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml` with dynamic_length defaults (alpha, margins, bounds, masking policy) and `length_vs_gt` defaults
+- [ ] T016 Update `configs/dense_rl/dense_base.yaml`, `debug.yaml`, `standard.yaml` with dynamic_length defaults (alpha, margins, bounds, masking policy) and `length_vs_gt` defaults; remove mask_overflow_only knob from docs/config if present
 - [ ] T017 [P] Update `src_new/rl/DYNAMIC_GENERATION_LENGTH.md` with final knobs and log tags summary
 
 ## Phase 3.6: Polish & Validation

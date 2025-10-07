@@ -95,7 +95,7 @@ scripts/
 ## Phase 1: Design & Contracts
 1. Data Model (`data-model.md`):
    - DynamicLengthConfig: enabled, estimator=tokenizer, alpha, eos_margin, min_cap, max_cap, hard_cap.  
-   - MaskingPolicy: `mask_truncated_completions=false`, `mask_overflow_only` boolean masks tokens beyond the cap.  
+   - MaskingPolicy: `mask_truncated_completions=false` (overflow masking knob removed).  
    - RewardsConfig.length_vs_gt: estimator=tokenizer, lower, upper, gamma, tail_numeric_weight.  
    - Logging keys: `dynamic_length/{mean_cap,min_cap,max_cap}`, `completions/{mean_length,min_length,max_length}`, `terminated_with_eos`, `truncated_flags`.
 2. Contracts (`contracts/`):

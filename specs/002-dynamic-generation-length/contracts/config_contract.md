@@ -10,7 +10,7 @@ Required keys and types (YAML):
   - min_cap: integer >= 0 (required)
   - max_cap: integer > 0 (required)
   - hard_cap: boolean (required)
-  - mask_overflow_only: boolean (required)
+
 - grpo.mask_truncated_completions: boolean (required; must be false for this feature to train on truncated outputs)
 - rewards_config.length_vs_gt (object)
   - estimator: string, default tokenizer (optional)

@@ -24,7 +24,7 @@ Choose one estimator for both cap and reward to avoid drift, or use tokenizer fo
 - Compute cap per sample before calling `model.generate`:
   - `cap = clamp(round(alpha * gt_len + eos_margin), min_cap, max_cap_global)`
 - Use this `cap` as the sample’s `max_new_tokens` for all K iid completions of that sample.
-- Set `mask_truncated_completions: false` so truncated completions contribute gradients; optionally enable `mask_overflow_only: true` to mask only tokens beyond the dynamic cap.
+- Set `mask_truncated_completions: false` so truncated completions contribute gradients. (Overflow-only masking knob removed for simplicity.)
 
 Suggested defaults:
 - `alpha = 1.1`
