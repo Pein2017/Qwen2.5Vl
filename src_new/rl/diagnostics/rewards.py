@@ -13,11 +13,11 @@ Tracks reward variance to diagnose:
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+import logging
+
 import torch
 
-from src_new.utils.logging_utils import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass

@@ -13,12 +13,12 @@ Validates image token consistency across pipeline stages:
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+import logging
+
 import torch
 from transformers import PreTrainedTokenizer
 
-from src_new.utils.logging_utils import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
