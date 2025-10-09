@@ -144,8 +144,6 @@ class GenerationConfig:
     min_new_tokens: int
     temperature: float
     top_p: float
-    top_k: int
-    repetition_penalty: float
     dynamic_length: DynamicLengthConfig
 
     @staticmethod
@@ -155,8 +153,6 @@ class GenerationConfig:
             min_new_tokens=_require(cfg, "min_new_tokens", "generation"),
             temperature=_require(cfg, "temperature", "generation"),
             top_p=_require(cfg, "top_p", "generation"),
-            top_k=_require(cfg, "top_k", "generation"),
-            repetition_penalty=_require(cfg, "repetition_penalty", "generation"),
             dynamic_length=DynamicLengthConfig.from_dict(
                 _require(cfg, "dynamic_length", "generation")
             ),
@@ -198,7 +194,7 @@ class BetaAnnealConfig:
 
 @dataclass(frozen=True)
 class GRPOConfig:
-    """GRPO algorithm - all required except beta_anneal and max_advantage_magnitude."""
+    """GRPO algorithm - all required except beta_anneal, max_advantage_magnitude, and steps_per_generation."""
 
     epsilon_low: float
     epsilon_high: float
@@ -212,10 +208,23 @@ class GRPOConfig:
     max_advantage_magnitude: Optional[float] = (
         None  # Truly optional (must come after required)
     )
+    steps_per_generation: Optional[int] = (
+        None  # None = auto (same as gradient_accumulation_steps)
+    )
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "GRPOConfig":
         beta_anneal_dict = cfg.get("beta_anneal")
+        steps_per_gen = cfg.get("steps_per_generation")
+
+        # Validate steps_per_generation if provided
+        if steps_per_gen is not None:
+            steps_per_gen = int(steps_per_gen)
+            if steps_per_gen < 1:
+                raise ConfigValidationError(
+                    f"grpo.steps_per_generation must be >= 1, got {steps_per_gen}"
+                )
+
         return GRPOConfig(
             epsilon_low=_require(cfg, "epsilon_low", "grpo"),
             epsilon_high=_require(cfg, "epsilon_high", "grpo"),
@@ -229,6 +238,7 @@ class GRPOConfig:
             if beta_anneal_dict
             else None,
             max_advantage_magnitude=cfg.get("max_advantage_magnitude"),  # Optional
+            steps_per_generation=steps_per_gen,  # Optional
         )
 
 
@@ -478,9 +488,26 @@ class RewardParamsConfig:
     tau_quad: float
     tau_line: float
     length_vs_gt: LengthVsGTConfig
+    # Optional per-reward params
+    line_giou: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "RewardParamsConfig":
+        line_giou_cfg = cfg.get("line_giou")
+        if line_giou_cfg is not None and not isinstance(line_giou_cfg, dict):
+            raise ConfigValidationError(
+                "rewards_config.line_giou must be a mapping when provided"
+            )
+        # If provided, validate known fields
+        if isinstance(line_giou_cfg, dict) and "buffer_frac" in line_giou_cfg:
+            bf = line_giou_cfg["buffer_frac"]
+            try:
+                _ = float(bf)
+            except Exception:
+                raise ConfigValidationError(
+                    "rewards_config.line_giou.buffer_frac must be a float"
+                )
+
         return RewardParamsConfig(
             clip_sigma=_require(cfg, "clip_sigma", "rewards_config"),
             tau_iou=_require(cfg, "tau_iou", "rewards_config"),
@@ -489,6 +516,7 @@ class RewardParamsConfig:
             length_vs_gt=LengthVsGTConfig.from_dict(
                 _require(cfg, "length_vs_gt", "rewards_config")
             ),
+            line_giou=line_giou_cfg,
         )
 
 

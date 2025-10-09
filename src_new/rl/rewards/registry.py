@@ -13,8 +13,10 @@ from .detection_rewards import (
     reward_bbox_giou,
     reward_coverage,
     reward_geometry_sanity,
+    reward_line_giou,
     reward_line_l1,
     reward_ordering,
+    reward_quad_giou,
     reward_quad_l1,
 )
 from .format_rewards import (
@@ -42,6 +44,8 @@ REGISTRY: Dict[str, Callable[[str], float]] = {
     # New proximity rewards
     "quad_l1": reward_quad_l1,
     "line_l1": reward_line_l1,
+    "quad_giou": reward_quad_giou,
+    "line_giou": reward_line_giou,
     # Ordering constraint reward
     "ordering": reward_ordering,
     # New accuracy-style rewards
@@ -75,6 +79,8 @@ REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
     "bbox_giou": {"category": "detection", "description": "Bbox GIoU accuracy"},
     "quad_l1": {"category": "detection", "description": "Quad L1 proximity"},
     "line_l1": {"category": "detection", "description": "Line L1 proximity"},
+    "quad_giou": {"category": "detection", "description": "Quad polygon GIoU"},
+    "line_giou": {"category": "detection", "description": "Polyline buffered GIoU"},
     "ordering": {
         "category": "detection",
         "description": "Geometry ordering correctness",

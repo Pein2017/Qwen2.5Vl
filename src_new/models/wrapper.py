@@ -30,7 +30,6 @@ from src_new.types.shapes import (
 from ..utils.rank_aware_logging import get_rank_aware_logger
 from ..utils.tensor_validation import validate_multimodal_tensors
 from .loss_manager import LossComponents, LossManager, ModelOutput
-from .patches import apply_comprehensive_qwen25_fixes
 
 
 logger = get_rank_aware_logger(__name__)
@@ -38,19 +37,19 @@ logger = get_rank_aware_logger(__name__)
 
 class CoordinateProcessor:
     """Simplified coordinate processor without legacy coordinate tokens."""
-    
+
     def __init__(self, config):
         # Remove all coordinate token dependencies
         pass
-    
+
     def validate_coordinate_range(self, coordinates):
         """Basic coordinate validation without token limits."""
         return True
-    
+
     def coord_to_token(self, coord):
         """Direct coordinate conversion without special tokens."""
         return str(coord)
-    
+
     def token_to_coord(self, token_id):
         """Direct token conversion without coordinate tokens."""
         return None
@@ -93,60 +92,64 @@ class DetectionModel(nn.Module):
     ):
         """Initialize DetectionModel without coordinate token dependencies."""
         super().__init__()
-        
+
         # Handle legacy parameters
         if base_model is not None:
             self.model = base_model
             self.base_model = base_model  # Also set base_model for compatibility
-            model_name_or_path = getattr(base_model, 'name_or_path', model_name_or_path)
-        
+            model_name_or_path = getattr(base_model, "name_or_path", model_name_or_path)
+
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
         self._coordinate_mode = False  # Always disabled
-        
+
         # Remove coordinate processor dependency
         self.coordinate_processor = CoordinateProcessor(config)
-        
+
         # Load and configure the base model if not provided
         if base_model is None and model_name_or_path:
             self.model = self._load_model(model_name_or_path, config)
             self.base_model = self.model  # Also set base_model for compatibility
-        
+
         # Configure tokenizer/processor
         self.tokenizer = tokenizer
         self._tokenizer = tokenizer
         self._extended_tokenizer = None
         self.processor = processor
         self.training_config = config
-        self._config = self.model.config if hasattr(self, 'model') else None
-        
+        self._config = self.model.config if hasattr(self, "model") else None
+
         # Initialize loss manager
         self.loss_manager = LossManager(config, None, tokenizer)
-        
+
         # Add TRL compatibility attributes
         self.warnings_issued = getattr(self.model, "warnings_issued", {})
-        
+
         # Model configuration
         vision_config = getattr(self.model.config, "vision_config", None)
-        self.merge_size = getattr(vision_config, "merge_size", 2) if vision_config else 2
-        
+        self.merge_size = (
+            getattr(vision_config, "merge_size", 2) if vision_config else 2
+        )
+
         # Initialize image pad token cache
         self._image_pad_token_id_cache = None
-        
-        self.logger.info(f"🎯 Using coordinate mode: disabled (coordinate tokens deprecated)")
+
+        self.logger.info(
+            f"🎯 Using coordinate mode: disabled (coordinate tokens deprecated)"
+        )
 
     @property
     def _image_pad_token_id(self):
         """Get image pad token ID from tokenizer."""
         if self._image_pad_token_id_cache is not None:
             return self._image_pad_token_id_cache
-        
+
         if self.tokenizer is not None:
             vocab = self.tokenizer.get_vocab()
             self._image_pad_token_id_cache = vocab.get(IMAGE_PAD, None)
         else:
             self._image_pad_token_id_cache = None
-        
+
         return self._image_pad_token_id_cache
 
     def _ensure_loss_manager(self):
@@ -157,11 +160,13 @@ class DetectionModel(nn.Module):
     def _load_model(self, model_name_or_path: str, config):
         """Load the base model."""
         from transformers import Qwen2_5_VLForConditionalGeneration
+
         return Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name_or_path,
-            torch_dtype=getattr(config, 'torch_dtype', 'auto'),
+            torch_dtype=getattr(config, "torch_dtype", "auto"),
             trust_remote_code=False,
         )
+
     def get_extended_tokenizer(self) -> Optional[PreTrainedTokenizerBase]:
         """
         Get the extended tokenizer after vocabulary extension.
@@ -195,7 +200,9 @@ class DetectionModel(nn.Module):
             model_path, trust_remote_code=False, use_fast=True
         )
         if not getattr(tok, "is_fast", False):
-            raise RuntimeError("Fast tokenizer required for DetectionModel (use_fast=True)")
+            raise RuntimeError(
+                "Fast tokenizer required for DetectionModel (use_fast=True)"
+            )
         _enc = tok(
             "sanity",
             return_offsets_mapping=True,
@@ -239,7 +246,9 @@ class DetectionModel(nn.Module):
         is_extended_checkpoint = cls.detect_extended_checkpoint(model_path)
 
         if is_extended_checkpoint:
-            logger.info(f"🚀 Detected checkpoint with extended vocabulary metadata at {model_path}")
+            logger.info(
+                f"🚀 Detected checkpoint with extended vocabulary metadata at {model_path}"
+            )
         else:
             logger.info("📋 Loading base model")
 
@@ -430,13 +439,20 @@ class DetectionModel(nn.Module):
             if not hasattr(self, "_validated_special_tokens"):
                 self._validated_special_tokens = False
             if not bool(self._validated_special_tokens):
-                _tok = getattr(self, "_tokenizer", None) if hasattr(self, "_tokenizer") else None
+                _tok = (
+                    getattr(self, "_tokenizer", None)
+                    if hasattr(self, "_tokenizer")
+                    else None
+                )
                 if _tok is None and hasattr(self.base_model, "processor"):
-                    _tok = getattr(getattr(self.base_model, "processor"), "tokenizer", None)
+                    _tok = getattr(
+                        getattr(self.base_model, "processor"), "tokenizer", None
+                    )
                 from src_new.processing.special_tokens import (
                     require_core_special_tokens,
                     require_geometry_tokens,
                 )
+
                 if _tok is not None:
                     require_core_special_tokens(_tok)
                     # Require line wrappers by default; models configured without line can disable elsewhere
@@ -517,7 +533,9 @@ class DetectionModel(nn.Module):
                 lengths = seg_lens.to(device=input_ids.device, dtype=torch.long)
                 if lengths.sum().item() == S:
                     # Build [S, S] lower-triangular causal base
-                    causal = torch.tril(torch.ones(S, S, device=input_ids.device, dtype=torch.bool))
+                    causal = torch.tril(
+                        torch.ones(S, S, device=input_ids.device, dtype=torch.bool)
+                    )
                     # Zero out cross-segment regions
                     idx = 0
                     blocks: list[tuple[int, int]] = []
@@ -525,10 +543,12 @@ class DetectionModel(nn.Module):
                         blocks.append((idx, idx + L))
                         idx += L
                     mask_bool = torch.zeros_like(causal)
-                    for (s, e) in blocks:
+                    for s, e in blocks:
                         mask_bool[s:e, s:e] = causal[s:e, s:e]
                     # Convert to additive mask with -inf for masked positions; expand to [B, 1, S, S]
-                    attn_add = (~mask_bool).to(dtype=input_ids.dtype) * torch.finfo(input_ids.dtype).min
+                    attn_add = (~mask_bool).to(dtype=input_ids.dtype) * torch.finfo(
+                        input_ids.dtype
+                    ).min
                     attn_add = attn_add.view(1, 1, S, S).expand(B, 1, S, S)
                     # Supply as mapping expected by Qwen2.5-VL (full_attention key)
                     base_kwargs["attention_mask"] = {"full_attention": attn_add}
@@ -620,7 +640,9 @@ class DetectionModel(nn.Module):
                     if input_ids is not None and hasattr(self.loss_manager, "__dict__"):
                         self.loss_manager._last_input_ids = input_ids.detach().clone()
                 except Exception as e:
-                    raise RuntimeError(f"Failed to attach last_input_ids for grouping: {e}")
+                    raise RuntimeError(
+                        f"Failed to attach last_input_ids for grouping: {e}"
+                    )
                 loss_components = self.loss_manager.compute_loss_components(
                     logits=base_outputs.logits,
                     labels=labels,
@@ -647,10 +669,14 @@ class DetectionModel(nn.Module):
 
             elif hasattr(base_outputs, "loss") and base_outputs.loss is not None:
                 # Disallow implicit fallback; input_ids/labels are required for strict training semantics
-                raise RuntimeError("Base model returned a loss but input_ids/labels were not provided to wrapper; strict mode requires spans and labels.")
+                raise RuntimeError(
+                    "Base model returned a loss but input_ids/labels were not provided to wrapper; strict mode requires spans and labels."
+                )
             else:
                 # No loss available -> hard error
-                raise RuntimeError("No loss available from base model and wrapper; ensure labels/spans are provided.")
+                raise RuntimeError(
+                    "No loss available from base model and wrapper; ensure labels/spans are provided."
+                )
 
             # Return dict-like object for DataParallel compatibility
             return {
@@ -659,10 +685,14 @@ class DetectionModel(nn.Module):
                     if loss_components.loss is not None
                     else (base_outputs.loss if hasattr(base_outputs, "loss") else None)
                 ),
-                "logits": base_outputs.logits if hasattr(base_outputs, "logits") else None,
+                "logits": base_outputs.logits
+                if hasattr(base_outputs, "logits")
+                else None,
                 "loss_components": loss_components,
                 "hidden_states": (
-                    base_outputs.hidden_states if hasattr(base_outputs, "hidden_states") else None
+                    base_outputs.hidden_states
+                    if hasattr(base_outputs, "hidden_states")
+                    else None
                 ),
             }
 
@@ -733,7 +763,9 @@ class DetectionModel(nn.Module):
             "logits": masked_logits,
             "loss_components": loss_components,
             "hidden_states": (
-                base_outputs.hidden_states if hasattr(base_outputs, "hidden_states") else None
+                base_outputs.hidden_states
+                if hasattr(base_outputs, "hidden_states")
+                else None
             ),
         }
 
@@ -955,9 +987,9 @@ class DetectionModel(nn.Module):
 
     def add_model_tags(self, tags):
         """Add model tags for TRL compatibility."""
-        if hasattr(self.model, 'add_model_tags'):
+        if hasattr(self.model, "add_model_tags"):
             self.model.add_model_tags(tags)
-        elif hasattr(self.base_model, 'add_model_tags'):
+        elif hasattr(self.base_model, "add_model_tags"):
             self.base_model.add_model_tags(tags)
         # If neither has the method, silently ignore (older transformers versions)
 

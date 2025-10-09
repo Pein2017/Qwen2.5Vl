@@ -33,7 +33,6 @@ def generate_and_score(
     min_new_tokens: Optional[int],
     temperature: float,
     top_p: float,
-    repetition_penalty: float,
     mask_truncated_completions: bool,
     scale_rewards: bool,
     max_advantage_magnitude: Optional[float],
@@ -203,7 +202,6 @@ def generate_and_score(
             k=sample_k,
             max_new_tokens=gen_cap_to_use,
             temperature=float(temperature),
-            repetition_penalty=float(repetition_penalty),
             **gen_kwargs,
         )
         prompt_len = ids_t.size(0)
@@ -519,6 +517,12 @@ def generate_and_score(
         if cap_hit_flags:
             c = torch.tensor(cap_hit_flags, dtype=torch.float32, device=device)
             result["completions/cap_hit_ratio"] = float(c.mean().item())
+        # Zero-length completion ratio (effective length after masking)
+        if completion_lengths:
+            zero_cnt = sum(1 for _l in completion_lengths if int(_l) <= 0)
+            result["completions/zero_len_ratio"] = float(zero_cnt) / float(
+                max(len(completion_lengths), 1)
+            )
     except Exception:
         pass
 

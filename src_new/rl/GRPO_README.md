@@ -147,7 +147,7 @@ For each sample, estimate a GT-aligned target length from its objects and derive
 
 ### Configuration (YAML)
 ```yaml
-grpo:
+generation:
   dynamic_length:
     enabled: true
     estimator: tokenizer           # or: numbers_wrappers
@@ -199,8 +199,6 @@ Accumulate rewards and gradients across multiple prompts before each optimizer u
 sampling:
   prompt_batch_size: 4           # Prompts per optimizer update
   reward_average_window: 5       # Smoothing window for reward metrics
-
-grpo:
   sample_k: 8                    # Trajectories per prompt (global if split mode)
   sample_k_per_rank: false       # If false, split sample_k across ranks (must be divisible by world_size)
 ```
@@ -257,7 +255,7 @@ If dataset has fewer prompts than `prompt_batch_size`:
 ## Failure Modes & Safeguards
 - **Ratio degeneracy**: If generation log-probs are not stored, the GRPO ratio collapses to ~1. Use the buffer's `generation_logps` for the denominator.
 - **Multimodal drift**: If `<|image_pad|>` counts do not match image grids or packed patch totals, fail fast and re-check processing/template.
-- **Runaway tails**: Enable dynamic per-sample caps and keep a modest repetition penalty; inspect numeric-tail metrics.
+- **Runaway tails**: Enable dynamic per-sample caps; inspect numeric-tail metrics.
 - **Distributed hangs**: Keep per-sample completions consistent across ranks, resample on slow-rank detection, and pad variable-length tensors before collectives.
 - **Non-finite loss**: The trainer guards by reducing temperature scale, clearing the buffer, and resampling.
 - **NCCL timeouts**: Reduce `prompt_batch_size` to lower memory pressure; increase timeout (`NCCL_TIMEOUT=300`); enable async error handling.
@@ -329,3 +327,53 @@ optimizer.zero_grad()
 - **Schedules**: Adjust temperature or KL beta schedules via the schedule helpers.
 - **Evaluation**: Add absolute metrics or richer sample exports without changing training internals.
 - **Modular components**: Extend or swap `MetricsAggregator`, `TensorBoardLogger`, `CompletionLossComputer`, `AdvantageNormalizer`, or `ConsoleFormatter` for different RL algorithms (PPO, DPO) or custom logging/metrics.
+
+## Buffer Reuse via steps_per_generation
+
+### Why
+Generate once, optimize S times. This reduces expensive generation calls and increases sample efficiency by reusing each completion across multiple optimizer steps.
+
+### How it works
+- Generation builds a `GenerationBuffer` on CPU containing prompts, K completions per prompt, masks, rewards/advantages, and generation-policy log-probs.
+- Training streams one completion per micro-step from the buffer and performs GRPO with optional KL to a frozen reference.
+- After `steps_per_generation = S` optimizer steps, the buffer is considered exhausted and a new buffer is generated.
+
+### Configuration (YAML)
+```yaml
+grpo:
+  steps_per_generation: 4   # Reuse each generation for 4 optimizer steps
+  epsilon_low: 0.2
+  epsilon_high: 0.2
+  beta_start: 0.05          # Enable KL with a frozen ref model
+  beta_anneal:
+    type: cosine
+    ratio: 0.67             # Anneal across 2/3 of training
+```
+
+### Batch math (distributed)
+Let `world_size = W`, `sample_k_per_rank = false` (split-K mode):
+- local_k = sample_k / W
+- gradient_accumulation_steps = local_k × prompt_batch_size × steps_per_generation
+
+Example (8 GPUs):
+- pb=4, k=8, spg=4 → local_k=1 → accumulation=1×4×4 = 16
+- pb=4, k=16, spg=2 → local_k=2 → accumulation=2×4×2 = 16
+
+### Logging behavior
+You will observe logs clustered in groups of `steps_per_generation`. Each cluster corresponds to optimizer steps that reuse the same generation buffer.
+
+### Recipes (8 GPUs)
+- Balanced (default):
+  - `sampling.prompt_batch_size: 4`
+  - `sampling.sample_k: 16`
+  - `sampling.sample_k_per_rank: false`
+  - `grpo.steps_per_generation: 2`
+- Prompt-heavy (more coverage):
+  - `prompt_batch_size: 8`, `sample_k: 16`, `steps_per_generation: 1`
+- Response-heavy (more stability per prompt):
+  - `prompt_batch_size: 4`, `sample_k: 8`, `steps_per_generation: 4`
+
+### Tips
+- Increase `steps_per_generation` first if generation cost dominates, but monitor overfitting to reused samples.
+- With KL enabled (`beta_start > 0`), memory increases; if OOM, lower `prompt_batch_size`, then `sample_k`, then `steps_per_generation`.
+- `sample_k_per_rank: true` multiplies total K by `world_size`; use only if you want per-rank K > 1 and can afford the cost.

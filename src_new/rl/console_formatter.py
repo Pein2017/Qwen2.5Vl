@@ -165,6 +165,8 @@ class ConsoleFormatter:
             clip_parts.append(f"high={logs['clip_ratio/high_mean']:.3f}")
         if "clip_ratio/region_mean" in logs:
             clip_parts.append(f"region={logs['clip_ratio/region_mean']:.3f}")
+        if "completions/zero_len_ratio" in logs:
+            clip_parts.append(f"zero_len={logs['completions/zero_len_ratio']:.3f}")
         if clip_parts:
             lines.append("[CLIPPING] " + " ".join(clip_parts))
 

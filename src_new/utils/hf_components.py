@@ -16,8 +16,8 @@ import torch
 from transformers import (
     AutoTokenizer,
     AutoVideoProcessor,
-    Qwen2VLImageProcessor,
     Qwen2_5_VLProcessor,
+    Qwen2VLImageProcessor,
 )
 
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
@@ -55,9 +55,6 @@ def _prefer_device_map() -> Dict[str, str]:
     if torch.cuda.is_available():
         return {"": "cuda:0"}
     return {"": "cpu"}
-
-
-
 
 
 def _load_video_processor(model_path: str) -> Any:
@@ -163,7 +160,10 @@ def build_hf_components(
         )
     processor.chat_template = chat_template
 
-    if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+    if (
+        getattr(tokenizer, "pad_token", None) is None
+        and getattr(tokenizer, "eos_token", None) is not None
+    ):
         tokenizer.pad_token = tokenizer.eos_token
     if hasattr(tokenizer, "padding_side"):
         tokenizer.padding_side = tokenizer_padding_side

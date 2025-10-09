@@ -82,6 +82,8 @@ sampling:
 
 **Important**: The actual gradient accumulation is computed automatically based on the sampling window. Do NOT specify `gradient_accumulation_steps` manually.
 
+Tip: `quad_giou` and `line_giou` require polygon/line geometry computations. For best fidelity, install `shapely`; otherwise they fall back to AABB GIoU (quad) and endpoint L1 (line).
+
 ### 5. Generation
 ```yaml
 generation:
@@ -89,8 +91,7 @@ generation:
   min_new_tokens: 0
   temperature: 1.1
   top_p: 0.95
-  top_k: 50
-  repetition_penalty: 1.05
+  # top_k and repetition_penalty omitted; use HF defaults
   dynamic_length:
     enabled: true
     estimator: "tokenizer"
@@ -227,9 +228,11 @@ rewards:
   geometry_sanity: 0.10
   coverage: 0.40
   ordering: 0.10
-  bbox_giou: 0.40
-  quad_l1: 0.40
-  line_l1: 0.40
+  bbox_giou: 0.35
+  quad_l1: 0.10
+  line_l1: 0.10
+  quad_giou: 0.35
+  line_giou: 0.25
   caption_f1: 0.30
   grounding_acc: 0.30
 
@@ -240,6 +243,8 @@ rewards_config:
   tau_iou: 0.5
   tau_quad: 0.02
   tau_line: 0.02
+  line_giou:
+    buffer_frac: 0.01
   length_vs_gt:
     estimator: "tokenizer"
     lower: 0.7

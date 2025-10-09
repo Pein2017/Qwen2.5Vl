@@ -71,6 +71,7 @@ class TensorBoardLogger:
             "completions/over_upper_ratio",
             "completions/under_lower_ratio",
             "completions/terminated_ratio",
+            "completions/zero_len_ratio",
         ]
 
         for key in completion_keys:
