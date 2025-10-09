@@ -60,7 +60,7 @@ def test_trainer_logs_tb_scalars_and_console(caplog, world_size):
     trainer._start_time = 0.0
     trainer._last_grad_norm = 1.23
     trainer.manual_cfg = SimpleNamespace(logging_steps=1, max_steps=10)
-    trainer.reward_func_names = ["parse", "bbox_giou"]
+    trainer.reward_func_names = ["wrappers", "bbox_giou"]
     trainer.model = DummyModel()
 
     # Initialize histories used by _log_step tail
@@ -69,7 +69,7 @@ def test_trainer_logs_tb_scalars_and_console(caplog, world_size):
     trainer._clip_ratio_history = []
     trainer._adv_std_history = []
     trainer._adv_max_history = []
-    trainer._reward_component_history = {"parse": [], "bbox_giou": []}
+    trainer._reward_component_history = {"wrappers": [], "bbox_giou": []}
 
     # Prepare a generation_result with rewards and per-reward matrix
     generation_result = {
@@ -79,7 +79,7 @@ def test_trainer_logs_tb_scalars_and_console(caplog, world_size):
         "truncated_flags": torch.tensor([0, 1], dtype=torch.float32),
         "terminated_with_eos": torch.tensor([1, 1], dtype=torch.float32),
         "rewards_per_func": torch.tensor([[0.3, 0.2], [0.7, 0.8]], dtype=torch.float32),
-        "reward_names": ["parse", "bbox_giou"],
+        "reward_names": ["wrappers", "bbox_giou"],
         "temperature": 1.1,
         "beta": 0.0,
     }
@@ -111,8 +111,8 @@ def test_trainer_logs_tb_scalars_and_console(caplog, world_size):
     assert "reward" in tags and "reward_std" in tags
     assert "temperature" in tags and "eta_minutes" in tags and "step" in tags
     # Per-reward
-    assert "rewards/parse/mean" in tags and "rewards/bbox_giou/mean" in tags
-    assert "rewards/parse/std" in tags and "rewards/bbox_giou/std" in tags
+    assert "rewards/wrappers/mean" in tags and "rewards/bbox_giou/mean" in tags
+    assert "rewards/wrappers/std" in tags and "rewards/bbox_giou/std" in tags
     # Completion stats
     assert "completions/mean_length" in tags
     assert "completions/clipped_ratio" in tags

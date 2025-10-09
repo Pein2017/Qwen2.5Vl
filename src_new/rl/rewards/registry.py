@@ -21,14 +21,16 @@ from .format_rewards import (
     check_banned_vocab,
     check_coords_counts,
     check_wrappers,
+    duplicate_penalty,
     length_vs_gt,
-    parse_reward,
+    pairing_ratio,
     separators_score,
 )
 
 
 REGISTRY: Dict[str, Callable[[str], float]] = {
-    "parse": parse_reward,
+    "pairing_ratio": pairing_ratio,
+    "duplicate_penalty": duplicate_penalty,
     "wrappers": check_wrappers,
     "coords": check_coords_counts,
     "separators": separators_score,
@@ -52,7 +54,14 @@ REGISTRY: Dict[str, Callable[[str], float]] = {
 # Metadata for reward display and categorization
 REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
     # Format rewards
-    "parse": {"category": "format", "description": "Parse success rate"},
+    "pairing_ratio": {
+        "category": "format",
+        "description": "Parsed objects per object-ref",
+    },
+    "duplicate_penalty": {
+        "category": "format",
+        "description": "Penalty for duplicate geometry lists",
+    },
     "wrappers": {"category": "format", "description": "Geometry wrapper correctness"},
     "coords": {"category": "format", "description": "Coordinate count correctness"},
     "separators": {"category": "format", "description": "Separator formatting quality"},

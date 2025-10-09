@@ -153,8 +153,16 @@ class GRPOConfig:
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "GRPOConfig":
         """Create GRPOConfig from dictionary."""
+        raw_sample_k = data.get("sample_k", 4)
+        try:
+            sample_k = int(raw_sample_k)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("grpo.sample_k must be an integer") from exc
+        if sample_k <= 0:
+            raise ValueError("grpo.sample_k must be a positive integer")
+
         return GRPOConfig(
-            sample_k=data.get("sample_k", 4),
+            sample_k=sample_k,
             max_new_tokens=data.get("max_new_tokens", 128),
             temperature=data.get("temperature", 0.9),
             top_p=data.get("top_p", 1.0),
@@ -210,6 +218,54 @@ class LoggingConfig:
             wandb_entity=wandb.get("entity"),
             wandb_tags=wandb.get("tags", []),
         )
+
+
+@dataclass(frozen=True)
+class PromptBatchConfig:
+    """Configuration for prompt batching parameters."""
+
+    prompt_batch_size: int = 4
+    reward_average_window: int = 5
+    watchdog_timeout_seconds: Optional[int] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "PromptBatchConfig":
+        raw_prompt_batch_size = data.get("prompt_batch_size", 4)
+        try:
+            prompt_batch_size = int(raw_prompt_batch_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "prompt_batch.prompt_batch_size must be an integer"
+            ) from exc
+        if prompt_batch_size <= 0:
+            raise ValueError("prompt_batch.prompt_batch_size must be a positive integer")
+
+        raw_reward_window = data.get("reward_average_window", 5)
+        try:
+            reward_window = int(raw_reward_window)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "prompt_batch.reward_average_window must be an integer"
+            ) from exc
+        if reward_window <= 0:
+            raise ValueError("prompt_batch.reward_average_window must be positive")
+
+        return PromptBatchConfig(
+            prompt_batch_size=prompt_batch_size,
+            reward_average_window=reward_window,
+            watchdog_timeout_seconds=data.get("watchdog_timeout_seconds"),
+        )
+
+    @property
+    def reward_smoothing_window(self) -> int:
+        """Number of accumulation cycles used for reward smoothing."""
+        return self.reward_average_window
+
+    def trajectories_per_cycle(self, sample_k: int) -> int:
+        """Expected trajectory count before an optimizer step."""
+        if sample_k <= 0:
+            raise ValueError("sample_k must be positive when computing trajectories")
+        return self.prompt_batch_size * sample_k
 
 
 @dataclass(frozen=True)
@@ -279,6 +335,7 @@ class EnhancedRLConfig:
     optimizer_config: OptimizerConfig = field(default_factory=OptimizerConfig)
     training_config: TrainingConfig = field(default_factory=TrainingConfig)
     grpo_config: GRPOConfig = field(default_factory=GRPOConfig)
+    prompt_batch_config: PromptBatchConfig = field(default_factory=PromptBatchConfig)
     logging_config: LoggingConfig = field(default_factory=LoggingConfig)
     checkpoint_config: CheckpointConfig = field(default_factory=CheckpointConfig)
 
@@ -315,6 +372,7 @@ class EnhancedRLConfig:
         optimizer_config = OptimizerConfig.from_dict(cfg.get("optimizer", {}))
         training_config = TrainingConfig.from_dict(cfg.get("training", {}))
         grpo_config = GRPOConfig.from_dict(cfg.get("grpo", {}))
+        prompt_batch_config = PromptBatchConfig.from_dict(cfg.get("prompt_batch", {}))
         logging_config = LoggingConfig.from_dict(cfg.get("logging", {}))
         checkpoint_config = CheckpointConfig.from_dict(cfg.get("checkpointing", {}))
 
@@ -338,6 +396,7 @@ class EnhancedRLConfig:
             optimizer_config=optimizer_config,
             training_config=training_config,
             grpo_config=grpo_config,
+            prompt_batch_config=prompt_batch_config,
             logging_config=logging_config,
             checkpoint_config=checkpoint_config,
             # Reward weights
@@ -443,6 +502,12 @@ class EnhancedRLConfig:
         logging.getLogger("src_new.rl").setLevel(log_level)
         logging.getLogger("transformers").setLevel(logging.WARNING)
         logging.getLogger("torch").setLevel(logging.WARNING)
+
+    def expected_trajectories_per_cycle(self) -> int:
+        """Expected number of trajectories required per optimizer step."""
+        return self.prompt_batch_config.trajectories_per_cycle(
+            self.grpo_config.sample_k
+        )
 
 
 # Legacy compatibility

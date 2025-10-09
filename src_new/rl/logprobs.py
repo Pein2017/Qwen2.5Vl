@@ -17,7 +17,11 @@ def clear_gpu_memory() -> None:
     try:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            # Synchronization can be costly; enable only when explicitly requested
+            import os as _os
+
+            if _os.getenv("RL_SYNC_ON_CLEAR", "0") == "1":
+                torch.cuda.synchronize()
     except Exception:
         # Silently ignore cleanup errors to avoid disrupting training
         pass
@@ -126,26 +130,42 @@ def get_per_token_logps(
         if grid_slice is not None:
             model_kwargs["image_grid_thw"] = grid_slice.to(inputs_device)
 
-        outputs = model(
-            input_ids=input_ids_batch,
-            attention_mask=attention_mask_batch,
-            logits_to_keep=logits_to_keep + 1,
-            **model_kwargs,
-        )
-        logits = getattr(outputs, "logits", None)
-        if logits is None:
-            raise RuntimeError("Model forward pass did not return logits")
+        # Use autocast context to ensure bf16 computation
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=True):
+            outputs = model(
+                input_ids=input_ids_batch,
+                attention_mask=attention_mask_batch,
+                logits_to_keep=logits_to_keep + 1,
+                **model_kwargs,
+            )
+            logits = getattr(outputs, "logits", None)
+            if logits is None:
+                raise RuntimeError("Model forward pass did not return logits")
 
-        logits = logits[:, :-1, :]
-        tail_ids = input_ids_batch[:, -logits_to_keep:]
-        scaled_logits = logits / float(temperature)
-        logps = (
-            torch.log_softmax(scaled_logits, dim=-1)
-            .gather(-1, tail_ids.unsqueeze(-1))
-            .squeeze(-1)
-        )
-        if detach:
-            logps = logps.detach()
+            # Free outputs immediately to reduce memory pressure
+            del outputs
+            clear_gpu_memory()
+
+            # Extract only the last logits_to_keep positions
+            logits = logits[:, -(logits_to_keep + 1):-1, :].contiguous()
+            tail_ids = input_ids_batch[:, -logits_to_keep:].contiguous()
+
+            # Detach early if requested to avoid keeping computation graph
+            if detach:
+                logits = logits.detach()
+
+            # Compute log probabilities - this is the memory-intensive operation
+            # scaled_logits shape: [1, logits_to_keep, vocab_size]
+            scaled_logits = logits / float(temperature)
+            del logits  # Free immediately
+
+            # Compute log_softmax on last dim (vocab), then gather the target token log probs
+            log_probs_all = torch.log_softmax(scaled_logits, dim=-1)
+            del scaled_logits  # Free immediately
+
+            logps = log_probs_all.gather(-1, tail_ids.unsqueeze(-1)).squeeze(-1)
+            del log_probs_all, tail_ids  # Free immediately
+
         all_logps.append(logps)
 
         clear_gpu_memory()

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Dict, Optional, Sequence, Tuple
 
-from .augmentation_config import AugmentationConfig, PhotometricConfig, SmartResizeConfig
+from .augmentation_config import (
+    AugmentationConfig,
+    PhotometricConfig,
+    SmartResizeConfig,
+)
 
 
 class SchemaError(ValueError):
@@ -113,6 +117,7 @@ class GroupLossWeights:
         if self.caption < 0 or self.grounding < 0 or self.formatting < 0:
             raise SchemaError("loss.grouped weights must be >= 0")
 
+
 @dataclass(frozen=True)
 class LossConfig:
     teacher_loss_weight: float
@@ -196,9 +201,7 @@ class TeacherPairingConfig:
                     "features.teacher_pairing.teacher_ratio is required when enabled"
                 )
             if self.teacher_ratio < 0:
-                raise SchemaError(
-                    "features.teacher_pairing.teacher_ratio must be >= 0"
-                )
+                raise SchemaError("features.teacher_pairing.teacher_ratio must be >= 0")
             if self.dynamic_pairing_enabled and (
                 self.dynamic_pair_cross_bucket_explore_prob is None
             ):
@@ -268,7 +271,9 @@ class CheckpointConfig:
             if value is None:
                 raise SchemaError(f"features.checkpoint.{key} is required when enabled")
         provided = sum(
-            1 for v in (self.min_interval_steps, self.interval_multiplier_of_eval_steps) if v is not None
+            1
+            for v in (self.min_interval_steps, self.interval_multiplier_of_eval_steps)
+            if v is not None
         )
         if provided != 1:
             raise SchemaError(
@@ -518,7 +523,6 @@ class TrainingConfig:
             "advanced",
             "formatting_loss_weight",
         ),
-
     }
 
     def __getattr__(self, name: str) -> object:

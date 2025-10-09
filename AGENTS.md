@@ -10,7 +10,7 @@
 
 ### End‑to‑End Dataflow
 - **SFT**: JSONL → ConversationBuilder (typed) → HF processor tensors → DetectionModel (validations) → single‑pass CE + grouped masks → SafeTensors + tokenizer/processor.
-- **RL (dense, `src_new`)**: Single‑turn dataset → ConversationBuilder (typed) → K generations → rewards (format + geometry) → GRPO update → periodic saves.
+- **RL (dense, `src_new`)**: Single‑turn dataset → ConversationBuilder (typed) → K generations → rewards (format + geometry) → GRPO update (trust‑region with stored generation log‑probs, optional KL) → periodic saves.
 - **Data conversion**: Raw V2 JSON + images → canonical geometry + hierarchical CN descriptions → smart‑resized images + strict JSONL (train/val/teacher_pool/all_samples) + validation reports.
 
 
@@ -22,7 +22,7 @@
 - `losses/`: grouped‑token logic in `token_grouping.py` (caption/grounding/formatting).
 - `training/`: `BBUTrainer`, `PhaseFreezeManager`, `TrainingStateManager`, `CheckpointSaver`, callbacks and metrics.
 - `inference.py`: training‑matched engine with strict image token/tensor validation and geometry‑first parsing.
-- `rl/`: GRPO runner/trainer, dataset regeneration via `ConversationBuilder`, reward registry with formatting + detection rewards.
+- `rl/`: GRPO runner (`runner.py`), manual trainer (`grpo_trainer.py`), generation/log‑probs/buffer utilities, dataset regeneration via `ConversationBuilder`, reward registry with formatting + detection rewards, lightweight evaluation.
 - `utils/`: HF component loader, tensor validators, path/data resolvers, rank‑aware logging, error formatting, seeding.
 
 
@@ -81,16 +81,37 @@
 
 
 ### RL Post‑Training (dense GRPO, `src_new/rl`)
-- **Dataset**: Single‑turn dense JSONL reconstructed via `ConversationBuilder`; vision tensors preserved end‑to‑end.
-- **Trainer**: Per‑sample generation with K completions; reward registry combines formatting (`parse`, `wrappers`, `coords`, `separators`, `vocab`, `length`, `length_window`) and detection/geometry (`bbox_giou`, `quad_l1`, `line_l1`, `ordering`, `coverage`, `geometry_sanity`). Optional KL via `beta`.
-- **Vision**: Packed 2D `pixel_values` and `image_grid_thw` with strict slice offsets; eager attention preferred; bf16 recommended.
-- **Contracts**: Completion masks stop at first `<|im_end|>`; ensure divisibility of `sample_k` across micro‑batches/world size/update steps. `src_post` is a separate RL project (group‑level QC); do not mix with `src_new` dense RL.
+- **Entrypoints**:
+  - Loader/Train: `python -m src_new.rl.runner --config /abs/config.yaml --mode {load|train}`
+  - Launcher: `bash scripts/run_dense_grpo.sh`
+  - Eval (lightweight): `python -m src_new.rl.eval --config /abs/config.yaml`
+- **Dataset**: Single‑turn dense JSONL reconstructed via `ConversationBuilder`; vision tensors preserved end‑to‑end. RL dataset (`rl/data/dataset.py`) emits 1D `input_ids`/`attention_mask`, optional `pixel_values`/`image_grid_thw`, `conversation_text`, and `meta` (`width`,`height`,`objects`).
+- **Runner** (`rl/runner.py`): HF‑first bootstrap (tokenizer/processor/model), strict YAML validation, builds datasets, rewards, and applies `PhaseFreezeManager` with explicit `layer_config`.
+- **Trainer** (`rl/grpo_trainer.py`): Manual GRPO on Accelerate. For each sample: generate K iid completions, compute/stash per‑token log‑probs under the generation policy (denominator), compute rewards and advantages (optionally cross‑rank), stream GRPO loss with clipping and optional KL to a frozen reference (`beta`), log to TensorBoard, checkpoint periodically, and run a tiny eval loop.
+- **Generation & dynamic length**: `rl/buffer.generate_and_score` supports GT‑aware per‑sample caps (`dynamic_length` block: `enabled, estimator, alpha, eos_margin, min_cap, max_cap, hard_cap`) and logs `dynamic_length/*` stats. Completions stop at the first `<|im_end|>` (mask policy configurable).
+- **Trust region (critical)**: Stored generation‑policy log‑probs (`generation_logps`) are used to form GRPO ratios π_current / π_generation. Avoids ratio≈1 degeneracy.
+- **Vision**: Packed 2D `pixel_values` and `image_grid_thw` with strict slicing/validation across micro‑steps (`rl/validators.py`).
+- **Distributed sampling window**: `grpo.sample_k_per_rank` supported. When false, `grpo.sample_k` must be divisible by `world_size`; the trainer splits global K across ranks and sets accumulation accordingly.
+- **Rewards registry** (`rl/rewards/registry.py`):
+  - Format/content: `pairing_ratio`, `duplicate_penalty`, `wrappers`, `coords`, `separators`, `vocab`, `length_vs_gt`
+  - Detection/geometry: `coverage`, `geometry_sanity`, `bbox_giou`, `quad_l1`, `line_l1`, `ordering`, `caption_f1`, `grounding_acc`
+  - Threshold/config passthrough via `rewards_config` (e.g., `tau_iou`, `tau_quad`, `tau_line`, and `length_vs_gt` parameters)
+  - Note: detection rewards require SciPy (Hungarian assignment)
+- **Logging**: Required TB keys: `tb_dir` (root) and `output.run_name` (subdir). Scalars include `reward`, `reward_std`, `temperature`, `beta`, `advantages/*`, completion lengths and cap‑hit ratios, policy clip ratios, dynamic‑length stats, plus per‑reward means/std.
 
 
-### Configuration & Schema (`src_new/config`)
-- Strict dataclasses with YAML layering and validation. Required keys for model/runtime, data paths, features (merge size, max pixels), loss weights, collator (standard only), logging, and checkpointing.
-- Auto‑resolution: derive `train/val/teacher_pool` paths from `data_root` when null.
-- No in‑code defaults; explicit `torch_dtype`/attention implementation enforced. bf16‑only policy: `model.torch_dtype=bfloat16`, `training.bf16=true`, `training.fp16=false`.
+### Configuration & Schema (`src_new/config`, RL loader)
+- Strict dataclasses with YAML layering and validation. Required keys for model/runtime, data paths, features (merge size, max pixels), loss weights, collator (standard only), logging, and checkpointing. bf16‑only policy: `model.torch_dtype=bfloat16`, `training.bf16=true`, `training.fp16=false`.
+- RL loader (`rl/runner.py`) requires explicit keys (no defaults):
+  - `model_path` (SFT checkpoint), `bf16: true`
+  - `model.attn_implementation: {eager|flash_attention_2|sdpa}` and `model.image_max_pixels: <int>`
+  - `loss.{teacher_loss_weight,student_loss_weight,caption_loss_weight,grounding_loss_weight,formatting_loss_weight}`
+  - `train_data_path`, `val_data_path`, `data_root`
+  - `output.{output_dir,run_name}`, `tb_dir`
+  - `training.{max_steps,warmup_steps}`, `optimizer.learning_rates.{llm,vision,merger}`, `optimizer.weight_decay`
+  - `logging.logging_steps`, `checkpointing.save_steps`, `runtime.seed`
+  - `grpo.{sample_k,max_new_tokens,temperature,top_p,repetition_penalty}`
+  - Optional: `grpo.dynamic_length{...}`, `normalization.cross_rank_advantages`, `observe_rewards`, `rewards_config`, `grpo.beta/beta_anneal`, `grpo.max_advantage_magnitude`
 
 
 ### Data Conversion Pipeline (`data_conversion`)
@@ -109,6 +130,7 @@
 - **Spans & labels**: Assistant spans token‑aligned and include `<|im_end|>`; labels outside spans set to -100; `<|image_pad|>` always masked.
 - **Grouping invariants**: Caption/grounding/formatting masks are disjoint; union equals shifted assistant mask per role.
 - **Geometry tokens**: Wrappers + raw integers only (no coordinate tokens); numeric tokens inside geometry count as grounding.
+- **RL trust region**: Always compute and use generation‑policy log‑probs as denominator; avoid π_current/π_current.
 - **Checkpoints**: Always save tokenizer/processor; wrapper exposes `model.config` for HF compatibility; best‑checkpoint rotation is atomic.
 
 
@@ -119,6 +141,8 @@
   - Formatting parse failures: check wrapper/separator balance; try tolerant geometry parsing; fallback converter for JSON‑like outputs.
   - Augmentation issues: ensure factor‑aligned smart resize; validate coordinate tracking; enable visualization debug flags; check bounds/canonicalization.
   - RL vision packing: `pixel_values` packed 2D and slice offsets consistent with `image_grid_thw` per chunk.
+  - RL ratio degeneracy: ensure `generation_logps` are populated; if not, ratios collapse to ~1.0 and clipping is ineffective.
+  - Runaway tails: enable dynamic caps (`grpo.dynamic_length`) and keep modest repetition penalty.
 - **Checklist**
   - Do image tokens exist when image tensors are present? If not, rebuild conversation via builder and re‑process with HF processor; check `image_grid_thw` shape.
   - Do assistant spans include `<|im_end|>` and are labels masked outside spans? If not, inspect span builder logs and offset mapping.
@@ -130,7 +154,7 @@
 ### Debugging & Reading Order
 - **Quick reading order**: `processing/conversation_processor.py` → span builder/mapping → `data/dataset.py` → `models/wrapper.py` → `models/loss_manager.py` → `losses/token_grouping.py`.
 - **Augmentation**: `augmentation/compose.py` → `wrappers.py` → `image_ops.py` → `validators.py`.
-- **Inference & RL**: `inference.py` → `rl/runner.py` → `rl/trainer.py` → rewards registry.
+- **Inference & RL**: `inference.py` → `rl/runner.py` → `rl/grpo_trainer.py` → rewards registry.
 - **Conversion**: `data_conversion/unified_processor.py` → `coordinate_manager.py` → `validation_manager.py` → `summary_builder.py` → `teacher_selector.py`.
 - **Debug configs**: `phase_*/debug.yaml` (100 samples, 1 epoch); `debug_alignment: true` logs token‑span mapping; `debug_visualization: true` saves augmentation before/after.
 - **Performance monitor**: Initialization, training, inference timing; memory profiling via accumulation and CUDA cache management.
@@ -145,7 +169,8 @@
 
 ### References
 - SFT docs hub: `src_new/UNIFIED_DOCUMENTATION.md`
-- RL post‑training: `src_new/rl/README.md`
+- RL post‑training: `src_new/rl/grpo_readme.md`
+- Dynamic length design: `src_new/rl/DYNAMIC_GENERATION_LENGTH.md`
 - Data conversion deep dive: `data_conversion/README.md`
 - Configuration system: `configs/README.md`
 
@@ -163,3 +188,7 @@
 - Keep geometry tokens and coord ranges dynamic; avoid hard‑coded IDs when editing.
 - Prefer improving processing/validation flows over adding ad‑hoc run scripts.
 
+# Ignored draft
+```
+export CODEX_HOME=/data3/Qwen2.5-VL-main/.codex
+```
