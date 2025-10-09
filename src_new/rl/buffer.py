@@ -349,16 +349,6 @@ def generate_and_score(
         if padded_generation_logps
         else torch.zeros(len(completions_raw), 1, dtype=torch.float32)
     )
-    
-    # T018: Log generation_logps presence for trust region diagnostic
-    if accelerator.is_main_process:
-        nonzero_count = (generation_logps_tensor.abs() > 1e-9).sum().item()
-        total_elements = generation_logps_tensor.numel()
-        logger.info(
-            f"[Buffer] generation_logps: shape={tuple(generation_logps_tensor.shape)}, "
-            f"non-zero={nonzero_count}/{total_elements} "
-            f"({100.0 * nonzero_count / max(total_elements, 1):.1f}%)"
-        )
 
     prompt_ids = prompt_ids.repeat_interleave(sample_k, dim=0)
     prompt_mask = prompt_mask.repeat_interleave(sample_k, dim=0)
