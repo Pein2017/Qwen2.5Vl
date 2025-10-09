@@ -107,12 +107,15 @@ def generate_and_score(
     gen_len_tok_list: List[int] = []
     gt_len_tok_list: List[int] = []
     cap_hit_flags: List[int] = []
+    # Generation-policy log-probs per completion (to be filled from generate())
+    generation_logps_list: List[torch.Tensor] = []
 
     gen_kwargs = {"top_p": float(top_p)}
     if min_new_tokens is not None:
         gen_kwargs["min_new_tokens"] = int(min_new_tokens)
 
     dynamic_caps: List[int] = []
+    gt_length_computed_count = 0  # Track successful GT length computations
 
     for sample_idx, (ids_t, mask_t, pv_t, thw_t) in enumerate(
         zip(input_ids_list, attention_masks_list, pixel_values_list, thw_list)
@@ -130,8 +133,36 @@ def generate_and_score(
         per_sample_cap = int(max_new_tokens)
         gt_len_tok: Optional[int] = None
 
-        # Compute dynamic cap only when enabled
+        # ALWAYS compute GT length for reward functions (length_vs_gt needs this)
+        # This computation is independent of whether dynamic_length is enabled
         meta = metas[sample_idx] if sample_idx < len(metas) else None
+        if isinstance(meta, dict) and meta.get("objects"):
+            try:
+                from src_new.processing.coordinate_converter import (
+                    CoordinateTokenConverter as _Conv,
+                )
+
+                conv = _Conv()
+                objs = meta.get("objects") or []
+                gt_text = conv.convert_objects_to_tokens(objs)
+                # Tokenizer-aligned count for GT
+                gt_ids = tokenizer(
+                    gt_text, add_special_tokens=False, return_attention_mask=False
+                ).get("input_ids", [])
+                gt_len_tok = (
+                    int(len(gt_ids))
+                    if isinstance(gt_ids, list)
+                    else int(gt_ids.shape[0])
+                )
+                gt_length_computed_count += 1
+            except Exception as e:
+                # Log warning if GT length computation fails (important for length_vs_gt reward)
+                _LOGGER.debug(
+                    "Failed to compute GT length for sample %d: %s", sample_idx, e
+                )
+                pass
+
+        # Compute dynamic cap when enabled (uses gt_len_tok if available)
         if dyn_enabled:
             if str(dyn_estimator).lower() != "tokenizer":
                 _LOGGER.warning(
@@ -139,23 +170,7 @@ def generate_and_score(
                     dyn_estimator,
                 )
             try:
-                if isinstance(meta, dict):
-                    from src_new.processing.coordinate_converter import (
-                        CoordinateTokenConverter as _Conv,
-                    )
-
-                    conv = _Conv()
-                    objs = meta.get("objects") or []
-                    gt_text = conv.convert_objects_to_tokens(objs)
-                    # Tokenizer-aligned count for GT
-                    gt_ids = tokenizer(
-                        gt_text, add_special_tokens=False, return_attention_mask=False
-                    ).get("input_ids", [])
-                    gt_len_tok = (
-                        int(len(gt_ids))
-                        if isinstance(gt_ids, list)
-                        else int(gt_ids.shape[0])
-                    )
+                if gt_len_tok is not None:
                     max_cap_val = (
                         int(dyn_max_cap)
                         if dyn_max_cap is not None
@@ -163,13 +178,15 @@ def generate_and_score(
                     )
                     est_val = int(
                         round(
-                            float(dyn_alpha) * int(gt_len_tok or 0)
-                            + float(dyn_eos_margin)
+                            float(dyn_alpha) * int(gt_len_tok) + float(dyn_eos_margin)
                         )
                     )
                     per_sample_cap = max(
                         int(dyn_min_cap), min(int(max_cap_val), est_val)
                     )
+                    dynamic_caps.append(per_sample_cap)
+                else:
+                    # No GT length available; use default cap
                     dynamic_caps.append(per_sample_cap)
             except Exception:
                 dynamic_caps.append(per_sample_cap)
@@ -179,7 +196,7 @@ def generate_and_score(
             int(per_sample_cap) if dyn_enabled and dyn_hard_cap else int(max_new_tokens)
         )
 
-        seqs = generation.sample_k(
+        seqs, gen_logps_steps = generation.sample_k(
             model=model,
             tokenizer=tokenizer,
             batch=batch_dict,
@@ -274,14 +291,35 @@ def generate_and_score(
                 tokenizer.decode(completion, skip_special_tokens=False)
             )
 
+            # Store generation-policy log-probs from generate(); align to effective length/mask
+            try:
+                eff_len = int(mask_vec.long().sum().item())
+                gen_logps_k = gen_logps_steps[g]
+                if isinstance(gen_logps_k, torch.Tensor):
+                    generation_logps_list.append(
+                        gen_logps_k[:eff_len].detach().to("cpu")
+                    )
+                else:
+                    generation_logps_list.append(
+                        torch.zeros(eff_len, dtype=torch.float32)
+                    )
+            except Exception:
+                generation_logps_list.append(
+                    torch.zeros(int(mask_vec.long().sum().item()), dtype=torch.float32)
+                )
+
             # Enrich meta for this completion with tokenizer lengths if available
+            # gt_len_tok is computed earlier (always when objects present)
+            # gen_len_tok is computed just above (always)
             base_meta = metas[sample_idx] if sample_idx < len(metas) else {}
             try:
                 m = dict(base_meta) if isinstance(base_meta, dict) else {}
             except Exception:
                 m = {}
+            # Always include GT length when available (critical for length_vs_gt reward)
             if gt_len_tok is not None:
                 m["gt_len_tokenizer"] = int(gt_len_tok)
+            # Always include generation length
             m["gen_len_tokenizer"] = int(gen_len_tok)
             meta_per_completion.append(m)
 
@@ -293,70 +331,7 @@ def generate_and_score(
         except Exception:
             pass
 
-    # ===== COMPUTE GENERATION LOGPROBS (Critical for GRPO trust region) =====
-    # Store log-probs from the policy that GENERATED the completions.
-    # This enables proper ratio = π_current / π_generation in GRPO loss.
-    # Without this, ratio is always 1.0 and trust region clipping is ineffective.
-
-    generation_logps_list: List[torch.Tensor] = []
-
-    for comp_idx, (comp_ids, comp_mask, p_idx) in enumerate(
-        zip(completions_raw, completion_masks, prompt_index_repeat)
-    ):
-        effective_len = int(comp_mask.long().sum().item())
-        if effective_len == 0:
-            # No valid tokens - store dummy zero tensor
-            generation_logps_list.append(
-                torch.zeros(1, dtype=torch.float32, device=device)
-            )
-            continue
-
-        # Ensure prompt/completion are on CPU before concatenation
-        comp_ids_eff = comp_ids[:effective_len].to("cpu")
-        prompt_ids_single = input_ids_list[p_idx].to("cpu")
-
-        # Concatenate prompt + completion
-        full_ids = torch.cat([prompt_ids_single, comp_ids_eff], dim=0).unsqueeze(0)
-        full_mask = torch.ones_like(full_ids, dtype=torch.long)
-
-        # Build vision inputs for this sample
-        pv_single = pixel_values_list[p_idx] if p_idx < len(pixel_values_list) else None
-        thw_single = thw_list[p_idx] if p_idx < len(thw_list) else None
-        images_count = (
-            torch.tensor([thw_single.size(0)], dtype=torch.long)
-            if thw_single is not None
-            else None
-        )
-
-        # Compute logprobs with the GENERATION policy (current model state)
-        with torch.no_grad():
-            try:
-                gen_logps = rl_logprobs.get_per_token_logps(
-                    model=model,
-                    input_ids=full_ids.to(device),
-                    attention_mask=full_mask.to(device),
-                    logits_to_keep=effective_len,
-                    pixel_values=pv_single.to(device)
-                    if pv_single is not None
-                    else None,
-                    image_grid_thw=thw_single.to(device)
-                    if thw_single is not None
-                    else None,
-                    images_per_sample=images_count.to(device)
-                    if images_count is not None
-                    else None,
-                    temperature=float(temperature),
-                    detach=True,
-                )
-                generation_logps_list.append(gen_logps.squeeze(0).cpu())
-            except Exception:
-                # Fallback on error: store zeros (will fall back to old behavior)
-                generation_logps_list.append(
-                    torch.zeros(effective_len, dtype=torch.float32)
-                )
-
-        # Free memory after each logprob computation
-        rl_logprobs.clear_gpu_memory()
+    # ===== GENERATION LOGPROBS already collected during generate() =====
 
     # Pad generation logprobs to same length
     max_logp_len = (
@@ -395,6 +370,7 @@ def generate_and_score(
         raise ValueError("reward_names must align with reward_fns")
 
     per_func_values: List[torch.Tensor] = []
+    per_func_values_raw: List[torch.Tensor] = []
     clip_sigma = float(reward_clip_sigma) if reward_clip_sigma is not None else 5.0
     for fn, reward_name in zip(reward_fns, reward_names):
         try:
@@ -406,8 +382,14 @@ def generate_and_score(
         except TypeError:
             values = fn(prompts=prompts_repeated, completions=completions_text)
         values = [float(v) if v is not None else float("nan") for v in values]
-        values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
-        values_tensor = torch.nan_to_num(values_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        # Raw (pre-clip, pre-standardize)
+        values_tensor_raw = torch.tensor(values, dtype=torch.float32, device=device)
+        values_tensor_raw = torch.nan_to_num(
+            values_tensor_raw, nan=0.0, posinf=0.0, neginf=0.0
+        )
+        per_func_values_raw.append(values_tensor_raw)
+        # Processed (clip + optional standardize)
+        values_tensor = values_tensor_raw.clone()
         values_tensor = torch.clamp(values_tensor, -clip_sigma, clip_sigma)
         if reward_standardizer is not None:
             values_tensor = reward_standardizer.update_and_standardize(
@@ -416,11 +398,20 @@ def generate_and_score(
         per_func_values.append(values_tensor)
 
     rewards_per_func = torch.stack(per_func_values, dim=1) if per_func_values else None
+    rewards_per_func_raw = (
+        torch.stack(per_func_values_raw, dim=1) if per_func_values_raw else None
+    )
     if rewards_per_func is None:
         rewards = torch.zeros(len(prompts_repeated), device=device)
     else:
         weighted = rewards_per_func * reward_weights.view(1, -1)
         rewards = torch.nan_to_num(weighted, nan=0.0).sum(dim=1)
+    # Aggregate raw (absolute) reward without clip/standardize
+    if rewards_per_func_raw is None:
+        raw_rewards = torch.zeros(len(prompts_repeated), device=device)
+    else:
+        raw_weighted = rewards_per_func_raw * reward_weights.view(1, -1)
+        raw_rewards = torch.nan_to_num(raw_weighted, nan=0.0).sum(dim=1)
 
     total_samples = len(inputs)
     grouped = rewards.view(total_samples, sample_k)
@@ -531,8 +522,25 @@ def generate_and_score(
     except Exception:
         pass
 
+    # Log GT length computation success rate for diagnostic purposes
+    if gt_length_computed_count > 0:
+        _LOGGER.debug(
+            "GT length computed for %d/%d samples (%.1f%%) - length_vs_gt reward will use accurate GT lengths",
+            gt_length_computed_count,
+            len(inputs),
+            100.0 * gt_length_computed_count / max(len(inputs), 1),
+        )
+    elif len(inputs) > 0:
+        _LOGGER.warning(
+            "GT length not computed for any samples - length_vs_gt reward may be inaccurate. "
+            "Ensure dataset samples contain 'objects' in meta dict."
+        )
+
     if rewards_per_func is not None:
         result["rewards_per_func"] = rewards_per_func.to(device)
+    if rewards_per_func_raw is not None:
+        result["raw_rewards_per_func"] = rewards_per_func_raw.to(device)
+        result["raw_rewards"] = raw_rewards.to(device)
     return result
 
 
@@ -581,13 +589,21 @@ def split_buffer(
         "advantages",
         "rewards",
         "rewards_per_func",
+        "raw_rewards_per_func",
+        "raw_rewards",
         "completion_lengths",
         "terminated_with_eos",
         "truncated_flags",
         "generation_logps",
     ]
     list_keys = ["prompts", "completions", "meta"]
-    scalar_keys = ["temperature"]
+    scalar_keys = [
+        "temperature",
+        "advantages_global/std",
+        "advantages_global/max_abs",
+        "rewards_global/mean",
+        "rewards_global/std",
+    ]
 
     chunks: List[Dict[str, Any]] = []
     for idx in range(steps_per_generation):

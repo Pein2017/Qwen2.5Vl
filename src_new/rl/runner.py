@@ -8,12 +8,11 @@ import inspect
 import json
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Set
 
 import torch
 
-from src_new.config.rl_config import EnhancedRLConfig
+from src_new.config.rl_config_v2 import ConfigValidationError, RLConfig
 from src_new.processing.special_tokens import (
     require_core_special_tokens,
     require_geometry_tokens,
@@ -31,136 +30,7 @@ from src_new.utils.rank_aware_logging import get_rank_aware_logger
 _LOGGER = get_rank_aware_logger("rl.runner")
 
 
-@dataclass(frozen=True)
-class RLLoaderConfig:
-    """Minimal loader subset extracted from YAML for component bootstrap."""
-
-    model_path: str
-    image_max_pixels: Optional[int]
-    attn_implementation: str
-    bf16: bool
-
-    @staticmethod
-    def from_yaml_dict(cfg: Dict[str, Any]) -> "RLLoaderConfig":
-        if not isinstance(cfg, dict):
-            raise ValueError("Config must be a mapping (YAML dict)")
-
-        model_path = cfg.get("model_path")
-        if not model_path or not isinstance(model_path, str):
-            raise ValueError(
-                "Missing required 'model_path' (absolute path to SFT checkpoint)"
-            )
-
-        # Require explicit model config section
-        model_section = cfg.get("model")
-        if not isinstance(model_section, dict):
-            raise ValueError("Missing required 'model' section in config")
-
-        image_max_pixels = model_section.get("image_max_pixels")
-        if image_max_pixels is None:
-            raise ValueError(
-                "Missing required 'model.image_max_pixels' - must be explicitly set"
-            )
-        image_max_pixels = int(image_max_pixels)
-
-        attn = model_section.get("attn_implementation")
-        if not attn:
-            raise ValueError(
-                "Missing required 'model.attn_implementation' - must be explicitly set"
-            )
-        if not isinstance(attn, str):
-            raise ValueError("model.attn_implementation must be a string")
-        attn = attn.strip().lower()
-        if attn not in {"eager", "flash_attention_2", "sdpa"}:
-            raise ValueError(
-                "model.attn_implementation must be one of {'eager','flash_attention_2','sdpa'}"
-            )
-
-        bf16 = cfg.get("bf16")
-        if bf16 is None:
-            raise ValueError(
-                "Missing required 'bf16' - must be explicitly set to true for RL"
-            )
-        if not bf16:
-            raise ValueError(
-                "bf16 is mandatory for RL runs. Set root-level 'bf16: true' in the YAML."
-            )
-
-        # Require explicit loss weights section
-        loss_section = cfg.get("loss")
-        if not isinstance(loss_section, dict):
-            raise ValueError("Missing required 'loss' section in config")
-        required_loss_keys = [
-            "caption_loss_weight",
-            "grounding_loss_weight",
-            "formatting_loss_weight",
-        ]
-        for key in required_loss_keys:
-            if key not in loss_section:
-                raise ValueError(
-                    f"Missing required 'loss.{key}' - must be explicitly set"
-                )
-
-        # Require explicit hierarchical sections
-        training = cfg.get("training") or {}
-        optimizer = cfg.get("optimizer") or {}
-        logging_cfg = cfg.get("logging") or {}
-        checkpointing = cfg.get("checkpointing") or {}
-        runtime = cfg.get("runtime") or {}
-        grpo = cfg.get("grpo") or {}
-
-        # Training keys: require only max_steps and warmup_steps (optimizer_step_batch_size removed)
-        for key in ["max_steps", "warmup_steps"]:
-            if key not in training:
-                raise ValueError(
-                    f"Missing required 'training.{key}' - must be explicitly set"
-                )
-
-        # Optimizer keys: require explicit group LRs and weight_decay
-        lr_section = optimizer.get("learning_rates")
-        if not isinstance(lr_section, dict):
-            raise ValueError("Missing required 'optimizer.learning_rates' section")
-        for key in ["llm", "vision", "merger"]:
-            if key not in lr_section:
-                raise ValueError(
-                    f"Missing required 'optimizer.learning_rates.{key}' - must be explicitly set"
-                )
-        if "weight_decay" not in optimizer:
-            raise ValueError(
-                "Missing required 'optimizer.weight_decay' - must be explicitly set"
-            )
-
-        # Logging/checkpointing/runtime keys
-        if "logging_steps" not in logging_cfg:
-            raise ValueError(
-                "Missing required 'logging.logging_steps' - must be explicitly set"
-            )
-        if "save_steps" not in checkpointing:
-            raise ValueError(
-                "Missing required 'checkpointing.save_steps' - must be explicitly set"
-            )
-        if "seed" not in runtime:
-            raise ValueError("Missing required 'runtime.seed' - must be explicitly set")
-
-        # GRPO keys
-        for key in [
-            "sample_k",
-            "max_new_tokens",
-            "temperature",
-            "top_p",
-            "repetition_penalty",
-        ]:
-            if key not in grpo:
-                raise ValueError(
-                    f"Missing required 'grpo.{key}' - must be explicitly set"
-                )
-
-        return RLLoaderConfig(
-            model_path=model_path,
-            image_max_pixels=image_max_pixels,
-            attn_implementation=attn,
-            bf16=bf16,
-        )
+# RLLoaderConfig removed - using RLConfig v2 directly
 
 
 def _load_yaml(path: str) -> Dict[str, Any]:
@@ -277,51 +147,18 @@ def _resolve_bf16(requested: bool, *, log: bool = True) -> bool:
     return False
 
 
-def _create_model_config(
-    raw: Dict[str, Any], loader_cfg: RLLoaderConfig, *, torch_dtype_name: str
-) -> Any:
-    # Require explicit loss configuration for LossManager compatibility
-    loss_config = raw.get("loss")
-    if not isinstance(loss_config, dict):
-        raise ValueError("Missing required 'loss' section in config")
-
-    required_loss_keys = [
-        "teacher_loss_weight",
-        "student_loss_weight",
-        "caption_loss_weight",
-        "grounding_loss_weight",
-        "formatting_loss_weight",
-    ]
-    for key in required_loss_keys:
-        if key not in loss_config:
-            raise ValueError(f"Missing required 'loss.{key}' - must be explicitly set")
-
-    teacher_loss_weight = float(loss_config["teacher_loss_weight"])
-    student_loss_weight = float(loss_config["student_loss_weight"])
-    caption_loss_weight = float(loss_config["caption_loss_weight"])
-    grounding_loss_weight = float(loss_config["grounding_loss_weight"])
-    formatting_loss_weight = float(loss_config["formatting_loss_weight"])
-
-    return type(
-        "RLShimConfig",
-        (),
-        {
-            "attn_implementation": loader_cfg.attn_implementation,
-            "torch_dtype": torch_dtype_name,
-            "use_cache": True,
-            # Loss weights for LossManager compatibility
-            "teacher_loss_weight": teacher_loss_weight,
-            "student_loss_weight": student_loss_weight,
-            "caption_loss_weight": caption_loss_weight,
-            "grounding_loss_weight": grounding_loss_weight,
-            "formatting_loss_weight": formatting_loss_weight,
-        },
-    )()
+# _create_model_config removed - inline in build_components with typed config
 
 
 def build_components(config_path: str) -> Dict[str, Any]:
+    """Build components using strict v2 config."""
     raw_cfg = _load_yaml(config_path)
-    loader_cfg = RLLoaderConfig.from_yaml_dict(raw_cfg)
+
+    try:
+        rl_config = RLConfig.from_yaml_dict(raw_cfg)
+    except ConfigValidationError as e:
+        _LOGGER.error("Configuration validation failed:\n%s", e)
+        raise
 
     level = logging.INFO
     logging.getLogger().setLevel(level)
@@ -329,17 +166,33 @@ def build_components(config_path: str) -> Dict[str, Any]:
 
     device_map = _prefer_device_map()
 
-    torch_dtype_name = "bfloat16" if loader_cfg.bf16 else "float32"
-    model_config = _create_model_config(
-        raw_cfg, loader_cfg, torch_dtype_name=torch_dtype_name
-    )
+    # Use typed config
+    bf16 = rl_config.training.bf16
+    torch_dtype_name = "bfloat16" if bf16 else "float32"
+
+    # Build model config from typed config
+    model_config = type(
+        "RLShimConfig",
+        (),
+        {
+            "attn_implementation": rl_config.model.attn_implementation,
+            "torch_dtype": torch_dtype_name,
+            "use_cache": rl_config.model.use_cache,
+            # Loss weights for LossManager compatibility
+            "teacher_loss_weight": rl_config.loss.teacher_loss_weight,
+            "student_loss_weight": rl_config.loss.student_loss_weight,
+            "caption_loss_weight": rl_config.loss.caption_loss_weight,
+            "grounding_loss_weight": rl_config.loss.grounding_loss_weight,
+            "formatting_loss_weight": rl_config.loss.formatting_loss_weight,
+        },
+    )()
 
     components: HFComponents = build_hf_components(
-        model_path=loader_cfg.model_path,
+        model_path=rl_config.paths.model_path,
         model_config=model_config,
-        attn_implementation=loader_cfg.attn_implementation,
-        image_max_pixels=loader_cfg.image_max_pixels,
-        bf16=loader_cfg.bf16,
+        attn_implementation=rl_config.model.attn_implementation,
+        image_max_pixels=rl_config.model.image_max_pixels,
+        bf16=bf16,
         force_eager_attention=False,
         device_map=device_map,
     )
@@ -358,22 +211,18 @@ def build_components(config_path: str) -> Dict[str, Any]:
         "processor": components.processor,
         "model": components.model,
         "hf_bundle": components,
-        "raw_config": raw_cfg,
+        "config": rl_config,  # Return typed config instead of raw_config
     }
 
 
 def build_datasets(cfg_path: str) -> Dict[str, Any]:
     bundles = build_components(cfg_path)
-    raw_cfg = bundles["raw_config"]
-    enhanced_cfg = EnhancedRLConfig.from_yaml_dict(raw_cfg)
+    rl_config = bundles["config"]
 
-    train_path = raw_cfg.get("train_data_path")
-    val_path = raw_cfg.get("val_data_path")
-    data_root = raw_cfg.get("data_root")
-    if not (train_path and val_path and data_root):
-        raise ValueError(
-            "RL YAML must include train_data_path, val_data_path, and data_root"
-        )
+    # Use typed config - no more raw_cfg
+    train_path = rl_config.paths.train_data_path
+    val_path = rl_config.paths.val_data_path
+    data_root = rl_config.paths.data_root
 
     # Validate tokenizer has required core/geometry tokens (fail fast)
     tok = bundles["tokenizer"]
@@ -396,8 +245,7 @@ def build_datasets(cfg_path: str) -> Dict[str, Any]:
         "tokenizer": bundles["tokenizer"],
         "model": bundles["model"],
         "processor": bundles["processor"],
-        "cfg": raw_cfg,
-        "enhanced_cfg": enhanced_cfg,
+        "config": rl_config,  # Return typed config
     }
 
 
@@ -407,20 +255,44 @@ def train(config_path: str) -> None:
     # Using Accelerate: avoid manual process group init and device selection
 
     bundles = build_datasets(config_path)
-    cfg = bundles["cfg"]
-    enhanced_cfg: EnhancedRLConfig = bundles["enhanced_cfg"]
-    enhanced_cfg.setup_logging()
+    rl_config: RLConfig = bundles["config"]
 
-    # Require explicit rewards configuration
-    rewards_section = cfg.get("rewards")
-    if not isinstance(rewards_section, dict):
-        raise ValueError("Missing required 'rewards' section in config")
-    if len(rewards_section) == 0:
-        raise ValueError(
-            "'rewards' section cannot be empty - must explicitly set reward weights"
-        )
+    # Setup logging using typed config
+    level = getattr(logging, rl_config.logging.log_level.upper())
+    logging.getLogger().setLevel(level)
 
-    weights: Dict[str, float] = rewards_section
+    # Use typed config for sampling parameters
+    prompt_batch_size = rl_config.sampling.prompt_batch_size
+    sample_k = rl_config.sampling.sample_k
+    sample_k_per_rank = rl_config.sampling.sample_k_per_rank
+
+    # Compute expected trajectories
+    # Get world_size from environment (set by torch.distributed.run)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
+    if sample_k_per_rank:
+        expected_trajectories = prompt_batch_size * sample_k
+    else:
+        if sample_k % world_size != 0:
+            raise ValueError(
+                f"sample_k={sample_k} must be divisible by world_size={world_size} when sample_k_per_rank=False"
+            )
+        expected_trajectories = prompt_batch_size * (sample_k // world_size)
+
+    # Log both global and per-rank expectations for clarity
+    per_rank_expected = expected_trajectories if sample_k_per_rank else (prompt_batch_size * (sample_k // max(world_size, 1)))
+    global_expected = prompt_batch_size * sample_k if sample_k_per_rank else expected_trajectories * max(world_size, 1)
+    _LOGGER.info(
+        "Prompt batching configured | prompts=%d | sample_k=%d | world_size=%d | expected_per_rank=%d | expected_global=%d",
+        prompt_batch_size,
+        sample_k,
+        world_size,
+        per_rank_expected,
+        global_expected,
+    )
+
+    # Use typed config for rewards
+    weights: Dict[str, float] = rl_config.rewards.weights
     active_keys: List[str] = [
         k for k, w in weights.items() if float(w) != 0.0 and k in REGISTRY
     ]
@@ -431,12 +303,9 @@ def train(config_path: str) -> None:
         )
 
     # Support observe_rewards: compute/log metrics even when weight=0
-    observe_rewards_raw = cfg.get("observe_rewards", [])
-    if not isinstance(observe_rewards_raw, list):
-        observe_rewards_raw = []
     observe_keys: List[str] = []
-    for key in observe_rewards_raw:
-        if isinstance(key, str) and key in REGISTRY and key not in active_keys:
+    for key in rl_config.rewards.observe_only:
+        if key in REGISTRY and key not in active_keys:
             observe_keys.append(key)
 
     # Combine active + observe (unique, sorted for deterministic order)
@@ -446,10 +315,19 @@ def train(config_path: str) -> None:
     reward_funcs: List[Callable[..., List[float]]] = []
     reward_weights: List[float] = []
 
-    # Optional rewards_config for thresholds/hyperparams
-    rewards_config = cfg.get("rewards_config", {})
-    if not isinstance(rewards_config, dict):
-        rewards_config = {}
+    # Use typed config for rewards hyperparams
+    rewards_config_dict = {
+        "tau_iou": rl_config.rewards.config.tau_iou,
+        "tau_quad": rl_config.rewards.config.tau_quad,
+        "tau_line": rl_config.rewards.config.tau_line,
+        "length_vs_gt": {
+            "estimator": rl_config.rewards.config.length_vs_gt.estimator,
+            "lower": rl_config.rewards.config.length_vs_gt.lower,
+            "upper": rl_config.rewards.config.length_vs_gt.upper,
+            "gamma": rl_config.rewards.config.length_vs_gt.gamma,
+            "tail_numeric_weight": rl_config.rewards.config.length_vs_gt.tail_numeric_weight,
+        },
+    }
 
     for key in all_keys:
         base_fn = REGISTRY[key]
@@ -514,7 +392,7 @@ def train(config_path: str) -> None:
                 wants_meta=expects_meta,
                 threshold_keys=threshold_params,
                 lvgt_keys=lvgt_params,
-                cfg_dict=rewards_config,
+                cfg_dict=rewards_config_dict,
             )
         )
         # Weight: original if in active_keys, else 0.0 (observe-only)
@@ -526,21 +404,22 @@ def train(config_path: str) -> None:
     # Use the DetectionModel wrapper directly so that fail-fast multimodal validations remain active
     hf_model = bundles["model"]  # type: ignore[assignment]
 
-    # Require explicit layer_config for phase freezing
-    layer_config_section = cfg.get("layer_config")
-    if not isinstance(layer_config_section, dict):
-        raise ValueError("Missing required 'layer_config' section in config")
+    if len(train_ds) < prompt_batch_size:
+        raise ValueError(
+            "prompt_batch.prompt_batch_size exceeds available prompts in dataset. "
+            f"Configured {prompt_batch_size}, dataset has {len(train_ds)} prompts."
+        )
 
-    # Apply SFT-style phase freezing based on explicit RL layer_config
-    lc = enhanced_cfg.layer_config
+    # Apply SFT-style phase freezing using typed config
+    lc = rl_config.layer_freezing
     pfm = PhaseFreezeManager()
     summary = pfm.apply_phase(
         model=hf_model,
         tokenizer=bundles["tokenizer"],
         phase="phase_3",
-        llm_top_k_block=int(lc.llm_trainable_top_k_blocks),
-        vision_top_k_block=int(lc.vision_trainable_top_k_blocks),
-        freeze_patch_embed=bool(lc.vision_freeze_patch_embed),
+        llm_top_k_block=lc.llm.trainable_top_k_blocks,
+        vision_top_k_block=lc.vision_tower.trainable_top_k_blocks,
+        freeze_patch_embed=lc.vision_tower.freeze_patch_embed,
     )
     _LOGGER.info(
         "Applied phase freeze: phase=%s top_k_llm=%d top_k_vision=%d patch_embed_frozen=%s",
@@ -552,10 +431,12 @@ def train(config_path: str) -> None:
 
     # No manual DDP wrapping when using Accelerate
 
-    output_dir = cfg.get("output_dir") or enhanced_cfg.output_dir
-    if not output_dir:
-        raise ValueError("Missing required 'output_dir' for manual trainer")
+    # Use typed config for output directories
+    output_dir = rl_config.paths.output_dir
     os.makedirs(output_dir, exist_ok=True)
+    # Ensure tb_dir exists (run_name subfolder created by trainer)
+    tb_dir = rl_config.paths.tb_dir
+    os.makedirs(tb_dir, exist_ok=True)
 
     manual_trainer = BBUGRPOTrainer(
         model=hf_model,
@@ -566,11 +447,10 @@ def train(config_path: str) -> None:
         reward_functions=reward_funcs,
         reward_names=reward_names,
         reward_weights=reward_weights,
-        enhanced_cfg=enhanced_cfg,
-        raw_config=cfg,
-        output_dir=str(output_dir),
+        rl_config=rl_config,  # Pass v2 config only
+        output_dir=output_dir,
     )
-    # Attach original YAML path for checkpoint reproducibility (no CLI overrides)
+    # Attach original YAML path for checkpoint reproducibility
     try:
         manual_trainer._checkpoint_saver.args.original_config_path = config_path
     except Exception:

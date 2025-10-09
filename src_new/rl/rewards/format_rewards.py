@@ -11,6 +11,8 @@ import math
 import re
 from typing import Dict, List
 
+from src_new.processing.parse_generated import parse_geometry_response
+
 # Canonical wrappers sourced from the single authority
 from src_new.processing.special_tokens import GEOMETRY_TOKENS
 
@@ -197,7 +199,26 @@ def check_coords_counts(text: str) -> float:
     return float(sum(1.0 for c in checks if c) / len(checks))
 
 
-_BANNED_TERMS = ["PPDU", "DCDU", "CPRI", "ODF", "光分路器"]
+_BANNED_TERMS = [
+    "PPDU",
+    "DCDU",
+    "CPRI",
+    "ODF",
+    "光分路器",
+    # Common typos/variants observed in SFT generations
+    "BBB",
+    "BBB设备",
+    "BBB端",
+    "BBB端光纤插头",
+    "BBB安装螺丝",
+    "BB设备",
+    "BB设备端",
+    "BB设备电源线",
+    "BB设备传输尾纤",
+    "BB设备传输光纤",
+    "BBUu",
+    "BBUu设备",
+]
 
 
 def check_banned_vocab(text: str) -> float:
@@ -211,11 +232,60 @@ def check_banned_vocab(text: str) -> float:
 
 
 def parse_reward(text: str) -> float:
-    # Simple success if at least one geometry block is present
+    """Binary parse success when any geometry wrapper is present."""
     for pat in (BOX_S, QUAD_S, LINE_S):
         if pat in text:
             return 1.0
     return 0.0
+
+
+def pairing_ratio(text: str, *, meta: Dict | None = None) -> float:
+    """Ratio of parsed objects to declared object refs (0..1).
+
+    Encourages each object-ref block to correspond to exactly one geometry block
+    that can be parsed by the tolerant parser.
+    """
+    try:
+        obj_refs = int(text.count(OBJ_S))
+    except Exception:
+        obj_refs = 0
+    try:
+        parsed = parse_geometry_response(text, tolerant=True) or []
+        parsed_count = int(len(parsed))
+    except Exception:
+        parsed_count = 0
+    denom = max(obj_refs, 1)
+    val = float(parsed_count) / float(denom)
+    if val < 0.0:
+        val = 0.0
+    if val > 1.0:
+        val = 1.0
+    return float(val)
+
+
+def duplicate_penalty(text: str) -> float:
+    """Penalize duplicate coordinate lists inside geometry wrappers (0..1).
+
+    1.0 when all geometry lists are unique (or none present), decreases as
+    duplicates appear.
+    """
+    sections = _iter_coord_sections_within_wrappers(text)
+    n = len(sections)
+    if n <= 0:
+        return 1.0
+    try:
+        # Normalize by stripping whitespace to make duplicates robust to spacing
+        norm = [re.sub(r"\s+", "", s) for s in sections]
+        unique = set(norm)
+        duplicates = max(n - len(unique), 0)
+        score = 1.0 - (float(duplicates) / float(max(n, 1)))
+        if score < 0.0:
+            score = 0.0
+        if score > 1.0:
+            score = 1.0
+        return float(score)
+    except Exception:
+        return 0.0
 
 
 ## Removed legacy proxy length rewards (length_score, length_window)
@@ -262,8 +332,27 @@ def length_vs_gt(
 
     if gen_len is None:
         gen_len = _proxy_len(text)
+
+    # CRITICAL: Do NOT use generated text as GT fallback (causes reward to always be 1.0)
+    # If GT length is unavailable after checking meta, return neutral reward
     if gt_len is None:
-        gt_len = _proxy_len(text)
+        # Try to extract from meta.objects as last resort
+        if isinstance(meta, dict) and meta.get("objects"):
+            try:
+                from src_new.processing.coordinate_converter import (
+                    CoordinateTokenConverter,
+                )
+
+                conv = CoordinateTokenConverter()
+                objs = meta.get("objects") or []
+                gt_text = conv.convert_objects_to_tokens(objs)
+                gt_len = _proxy_len(gt_text)  # Use proxy on GT text, not generated!
+            except Exception:
+                pass
+
+        # If still unavailable, return neutral reward instead of comparing to self
+        if gt_len is None:
+            return 0.5  # Neutral reward when GT unavailable
 
     gt_len = int(max(1, int(gt_len)))
     gen_len = int(max(0, int(gen_len)))
@@ -296,7 +385,6 @@ def length_vs_gt(
 
 def compute_reward(text: str, weights: Dict[str, float]) -> float:
     comps = {
-        "parse": parse_reward(text),
         "wrappers": check_wrappers(text),
         "coords": check_coords_counts(text),
         "separators": check_ascii_separators(text),
@@ -322,6 +410,8 @@ __all__ = [
     "check_coords_counts",
     "check_banned_vocab",
     "parse_reward",
+    "pairing_ratio",
+    "duplicate_penalty",
     "length_vs_gt",
     "compute_reward",
 ]

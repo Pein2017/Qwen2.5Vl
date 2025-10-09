@@ -109,13 +109,17 @@ class PhaseFreezeManager:
 
         # Resolve effective settings directly from arguments (no phase-derived defaults)
         eff_top_k_layers = int(llm_top_k_block) if llm_top_k_block is not None else 0
-        eff_vision_top_k_blocks = int(vision_top_k_block) if vision_top_k_block is not None else 0
+        eff_vision_top_k_blocks = (
+            int(vision_top_k_block) if vision_top_k_block is not None else 0
+        )
 
-        eff_freeze_patch_embed = bool(freeze_patch_embed) if freeze_patch_embed is not None else True
+        eff_freeze_patch_embed = (
+            bool(freeze_patch_embed) if freeze_patch_embed is not None else True
+        )
 
         # Reset any prior hooks
         self.clear()
-      
+
         # 1) Freeze everything
         for _, p in model.named_parameters():
             p.requires_grad = False
@@ -129,45 +133,6 @@ class PhaseFreezeManager:
         for name, p in model.named_parameters():
             if name.endswith("lm_head.weight"):
                 p.requires_grad = True
-
-        # Debug: summarize trainable modules after applying phase policy
-        try:
-            vision_trainable = 0
-            vision_total = 0
-            llm_trainable = 0
-            llm_total = 0
-            merger_trainable = False
-            lm_head_trainable = False
-
-            for name, p in model.named_parameters():
-                if ".visual.blocks." in name:
-                    vision_total += 1
-                    if p.requires_grad:
-                        vision_trainable += 1
-                if (".language_model.layers." in name) or (".model.layers." in name):
-                    llm_total += 1
-                    if p.requires_grad:
-                        llm_trainable += 1
-                if "visual.merger" in name and p.requires_grad:
-                    merger_trainable = True
-                if name.endswith("lm_head.weight") and p.requires_grad:
-                    lm_head_trainable = True
-
-            phase_logger = None
-            try:
-                from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
-                phase_logger = _get("training.phase_freeze_manager")
-            except Exception:
-                import logging as _logging
-                phase_logger = _logging.getLogger("training.phase_freeze_manager")
-
-            phase_logger.info(
-                f"🧊 Phase freeze summary — vision_trainable_params={vision_trainable}/{vision_total}, "
-                f"llm_trainable_params={llm_trainable}/{llm_total}, merger_trainable={merger_trainable}, "
-                f"lm_head_trainable={lm_head_trainable}"
-            )
-        except Exception:
-            pass
 
         # 3) Optional: restrict training to specific token IDs (e.g., line_start/line_end)
         token_slice_enabled = False
@@ -192,7 +157,9 @@ class PhaseFreezeManager:
                         "[PhaseFreeze] Could not access embeddings/LM head for token-slice masking"
                     )
             except Exception as e:
-                logger.warning(f"[PhaseFreeze] trainable_token_strings handling failed: {e}")
+                logger.warning(
+                    f"[PhaseFreeze] trainable_token_strings handling failed: {e}"
+                )
 
         # 4) Unified unfreezing controlled solely by top-k settings
         # LLM control: 0=frozen, -1=all, k=last-k
@@ -231,7 +198,50 @@ class PhaseFreezeManager:
             # No additional action needed; mask hooks are already installed
             pass
 
-        # 5) Summarize
+        # 5) Debug: summarize trainable modules after applying phase policy
+        try:
+            vision_trainable = 0
+            vision_total = 0
+            llm_trainable = 0
+            llm_total = 0
+            merger_trainable = False
+            lm_head_trainable = False
+
+            for name, p in model.named_parameters():
+                if ".visual.blocks." in name:
+                    vision_total += 1
+                    if p.requires_grad:
+                        vision_trainable += 1
+                if (".language_model.layers." in name) or (".model.layers." in name):
+                    llm_total += 1
+                    if p.requires_grad:
+                        llm_trainable += 1
+                if "visual.merger" in name and p.requires_grad:
+                    merger_trainable = True
+                if name.endswith("lm_head.weight") and p.requires_grad:
+                    lm_head_trainable = True
+
+            phase_logger = None
+            try:
+                from src_new.utils.rank_aware_logging import (
+                    get_rank_aware_logger as _get,
+                )
+
+                phase_logger = _get("training.phase_freeze_manager")
+            except Exception:
+                import logging as _logging
+
+                phase_logger = _logging.getLogger("training.phase_freeze_manager")
+
+            phase_logger.info(
+                f"🧊 Phase freeze summary — vision_trainable_params={vision_trainable}/{vision_total}, "
+                f"llm_trainable_params={llm_trainable}/{llm_total}, merger_trainable={merger_trainable}, "
+                f"lm_head_trainable={lm_head_trainable}"
+            )
+        except Exception:
+            pass
+
+        # 6) Summarize total trainable parameters
         num_trainable = 0
         for _, p in model.named_parameters():
             if p.requires_grad:
@@ -243,7 +253,6 @@ class PhaseFreezeManager:
         summary = FreezeSummary(
             phase=phase,
             num_trainable_params=num_trainable,
-
             top_k_llm_layers=int(eff_top_k_layers or 0),
             top_k_vision_blocks=int(eff_vision_top_k_blocks or 0),
             patch_embed_frozen=bool(eff_freeze_patch_embed),
@@ -251,14 +260,13 @@ class PhaseFreezeManager:
 
         try:
             logger.info(
-                "[PhaseFreeze] Applied phase=%s | trainable_params≈%s | coord_slice=%s | coord_range=%s | topK_llm=%s | topK_vision=%s | patch_embed_frozen=%s",
+                "[PhaseFreeze] Applied phase=%s | trainable_params≈%s | topK_llm=%s | topK_vision=%s | patch_embed_frozen=%s | token_slice=%s",
                 summary.phase,
                 str(summary.num_trainable_params),
-                str(summary.coord_slice_enabled),
-                str(summary.coord_range),
                 str(summary.top_k_llm_layers),
                 str(summary.top_k_vision_blocks),
                 str(summary.patch_embed_frozen),
+                str(token_slice_enabled),
             )
         except Exception:
             pass

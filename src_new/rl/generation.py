@@ -129,39 +129,108 @@ def sample_k(
     generation_config: Optional[Any] = None,
     generators: Optional[list[torch.Generator]] = None,
     **extra_kwargs: Any,
-) -> torch.Tensor:
-    """Generate ``k`` iid completions for the same prompt batch."""
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    """Generate ``k`` iid completions for the same prompt_batch_size chunk and return per-step log-probs.
+
+    Returns:
+        sequences_stacked: Tensor with shape [K, B, L_max] (right-padded)
+        gen_logps_list: list of length K with 1D tensors of per-token log-probs (length=T_k per completion)
+    """
 
     if int(k) <= 0:
         raise ValueError("k must be >= 1 for sampling")
 
     generations = []
     lengths = []
+    gen_logps_list: list[torch.Tensor] = []
+
+    # Prepare inputs once to get prompt length on device
+    gen_inputs = prepare_generate_inputs(model, batch)
+
+    # Enforce single-row prompts for memory efficiency
+    batch_size = gen_inputs["input_ids"].shape[0]
+    if batch_size != 1:
+        raise ValueError(
+            f"sample_k requires single-row prompts (batch_size=1), got batch_size={batch_size}. "
+            f"This ensures memory-efficient single-sample generation and log-prob computation."
+        )
+
+    prompt_len = int(gen_inputs["input_ids"].shape[1])
+
+    # Unwrap DDP to call generate
+    gen_model = getattr(model, "module", model)
+
+    # Resolve EOS id once and ensure it is honored during generation
+    eos_id = resolve_im_end_id(tokenizer)
+
     for _ in range(int(k)):
         gen_idx = _
         if generators is not None and gen_idx < len(generators):
             extra_kwargs["generator"] = generators[gen_idx]
-        seq = generate_completions(
-            model,
-            tokenizer,
-            batch,
-            generation_config=generation_config,
-            do_sample=True,
-            temperature=float(temperature),
-            repetition_penalty=float(repetition_penalty),
-            max_new_tokens=int(max_new_tokens),
-            use_cache=True,
-            **extra_kwargs,
-        )
+
+        # Ensure EOS is set either on generation_config or as a kwarg
+        if generation_config is not None:
+            if (
+                eos_id is not None
+                and getattr(generation_config, "eos_token_id", None) is None
+            ):
+                try:
+                    generation_config.eos_token_id = int(eos_id)
+                except Exception:
+                    pass
+            gen_args = {"generation_config": generation_config}
+        else:
+            gen_args = {}
+            if eos_id is not None and "eos_token_id" not in extra_kwargs:
+                extra_kwargs["eos_token_id"] = int(eos_id)
+
+        with torch.no_grad():
+            outputs = gen_model.generate(
+                **gen_inputs,
+                do_sample=True,
+                temperature=float(temperature),
+                repetition_penalty=float(repetition_penalty),
+                max_new_tokens=int(max_new_tokens),
+                use_cache=True,
+                return_dict_in_generate=True,
+                output_scores=True,
+                **gen_args,
+                **extra_kwargs,
+            )
+
+        # sequences: [B, prompt_len + T]; scores: list[T] of [B, vocab]
+        sequences = outputs.sequences
+        scores = list(outputs.scores) if outputs.scores is not None else []
+
+        # Compute per-step log-probs for completion tokens only
+        # For B==1 (we pass single-sample batches here)
+        if len(scores) > 0:
+            import torch.nn.functional as F
+
+            step_logps = []
+            for t, step_scores in enumerate(scores):
+                # step_scores: [B, vocab]
+                logp = F.log_softmax(step_scores, dim=-1)
+                # token chosen at this step is sequences[:, prompt_len + t]
+                token_t = sequences[:, prompt_len + t].unsqueeze(-1)
+                logp_t = logp.gather(dim=-1, index=token_t).squeeze(-1)  # [B]
+                # For B==1, take item tensor; keep as 1D tensor for consistency
+                step_logps.append(logp_t.detach().to("cpu"))
+            gen_logps = torch.stack(step_logps, dim=-1).squeeze(0)  # [T]
+        else:
+            gen_logps = torch.zeros(0, dtype=torch.float32)
+        gen_logps_list.append(gen_logps)
+
+        # Collect sequences and move to CPU to control peak memory
+        seq = sequences
         if seq.dim() == 1:
             seq = seq.unsqueeze(0)
-        # Move to CPU immediately to keep GPU peak constant across k
-        # Without this, peak memory scales with k since all K sequences accumulate on GPU
         seq = seq.to("cpu", non_blocking=True)
         rl_logprobs.clear_gpu_memory()
         generations.append(seq)
         lengths.append(int(seq.size(1)))
-    # Right-pad to the maximum length across K samples so stacking succeeds
+
+    # Right-pad sequences to the maximum length across K samples so stacking succeeds
     max_len = max(lengths)
     pad_id = getattr(tokenizer, "pad_token_id", 0)
     try:
@@ -181,7 +250,8 @@ def sample_k(
             device=seq.device,
         )
         padded.append(torch.cat([seq, pad], dim=1))
-    return torch.stack(padded, dim=0)
+
+    return torch.stack(padded, dim=0), gen_logps_list
 
 
 __all__ = [

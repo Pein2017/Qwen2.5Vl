@@ -1,205 +1,383 @@
-# Dense RL Configuration System
+# Dense RL Configuration Guide
 
-## Overview
+## Strict Configuration Policy
 
-The Dense RL configuration system has been refactored to eliminate redundancy and enforce explicit configuration management. This prevents configuration errors by removing fallback defaults that could mask missing critical settings.
+**⚠️ NO DEFAULTS** - All hyperparameters must be explicitly set in YAML configs.
 
-## Configuration Structure
+### Core Principles
 
-### Inheritance Pattern
+1. **Base config = Immutable constants ONLY**
+   - `dense_base.yaml` contains values that NEVER change across runs
+   - Model dtype, loss ratios, runtime backend
+   - NO tunable hyperparameters
+
+2. **Child configs = Explicit everything**
+   - Every hyperparameter must be explicitly set
+   - No `.get(key, default)` for any tunable parameter
+   - Missing keys raise clear errors immediately
+
+3. **Truly optional fields**
+   - `paths.ref_model_path` (can be None)
+   - `grpo.max_advantage_magnitude` (can be None)
+   - `grpo.beta_anneal` (can be None if beta=0)
+   - Everything else is REQUIRED
+
+4. **Fail-fast validation**
+   - Config loads with strict `_require()` validation
+   - Clear error message: `"Missing required config key: 'X' in Y"`
+   - Forces explicit configuration
+
+## File Structure
 
 ```
-dense_base.yaml  (INCOMPLETE - universal constants only)
-    ├── debug.yaml     (complete debug environment)
-    └── standard.yaml  (complete production environment)
+configs/dense_rl/
+├── dense_base.yaml      # Immutable constants only
+├── debug.yaml           # Fast iteration (100 steps)
+├── standard.yaml        # Production training
+└── README.md           # This file
 ```
 
-### Design Principles
+## Required Sections
 
-1. **Base is incomplete by design** - Cannot be launched alone
-2. **No fallback defaults** - All required values must be explicitly set (legacy batch keys removed)
-3. **Fail-fast validation** - Missing configuration detected immediately
-4. **Clear error messages** - Developers know exactly what's missing
-5. **YAML-only policy** - Config values are loaded strictly from YAML; no env-var expansion and no CLI overrides for config keys are supported. Use YAML fields exclusively.
+Every child config MUST provide these sections:
 
-## File Descriptions
-
-### `dense_base.yaml` - Universal Constants
-
-Contains only constants that **never change** across debug/standard environments:
-
-- **Model constants**: `bf16`, `torch_dtype`, `image_max_pixels`, `trust_remote_code`
-- **Loss weights**: LossManager compatibility ratios
-- **GRPO algorithm**: Core algorithm parameters (`epsilon_low`, `epsilon_high`, etc.)
-- **Runtime constants**: `ddp_backend`, `local_rank`
-- **Generation constants**: Universal generation settings
-
-**Missing (must be provided by child configs):**
-- All paths (`model_path`, `data_paths`, `output_dir`)
-- All training parameters (`learning_rate`, `batch_size`, etc.)
-- All environment-specific settings
-
-### `debug.yaml` - Fast Iteration Environment
-
-Inherits from base and provides:
-- **Debug paths**: Local checkpoint and data paths
-- **Fast training**: `max_steps: 20`, `logging_steps: 1`
-- Uses `grpo.sample_k` for per-update sample count (no separate global batch key)
-- **Minimal freezing**: Limited layer training for speed
-- **Small sampling**: `sample_k: 2` for faster iteration
-
-### `standard.yaml` - Production Environment
-
-Inherits from base and provides:
-- **Production paths**: Full checkpoint and data paths  
-- **Full training**: `max_steps: 1000`, proper warmup
-- Per-update sample count is driven by `grpo.sample_k` (no separate global batch key)
-- **Complete freezing**: Full layer training configuration
-- **Optimal sampling**: `sample_k: 4` for better GRPO performance
-
-## RL Conversation Shape
-
-- RL runs are single‑turn only; no teacher‑student pairing.
-- Expect standard single‑image batches per sample.
-- Datasets and builders used by RL MUST NOT introduce additional turns beyond the student prompt.
-
-## Required Configuration Sections
-
-Every complete configuration **must** explicitly define:
-
-### Core Paths (all required)
+### 1. Paths
 ```yaml
-model_path: "/path/to/checkpoint"
-ref_model_path: "/path/to/ref_checkpoint"  
-train_data_path: "/path/to/train.jsonl"
-val_data_path: "/path/to/val.jsonl"
-data_root: "/path/to/data"
-output_dir: "/path/to/output"
+paths:
+  model_path: "path/to/sft/checkpoint"
+  ref_model_path: "path/to/ref/model"  # Optional, can be null
+  train_data_path: "data/train.jsonl"
+  val_data_path: "data/val.jsonl"
+  data_root: "data/"
+  output_dir: "outputs/rl_run"
+  tb_dir: "tb_logs"
 ```
 
-### Experiment Tracking (all required)
+### 2. Experiment
 ```yaml
-tb_dir: "/path/to/tensorboard"
-run_name: "experiment_name"
-seed: 42
+experiment:
+  run_name: "my_grpo_run"
+  seed: 17
+  tags: []  # Optional list
 ```
 
-### Model Configuration (required)
+### 3. Model
 ```yaml
 model:
-  attn_implementation: "flash_attention_2"  # required
-  # base provides: torch_dtype, use_cache, trust_remote_code, image_max_pixels
+  attn_implementation: "flash_attention_2"  # or "eager" or "sdpa"
 ```
 
-### Layer Freezing (all sections required)
+### 4. Sampling
+```yaml
+sampling:
+  prompt_batch_size: 8      # Number of prompts per optimizer step
+  sample_k: 8               # Completions per prompt (split across GPUs if sample_k_per_rank=false)
+  sample_k_per_rank: false  # If false, sample_k is split across world_size
+  reward_average_window: 5
+
+# NOTE: gradient_accumulation_steps is AUTO-COMPUTED as:
+#   local_sample_k × prompt_batch_size
+# where local_sample_k = sample_k (if sample_k_per_rank) or sample_k/world_size
+```
+
+**Important**: The actual gradient accumulation is computed automatically based on the sampling window. Do NOT specify `gradient_accumulation_steps` manually.
+
+### 5. Generation
+```yaml
+generation:
+  max_new_tokens: 1500
+  min_new_tokens: 0
+  temperature: 1.1
+  top_p: 0.95
+  top_k: 50
+  repetition_penalty: 1.05
+  dynamic_length:
+    enabled: true
+    estimator: "tokenizer"
+    alpha: 1.2
+    eos_margin: 16
+    min_cap: 64
+    max_cap: 2048
+    hard_cap: true
+```
+
+### 6. GRPO
+```yaml
+grpo:
+  epsilon_low: 0.2
+  epsilon_high: 0.2
+  beta_start: 0.05
+  beta_anneal:  # Optional
+    type: "cosine"  # or "linear"
+    ratio: 0.67     # Fraction of training for annealing (e.g., 0.67 = 2/3)
+  loss_type: "grpo"
+  scale_rewards: true
+  mask_truncated_completions: false
+  max_advantage_magnitude: 5.0  # Optional, can be null
+```
+
+**Beta Annealing (epoch-based):**
+- `beta_start`: Initial KL coefficient
+- `beta_anneal.type`: "linear" or "cosine" decay
+- `beta_anneal.ratio`: Fraction of total training for annealing
+  - Example: ratio=0.67 with 3000 steps → anneal over 2010 steps
+  - Beta decays from beta_start to 0 over this period
+- Optional: Can be omitted or set to null if beta_start=0
+
+### 7. Normalization
+```yaml
+normalization:
+  cross_rank_advantages: true
+```
+
+### 8. Training
+```yaml
+training:
+  num_train_epochs: 3
+  dataset_size: -1           # -1 = auto-detect from len(train_dataset)
+  warmup_ratio: 0.1          # Warmup as fraction of total steps (e.g., 0.1 = 10%)
+  lr_scheduler_type: "cosine"
+  gradient_checkpointing: false       # Enable to reduce memory (slight speed cost)
+  dataloader_num_workers: 8
+  pin_memory: true
+  prefetch_factor: 4         # Prefetch batches when num_workers > 0
+  bf16: true
+  fp16: false
+```
+
+**Epoch-Based Training:**
+- `num_train_epochs`: Number of passes through dataset
+- `dataset_size`: Number of samples (-1 for auto-detect)
+  - When -1: uses len(train_dataset)
+  - When positive: limits to that many samples
+- Steps per epoch = `dataset_size // prompt_batch_size`
+- Total steps = `num_train_epochs × steps_per_epoch`
+
+**Warmup:**
+- `warmup_ratio`: Fraction of total steps for warmup (e.g., 0.1 = 10%)
+- Warmup steps = `warmup_ratio × total_steps`
+
+**Step-based configs** (unchanged):
+- `eval_every_steps`: Evaluation frequency
+- `logging_steps`: Logging frequency  
+- `save_steps`: Checkpoint frequency
+
+**Gradient Checkpointing**: 
+- Set `gradient_checkpointing: true` to reduce memory usage
+- Trades off slight speed for lower VRAM consumption
+- Useful for large models or higher resolution images
+
+**Prefetch Factor**:
+- Only used when `dataloader_num_workers > 0`
+- Prefetches batches to speed up data loading
+- Recommended: 2-4 for spinning disks, 4-8 for SSDs
+
+### 9. Optimizer
+```yaml
+optimizer:
+  type: "adamw"
+  learning_rates:
+    llm: 1.0e-5
+    vision: 1.0e-6
+    merger: 1.0e-4
+  weight_decay: 1.0e-3
+  max_grad_norm: 1.0
+```
+
+**Note**: AdamW uses default PyTorch values for beta1 (0.9), beta2 (0.999), and epsilon (1e-8). These can be optionally overridden by adding `adam_beta1`, `adam_beta2`, or `adam_epsilon` fields if needed.
+
+### 10. Layer Freezing
 ```yaml
 layer_config:
   vision_tower:
     freeze_patch_embed: true
-    freeze_bottom_layers: true  
-    trainable_top_k_blocks: 4
+    freeze_bottom_layers: false
+    trainable_top_k_blocks: 2
   llm:
     freeze_bottom_layers: false
-    trainable_top_k_blocks: -1
+    trainable_top_k_blocks: 4
   merger:
     freeze: false
 ```
 
-### Training Configuration (all required)
+### 11. Logging
 ```yaml
-training:
-  max_steps: 1000
-  warmup_steps: 25
 logging:
-  logging_steps: 10
-checkpointing:
-  save_steps: 200
-optimizer:
-  weight_decay: 0.0
+  logging_steps: 1
+  log_level: "INFO"
 ```
 
-### Generation Configuration (all required)
+### 12. Checkpointing
 ```yaml
-grpo:
-  sample_k: 4
-  max_new_tokens: 1024
-  temperature: 1.0
-  top_p: 0.95
-  repetition_penalty: 1.1
+checkpointing:
+  save_steps: 500
+  save_total_limit: 3
 ```
 
-### Reward Configuration (required, at least one non-zero)
+**Note**: Checkpoints always save with strategy="steps" and include tokenizer/processor
+
+### 13. Rewards
 ```yaml
 rewards:
-  parse: 0.30
   wrappers: 0.10
   coords: 0.10
   separators: 0.10
-  vocab: 0.05
-  length: 0.10
-  length_window: 0.10
-  bbox_giou: 0.15
+  vocab: 0.03
+  length_vs_gt: 0.20
+  geometry_sanity: 0.10
+  coverage: 0.40
+  ordering: 0.10
+  bbox_giou: 0.40
+  quad_l1: 0.40
+  line_l1: 0.40
+  caption_f1: 0.30
+  grounding_acc: 0.30
+
+observe_rewards: []
+
+rewards_config:
+  clip_sigma: 5.0
+  tau_iou: 0.5
+  tau_quad: 0.02
+  tau_line: 0.02
+  length_vs_gt:
+    estimator: "tokenizer"
+    lower: 0.7
+    upper: 1.2
+    gamma: 3.0
+    tail_numeric_weight: 0.4
 ```
 
-## Validation Behavior
-
-### Explicit Validation
-- **No `.get(key, default)`** patterns in runner code
-- **Direct key access** with immediate failure if missing
-- **Type validation** for all configuration sections
-- **Non-empty validation** for critical sections like rewards
-
-### Error Examples
-
-Missing model_path:
-```
-ValueError: Missing required 'model_path' (absolute path to SFT checkpoint)
+### 14. Evaluation
+```yaml
+evaluation:
+  enabled: true
+  eval_every_steps: 50
+  rounds: 1
+  per_rank_samples: 1
+  save_samples: 20
+  log_text_snippets: true
+  seed: 17
 ```
 
-Missing grpo section:
-```
-ValueError: Missing required 'grpo' section in config
-```
+## Auto-Computed Values
 
-Missing specific grpo parameter:
-```
-ValueError: Missing required 'grpo.epsilon_low' - must be explicitly set
-```
+These values are **automatically computed** by the trainer:
+
+1. **`max_steps`** = `num_train_epochs × (dataset_size // prompt_batch_size)`
+   - Where `dataset_size` auto-detects from `len(train_dataset)` if set to -1
+
+2. **`gradient_accumulation_steps`** = `local_sample_k × prompt_batch_size`
+   - Where `local_sample_k = sample_k` (if `sample_k_per_rank=true`)
+   - Or `local_sample_k = sample_k / world_size` (if `sample_k_per_rank=false`)
+
+3. **`per_device_train_batch_size`** = `1` (hardcoded)
+
+Example: With `num_train_epochs=3`, `dataset_size=1000`, `prompt_batch_size=8`, `sample_k=8`, `world_size=4`, `sample_k_per_rank=false`:
+- `steps_per_epoch = 1000 // 8 = 125`
+- `max_steps = 3 × 125 = 375`
+- `local_sample_k = 8/4 = 2`
+- `gradient_accumulation_steps = 2 × 8 = 16`
 
 ## Usage
 
-### Launch Debug Environment
+### Basic
 ```bash
+# Load and validate config
+python -m src_new.rl.runner --config configs/dense_rl/debug.yaml --mode load
+
+# Train
 python -m src_new.rl.runner --config configs/dense_rl/debug.yaml --mode train
 ```
 
-### Launch Production Environment  
+### With Launcher
 ```bash
-python -m src_new.rl.runner --config configs/dense_rl/standard.yaml --mode train
+bash scripts/run_dense_grpo.sh configs/dense_rl/standard.yaml
 ```
 
-### Base Alone (Will Fail)
-```bash
-python -m src_new.rl.runner --config configs/dense_rl/dense_base.yaml --mode load
-# ValueError: Missing required 'model_path' (absolute path to SFT checkpoint)
+## Error Handling
+
+### Missing Required Key
+```
+ConfigValidationError: Missing required config key: 'train_data_path' in paths
+This value must be explicitly set in your YAML config.
 ```
 
-## Benefits of New Structure
+**Solution**: Add the missing key to your YAML file.
 
-1. **Reduced Redundancy**: Common values defined once in base
-2. **Explicit Configuration**: No hidden defaults that can cause issues
-3. **Fail-Fast**: Missing config detected before training starts
-4. **Clear Environment Separation**: Debug vs production clearly differentiated
-5. **Maintenance**: Easy to update universal constants in one place
-6. **Safety**: Impossible to accidentally run with wrong/missing config
+### Wrong Type
+```
+ConfigValidationError: beta_anneal.type must be 'linear' or 'cosine', got: 'exponential'
+```
 
-## Migration Notes
+**Solution**: Use a valid value.
 
-When updating configurations:
+## Migration from Old Format
 
-1. **Remove redundant values** that are already in base
-2. **Add missing required values** explicitly 
-3. **Test with validation** to ensure completeness
-4. **Use inheritance properly** - only override what differs from base
+### Old (Deprecated)
+```yaml
+# OLD - no longer supported
+model_path: "..."
+train_data_path: "..."
+# Scattered keys with defaults
+gradient_accumulation_steps: 4  # This is now auto-computed!
+```
 
-The new system prevents the common issue of "it worked on my machine" by ensuring all environments have explicitly defined, complete configurations.
+### New (Required)
+```yaml
+extends: [./dense_base.yaml]
+
+# All keys grouped logically and explicitly set
+paths:
+  model_path: "..."
+  train_data_path: "..."
+  # ...
+
+experiment:
+  run_name: "..."
+  seed: 17
+
+sampling:
+  prompt_batch_size: 8
+  sample_k: 8
+  # gradient_accumulation_steps is AUTO-COMPUTED, don't specify it!
+
+# ... all other required sections
+```
+
+## Best Practices
+
+1. **Start from template**: Copy `debug.yaml` or `standard.yaml`
+2. **Change values explicitly**: Never rely on defaults
+3. **Group related settings**: Use the section structure
+4. **Validate early**: Run `--mode load` before training
+5. **Document changes**: Add comments for non-obvious values
+6. **Don't specify auto-computed values**: Let the trainer compute them
+
+## Troubleshooting
+
+### Q: Config loading fails with "Missing required config key"
+**A**: Add the missing key to your YAML file. There are NO defaults.
+
+### Q: Want to disable a feature?
+**A**: Set the corresponding flag explicitly:
+- Evaluation: `evaluation.enabled: false`
+- Beta annealing: `grpo.beta_anneal: null` or omit (if beta_start=0)
+
+### Q: How to inherit from base?
+**A**: Use `extends: [./dense_base.yaml]` at the top of your config.
+
+### Q: How is max_steps determined?
+**A**: It's auto-computed from `num_train_epochs × (dataset_size // prompt_batch_size)`. Control training length via `num_train_epochs` and optionally `dataset_size`.
+
+### Q: Can I add new optional parameters?
+**A**: Only if they are truly optional (have `Optional[T] = None` in the dataclass).
+All hyperparameters must be required.
+
+## Reference
+
+- Configuration module: `src_new/config/rl_config_v2.py`
+- Runner: `src_new/rl/runner.py`
+- Trainer: `src_new/rl/grpo_trainer.py`
+- Plan: `RL-refactoring-plan/config_claude4.5.md`
+- Summary: `RL-refactoring-plan/IMPLEMENTATION_SUMMARY.md`
