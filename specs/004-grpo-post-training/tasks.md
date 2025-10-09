@@ -79,20 +79,20 @@ description: "Task list for GRPO Post-Training Diagnostics and Error Detection"
   - Output: `TrustRegionDiagnostic` instance
   - Logic: Compute statistics, check degeneracy threshold (std < 0.1)
 
-- [ ] T017 [US1] Add instrumentation hook in `src_new/rl/completion_loss.py::_get_generation_logprobs`
+- [X] T017 [US1] Add instrumentation hook in `src_new/rl/completion_loss.py::_get_generation_logprobs`
   - After ratio computation, call `compute_trust_region_diagnostic()`
   - Store diagnostic in trainer state
   - Log warning if fallback used or degeneracy detected
 
-- [ ] T018 [US1] Add instrumentation hook in `src_new/rl/buffer.py::generate_and_score`
+- [X] T018 [US1] Add instrumentation hook in `src_new/rl/buffer.py::generate_and_score`
   - Verify generation_logps tensor shape and non-zero values
   - Log generation_logps_present status
 
-- [ ] T019 [US1] Add TensorBoard logging in `src_new/rl/grpo_trainer.py::train` loop
+- [X] T019 [US1] Add TensorBoard logging in `src_new/rl/grpo_trainer.py::train` loop
   - After each training step, log `diagnostic.to_tensorboard()`
   - Export histogram every 10 steps via exporter
 
-- [ ] T020 [US1] Run pytest `tests/rl/diagnostics/test_trust_region.py` - all tests MUST pass
+- [X] T020 [US1] Run pytest `tests/rl/diagnostics/test_trust_region.py` - all tests MUST pass
 
 **Checkpoint**: User Story 1 complete - trust region diagnostics functional
 

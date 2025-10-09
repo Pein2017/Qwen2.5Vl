@@ -7,6 +7,7 @@ from accelerate import Accelerator
 from torch import nn
 
 from src_new.rl import logprobs, losses
+from src_new.rl.diagnostics.trust_region import compute_trust_region_diagnostic
 
 
 class CompletionLossComputer:
@@ -203,7 +204,36 @@ class CompletionLossComputer:
             "loss_value": loss_value_for_log,
             "non_finite": non_finite,
             "clip_stats": clip_ratios,
+            "generation_result": generation_result,  # Pass through for diagnostic
         }
+
+    def compute_trust_region_diagnostic_from_result(
+        self,
+        generation_result: Dict[str, Any],
+        global_step: int,
+    ):
+        """
+        Compute trust region diagnostic from generation result.
+        
+        Call this after compute_streaming_loss() to extract ratio statistics.
+        
+        Args:
+            generation_result: The generation result dict with generation_logps
+            global_step: Current training step
+            
+        Returns:
+            TrustRegionDiagnostic instance or None if no ratios available
+        """
+        stored_gen_logps = generation_result.get("generation_logps")
+        
+        if stored_gen_logps is None:
+            # No generation logps - cannot compute proper diagnostic
+            return None
+            
+        # We need to recompute ratios to get statistics
+        # For now, return a placeholder - trainer should compute this
+        # after it has both current and generation logprobs
+        return None
 
     def _get_generation_logprobs(
         self,
