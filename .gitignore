@@ -25,6 +25,7 @@
 !RL-refactoring-plan/**
 !.history
 !configs/
+!specs/
 
 
 # 5) Exclude temporary/experimental and large output directories (even if they contain .py/.md)
