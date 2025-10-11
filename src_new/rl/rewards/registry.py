@@ -26,6 +26,7 @@ from .format_rewards import (
     duplicate_penalty,
     length_vs_gt,
     pairing_ratio,
+    pattern_penalty,
     separators_score,
 )
 
@@ -33,6 +34,7 @@ from .format_rewards import (
 REGISTRY: Dict[str, Callable[[str], float]] = {
     "pairing_ratio": pairing_ratio,
     "duplicate_penalty": duplicate_penalty,
+    "pattern_penalty": pattern_penalty,
     "wrappers": check_wrappers,
     "coords": check_coords_counts,
     "separators": separators_score,
@@ -107,9 +109,10 @@ def combine(text: str, weights: Dict[str, float], meta: dict | None = None) -> f
         if fn is None:
             continue
         try:
-            val = float(fn(text, meta=meta))  # detection rewards accept meta
+            # Try with meta and per-reward params injected by outer wrapper (runner wraps with cfg)
+            val = float(fn(text, meta=meta))
         except TypeError:
-            val = float(fn(text))  # formatting rewards without meta
+            val = float(fn(text))
         score += w * val
         total_w += w
     return float(score / total_w) if total_w > 0.0 else 0.0

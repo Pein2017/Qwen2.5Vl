@@ -40,6 +40,10 @@ class GenerationBuffer:
     rewards_per_func_list: List[torch.Tensor]  # P prompts, each [K, num_rewards]
     raw_rewards_per_func_list: List[torch.Tensor]  # P prompts, each [K, num_rewards]
 
+    # Termination and truncation flags (CPU) aligned per completion
+    terminated_flags_list: List[torch.Tensor]  # P prompts, each [K]
+    truncated_flags_list: List[torch.Tensor]  # P prompts, each [K]
+
     # Vision tensors (CPU)
     pixel_values_list: List[Optional[torch.Tensor]]  # P prompts
     image_grid_thw_list: List[Optional[torch.Tensor]]  # P prompts

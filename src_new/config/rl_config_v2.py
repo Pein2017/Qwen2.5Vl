@@ -119,7 +119,6 @@ class DynamicLengthConfig:
     estimator: str
     alpha: float
     eos_margin: int
-    min_cap: int
     max_cap: int
     hard_cap: bool
 
@@ -130,7 +129,6 @@ class DynamicLengthConfig:
             estimator=_require(cfg, "estimator", "dynamic_length"),
             alpha=_require(cfg, "alpha", "dynamic_length"),
             eos_margin=_require(cfg, "eos_margin", "dynamic_length"),
-            min_cap=_require(cfg, "min_cap", "dynamic_length"),
             max_cap=_require(cfg, "max_cap", "dynamic_length"),
             hard_cap=_require(cfg, "hard_cap", "dynamic_length"),
         )
@@ -460,22 +458,21 @@ class CheckpointingConfig:
 
 @dataclass(frozen=True)
 class LengthVsGTConfig:
-    """Length vs GT reward config - all required."""
+    """Length vs GT reward config - minimal Gaussian parameters."""
 
-    estimator: str
-    lower: float
-    upper: float
-    gamma: float
-    tail_numeric_weight: float
+    use_ratio: bool
+    sigma_ratio: float
+    sigma_tokens: int
+    min_reward: float
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "LengthVsGTConfig":
+        # Defaults consistent with plan; enforce presence via _require for explicit config
         return LengthVsGTConfig(
-            estimator=_require(cfg, "estimator", "length_vs_gt"),
-            lower=_require(cfg, "lower", "length_vs_gt"),
-            upper=_require(cfg, "upper", "length_vs_gt"),
-            gamma=_require(cfg, "gamma", "length_vs_gt"),
-            tail_numeric_weight=_require(cfg, "tail_numeric_weight", "length_vs_gt"),
+            use_ratio=_require(cfg, "use_ratio", "length_vs_gt"),
+            sigma_ratio=_require(cfg, "sigma_ratio", "length_vs_gt"),
+            sigma_tokens=_require(cfg, "sigma_tokens", "length_vs_gt"),
+            min_reward=_require(cfg, "min_reward", "length_vs_gt"),
         )
 
 
@@ -490,9 +487,69 @@ class RewardParamsConfig:
     length_vs_gt: LengthVsGTConfig
     # Optional per-reward params
     line_giou: Optional[Dict[str, Any]] = None
+    # New: line-specific duplicate and pattern penalties (flattened 'line' sub-blocks)
+    duplicate_penalty: Optional[Dict[str, Any]] = None
+    pattern_penalty: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "RewardParamsConfig":
+        def _extract_duplicate_penalty(
+            root: Dict[str, Any],
+        ) -> Optional[Dict[str, Any]]:
+            dp = root.get("duplicate_penalty")
+            if dp is None:
+                return None
+            if not isinstance(dp, dict):
+                raise ConfigValidationError(
+                    "rewards_config.duplicate_penalty must be a mapping when provided"
+                )
+            line = (
+                dp.get("line")
+                if isinstance(dp.get("apply_to"), list) and "line" in dp.get("apply_to")
+                else dp.get("line")
+            )
+            if line is not None and not isinstance(line, dict):
+                raise ConfigValidationError(
+                    "rewards_config.duplicate_penalty.line must be a mapping when provided"
+                )
+            # Validate known fields when present
+            if line is not None:
+                for k in ("min_vertex_separation",):
+                    if k in line:
+                        _ = int(line[k])
+                for k in (
+                    "zero_length_seg_penalty",
+                    "per_duplicate_vertex",
+                    "max_penalty",
+                ):
+                    if k in line:
+                        _ = float(line[k])
+            return {"line": line} if line is not None else {}
+
+        def _extract_pattern_penalty(root: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            pp = root.get("pattern_penalty")
+            if pp is None:
+                return None
+            if not isinstance(pp, dict):
+                raise ConfigValidationError(
+                    "rewards_config.pattern_penalty must be a mapping when provided"
+                )
+            line = pp.get("line")
+            if line is not None and not isinstance(line, dict):
+                raise ConfigValidationError(
+                    "rewards_config.pattern_penalty.line must be a mapping when provided"
+                )
+            if line is not None:
+                for k in (
+                    "axis_run_max_ratio",
+                    "step_repeat_max_ratio",
+                    "per_overshoot",
+                    "max_penalty",
+                ):
+                    if k in line:
+                        _ = float(line[k])
+            return {"line": line} if line is not None else {}
+
         line_giou_cfg = cfg.get("line_giou")
         if line_giou_cfg is not None and not isinstance(line_giou_cfg, dict):
             raise ConfigValidationError(
@@ -517,6 +574,8 @@ class RewardParamsConfig:
                 _require(cfg, "length_vs_gt", "rewards_config")
             ),
             line_giou=line_giou_cfg,
+            duplicate_penalty=_extract_duplicate_penalty(cfg),
+            pattern_penalty=_extract_pattern_penalty(cfg),
         )
 
 

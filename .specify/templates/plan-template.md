@@ -46,6 +46,7 @@ Fill the table below with `PASS`, `PASS WITH ACTION`, or `NEEDS ACTION`, plus a 
 | Security & Compliance |  | |
 | Documentation & Traceability |  | |
 | Performance & Resource Stewardship |  | |
+| Sequential Processing & GPU Resource Constraints |  | |
 | Code Review & CI Gates |  | |
 | Execution Environment & Tooling Rules |  | |
 | Operational Workflow & Artifact Expectations |  | |

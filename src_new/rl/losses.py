@@ -42,16 +42,24 @@ def compute_grpo_loss(
         adv = advantages.view(batch_size, 1)
     else:
         adv = advantages
-    adv = adv.expand_as(logps)
 
-    mask = completion_mask.to(dtype=logps.dtype)
+    # Compute in float32 for stability
+    logps_f = logps.float()
+    adv_f = adv.float().expand_as(logps_f)
+    mask = completion_mask.to(dtype=logps_f.dtype)
+    denom = mask.sum().clamp_min(1.0)
+
     if mask.sum() == 0:
         raise ValueError("completion_mask contains no valid tokens")
 
     if old_logps is None:
-        ratio = torch.exp(logps)
+        diff = logps_f
     else:
-        ratio = torch.exp(logps - old_logps)
+        diff = logps_f - old_logps.float()
+
+    # Clamp difference to avoid overflow in exp
+    diff = diff.clamp(min=-50.0, max=50.0)
+    ratio = torch.exp(diff)
 
     clipped_ratio = torch.clamp(
         ratio, 1.0 - float(epsilon_low), 1.0 + float(epsilon_high)
@@ -60,16 +68,16 @@ def compute_grpo_loss(
     if str(loss_type).lower() != "grpo":
         raise ValueError(f"Only 'grpo' loss_type is supported; got '{loss_type}'")
 
-    surrogate_a = ratio * adv
-    surrogate_b = clipped_ratio * adv
+    surrogate_a = ratio * adv_f
+    surrogate_b = clipped_ratio * adv_f
     policy_loss = -torch.minimum(surrogate_a, surrogate_b)
 
-    policy_loss = (policy_loss * mask).sum() / mask.sum()
+    policy_loss = (policy_loss * mask).sum() / denom
 
     if beta > 0.0 and per_token_kl is not None:
         if per_token_kl.shape != logps.shape:
             raise ValueError("per_token_kl must match logps shape")
-        kl_term = (per_token_kl * mask).sum() / mask.sum()
+        kl_term = (per_token_kl.float() * mask).sum() / denom
         policy_loss = policy_loss + float(beta) * kl_term
 
     return policy_loss

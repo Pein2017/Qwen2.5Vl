@@ -25,6 +25,7 @@
 !RL-refactoring-plan/**
 !.history
 !configs/
+!specs/
 
 
 # 5) Exclude temporary/experimental and large output directories (even if they contain .py/.md)
@@ -74,3 +75,4 @@ AI研发工作汇报.md
 **/*.png
 **/*.webp
 **/*.gif
+.history/

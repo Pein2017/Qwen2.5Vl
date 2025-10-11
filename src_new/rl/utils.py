@@ -37,6 +37,22 @@ def resolve_im_end_id(tokenizer: Any) -> int | None:
     return None
 
 
+def resolve_im_end_id_strict(tokenizer: Any) -> int | None:
+    """Resolve the <|im_end|> token id without any fallback.
+
+    Returns None if the tokenizer does not define IM_END.
+    """
+    if tokenizer is None:
+        return None
+    try:
+        token_id = tokenizer.convert_tokens_to_ids(IM_END)
+        if token_id is not None and int(token_id) >= 0:
+            return int(token_id)
+    except Exception:
+        pass
+    return None
+
+
 def create_builder(processor: Any) -> ConversationBuilder:
     """Factory for ConversationBuilder used in RL modules.
 

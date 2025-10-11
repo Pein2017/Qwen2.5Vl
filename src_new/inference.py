@@ -14,6 +14,7 @@ with the following features:
 import os
 import sys
 
+
 # PROJECT_ROOT not needed - using relative paths
 
 # Prevent stdlib shadowing when running this file directly (python src_new/inference.py)
@@ -55,8 +56,13 @@ logger = get_rank_aware_logger("inference")
 # Import new architecture components
 from src_new.config.config import load_config
 from src_new.models.patches import apply_comprehensive_qwen25_fixes
-from src_new.utils.hf_components import build_hf_components
 from src_new.processing.conversation import ConversationBuilder
+from src_new.processing.parse_generated import (
+    convert_objects_to_vis,
+    convert_response_to_vis_json,
+    deduplicate_objects,
+    parse_geometry_response,
+)
 from src_new.processing.special_tokens import (
     ASSISTANT_HEADER,
     END_OF_TEXT,
@@ -65,21 +71,18 @@ from src_new.processing.special_tokens import (
     IM_START,
     IMAGE_PAD,
 )
-from src_new.processing.parse_generated import (
-    convert_objects_to_vis,
-    convert_response_to_vis_json,
-    deduplicate_objects,
-    parse_geometry_response,
-)
-from src_new.utils.data_resolver import DataResolver
-from src_new.utils.path_manager import create_path_manager
-from src_new.utils.validation import PathValidationError
+
 # Import prompts from training pipeline to ensure consistency
 from src_new.processing.templates import CONSTANTS, get_system_prompt
+from src_new.utils.data_resolver import DataResolver
+from src_new.utils.hf_components import build_hf_components
+from src_new.utils.path_manager import create_path_manager
+from src_new.utils.validation import PathValidationError
 
 
-
-def _normalize_prediction_to_vis_objects_impl(engine: "InferenceEngine", text: str) -> List[Dict[str, Any]]:
+def _normalize_prediction_to_vis_objects_impl(
+    engine: "InferenceEngine", text: str
+) -> List[Dict[str, Any]]:
     """Normalize raw generated text into a list of visualization objects."""
 
     logger.info("🔍 Parsing response text for geometry objects")
@@ -102,10 +105,14 @@ def _normalize_prediction_to_vis_objects_impl(engine: "InferenceEngine", text: s
 
     has_geometry_tokens = (
         "<|object_ref_start|>" in text or "<|obj_ref_start|>" in text
-    ) and any(token in text for token in ["<|quad_start|>", "<|box_start|>", "<|line_start|>"])
+    ) and any(
+        token in text for token in ["<|quad_start|>", "<|box_start|>", "<|line_start|>"]
+    )
 
     if has_geometry_tokens:
-        logger.info("🔧 Detected geometry tokens - attempting strict geometry parsing...")
+        logger.info(
+            "🔧 Detected geometry tokens - attempting strict geometry parsing..."
+        )
         geometry_objects = parse_geometry_response(text, tolerant=False)
         if geometry_objects:
             logger.info(
@@ -168,9 +175,7 @@ def _normalize_prediction_to_vis_objects_impl(engine: "InferenceEngine", text: s
         json_text = engine._convert_prediction_text_to_vis_json(text)
         parsed_list = json.loads(json_text)
         if isinstance(parsed_list, list):
-            logger.info(
-                f"✅ Fallback converter successful: {len(parsed_list)} items"
-            )
+            logger.info(f"✅ Fallback converter successful: {len(parsed_list)} items")
             unified: List[Dict[str, Any]] = []
             for obj in parsed_list:
                 if not isinstance(obj, dict):
@@ -223,6 +228,7 @@ class InferenceEngine:
         global_teacher_seed: Optional[int] = None,
         global_teacher_index: Optional[int] = None,
         global_teacher_file: Optional[str] = None,
+        config_auto_loaded: bool = False,
     ):
         """Initialize inference engine with new architecture.
 
@@ -236,6 +242,7 @@ class InferenceEngine:
             teacher_pool_file: Path to teacher pool JSONL file
             num_teachers: Number of teacher examples to use per sample
             force_eager_attention: Force eager attention instead of flash attention
+            config_auto_loaded: Whether config was auto-loaded from checkpoint (internal flag)
         """
         self.model_path = model_path
         self.batch_size = batch_size
@@ -244,7 +251,9 @@ class InferenceEngine:
         self.teacher_pool_file = teacher_pool_file
         # Force-disable teacher pairing for inference
         if num_teachers and int(num_teachers) > 0:
-            logger.warning(f"Teacher pairing is disabled in inference; ignoring num_teachers={num_teachers}")
+            logger.warning(
+                f"Teacher pairing is disabled in inference; ignoring num_teachers={num_teachers}"
+            )
         self.num_teachers = 0
         self.force_eager_attention = force_eager_attention
         # Optional data root for resolving relative image paths
@@ -258,8 +267,12 @@ class InferenceEngine:
         self.generation_variant = v
         # Global teacher ablation configuration
         self.use_global_teacher = bool(use_global_teacher)
-        self.global_teacher_seed = int(global_teacher_seed) if global_teacher_seed is not None else None
-        self.global_teacher_index = int(global_teacher_index) if global_teacher_index is not None else None
+        self.global_teacher_seed = (
+            int(global_teacher_seed) if global_teacher_seed is not None else None
+        )
+        self.global_teacher_index = (
+            int(global_teacher_index) if global_teacher_index is not None else None
+        )
         self.global_teacher_file = global_teacher_file
         self._global_teacher_sample: Optional[Dict[str, Any]] = None
 
@@ -267,8 +280,27 @@ class InferenceEngine:
         logger.info(f"Loading configuration from {config_path}")
         self.config = load_config(config_path)
 
-        # Resolve model path (do not mutate frozen config)
-        self._model_path = model_path if model_path else self.config.model_path
+        # CRITICAL FIX: Override config's model_path when auto-loaded from checkpoint
+        # When config is auto-loaded from checkpoint directory, the config's model_path
+        # field still points to the original base model, not the checkpoint itself.
+        # Always prioritize CLI's model_path over config's model_path.
+        if config_auto_loaded and model_path:
+            logger.info(
+                f"🔄 Auto-loaded config detected - overriding config's model_path"
+            )
+            logger.info(
+                f"   Config's model_path: {getattr(self.config, 'model_path', 'N/A')}"
+            )
+            logger.info(f"   CLI's model_path: {model_path}")
+            logger.info(f"   Using CLI's model_path for inference")
+            self._model_path = model_path
+        else:
+            # Standard path resolution when config is explicitly provided
+            self._model_path = model_path if model_path else self.config.model_path
+
+        # Log final resolved model path
+        logger.info(f"✅ Resolved model path: {self._model_path}")
+
         # Enforce explicit paths (no implicit fallbacks)
         if self.data_root is None:
             self.data_root = self.config.data_root
@@ -295,7 +327,9 @@ class InferenceEngine:
 
             # Resolve teacher pool path using DataResolver first (authoritative to data_root)
             if self.data_root is None:
-                raise ValueError("data_root must be provided for teacher pool resolution when num_teachers>0")
+                raise ValueError(
+                    "data_root must be provided for teacher pool resolution when num_teachers>0"
+                )
             try:
                 resolved_dataset_paths = DataResolver.resolve_dataset_paths(
                     str(self.data_root)
@@ -320,7 +354,9 @@ class InferenceEngine:
                     and self.teacher_pool_file != default_teacher_pool
                 ):
                     try:
-                        resolved_path = str(path_manager.resolve_path(default_teacher_pool))
+                        resolved_path = str(
+                            path_manager.resolve_path(default_teacher_pool)
+                        )
                         teacher_pool_path = resolved_path
                         logger.info(
                             f"Using teacher pool resolved from data_root instead of provided path: {default_teacher_pool}"
@@ -355,8 +391,10 @@ class InferenceEngine:
                 )
 
             # Use teacher guidance only when explicitly requested via num_teachers > 0
-                    # Always skip teacher guidance in inference
-        logger.info("ℹ️ Inference: teacher-student pairing is disabled; using single-turn prompts only")
+            # Always skip teacher guidance in inference
+        logger.info(
+            "ℹ️ Inference: teacher-student pairing is disabled; using single-turn prompts only"
+        )
 
         logger.info("✅ InferenceEngine initialized successfully")
 
@@ -367,13 +405,17 @@ class InferenceEngine:
         # Enforce bf16-only policy in inference
         try:
             if not bool(getattr(self.config, "bf16", True)):
-                raise ValueError("Inference requires bf16; set training.bf16: true in the config")
+                raise ValueError(
+                    "Inference requires bf16; set training.bf16: true in the config"
+                )
             if bool(getattr(self.config, "fp16", False)):
-                raise ValueError("Inference disallows fp16; set training.fp16: false and use bf16")
+                raise ValueError(
+                    "Inference disallows fp16; set training.fp16: false and use bf16"
+                )
             dtype_norm = str(getattr(self.config, "torch_dtype", "")).lower()
             if dtype_norm not in {"bfloat16", "bf16"}:
                 raise ValueError("Inference requires model.torch_dtype=bfloat16")
-        except Exception as e:
+        except Exception:
             raise
 
         if self.config.attn_implementation == "flash_attention_2":
@@ -439,7 +481,9 @@ class InferenceEngine:
             logger.info("✅ Cached system prompt from training templates for inference")
         except Exception as exc:
             self.system_prompt = None
-            logger.warning("Failed to build system prompt from training templates: %s", exc)
+            logger.warning(
+                "Failed to build system prompt from training templates: %s", exc
+            )
 
         self.conversation_processor = ConversationBuilder(
             processor=self.processor,
@@ -462,7 +506,11 @@ class InferenceEngine:
     ) -> List[Dict[str, Any]]:
         """Load teacher samples from JSONL file."""
         if teacher_pool_path is None:
-            teacher_pool_path = str(self.teacher_pool_file) if self.teacher_pool_file is not None else None
+            teacher_pool_path = (
+                str(self.teacher_pool_file)
+                if self.teacher_pool_file is not None
+                else None
+            )
         if not teacher_pool_path:
             return []
 
@@ -512,9 +560,12 @@ class InferenceEngine:
 
         # Choose index
         if self.global_teacher_index is not None:
-            if self.global_teacher_index < 0 or self.global_teacher_index >= total_lines:
+            if (
+                self.global_teacher_index < 0
+                or self.global_teacher_index >= total_lines
+            ):
                 raise ValueError(
-                    f"global_teacher_index out of range: {self.global_teacher_index} not in [0,{total_lines-1}]"
+                    f"global_teacher_index out of range: {self.global_teacher_index} not in [0,{total_lines - 1}]"
                 )
             chosen_index = int(self.global_teacher_index)
         else:
@@ -529,7 +580,9 @@ class InferenceEngine:
                     try:
                         candidate = json.loads(line.strip())
                     except Exception as e:
-                        raise ValueError(f"Failed to parse teacher sample at line {idx}: {e}")
+                        raise ValueError(
+                            f"Failed to parse teacher sample at line {idx}: {e}"
+                        )
                     if not isinstance(candidate, dict):
                         raise ValueError("Teacher sample must be a JSON object")
                     # Basic validation; dense pipeline expects images and objects
@@ -538,11 +591,17 @@ class InferenceEngine:
                         or not isinstance(candidate["images"], list)
                         or len(candidate["images"]) == 0
                     ):
-                        raise ValueError("Teacher sample missing required 'images' list")
+                        raise ValueError(
+                            "Teacher sample missing required 'images' list"
+                        )
                     # Do not strictly require 'objects' in summary mode
                     if self.generation_variant == "dense":
-                        if "objects" not in candidate or not isinstance(candidate["objects"], list):
-                            raise ValueError("Teacher sample missing required 'objects' list for dense mode")
+                        if "objects" not in candidate or not isinstance(
+                            candidate["objects"], list
+                        ):
+                            raise ValueError(
+                                "Teacher sample missing required 'objects' list for dense mode"
+                            )
                     selected_sample = candidate
                     break
 
@@ -597,7 +656,9 @@ class InferenceEngine:
 
         # If explicit teachers are provided on the sample, honor them (global-teacher mode)
         try:
-            explicit_teachers = sample.get("teacher_samples") if isinstance(sample, dict) else None
+            explicit_teachers = (
+                sample.get("teacher_samples") if isinstance(sample, dict) else None
+            )
             if isinstance(explicit_teachers, list) and len(explicit_teachers) > 0:
                 return self._prepare_with_explicit_teachers(sample, explicit_teachers)
         except Exception as _e:
@@ -729,7 +790,11 @@ class InferenceEngine:
             raise RuntimeError(f"Failed to create training-matched conversation: {e}")
 
         # FINAL VALIDATION: Ensure tensor consistency for model generation
-        input_ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
+        input_ids_for_decode = (
+            inputs["input_ids"][0]
+            if inputs["input_ids"].dim() == 2
+            else inputs["input_ids"]
+        )
         final_text = self.tokenizer.decode(
             input_ids_for_decode, skip_special_tokens=False
         )
@@ -810,23 +875,22 @@ class InferenceEngine:
         # Build conversation based on generation variant
         try:
             if self.generation_variant == "summary":
-                inputs = (
-                    self.conversation_processor.create_summary_conversation_for_generation(
-                        images=images
-                    )
+                inputs = self.conversation_processor.create_summary_conversation_for_generation(
+                    images=images
                 )
             else:
-                inputs = (
-                    self.conversation_processor.create_simple_conversation_for_generation(
-                        sample=sample,
-                        images=images
-                    )
+                inputs = self.conversation_processor.create_simple_conversation_for_generation(
+                    sample=sample, images=images
                 )
         except Exception as e:
             raise RuntimeError(f"ConversationBuilder failed: {e}")
 
         # Validate conversation structure using the processed inputs
-        input_ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
+        input_ids_for_decode = (
+            inputs["input_ids"][0]
+            if inputs["input_ids"].dim() == 2
+            else inputs["input_ids"]
+        )
         final_text = self.tokenizer.decode(
             input_ids_for_decode, skip_special_tokens=False
         )
@@ -881,7 +945,12 @@ class InferenceEngine:
         logger.debug(f"   Has image inputs: {has_images}")
 
         # Sanitize and move only model-relevant tensors to device
-        allowed_input_keys = {"input_ids", "attention_mask", "pixel_values", "image_grid_thw"}
+        allowed_input_keys = {
+            "input_ids",
+            "attention_mask",
+            "pixel_values",
+            "image_grid_thw",
+        }
         sanitized_inputs: Dict[str, torch.Tensor] = {}
         for k, v in inputs.items():
             if k in allowed_input_keys and torch.is_tensor(v):
@@ -901,7 +970,11 @@ class InferenceEngine:
         # CRITICAL VALIDATION: Cross-validate image tokens and tensors before generation
         if has_images and debug_mode:
             # Decode input_ids to check image token alignment
-            ids_for_decode = inputs["input_ids"][0] if inputs["input_ids"].dim() == 2 else inputs["input_ids"]
+            ids_for_decode = (
+                inputs["input_ids"][0]
+                if inputs["input_ids"].dim() == 2
+                else inputs["input_ids"]
+            )
             decoded_text = self.tokenizer.decode(
                 ids_for_decode, skip_special_tokens=False
             )
@@ -991,13 +1064,13 @@ class InferenceEngine:
                 # No decode-time token bans; allow full vocabulary per user request
 
                 gen_kwargs = {
-                    'max_new_tokens': max_new_tokens,
-                    'do_sample': do_sample,
-                    'temperature': temperature if do_sample else 1.0,
-                    'repetition_penalty': repetition_penalty,
-                    'pad_token_id': self.tokenizer.pad_token_id,
-                    'eos_token_id': list(eos_tokens),
-                    'use_cache': True,
+                    "max_new_tokens": max_new_tokens,
+                    "do_sample": do_sample,
+                    "temperature": temperature if do_sample else 1.0,
+                    "repetition_penalty": repetition_penalty,
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "eos_token_id": list(eos_tokens),
+                    "use_cache": True,
                 }
                 safe_inputs = self._filter_generate_inputs(inputs)
                 output_ids = self.model.generate(**safe_inputs, **gen_kwargs)
@@ -1064,7 +1137,11 @@ class InferenceEngine:
             # Decode ONLY the newly generated tokens (assistant content for the student turn)
             # Preserve coordinate and geometry tokens; do NOT skip specials here.
             # Compute input length robustly for 1D/2D input_ids
-            if "input_ids" in safe_inputs and hasattr(safe_inputs["input_ids"], "dim") and safe_inputs["input_ids"].dim() == 2:
+            if (
+                "input_ids" in safe_inputs
+                and hasattr(safe_inputs["input_ids"], "dim")
+                and safe_inputs["input_ids"].dim() == 2
+            ):
                 input_len = int(safe_inputs["input_ids"].shape[1])
             else:
                 input_len = int(inputs["input_ids"].shape[-1])
@@ -1114,7 +1191,7 @@ class InferenceEngine:
         logger.info(f"   Content: '{cleaned_response}'")
         # Normalize to visualization object list
         objects_list: List[Dict[str, Any]] = self._normalize_prediction_to_vis_objects(
-            cleaned_response
+            self, cleaned_response
         )
 
         if not objects_list:
@@ -1155,28 +1232,40 @@ class InferenceEngine:
                 eos_tokens = [int(im_end_id)]
                 # No decode-time token bans in summary mode per user request
                 gen_kwargs = {
-                    'max_new_tokens': max_new_tokens,
-                    'do_sample': do_sample,
-                    'temperature': temperature if do_sample else 1.0,
-                    'repetition_penalty': repetition_penalty,
-                    'pad_token_id': self.tokenizer.pad_token_id,
-                    'eos_token_id': eos_tokens,
-                    'use_cache': True,
+                    "max_new_tokens": max_new_tokens,
+                    "do_sample": do_sample,
+                    "temperature": temperature if do_sample else 1.0,
+                    "repetition_penalty": repetition_penalty,
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "eos_token_id": eos_tokens,
+                    "use_cache": True,
                 }
                 safe_inputs = self._filter_generate_inputs(inputs)
                 # Ensure batch dimension for text tensors
-                if 'input_ids' in safe_inputs and hasattr(safe_inputs['input_ids'], 'dim') and safe_inputs['input_ids'].dim() == 1:
-                    safe_inputs['input_ids'] = safe_inputs['input_ids'].unsqueeze(0)
-                if 'attention_mask' in safe_inputs and hasattr(safe_inputs['attention_mask'], 'dim') and safe_inputs['attention_mask'].dim() == 1:
-                    safe_inputs['attention_mask'] = safe_inputs['attention_mask'].unsqueeze(0)
+                if (
+                    "input_ids" in safe_inputs
+                    and hasattr(safe_inputs["input_ids"], "dim")
+                    and safe_inputs["input_ids"].dim() == 1
+                ):
+                    safe_inputs["input_ids"] = safe_inputs["input_ids"].unsqueeze(0)
+                if (
+                    "attention_mask" in safe_inputs
+                    and hasattr(safe_inputs["attention_mask"], "dim")
+                    and safe_inputs["attention_mask"].dim() == 1
+                ):
+                    safe_inputs["attention_mask"] = safe_inputs[
+                        "attention_mask"
+                    ].unsqueeze(0)
                 # Compute input length from batched input_ids
-                if 'input_ids' in safe_inputs and hasattr(safe_inputs['input_ids'], 'shape'):
-                    input_len = int(safe_inputs['input_ids'].shape[-1])
+                if "input_ids" in safe_inputs and hasattr(
+                    safe_inputs["input_ids"], "shape"
+                ):
+                    input_len = int(safe_inputs["input_ids"].shape[-1])
                 else:
-                    input_len = int(inputs['input_ids'].shape[-1])
+                    input_len = int(inputs["input_ids"].shape[-1])
                 output_ids = self.model.generate(**safe_inputs, **gen_kwargs)
                 # Normalize output shape to [1, seq]
-                if hasattr(output_ids, 'dim') and output_ids.dim() == 1:
+                if hasattr(output_ids, "dim") and output_ids.dim() == 1:
                     output_ids = output_ids.unsqueeze(0)
                 # Decode only newly generated tokens
                 generated_text = self.tokenizer.decode(
@@ -1304,39 +1393,38 @@ class InferenceEngine:
             return None
         return None
 
-
-def _convert_prediction_text_to_vis_json(self, response: str) -> str:
-    """Convert model response text to a JSON string for visualization format."""
-    parsed = self._try_parse_json_list(response)
-    if isinstance(parsed, list):
-        normalized: List[Dict[str, Any]] = []
-        for obj in parsed:
-            if not isinstance(obj, dict):
-                continue
-            label = obj.get("desc") or obj.get("label")
-            if label is None:
-                continue
-            normalized_obj: Dict[str, Any] = {"desc": label}
-            for key in GEOMETRY_TOKENS:
-                if key in obj and isinstance(obj[key], list):
-                    try:
-                        normalized_obj[key] = [int(c) for c in obj[key]]
-                    except Exception:
-                        normalized_obj[key] = obj[key]
-                    break
-            if any(k in normalized_obj for k in GEOMETRY_TOKENS):
-                normalized.append(normalized_obj)
-        if normalized:
-            vis_objects = convert_objects_to_vis(normalized)
-            try:
-                return json.dumps(vis_objects, ensure_ascii=False)
-            except Exception:
-                return response
-    return convert_response_to_vis_json(
-        response,
-        coordinate_mode=False,
-        tolerant_geometry=True,
-    )
+    def _convert_prediction_text_to_vis_json(self, response: str) -> str:
+        """Convert model response text to a JSON string for visualization format."""
+        parsed = self._try_parse_json_list(response)
+        if isinstance(parsed, list):
+            normalized: List[Dict[str, Any]] = []
+            for obj in parsed:
+                if not isinstance(obj, dict):
+                    continue
+                label = obj.get("desc") or obj.get("label")
+                if label is None:
+                    continue
+                normalized_obj: Dict[str, Any] = {"desc": label}
+                for key in GEOMETRY_TOKENS:
+                    if key in obj and isinstance(obj[key], list):
+                        try:
+                            normalized_obj[key] = [int(c) for c in obj[key]]
+                        except Exception:
+                            normalized_obj[key] = obj[key]
+                        break
+                if any(k in normalized_obj for k in GEOMETRY_TOKENS):
+                    normalized.append(normalized_obj)
+            if normalized:
+                vis_objects = convert_objects_to_vis(normalized)
+                try:
+                    return json.dumps(vis_objects, ensure_ascii=False)
+                except Exception:
+                    return response
+        return convert_response_to_vis_json(
+            response,
+            coordinate_mode=False,
+            tolerant_geometry=True,
+        )
 
     def validate_image_token_alignment(
         self, inputs: Dict[str, torch.Tensor]
@@ -1504,17 +1592,25 @@ def _convert_prediction_text_to_vis_json(self, response: str) -> str:
         # Global teacher ablation mode: select and cache a single teacher
         global_teacher: Optional[Dict[str, Any]] = None
         global_teacher_index: Optional[int] = None
-        if getattr(self, 'use_global_teacher', False):
+        if getattr(self, "use_global_teacher", False):
             teacher_source = self.global_teacher_file or input_file
             try:
-                global_teacher, global_teacher_index = self._select_global_teacher_sample(teacher_source)
+                global_teacher, global_teacher_index = (
+                    self._select_global_teacher_sample(teacher_source)
+                )
                 logger.info(
                     f"🧪 Global-teacher ablation enabled: selected index {global_teacher_index} from '{teacher_source}'"
                 )
                 # Optional: summarize teacher for logs
                 try:
-                    num_imgs = len(global_teacher.get('images', [])) if isinstance(global_teacher.get('images'), list) else 0
-                    logger.info(f"   Teacher has {num_imgs} image(s); fields: {list(global_teacher.keys())}")
+                    num_imgs = (
+                        len(global_teacher.get("images", []))
+                        if isinstance(global_teacher.get("images"), list)
+                        else 0
+                    )
+                    logger.info(
+                        f"   Teacher has {num_imgs} image(s); fields: {list(global_teacher.keys())}"
+                    )
                 except Exception:
                     pass
             except Exception as e:
@@ -1541,14 +1637,21 @@ def _convert_prediction_text_to_vis_json(self, response: str) -> str:
                 try:
                     sample = json.loads(line.strip())
                     # Skip the chosen teacher sample in global-teacher mode to avoid self-pairing
-                    if global_teacher is not None and global_teacher_index is not None and i == global_teacher_index:
-                        logger.debug(f"Skipping teacher sample at index {i} during student loop (global-teacher mode)")
+                    if (
+                        global_teacher is not None
+                        and global_teacher_index is not None
+                        and i == global_teacher_index
+                    ):
+                        logger.debug(
+                            f"Skipping teacher sample at index {i} during student loop (global-teacher mode)"
+                        )
                         continue
 
                     # Inject teacher into sample if enabled
                     if global_teacher is not None:
                         # Ensure immutability of cached teacher
                         import copy
+
                         teacher_copy = copy.deepcopy(global_teacher)
                         # Attach explicit teacher for exact reproduction path
                         sample["teacher_samples"] = [teacher_copy]
@@ -1637,7 +1740,8 @@ def _convert_prediction_text_to_vis_json(self, response: str) -> str:
                 result = {
                     "sample_id": sample.get("id", "unknown"),
                     "image": sample["images"][0]
-                    if isinstance(sample.get("images"), list) and len(sample["images"]) > 0
+                    if isinstance(sample.get("images"), list)
+                    and len(sample["images"]) > 0
                     else None,
                     "images": sample["images"],
                     "summary_text": summary_text,
@@ -1674,7 +1778,7 @@ def _convert_prediction_text_to_vis_json(self, response: str) -> str:
         except Exception as e:
             logger.error(f"Error in _process_single_sample: {e}")
             # In summary mode, return summary-shaped error to avoid downstream parsing issues
-            if getattr(self, 'generation_variant', 'dense') == 'summary':
+            if getattr(self, "generation_variant", "dense") == "summary":
                 return {
                     "sample_id": sample.get("id", "unknown"),
                     "images": sample.get("images", []),
@@ -1812,9 +1916,9 @@ def _convert_prediction_text_to_vis_json(self, response: str) -> str:
             logger.warning(f"Failed to parse standard response: {e}")
             return response
 
-
-
-    _normalize_prediction_to_vis_objects = staticmethod(_normalize_prediction_to_vis_objects_impl)
+    _normalize_prediction_to_vis_objects = staticmethod(
+        _normalize_prediction_to_vis_objects_impl
+    )
 
     def _filter_generate_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Keep only keys accepted by generate/forward and move tensors to device.
@@ -1996,7 +2100,9 @@ def main():
         raise ValueError(f"Failed to normalize CLI paths: {e}")
 
     # Auto-detect config from model_path if not provided
+    config_auto_loaded = False
     if args.config_path is None or len(str(args.config_path).strip()) == 0:
+        config_auto_loaded = True
         ckpt_dir = args.model_path
         # Candidates in preference order
         candidate_files = [
@@ -2017,6 +2123,9 @@ def main():
         # If config.json is found, attempt to convert to YAML-compatible dict load
         args.config_path = found_config
         logger.info(f"🧭 Auto-loaded config from checkpoint: {args.config_path}")
+        logger.info(
+            f"   ⚠️  Note: CLI's --model_path will override config's model_path field"
+        )
 
     # Resolve input_file from dataset if not provided
     if args.input_file is None:
@@ -2079,6 +2188,7 @@ def main():
         global_teacher_seed=args.global_teacher_seed,
         global_teacher_index=args.global_teacher_index,
         global_teacher_file=args.global_teacher_file,
+        config_auto_loaded=config_auto_loaded,
     )
 
     # Run inference
@@ -2099,4 +2209,6 @@ if __name__ == "__main__":
     main()
 
 # Backward compatibility alias
-InferenceEngine._normalize_prediction_to_vis_objects = staticmethod(_normalize_prediction_to_vis_objects_impl)
+InferenceEngine._normalize_prediction_to_vis_objects = staticmethod(
+    _normalize_prediction_to_vis_objects_impl
+)

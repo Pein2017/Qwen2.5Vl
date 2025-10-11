@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
-from src_new.augmentation.presets import PresetOptions, build_augmentation_config_from_preset
+from src_new.augmentation.presets import (
+    PresetOptions,
+    build_augmentation_config_from_preset,
+)
 from src_new.utils.data_resolver import DataResolver
 from src_new.utils.validation import normalize_path_input
 
@@ -46,9 +49,6 @@ from .schema import (
     TrainingConfigSection,
 )
 from .validators import (
-    exactly_one,
-    non_negative,
-    probability,
     requires_if,
 )
 
@@ -135,9 +135,7 @@ def _gather_layers(
 
     extends = raw.get("extends", [])
     if extends and not isinstance(extends, list):
-        raise LayerResolutionError(
-            f"extends must be a list when provided ({path})"
-        )
+        raise LayerResolutionError(f"extends must be a list when provided ({path})")
 
     stack.append(path)
     layers: List[Tuple[Path, Dict[str, Any]]] = []
@@ -149,7 +147,9 @@ def _gather_layers(
                 f"extends entries must be strings (file paths). Invalid entry in {path}: {ref!r}"
             )
         resolved = _resolve_config_path(ref, configs_dir, base_dir=base_dir)
-        layers.extend(_gather_layers(resolved, configs_dir, visited=visited, stack=stack))
+        layers.extend(
+            _gather_layers(resolved, configs_dir, visited=visited, stack=stack)
+        )
 
     stack.pop()
 
@@ -163,11 +163,7 @@ def _gather_layers(
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     merged = copy.deepcopy(base)
     for key, value in override.items():
-        if (
-            key in merged
-            and isinstance(merged[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = copy.deepcopy(value)
@@ -226,7 +222,9 @@ def _validate_raw_config(config: Dict[str, Any]) -> None:
 def _normalize_paths(config: Dict[str, Any]) -> None:
     model_section = config.get("model", {})
     if "model_path" in model_section:
-        model_section["model_path"] = str(normalize_path_input(model_section["model_path"]))
+        model_section["model_path"] = str(
+            normalize_path_input(model_section["model_path"])
+        )
 
     data_section = config.get("data", {})
     data_root = data_section.get("data_root")
@@ -250,7 +248,9 @@ def _normalize_paths(config: Dict[str, Any]) -> None:
             output_section[key] = str(normalize_path_input(output_section[key]))
 
 
-def _build_smart_resize(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[SmartResizeConfig]:
+def _build_smart_resize(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[SmartResizeConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -264,7 +264,9 @@ def _build_smart_resize(mapping: Optional[Mapping[str, Any]], path: str) -> Opti
     )
 
 
-def _build_image_geom(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[ImageGeomConfig]:
+def _build_image_geom(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[ImageGeomConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -279,7 +281,9 @@ def _build_image_geom(mapping: Optional[Mapping[str, Any]], path: str) -> Option
     )
 
 
-def _build_photometric(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[PhotometricConfig]:
+def _build_photometric(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[PhotometricConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -294,7 +298,9 @@ def _build_photometric(mapping: Optional[Mapping[str, Any]], path: str) -> Optio
     return cfg
 
 
-def _build_lines(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[LineAugConfig]:
+def _build_lines(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[LineAugConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -307,7 +313,9 @@ def _build_lines(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[Li
     )
 
 
-def _build_type_policies(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[Dict[str, TypePolicyConfig]]:
+def _build_type_policies(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[Dict[str, TypePolicyConfig]]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -334,7 +342,9 @@ def _build_type_policies(mapping: Optional[Mapping[str, Any]], path: str) -> Opt
     return policies
 
 
-def _build_criteria(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[CriteriaConfig]:
+def _build_criteria(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[CriteriaConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -354,7 +364,9 @@ def _build_criteria(mapping: Optional[Mapping[str, Any]], path: str) -> Optional
     return CriteriaConfig(occlusion=occlusion_cfg)
 
 
-def _build_ocr(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[OCRPolicyConfig]:
+def _build_ocr(
+    mapping: Optional[Mapping[str, Any]], path: str
+) -> Optional[OCRPolicyConfig]:
     if mapping is None:
         return None
     if not isinstance(mapping, Mapping):
@@ -367,7 +379,9 @@ def _build_ocr(mapping: Optional[Mapping[str, Any]], path: str) -> Optional[OCRP
     )
 
 
-def _build_augmentation_config(mapping: Mapping[str, Any], path: str) -> AugmentationConfig:
+def _build_augmentation_config(
+    mapping: Mapping[str, Any], path: str
+) -> AugmentationConfig:
     if "preset" in mapping and mapping["preset"] is not None:
         preset = str(mapping["preset"])
         smart_resize = mapping.get("smart_resize")
@@ -376,26 +390,36 @@ def _build_augmentation_config(mapping: Mapping[str, Any], path: str) -> Augment
                 f"{path}.smart_resize must be provided when preset is '{preset}'"
             )
         opts = PresetOptions(
-            preset= preset,  # type: ignore[arg-type]
+            preset=preset,  # type: ignore[arg-type]
             rng_seed=int(mapping.get("rng_seed", 12345)),
             apply_to_teachers=bool(mapping.get("apply_to_teachers", False)),
             lines_policy=str(mapping.get("lines_policy", "transform")),
             debug_visualization=bool(mapping.get("debug_visualization", False)),
             debug_output_dir=mapping.get("debug_output_dir"),
             smart_resize_enabled=(
-                bool(smart_resize.get("enabled")) if isinstance(smart_resize, Mapping) else None
+                bool(smart_resize.get("enabled"))
+                if isinstance(smart_resize, Mapping)
+                else None
             ),
             smart_resize_factor=(
-                int(smart_resize.get("factor")) if isinstance(smart_resize, Mapping) else None
+                int(smart_resize.get("factor"))
+                if isinstance(smart_resize, Mapping)
+                else None
             ),
             smart_resize_min_pixels=(
-                int(smart_resize.get("min_pixels")) if isinstance(smart_resize, Mapping) else None
+                int(smart_resize.get("min_pixels"))
+                if isinstance(smart_resize, Mapping)
+                else None
             ),
             smart_resize_max_pixels=(
-                int(smart_resize.get("max_pixels")) if isinstance(smart_resize, Mapping) else None
+                int(smart_resize.get("max_pixels"))
+                if isinstance(smart_resize, Mapping)
+                else None
             ),
             smart_resize_max_ratio=(
-                float(smart_resize.get("max_ratio")) if isinstance(smart_resize, Mapping) else None
+                float(smart_resize.get("max_ratio"))
+                if isinstance(smart_resize, Mapping)
+                else None
             ),
         )
         cfg = build_augmentation_config_from_preset(opts)
@@ -405,11 +429,15 @@ def _build_augmentation_config(mapping: Mapping[str, Any], path: str) -> Augment
     if "enabled" not in mapping:
         raise SchemaError(f"{path} must include either 'preset' or 'enabled'")
 
-    smart_resize = _build_smart_resize(mapping.get("smart_resize"), f"{path}.smart_resize")
+    smart_resize = _build_smart_resize(
+        mapping.get("smart_resize"), f"{path}.smart_resize"
+    )
     image_geom = _build_image_geom(mapping.get("image_geom"), f"{path}.image_geom")
     photometric = _build_photometric(mapping.get("photometric"), f"{path}.photometric")
     lines = _build_lines(mapping.get("lines"), f"{path}.lines")
-    type_policies = _build_type_policies(mapping.get("type_policies"), f"{path}.type_policies")
+    type_policies = _build_type_policies(
+        mapping.get("type_policies"), f"{path}.type_policies"
+    )
     ocr = _build_ocr(mapping.get("ocr"), f"{path}.ocr")
     criteria = _build_criteria(mapping.get("criteria"), f"{path}.criteria")
 
@@ -432,7 +460,9 @@ def _build_augmentation_config(mapping: Mapping[str, Any], path: str) -> Augment
     return cfg
 
 
-def _build_schedule(sequence: Optional[Sequence[Any]]) -> Tuple[AugmentationScheduleItem, ...]:
+def _build_schedule(
+    sequence: Optional[Sequence[Any]],
+) -> Tuple[AugmentationScheduleItem, ...]:
     if sequence is None:
         return tuple()
     items: List[AugmentationScheduleItem] = []
@@ -442,7 +472,8 @@ def _build_schedule(sequence: Optional[Sequence[Any]]) -> Tuple[AugmentationSche
                 f"features.augmentation.schedule[{idx}] must be a mapping"
             )
         smart_resize = _build_smart_resize(
-            item.get("smart_resize"), f"features.augmentation.schedule[{idx}].smart_resize"
+            item.get("smart_resize"),
+            f"features.augmentation.schedule[{idx}].smart_resize",
         )
         items.append(
             AugmentationScheduleItem(
@@ -488,9 +519,18 @@ def _build_features(config: Dict[str, Any]) -> FeaturesConfig:
         teacher_aug_mapping = copy.deepcopy(teacher_aug_payload["config"])
         teacher_aug_mapping.setdefault("enabled", True)
         teacher_aug_mapping.setdefault("apply_to_teachers", True)
-        teacher_aug_mapping.setdefault("lines_policy", teacher_aug_mapping.get("lines_policy", "transform"))
-        teacher_aug_mapping.setdefault("debug_visualization", teacher_aug_mapping.get("debug_visualization", False))
-        teacher_aug_mapping.setdefault("rng_seed", teacher_aug_mapping.get("rng_seed", teacher_aug_payload.get("rng_seed", 12345)))
+        teacher_aug_mapping.setdefault(
+            "lines_policy", teacher_aug_mapping.get("lines_policy", "transform")
+        )
+        teacher_aug_mapping.setdefault(
+            "debug_visualization", teacher_aug_mapping.get("debug_visualization", False)
+        )
+        teacher_aug_mapping.setdefault(
+            "rng_seed",
+            teacher_aug_mapping.get(
+                "rng_seed", teacher_aug_payload.get("rng_seed", 12345)
+            ),
+        )
         teacher_aug_config = _build_augmentation_config(
             teacher_aug_mapping, "features.teacher_augmentation.config"
         )
@@ -623,17 +663,17 @@ def load_layered_config(config_name: str) -> TrainingConfig:
     # base_data = _load_yaml(base_path)
 
     config_key = config_name
-    if config_key.startswith('configs/'):
-        config_key = config_key[len('configs/'):]
+    if config_key.startswith("configs/"):
+        config_key = config_key[len("configs/") :]
     alias_map = {
-        'phase_1_debug': 'debug',
-        'phase_2_debug': 'debug',
-        'phase_3_debug': 'debug',
+        "phase_1_debug": "debug",
+        "phase_2_debug": "debug",
+        "phase_3_debug": "debug",
     }
     try:
         config_path = _resolve_config_path(config_key, configs_dir)
     except FileNotFoundError as err:
-        alt_key = config_key.replace('/', '_')
+        alt_key = config_key.replace("/", "_")
         candidates = []
         if alt_key != config_key:
             candidates.append(alt_key)
@@ -658,8 +698,12 @@ def load_layered_config(config_name: str) -> TrainingConfig:
 
     phase_name = _derive_phase_name(merged)
     if phase_name:
-        phase_dir = phase_name if str(phase_name).startswith('phase_') else f'phase_{phase_name}'
-        phase_base = configs_dir / phase_dir / 'base.yaml'
+        phase_dir = (
+            phase_name
+            if str(phase_name).startswith("phase_")
+            else f"phase_{phase_name}"
+        )
+        phase_base = configs_dir / phase_dir / "base.yaml"
         if phase_base.exists():
             layer_paths = [layer_path for layer_path, _ in layers]
             if phase_base not in layer_paths:

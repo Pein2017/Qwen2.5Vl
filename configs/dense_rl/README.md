@@ -244,7 +244,7 @@ rewards_config:
   tau_quad: 0.02
   tau_line: 0.02
   line_giou:
-    buffer_frac: 0.01
+    buffer_frac: 0.05
   length_vs_gt:
     estimator: "tokenizer"
     lower: 0.7

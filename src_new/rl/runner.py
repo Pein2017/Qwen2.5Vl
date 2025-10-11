@@ -329,11 +329,10 @@ def train(config_path: str) -> None:
         "tau_quad": rl_config.rewards.config.tau_quad,
         "tau_line": rl_config.rewards.config.tau_line,
         "length_vs_gt": {
-            "estimator": rl_config.rewards.config.length_vs_gt.estimator,
-            "lower": rl_config.rewards.config.length_vs_gt.lower,
-            "upper": rl_config.rewards.config.length_vs_gt.upper,
-            "gamma": rl_config.rewards.config.length_vs_gt.gamma,
-            "tail_numeric_weight": rl_config.rewards.config.length_vs_gt.tail_numeric_weight,
+            "use_ratio": rl_config.rewards.config.length_vs_gt.use_ratio,
+            "sigma_ratio": rl_config.rewards.config.length_vs_gt.sigma_ratio,
+            "sigma_tokens": rl_config.rewards.config.length_vs_gt.sigma_tokens,
+            "min_reward": rl_config.rewards.config.length_vs_gt.min_reward,
         },
     }
     # Generic per-reward param blocks from rewards_config (if present)
@@ -343,6 +342,14 @@ def train(config_path: str) -> None:
         # Convert dataclass to dict-ish access
         if getattr(rl_config.rewards.config, "line_giou", None) is not None:
             extra_cfg["line_giou"] = dict(rl_config.rewards.config.line_giou)
+        if getattr(rl_config.rewards.config, "duplicate_penalty", None) is not None:
+            extra_cfg["duplicate_penalty"] = dict(
+                rl_config.rewards.config.duplicate_penalty
+            )
+        if getattr(rl_config.rewards.config, "pattern_penalty", None) is not None:
+            extra_cfg["pattern_penalty"] = dict(
+                rl_config.rewards.config.pattern_penalty
+            )
         # Merge into rewards_config_dict for wrapper to consume
         rewards_config_dict.update(extra_cfg)
     except Exception:

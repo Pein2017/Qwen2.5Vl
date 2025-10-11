@@ -359,7 +359,8 @@ class BBUGRPOTrainer:
         }
         self._state_manager.accumulate_loss_components(metrics)
 
-        if self._global_step % self.manual_cfg.logging_steps == 0:
+        buffer_is_fresh = bool(generation_result.get("buffer/is_fresh", False))
+        if buffer_is_fresh or (self._global_step % self.manual_cfg.logging_steps == 0):
             # Gather advantages across ranks
             adv_tensor = generation_result.get("advantages")
             adv_std = 0.0
@@ -411,6 +412,31 @@ class BBUGRPOTrainer:
             else:
                 term_ratio = 0.0
 
+            # Warn if truncation is being forced frequently
+            try:
+                cap_hit = generation_result.get("completions/cap_hit_ratio")
+                trunc_flags = generation_result.get("truncated_flags")
+                trunc_ratio = None
+                if trunc_flags is not None:
+                    tf = trunc_flags.detach().float()
+                    if tf.device.type == "cpu":
+                        tf = tf.to(self.accelerator.device)
+                    if self.world_size > 1:
+                        tf = self.accelerator.gather(tf)
+                    trunc_ratio = float(tf.mean().item())
+                # Rank-0 only warning
+                if self.accelerator.is_main_process:
+                    if isinstance(cap_hit, float) and cap_hit > 0.0:
+                        self.logger.warning(
+                            f"Generation is hitting caps: cap_hit_ratio={cap_hit:.3f}; term_ratio={term_ratio:.3f}. Consider relaxing dynamic_length or hard_cap."
+                        )
+                    if trunc_ratio is not None and trunc_ratio > 0.0:
+                        self.logger.warning(
+                            f"Truncation masked tokens post-generation: truncated_ratio={trunc_ratio:.3f}; term_ratio={term_ratio:.3f}."
+                        )
+            except Exception:
+                pass
+
             # ETA (minutes) and epoch progress (0..1)
             elapsed_sec = max(time.time() - self._start_time, 1e-6)
             remaining_steps = max(self.manual_cfg.max_steps - self._global_step, 0)
@@ -444,6 +470,10 @@ class BBUGRPOTrainer:
                     "eta_minutes": eta_minutes,
                     "epoch": epoch_progress,
                     "completions/terminated_ratio": term_ratio,
+                    # Tail sanitizer usage (if provided by buffer)
+                    "sanitizer/applied_ratio": float(
+                        generation_result.get("sanitizer/applied_ratio", 0.0)
+                    ),
                     # Pass through zero-length ratio if computed by buffer
                     "completions/zero_len_ratio": float(
                         generation_result.get("completions/zero_len_ratio", 0.0)
@@ -498,6 +528,29 @@ class BBUGRPOTrainer:
                 )
 
             self._state_manager.reset_metrics_state()
+        else:
+            # Compact one-liner for reuse steps (avoid repeating full block)
+            try:
+                step_in_cycle = int(generation_result.get("buffer/step_in_cycle", 0))
+                comps_per_cycle = int(
+                    generation_result.get("buffer/completions_per_cycle", 1)
+                )
+                reuse_idx = max(1, step_in_cycle // max(1, comps_per_cycle))
+                reuse_total = int(self.manual_cfg.steps_per_generation)
+            except Exception:
+                reuse_idx, reuse_total = 1, int(self.manual_cfg.steps_per_generation)
+            if self.accelerator.is_main_process:
+                _LOGGER.info(
+                    "[CORE] step=%d (reuse %d/%d) loss=%.4f reward=%.4f±%.4f lr=%.3e grad_norm=%.3f",
+                    self._global_step,
+                    reuse_idx,
+                    reuse_total,
+                    float(metrics.get("loss", 0.0)),
+                    reward_mean,
+                    reward_std,
+                    float(current_lr),
+                    float(self._last_grad_norm),
+                )
 
     def _add_reward_components_to_logs(
         self,
@@ -542,7 +595,6 @@ class BBUGRPOTrainer:
 
         for key in (
             "dynamic_length/mean_cap",
-            "dynamic_length/min_cap",
             "dynamic_length/max_cap",
         ):
             if key in generation_result:
@@ -591,6 +643,18 @@ class BBUGRPOTrainer:
                     logs[key] = float(generation_result.get(key, 0.0))
                 except Exception:
                     pass
+        # Also log truncation ratio if available
+        try:
+            trunc_flags = generation_result.get("truncated_flags")
+            if trunc_flags is not None:
+                tf = trunc_flags.detach().float()
+                if tf.device.type == "cpu":
+                    tf = tf.to(self.accelerator.device)
+                if self.world_size > 1:
+                    tf = self.accelerator.gather(tf)
+                logs["completions/truncated_ratio"] = float(tf.mean().item())
+        except Exception:
+            pass
 
         # Policy clipping diagnostics
         try:
@@ -936,6 +1000,42 @@ class BBUGRPOTrainer:
         # No need to recompute here
 
         self._log_step(loss_value_for_log, generation_result, current_lr)
+
+        # Optionally dump raw generation + GT text as JSONL (rank-0 only)
+        try:
+            if self.accelerator.is_main_process:
+                dump_enabled = os.getenv("DUMP_TEXT_SAMPLES", "0") == "1"
+                if dump_enabled and self._training_state.generation_buffer is not None:
+                    cadence_env = os.getenv("DUMP_TEXT_CADENCE")
+                    try:
+                        cadence = (
+                            int(cadence_env)
+                            if cadence_env is not None
+                            else int(self.config.logging.logging_steps)
+                        )
+                    except Exception:
+                        cadence = int(self.config.logging.logging_steps)
+                    if cadence > 0 and (self._global_step % cadence == 0):
+                        from src_new.rl.text_dump import (
+                            append_generation_text_samples,  # local import
+                        )
+
+                        out_path = os.getenv("DUMP_TEXT_OUTPUT")
+                        if not out_path:
+                            try:
+                                out_path = os.path.join(
+                                    self.output_dir, "gen_text.jsonl"
+                                )
+                            except Exception:
+                                out_path = "gen_text.jsonl"
+                        append_generation_text_samples(
+                            tokenizer=self.tokenizer,
+                            gen_buffer=self._training_state.generation_buffer,
+                            output_file=out_path,
+                            step=int(self._global_step),
+                        )
+        except Exception as _e:
+            _LOGGER.warning("Text dump skipped due to error: %s", _e)
         if (
             self._eval_enabled
             and self._eval_every_steps > 0
@@ -1245,6 +1345,9 @@ class BBUGRPOTrainer:
         rewards_all: List[torch.Tensor] = []
         rewards_per_func_all: List[torch.Tensor] = []  # For detailed logging
         raw_rewards_per_func_all: List[torch.Tensor] = []  # For detailed logging
+        # Termination/truncation flags per prompt
+        terminated_flags_all: List[torch.Tensor] = []
+        truncated_flags_all: List[torch.Tensor] = []
         pixel_values_all: List[Optional[torch.Tensor]] = []
         image_grid_thw_all: List[Optional[torch.Tensor]] = []
         images_per_sample_all: List[Optional[torch.Tensor]] = []
@@ -1294,6 +1397,11 @@ class BBUGRPOTrainer:
                 min_new_tokens=self.manual_cfg.min_new_tokens,
                 temperature=gen_cfg["temperature"],
                 top_p=gen_cfg["top_p"],
+                repetition_penalty=(
+                    float(os.getenv("REPETITION_PENALTY"))
+                    if os.getenv("REPETITION_PENALTY") is not None
+                    else None
+                ),
                 mask_truncated_completions=self.manual_cfg.mask_truncated_completions,
                 scale_rewards=self.manual_cfg.scale_rewards,
                 max_advantage_magnitude=self.manual_cfg.max_advantage_magnitude,
@@ -1301,7 +1409,6 @@ class BBUGRPOTrainer:
                 dyn_enabled=dyn_cfg.enabled,
                 dyn_alpha=dyn_cfg.alpha,
                 dyn_eos_margin=dyn_cfg.eos_margin,
-                dyn_min_cap=dyn_cfg.min_cap,
                 dyn_max_cap=dyn_cfg.max_cap,
                 dyn_estimator=dyn_cfg.estimator,
                 dyn_hard_cap=dyn_cfg.hard_cap,
@@ -1331,6 +1438,17 @@ class BBUGRPOTrainer:
             )  # CRITICAL for trust region!
             advantages_all.append(single_gen["advantages"].cpu())  # [K]
             rewards_all.append(single_gen["rewards"].cpu())
+
+            # Per-completion termination/truncation flags (flatten to [K])
+            try:
+                t = single_gen.get("terminated_with_eos")
+                u = single_gen.get("truncated_flags")
+                if t is not None:
+                    terminated_flags_all.append(t.detach().cpu().long().view(-1))
+                if u is not None:
+                    truncated_flags_all.append(u.detach().cpu().long().view(-1))
+            except Exception:
+                pass
 
             # Per-function rewards for detailed logging
             if "rewards_per_func" in single_gen:
@@ -1419,6 +1537,8 @@ class BBUGRPOTrainer:
             rewards_list=rewards_all,
             rewards_per_func_list=rewards_per_func_all,  # For detailed logging
             raw_rewards_per_func_list=raw_rewards_per_func_all,  # For detailed logging
+            terminated_flags_list=terminated_flags_all,
+            truncated_flags_list=truncated_flags_all,
             pixel_values_list=pixel_values_all,
             image_grid_thw_list=image_grid_thw_all,
             images_per_sample_list=images_per_sample_all,
@@ -1768,6 +1888,31 @@ class BBUGRPOTrainer:
                     generation_result_for_log["raw_rewards_per_func"] = (
                         all_raw_rewards_per_func
                     )
+
+                # Add termination/truncation flags if present in buffer
+                try:
+                    if (
+                        gen_buffer.terminated_flags_list
+                        and gen_buffer.truncated_flags_list
+                    ):
+                        term_flat = torch.cat(
+                            [
+                                t.to(self._device).view(-1)
+                                for t in gen_buffer.terminated_flags_list
+                            ],
+                            dim=0,
+                        )
+                        trunc_flat = torch.cat(
+                            [
+                                u.to(self._device).view(-1)
+                                for u in gen_buffer.truncated_flags_list
+                            ],
+                            dim=0,
+                        )
+                        generation_result_for_log["terminated_with_eos"] = term_flat
+                        generation_result_for_log["truncated_flags"] = trunc_flat
+                except Exception:
+                    pass
 
                 # Add clipping diagnostics
                 clip_diag = gen_buffer.get_clip_diagnostics()

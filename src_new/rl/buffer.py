@@ -11,6 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 from src_new.rl import generation
 from src_new.rl import logprobs as rl_logprobs
 from src_new.rl import validators as rl_validators
+from src_new.rl.rewards.sanitizer import sanitize_tail_geometry_block
 from src_new.rl.rewards.standardizer import RewardStandardizer
 from src_new.rl.utils import resolve_im_end_id
 
@@ -33,6 +34,7 @@ def generate_and_score(
     min_new_tokens: Optional[int],
     temperature: float,
     top_p: float,
+    repetition_penalty: Optional[float] = None,
     mask_truncated_completions: bool,
     scale_rewards: bool,
     max_advantage_magnitude: Optional[float],
@@ -41,7 +43,6 @@ def generate_and_score(
     dyn_enabled: bool = True,
     dyn_alpha: float = 1.1,
     dyn_eos_margin: int = 16,
-    dyn_min_cap: int = 32,
     dyn_max_cap: Optional[int] = None,
     dyn_estimator: str = "tokenizer",
     dyn_hard_cap: bool = True,
@@ -110,6 +111,11 @@ def generate_and_score(
     generation_logps_list: List[torch.Tensor] = []
 
     gen_kwargs = {"top_p": float(top_p)}
+    if repetition_penalty is not None:
+        try:
+            gen_kwargs["repetition_penalty"] = float(repetition_penalty)
+        except Exception:
+            pass
     if min_new_tokens is not None:
         gen_kwargs["min_new_tokens"] = int(min_new_tokens)
 
@@ -180,9 +186,7 @@ def generate_and_score(
                             float(dyn_alpha) * int(gt_len_tok) + float(dyn_eos_margin)
                         )
                     )
-                    per_sample_cap = max(
-                        int(dyn_min_cap), min(int(max_cap_val), est_val)
-                    )
+                    per_sample_cap = min(int(max_cap_val), est_val)
                     dynamic_caps.append(per_sample_cap)
                 else:
                     # No GT length available; use default cap
@@ -225,8 +229,23 @@ def generate_and_score(
             if completion.device.type != "cpu":
                 completion = completion.to("cpu")
 
-            # gen length from tokenizer perspective = number of generated token ids
-            gen_len_tok = int(completion.numel())
+            # Build mask over completion tokens; ALWAYS mask padding after EOS
+            # mask_vec includes the EOS token itself (mask up to and including EOS, zero after)
+            mask_vec = torch.ones_like(completion, dtype=torch.long)
+            had_eos = 0
+            if eos_token_id is not None:
+                eos_positions = (completion == eos_token_id).nonzero(as_tuple=True)
+                if eos_positions[0].numel() > 0:
+                    first_eos = int(eos_positions[0][0].item())
+                    # Mask everything AFTER the EOS (EOS itself is kept in the mask)
+                    if first_eos + 1 < completion.numel():
+                        mask_vec[first_eos + 1 :] = 0
+                    had_eos = 1
+            completion_has_eos.append(int(had_eos))
+
+            # Effective generated length = sum of mask (includes EOS if present)
+            eff_len = int(mask_vec.long().sum().item())
+            gen_len_tok = eff_len
             gen_len_tok_list.append(gen_len_tok)
             if gt_len_tok is not None:
                 gt_len_tok_list.append(int(gt_len_tok))
@@ -234,37 +253,14 @@ def generate_and_score(
                 # keep lists aligned
                 gt_len_tok_list.append(0)
 
-            mask_vec = torch.ones_like(completion, dtype=torch.long)
-            if eos_token_id is not None:
-                eos_positions = (completion == eos_token_id).nonzero(as_tuple=True)
-                if eos_positions[0].numel() > 0:
-                    first_eos = int(eos_positions[0][0].item())
-                    mask_vec[first_eos + 1 :] = 0 if mask_truncated_completions else 1
-                    completion_has_eos.append(1)
-                    completion_truncated.append(
-                        1
-                        if mask_truncated_completions
-                        and mask_vec[first_eos + 1 :].numel() > 0
-                        else 0
-                    )
-                else:
-                    completion_has_eos.append(0)
-                    if mask_truncated_completions:
-                        mask_vec[:] = 0
-                        completion_truncated.append(1)
-                    else:
-                        completion_truncated.append(0)
-            else:
-                completion_has_eos.append(0)
-                completion_truncated.append(0)
-
-            # When hard_cap is disabled, mask overflow tokens beyond per-sample cap
+            # When hard_cap is disabled, mask overflow tokens beyond per-sample cap (only if no EOS)
             try:
                 if (
                     dyn_enabled
                     and (not dyn_hard_cap)
                     and per_sample_cap > 0
                     and completion.numel() > per_sample_cap
+                    and int(had_eos) == 0
                 ):
                     overflow = completion.numel() - int(per_sample_cap)
                     if overflow > 0:
@@ -272,21 +268,34 @@ def generate_and_score(
             except Exception:
                 pass
 
-            # Cap-hit flag when hard cap is active
+            # Cap-hit flag when hard cap is active (count only when no EOS)
             try:
-                if dyn_enabled and dyn_hard_cap and per_sample_cap > 0:
+                if (
+                    dyn_enabled
+                    and dyn_hard_cap
+                    and per_sample_cap > 0
+                    and int(had_eos) == 0
+                ):
                     cap_hit_flags.append(1 if gen_len_tok >= int(gen_cap_to_use) else 0)
                 else:
                     cap_hit_flags.append(0)
             except Exception:
                 cap_hit_flags.append(0)
 
+            # Truncation flag: masked zeros without EOS (hit max_new_tokens without terminating)
+            try:
+                has_zeros = bool((mask_vec == 0).any().item())
+                is_truncated = bool(has_zeros and (int(had_eos) == 0))
+                completion_truncated.append(1 if is_truncated else 0)
+            except Exception:
+                completion_truncated.append(0)
+
             completion_masks.append(mask_vec)
             completions_raw.append(completion)
             completion_lengths.append(int(mask_vec.long().sum().item()))
             prompt_index_repeat.append(sample_idx)
             completions_text_sample.append(
-                tokenizer.decode(completion, skip_special_tokens=False)
+                tokenizer.decode(completion[:eff_len], skip_special_tokens=False)
             )
 
             # Store generation-policy log-probs from generate(); align to effective length/mask
@@ -369,16 +378,58 @@ def generate_and_score(
 
     per_func_values: List[torch.Tensor] = []
     per_func_values_raw: List[torch.Tensor] = []
+    # Build sanitized completions for selected rewards when tail is ambiguous
+    terminated_flags_flat = [int(x) for x in completion_has_eos]
+    truncated_flags_flat = [int(x) for x in completion_truncated]
+    sanitized_completions: List[str] = []
+    sanitizer_applied = 0
+    for idx, txt in enumerate(completions_text):
+        need_sanitize = (
+            idx < len(terminated_flags_flat) and terminated_flags_flat[idx] == 0
+        ) or (idx < len(truncated_flags_flat) and truncated_flags_flat[idx] == 1)
+        if need_sanitize:
+            sanitized = sanitize_tail_geometry_block(txt)
+            if sanitized != txt:
+                sanitizer_applied += 1
+            sanitized_completions.append(sanitized)
+        else:
+            sanitized_completions.append(txt)
+
+    # Rewards for which we apply tail sanitization by default (length-wise excluded)
+    SANITIZE_REWARDS = {
+        "wrappers",
+        "coords",
+        "separators",
+        "caption_f1",
+        "grounding_acc",
+        "coverage",
+        "bbox_giou",
+        "quad_giou",
+        "line_giou",
+        "quad_l1",
+        "line_l1",
+    }
     clip_sigma = float(reward_clip_sigma) if reward_clip_sigma is not None else 5.0
     for fn, reward_name in zip(reward_fns, reward_names):
         try:
             values = fn(
                 prompts=prompts_repeated,
-                completions=completions_text,
+                completions=(
+                    sanitized_completions
+                    if reward_name in SANITIZE_REWARDS
+                    else completions_text
+                ),
                 meta=meta_repeated,
             )
         except TypeError:
-            values = fn(prompts=prompts_repeated, completions=completions_text)
+            values = fn(
+                prompts=prompts_repeated,
+                completions=(
+                    sanitized_completions
+                    if reward_name in SANITIZE_REWARDS
+                    else completions_text
+                ),
+            )
         values = [float(v) if v is not None else float("nan") for v in values]
         # Raw (pre-clip, pre-standardize)
         values_tensor_raw = torch.tensor(values, dtype=torch.float32, device=device)
@@ -486,20 +537,25 @@ def generate_and_score(
         ),
         "terminated_with_eos": torch.tensor(
             completion_has_eos, dtype=torch.long, device=device
-        ),
+        ).view(-1),
         "truncated_flags": torch.tensor(
             completion_truncated, dtype=torch.long, device=device
-        ),
+        ).view(-1),
         "generation_logps": generation_logps_tensor.to(
             device
         ),  # Log-probs from generation policy
     }
+    # Log sanitizer diagnostics
+    try:
+        total_c = max(len(completions_text), 1)
+        result["sanitizer/applied_ratio"] = float(sanitizer_applied) / float(total_c)
+    except Exception:
+        pass
     # Aggregate dynamic cap statistics for logging
     try:
         if dynamic_caps:
             caps_t = torch.tensor(dynamic_caps, dtype=torch.float32, device=device)
             result["dynamic_length/mean_cap"] = float(caps_t.mean().item())
-            result["dynamic_length/min_cap"] = float(caps_t.min().item())
             result["dynamic_length/max_cap"] = float(caps_t.max().item())
     except Exception:
         pass

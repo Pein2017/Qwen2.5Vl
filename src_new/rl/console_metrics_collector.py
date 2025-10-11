@@ -102,7 +102,6 @@ class ConsoleMetricsCollector:
             [
                 "dynamic_length/enabled",
                 "dynamic_length/mean_cap",
-                "dynamic_length/min_cap",
                 "dynamic_length/max_cap",
             ],
         )

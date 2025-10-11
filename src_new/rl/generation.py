@@ -7,13 +7,17 @@ TRL so the manual trainer can stay lightweight.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
 
 from src_new.rl import logprobs as rl_logprobs
-from src_new.rl.utils import resolve_im_end_id
+from src_new.rl.utils import resolve_im_end_id_strict
+
+
+_GEN_LOGGER = logging.getLogger("rl.generation")
 
 
 _ALLOWED_GENERATION_KEYS = {
@@ -80,7 +84,7 @@ def generate_completions(
     """
 
     gen_inputs = prepare_generate_inputs(model, batch)
-    resolved = resolve_im_end_id(tokenizer)
+    resolved = resolve_im_end_id_strict(tokenizer)
     eos_id = resolved if resolved is not None else eos_token_id
 
     # Unwrap DDP if present to access .generate() method
@@ -160,7 +164,7 @@ def sample_k(
     gen_model = getattr(model, "module", model)
 
     # Resolve EOS id once and ensure it is honored during generation
-    eos_id = resolve_im_end_id(tokenizer)
+    eos_id = resolve_im_end_id_strict(tokenizer)
 
     for _ in range(int(k)):
         gen_idx = _
@@ -183,6 +187,12 @@ def sample_k(
             if eos_id is not None and "eos_token_id" not in extra_kwargs:
                 extra_kwargs["eos_token_id"] = int(eos_id)
 
+        _GEN_LOGGER.info(
+            "generation.sample_k starting generate: k_idx=%d, temp=%.3f, max_new=%d",
+            gen_idx,
+            float(temperature),
+            int(max_new_tokens),
+        )
         with torch.no_grad():
             outputs = gen_model.generate(
                 **gen_inputs,
@@ -195,6 +205,53 @@ def sample_k(
                 **gen_args,
                 **extra_kwargs,
             )
+        _GEN_LOGGER.info(
+            "generation.sample_k finished generate: k_idx=%d, seq_len=%d",
+            gen_idx,
+            int(getattr(outputs, "sequences", gen_inputs["input_ids"]).shape[-1]),
+        )
+
+        # If EOS is present in sequences, trim all sequences at first EOS for consistency
+        try:
+            sequences = getattr(outputs, "sequences", None)
+            if isinstance(sequences, torch.Tensor) and eos_id is not None:
+                eos = int(eos_id)
+                # Right-pad tokens only after the first EOS that appears in the COMPLETION region
+                pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
+                for b in range(sequences.size(0)):
+                    row = sequences[b]
+                    # Search for EOS strictly within the completion slice
+                    comp_slice = row[prompt_len:]
+                    idxs = (comp_slice == eos).nonzero(as_tuple=True)
+                    if idxs[0].numel() > 0:
+                        # Convert relative position within completion to absolute index
+                        first = int(prompt_len + int(idxs[0][0].item()))
+                        if first + 1 < row.size(0):
+                            row[first + 1 :] = pad_id
+        except Exception:
+            pass
+
+        # Log effective generation kwargs once per call (on first completion)
+        if gen_idx == 0:
+            try:
+                eff_kwargs = {
+                    "do_sample": True,
+                    "temperature": float(temperature),
+                    "max_new_tokens": int(max_new_tokens),
+                    "top_p": float(extra_kwargs.get("top_p"))
+                    if "top_p" in extra_kwargs
+                    else None,
+                    "min_new_tokens": int(extra_kwargs.get("min_new_tokens"))
+                    if "min_new_tokens" in extra_kwargs
+                    else None,
+                    "eos_token_id": int(eos_id) if eos_id is not None else None,
+                }
+                _GEN_LOGGER.info(
+                    "generation.sample_k effective kwargs: %s",
+                    {k: v for k, v in eff_kwargs.items() if v is not None},
+                )
+            except Exception:
+                pass
 
         # sequences: [B, prompt_len + T]; scores: list[T] of [B, vocab]
         sequences = outputs.sequences
