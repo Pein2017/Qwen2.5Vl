@@ -14,25 +14,29 @@
 - **You need**:
   - An SFT checkpoint + its processor (from `src_new/`).
   - A dataset organized by group labels (`审核通过|审核不通过/{group_id}/*.jpg`) or a JSONL file.
-- **How it updates your SFT model**: Fine‑tunes the LM head and a few top text layers (vision usually mostly frozen). GRPO gradients flow through Stage‑B replies and optionally Stage‑A summaries.
-- **Quick run**:
-  ```bash
-  conda activate ms
-  bash scripts/run_group_qc_rl.sh /abs/path/to/config.yaml
-  ```
-  Minimal keys in `configs/rl/group_qc_grpo.yaml`:
-  ```yaml
-  checkpoint: /abs/path/sft_ckpt
-  processor:  /abs/path/processor
-  train_data_dir: /abs/path/groups
-  output_dir: /abs/path/output_post/grpo
-  mission: bbu安装方式检查
-  # Sampling
-  K_B: 3                 # Stage-B replies per group
-  K_A: 3                 # Stage-A candidates per image (if enabled)
-  train_stage_a_mode: conditional   # conditional | joint | off
-  stage_a_weight: 1.0
-  ```
+- **Data layout (now supported)**
+  - Pattern A（原有）:
+    ```
+    /abs/path/to/train_groups/
+      审核通过/
+        <group_id>/image_*.jpg
+      审核不通过/
+        <group_id>/image_*.jpg
+    ```
+  - Pattern B（新增，mission 感知）:
+    ```
+    /abs/path/to/train_groups/
+      <mission>/
+        审核通过/
+          <group_id>/image_*.jpg
+        审核不通过/
+          <group_id>/image_*.jpg
+    ```
+  - 或 JSONL: 一行一组
+    ```json
+    {"images": ["/abs/.../1.jpg", "/abs/.../2.jpg"], "label": "pass", "meta": {"group_id": "g1"}}
+    ```
+  - Label 归一: 审核通过|通过|pass → pass；审核不通过|不通过|fail → fail。
 
 ---
 
@@ -273,161 +277,4 @@ Notes:
 - `src_post/prompting/conversation.py`: Stage‑A/B prompt builders and mission hints.
 - `src_post/prompting/schema.py`: mission check/token parsing from `MISSION_CHECKS_COVERAGE` (cached).
 - `src_post/rewards/lexicon.py`: shared canonical tokens (negatives/slots/forbidden words).
-- `src_post/generation/generation.py`: generators and `build_decision_prefix_constraint` for strict Stage‑B headers.
-- `src_post/data/dataset_group_qc.py`: group‑level dataset (directory or JSONL).
-- `src_post/generation/logits_processors.py`: decode‑time masking for geometry/coordinate tokens.
-- `src_post/rewards/`: modular rewards and penalties.
-- `src_post/prompting/span_parser.py`: robust parsing of Stage‑B decision text.
-
----
-
-## Differences from SFT in `src_new/`
-- **Objective**: SFT minimizes CE to match reference text; RL here maximizes a composed task reward using GRPO (relative advantages across samples). No value head.
-- **Where gradients flow**: Stage‑B reply tokens (always), and optionally Stage‑A summary tokens (conditional or joint). Vision stack largely frozen; LM head + last‑K text layers and last‑K vision blocks are trained.
-- **Images**: Reuse the official `Qwen2VLProcessor` and the SFT‑style EXIF‑aware resize so vision token alignment stays correct.
-- **Decoding constraints**: Prefer reward‑based shaping; optional runtime masking removes geometry/coord tokens during generation without affecting gradients.
-
----
-
-## Troubleshooting
-- **Repetition in Stage‑A summaries**: raise generation `repetition_penalty`/`no_repeat_ngram_size` or increase negative weight of `rep_penalty`.
-- **Special tokens leak (`<|...|>`)**: increase negative weight of `special_penalty`; optionally enable decode‑time masking.
-- **Quotes or long rambles**: penalize with `quote_penalty`; you may also shorten Stage‑A `max_new_tokens_stage_a`.
-- **Advantage variance issues (std≈0)**: skip update (A=0) or increase `K_B`/`K_A` moderately.
-- **Instability/drift**: increase KL weight(s) slightly; reduce learning rate; keep most layers frozen initially.
-
-## New knobs (refactor additions)
-
-- Stage‑B training control
-  - `train_stage_b: bool` (freeze Stage‑B updates when false)
-  - `stage_b_weight: float` (weight of Stage‑B loss)
-  - `freeze_stage_b_steps: int` (freeze Stage‑B for the first N updates)
-- Prompt bias toggle
-  - `use_mission_checklist: bool` (include checklist when true; use minimal Stage‑B prompt when false)
-- Group reward mode
-  - `group_reward_mode: {margin_only|label_match|combined}`
-    - `margin_only` uses TF log‑margin only via `group_margin`
-    - `label_match` uses binary only
-    - `combined` uses configured reward names/weights
-- Stage‑A credit assignment
-  - `train_stage_a_mode: {off|conditional|joint}`
-  - `pairwise_credit_enabled: bool` (enable pairwise fallback)
-  - `pairwise_pairs_per_group: int` (budget ≤ 1 by default)
-  - `pairwise_delta_threshold: float` (trigger only if best single‑image Δ < threshold)
-- Uncertainty gate (optional)
-  - `use_uncertainty_gate: bool`
-  - `uncertainty_gate_min_entropy: float` (per‑line entropy threshold)
-
-### Examples
-
-Warm‑up (Stage‑A only; minimal prompt; margin‑only):
-```yaml
-checkpoint: /abs/sft_ckpt
-processor:  /abs/sft_processor
-output_dir: /abs/out/grpo_warmup
-train_data_dir: /abs/data/groups
-mission: bbu安装方式检查
-
-train_stage_b: false
-stage_b_weight: 1.0
-freeze_stage_b_steps: 1000
-use_mission_checklist: false
-
-group_reward_mode: margin_only
-reward_fns: group_margin,formatting,cleanliness,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.3,0.3,-0.7,-0.4,-1.0
-
-train_stage_a_mode: conditional
-pairwise_credit_enabled: true
-pairwise_pairs_per_group: 1
-pairwise_delta_threshold: 0.02
-
-use_ref_kl: true
-ref_checkpoint: /abs/sft_ckpt
-lambda_kl_stage_b: 0.02
-lambda_kl_stage_a: 0.02
-
-K_B: 3
-K_A: 3
-max_new_tokens_stage_a: 48
-max_new_tokens_stage_b: 128
-
-device: cuda
-epochs: 1
-batch_size: 1
-```
-
-End‑to‑end (both stages; checklist; combined reward):
-```yaml
-checkpoint: /abs/sft_ckpt
-processor:  /abs/sft_processor
-output_dir: /abs/out/grpo_e2e
-train_data_dir: /abs/data/groups
-mission: bbu安装方式检查
-
-train_stage_b: true
-stage_b_weight: 1.0
-freeze_stage_b_steps: 0
-use_mission_checklist: true
-
-group_reward_mode: combined
-reward_fns: group_margin,label_match,formatting,cleanliness,rep_penalty
-reward_weights: 1.0,0.3,0.3,0.2,-0.7
-
-train_stage_a_mode: conditional
-pairwise_credit_enabled: false
-pairwise_pairs_per_group: 0
-pairwise_delta_threshold: 0.00
-
-use_ref_kl: true
-ref_checkpoint: /abs/sft_ckpt
-lambda_kl_stage_b: 0.02
-lambda_kl_stage_a: 0.02
-
-K_B: 3
-K_A: 3
-max_new_tokens_stage_a: 48
-max_new_tokens_stage_b: 128
-
-device: cuda
-epochs: 1
-batch_size: 1
-```
-
-## GRPO enhancements (optional)
-
-The following keys enable more robust GRPO behavior. They are optional and disabled by default; when enabled, values are validated fail‑fast.
-
-```yaml
-# Stage‑B clipped GRPO
-enable_clipped_grpo: true
-epsilon_low: 0.2                # (0,1]
-# Optional upper slack for asymmetric clipping (0 = symmetric)
-epsilon_high: 0.0
-loss_type_stage_b: grpo         # {grpo|bnpo|dr_grpo}
-
-# Stage‑B entropy mask (specify exactly ONE of the following when enabled)
-enable_entropy_mask_stage_b: true
-entropy_top_quantile_stage_b: 0.2  # keep top‑entropy tokens
-# entropy_min_threshold_stage_b: 1.5 # alternatively, absolute threshold
-
-# Stability: resample when std==0 (bounded attempts)
-max_resample_times: 2
-
-# Stage‑A focusing & gating
-stage_a_top_m: 1                   # backprop only top‑M images per group (0 = all)
-uncertainty_decay_factor: 0.0      # when gate fails: 0 => zero advantage; (0,1] => decay factor
-pairwise_select: heuristic          # {heuristic|entropy|delta}
-
-# Logging & shaping
-log_all_candidates: true
-soft_overlong_penalty_enabled: true
-soft_overlong_penalty_weight: 0.2   # penalty applied when Stage‑B hits max length without EOS
-```
-
-Notes:
-- Clipped GRPO computes per‑token ratios r = exp(cur − old) and clamps to [1−epsilon_low, 1+epsilon_high], then applies the GRPO min operator with the group advantage.
-- Entropy mask drops low‑entropy reply tokens from loss to stabilize updates; use quantile or absolute threshold (mutually exclusive).
-- `max_resample_times` only affects degenerate groups with zero reward variance and preserves randomness seeding across attempts.
-- `stage_a_top_m` focuses Stage‑A credit to the most impactful images by Δ margin; `uncertainty_decay_factor` controls how strictly the gate zeroes/decays advantages.
-- `log_all_candidates` extends JSONL with all K_B candidates and their rewards; existing schema remains unchanged when disabled.
+- `src_post/generation/generation.py`: generators and `build_decision_prefix_constraint`

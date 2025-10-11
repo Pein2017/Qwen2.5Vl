@@ -23,3 +23,8 @@
 
 ## Fail‑Fast
 - 所有路径必须存在；枚举越界直接报错；奖励名需在注册表中；日志/保存路径提前创建。
+
+## Suggested Defaults (non-binding)
+- Stage‑B 裁剪：`enable_clipped_grpo: false`（若开启需设置：`epsilon_low ∈ (0,1]`, `loss_type_stage_b ∈ {grpo,bnpo,dr_grpo}`）
+- Stage‑B 熵掩码：`enable_entropy_mask_stage_b: false`（若开启二选一：`entropy_top_quantile_stage_b` 或 `entropy_min_threshold_stage_b`）
+- 解码屏蔽（仅影响生成，不改梯度）：Stage‑A `mask_geometry_tokens: true`, `mask_coordinate_tokens: true`; Stage‑B 两项均 false

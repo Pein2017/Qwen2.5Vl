@@ -14,6 +14,14 @@
 - `use_uncertainty_gate=true, uncertainty_gate_min_entropy=1.2`
 - 并行：8卡，Accelerate/或 DDP（WORLD_SIZE=8）
 
+## Defaults（建议，不改变现有代码）
+- Stage‑B 裁剪/熵掩码：默认关闭
+  - `enable_clipped_grpo: false`
+  - `enable_entropy_mask_stage_b: false`
+- 解码屏蔽（仅影响生成）
+  - Stage‑A：`mask_geometry_tokens: true`, `mask_coordinate_tokens: true`
+  - Stage‑B：`mask_geometry_tokens: false`, `mask_coordinate_tokens: false`
+
 ## Run (Accelerate)
 ```
 accelerate launch --num_processes 8 --mixed_precision bf16 \
