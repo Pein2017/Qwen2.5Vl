@@ -47,6 +47,12 @@ def _build_minimal_training_config(base_model) -> Any:
         max_coord_value=2047,
         merge_size=merge_size,
         use_cache=True,
+        # ---- Required by LossManager (nonnegative weights; RL path won't use them) ----
+        teacher_loss_weight=0.0,
+        student_loss_weight=0.0,
+        caption_loss_weight=0.0,
+        grounding_loss_weight=0.0,
+        formatting_loss_weight=0.0,
     )
     return cfg
 
