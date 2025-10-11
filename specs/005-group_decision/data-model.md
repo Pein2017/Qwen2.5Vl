@@ -1,0 +1,38 @@
+# Data Model
+
+## Entities
+- Group
+  - images: List[str]（绝对/可解析路径）
+  - label: str ∈ {pass, fail}
+  - meta: {group_id?: str}
+- Image
+  - path: str
+  - summary: str（Stage‑A 一行中文，训练期为生成；无需持久化）
+- StageBDecision
+  - label: str ∈ {pass, fail}
+  - reason: str（第二行中文）
+- Reward
+  - names: List[str]
+  - weights: List[float]
+  - group_margin: float
+  - std: float（同组内 K_B 方差）
+
+## RL Config (required keys)
+- Paths: checkpoint, processor, output_dir, {train_data_dir|eval_data_dir}
+- Runtime: device, seed, limit_groups, log_step
+- Generation: temperature, top_p, max_new_tokens_stage_a, max_new_tokens_stage_b
+- Sampling: K_B, K_A, K_set, adv_clip, length_norm
+- Training: train, epochs, batch_size, learning_rate, weight_decay, max_grad_norm, drop_last
+- Freeze/LR: llm_top_k_block, vision_top_k_block, freeze_patch_embed, train_aligner, aligner_lr, llm_lr, vision_lr
+- KL: use_ref_kl, ref_checkpoint, lambda_kl_stage_b, lambda_kl_stage_a
+- Stage‑A: train_stage_a_mode, stage_a_weight, max_images_tf
+- Group reward: group_reward_mode, use_mission_checklist
+- Pairwise/Uncertainty: pairwise_credit_enabled, pairwise_pairs_per_group, pairwise_delta_threshold, use_uncertainty_gate, uncertainty_gate_min_entropy
+- Logging/Save: tb_log_dir, run_name, save_step, save_limit
+
+## Defaults (from spec)
+- use_mission_checklist=true
+- Stage‑B: K_B=2, temperature=0.7, top_p=0.95
+- KL: use_ref_kl=true，ref=当前SFT
+- Stage‑A 门控：use_uncertainty_gate=true, entropy_threshold=1.2
+- 硬件并行：8×A100‑80G + Accelerate
