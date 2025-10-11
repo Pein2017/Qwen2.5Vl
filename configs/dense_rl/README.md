@@ -71,13 +71,12 @@ model:
 ```yaml
 sampling:
   prompt_batch_size: 8      # Number of prompts per optimizer step
-  sample_k: 8               # Completions per prompt (split across GPUs if sample_k_per_rank=false)
-  sample_k_per_rank: false  # If false, sample_k is split across world_size
+  sample_k: 8               # GLOBAL completions per prompt across all ranks
   reward_average_window: 5
 
 # NOTE: gradient_accumulation_steps is AUTO-COMPUTED as:
-#   local_sample_k × prompt_batch_size
-# where local_sample_k = sample_k (if sample_k_per_rank) or sample_k/world_size
+#   local_k × prompt_batch_size
+# where local_k = sample_k / world_size (require divisibility)
 ```
 
 **Important**: The actual gradient accumulation is computed automatically based on the sampling window. Do NOT specify `gradient_accumulation_steps` manually.
@@ -272,16 +271,15 @@ These values are **automatically computed** by the trainer:
 1. **`max_steps`** = `num_train_epochs × (dataset_size // prompt_batch_size)`
    - Where `dataset_size` auto-detects from `len(train_dataset)` if set to -1
 
-2. **`gradient_accumulation_steps`** = `local_sample_k × prompt_batch_size`
-   - Where `local_sample_k = sample_k` (if `sample_k_per_rank=true`)
-   - Or `local_sample_k = sample_k / world_size` (if `sample_k_per_rank=false`)
+2. **`gradient_accumulation_steps`** = `local_k × prompt_batch_size`
+   - Where `local_k = sample_k / world_size` (require `sample_k % world_size == 0`)
 
 3. **`per_device_train_batch_size`** = `1` (hardcoded)
 
-Example: With `num_train_epochs=3`, `dataset_size=1000`, `prompt_batch_size=8`, `sample_k=8`, `world_size=4`, `sample_k_per_rank=false`:
+Example: With `num_train_epochs=3`, `dataset_size=1000`, `prompt_batch_size=8`, `sample_k=8`, `world_size=4`:
 - `steps_per_epoch = 1000 // 8 = 125`
 - `max_steps = 3 × 125 = 375`
-- `local_sample_k = 8/4 = 2`
+- `local_k = 8/4 = 2`
 - `gradient_accumulation_steps = 2 × 8 = 16`
 
 ## Usage

@@ -190,7 +190,7 @@ Accumulate rewards and gradients across multiple prompts before each optimizer u
 
 ### Architecture
 1. **Sample prompts**: Draw `sampling.prompt_batch_size` prompts (sequential broadcast)
-2. **Per-prompt generation**: Each prompt generates `grpo.sample_k` trajectories (split across ranks if `sample_k_per_rank=false`)
+2. **Per-prompt generation**: Each prompt generates `grpo.sample_k` trajectories (GLOBAL; split evenly across ranks)
 3. **Accumulate**: Gradients accumulate via `loss.backward()` without `optimizer.step()`
 4. **Optimizer step**: After collecting all prompts × trajectories
 
@@ -199,14 +199,12 @@ Accumulate rewards and gradients across multiple prompts before each optimizer u
 sampling:
   prompt_batch_size: 4           # Prompts per optimizer update
   reward_average_window: 5       # Smoothing window for reward metrics
-  sample_k: 8                    # Trajectories per prompt (global if split mode)
-  sample_k_per_rank: false       # If false, split sample_k across ranks (must be divisible by world_size)
+  sample_k: 8                    # GLOBAL trajectories per prompt (across all ranks)
 ```
 
 ### Modes
-- **Split-K mode** (`sample_k_per_rank=false`): `sample_k` divided across ranks → total `sample_k` trajectories per prompt
+- **Global-K (default)**: `sample_k` divided evenly across ranks → total `sample_k` trajectories per prompt
   - Requirement: `sample_k % world_size == 0`
-- **Per-rank-K mode** (`sample_k_per_rank=true`): Each rank generates `sample_k` → total `sample_k × world_size` per prompt
 
 ### Drop-Last Behavior
 If dataset has fewer prompts than `prompt_batch_size`:
@@ -221,8 +219,8 @@ If dataset has fewer prompts than `prompt_batch_size`:
 
 ## Distributed Execution & Sampling Window
 - Accelerate manages process groups and device placement; the trainer infers world size/rank and configures a **sampling window** so that each optimizer step sees a consistent set of completions.
-- Two sampling modes:
-  - Global-K split across ranks (`sample_k_per_rank=false`), or per-rank-K (`sample_k_per_rank=true`).
+- Sampling mode:
+  - Global-K only: `sample_k` is GLOBAL and split evenly across ranks.
 - Shared-buffer resampling safeguards:
   - All ranks regenerate at the same time to keep collectives aligned.
   - A slow-generation guard resamples if any rank exceeds a generation-time threshold or yields zero completions.
@@ -351,8 +349,8 @@ grpo:
 ```
 
 ### Batch math (distributed)
-Let `world_size = W`, `sample_k_per_rank = false` (split-K mode):
-- local_k = sample_k / W
+Let `world_size = W`:
+- local_k = sample_k / W (require divisibility)
 - gradient_accumulation_steps = local_k × prompt_batch_size × steps_per_generation
 
 Example (8 GPUs):
@@ -366,7 +364,6 @@ You will observe logs clustered in groups of `steps_per_generation`. Each cluste
 - Balanced (default):
   - `sampling.prompt_batch_size: 4`
   - `sampling.sample_k: 16`
-  - `sampling.sample_k_per_rank: false`
   - `grpo.steps_per_generation: 2`
 - Prompt-heavy (more coverage):
   - `prompt_batch_size: 8`, `sample_k: 16`, `steps_per_generation: 1`
@@ -376,4 +373,4 @@ You will observe logs clustered in groups of `steps_per_generation`. Each cluste
 ### Tips
 - Increase `steps_per_generation` first if generation cost dominates, but monitor overfitting to reused samples.
 - With KL enabled (`beta_start > 0`), memory increases; if OOM, lower `prompt_batch_size`, then `sample_k`, then `steps_per_generation`.
-- `sample_k_per_rank: true` multiplies total K by `world_size`; use only if you want per-rank K > 1 and can afford the cost.
+  

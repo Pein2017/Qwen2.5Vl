@@ -98,15 +98,21 @@ class SamplingConfig:
 
     prompt_batch_size: int
     sample_k: int
-    sample_k_per_rank: bool
     reward_average_window: int
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "SamplingConfig":
+        # Migration guard: forbid legacy flag
+        if "sample_k_per_rank" in cfg:
+            raise ConfigValidationError(
+                "'sampling.sample_k_per_rank' has been removed.\n"
+                "Define 'sampling.sample_k' as a GLOBAL count (total across ranks).\n"
+                "The trainer requires sample_k % world_size == 0 and uses local_k = sample_k / world_size."
+            )
+
         return SamplingConfig(
             prompt_batch_size=_require(cfg, "prompt_batch_size", "sampling"),
             sample_k=_require(cfg, "sample_k", "sampling"),
-            sample_k_per_rank=_require(cfg, "sample_k_per_rank", "sampling"),
             reward_average_window=_require(cfg, "reward_average_window", "sampling"),
         )
 
@@ -142,6 +148,7 @@ class GenerationConfig:
     min_new_tokens: int
     temperature: float
     top_p: float
+    repetition_penalty: float
     dynamic_length: DynamicLengthConfig
 
     @staticmethod
@@ -151,6 +158,7 @@ class GenerationConfig:
             min_new_tokens=_require(cfg, "min_new_tokens", "generation"),
             temperature=_require(cfg, "temperature", "generation"),
             top_p=_require(cfg, "top_p", "generation"),
+            repetition_penalty=_require(cfg, "repetition_penalty", "generation"),
             dynamic_length=DynamicLengthConfig.from_dict(
                 _require(cfg, "dynamic_length", "generation")
             ),
@@ -192,7 +200,7 @@ class BetaAnnealConfig:
 
 @dataclass(frozen=True)
 class GRPOConfig:
-    """GRPO algorithm - all required except beta_anneal, max_advantage_magnitude, and steps_per_generation."""
+    """GRPO algorithm - all required except beta_anneal and max_advantage_magnitude."""
 
     epsilon_low: float
     epsilon_high: float
@@ -200,28 +208,26 @@ class GRPOConfig:
     loss_type: str
     scale_rewards: bool
     mask_truncated_completions: bool
+    standardize_rewards: bool  # Per-component reward standardization
+    steps_per_generation: int  # Buffer reuse: 1=no reuse, >1=Swift-style (experimental)
     beta_anneal: Optional[BetaAnnealConfig] = (
         None  # Truly optional (must come after required)
     )
     max_advantage_magnitude: Optional[float] = (
         None  # Truly optional (must come after required)
     )
-    steps_per_generation: Optional[int] = (
-        None  # None = auto (same as gradient_accumulation_steps)
-    )
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "GRPOConfig":
         beta_anneal_dict = cfg.get("beta_anneal")
-        steps_per_gen = cfg.get("steps_per_generation")
+        steps_per_gen = _require(cfg, "steps_per_generation", "grpo")
 
-        # Validate steps_per_generation if provided
-        if steps_per_gen is not None:
-            steps_per_gen = int(steps_per_gen)
-            if steps_per_gen < 1:
-                raise ConfigValidationError(
-                    f"grpo.steps_per_generation must be >= 1, got {steps_per_gen}"
-                )
+        # Validate steps_per_generation
+        steps_per_gen = int(steps_per_gen)
+        if steps_per_gen < 1:
+            raise ConfigValidationError(
+                f"grpo.steps_per_generation must be >= 1, got {steps_per_gen}"
+            )
 
         return GRPOConfig(
             epsilon_low=_require(cfg, "epsilon_low", "grpo"),
@@ -232,11 +238,12 @@ class GRPOConfig:
             mask_truncated_completions=_require(
                 cfg, "mask_truncated_completions", "grpo"
             ),
+            standardize_rewards=_require(cfg, "standardize_rewards", "grpo"),
+            steps_per_generation=steps_per_gen,
             beta_anneal=BetaAnnealConfig.from_dict(beta_anneal_dict)
             if beta_anneal_dict
             else None,
             max_advantage_magnitude=cfg.get("max_advantage_magnitude"),  # Optional
-            steps_per_generation=steps_per_gen,  # Optional
         )
 
 
@@ -268,6 +275,8 @@ class TrainingConfig:
     prefetch_factor: int
     bf16: bool
     fp16: bool
+    gradient_accumulation_steps: int
+    per_device_train_batch_size: int
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "TrainingConfig":
@@ -293,7 +302,7 @@ class TrainingConfig:
                 f"num_train_epochs must be > 0, got {num_epochs}"
             )
 
-        dataset_size = cfg.get("dataset_size", -1)
+        dataset_size = _require(cfg, "dataset_size", "training")
         if dataset_size < -1:
             raise ConfigValidationError(
                 f"dataset_size must be >= -1, got {dataset_size}"
@@ -302,6 +311,18 @@ class TrainingConfig:
         warmup = _require(cfg, "warmup_ratio", "training")
         if warmup < 0.0:
             raise ConfigValidationError(f"warmup_ratio must be >= 0.0, got {warmup}")
+
+        grad_accum = _require(cfg, "gradient_accumulation_steps", "training")
+        if grad_accum < 1:
+            raise ConfigValidationError(
+                f"gradient_accumulation_steps must be >= 1, got {grad_accum}"
+            )
+
+        per_device_batch = _require(cfg, "per_device_train_batch_size", "training")
+        if per_device_batch < 1:
+            raise ConfigValidationError(
+                f"per_device_train_batch_size must be >= 1, got {per_device_batch}"
+            )
 
         return TrainingConfig(
             num_train_epochs=num_epochs,
@@ -313,6 +334,8 @@ class TrainingConfig:
             prefetch_factor=_require(cfg, "prefetch_factor", "training"),
             bf16=_require(cfg, "bf16", "training"),
             fp16=_require(cfg, "fp16", "training"),
+            gradient_accumulation_steps=grad_accum,
+            per_device_train_batch_size=per_device_batch,
         )
 
 
@@ -477,6 +500,38 @@ class LengthVsGTConfig:
 
 
 @dataclass(frozen=True)
+class StandardizerConfig:
+    """Per-component standardizer hyperparameters (optional block)."""
+
+    mode: str  # "std_only" or "zscore"
+    momentum: float
+    warmup_steps: int
+    min_std: float
+    clip: float
+
+    @staticmethod
+    def from_dict(cfg: Optional[Dict[str, Any]]) -> "StandardizerConfig":
+        if cfg is None:
+            raise ConfigValidationError(
+                "Missing required 'rewards_config.standardizer' block while reward standardization is enabled"
+            )
+        mode = _require(cfg, "mode", "rewards_config.standardizer")
+        if mode not in {"std_only", "zscore"}:
+            raise ConfigValidationError(
+                "rewards_config.standardizer.mode must be 'std_only' or 'zscore'"
+            )
+        return StandardizerConfig(
+            mode=mode,
+            momentum=float(_require(cfg, "momentum", "rewards_config.standardizer")),
+            warmup_steps=int(
+                _require(cfg, "warmup_steps", "rewards_config.standardizer")
+            ),
+            min_std=float(_require(cfg, "min_std", "rewards_config.standardizer")),
+            clip=float(_require(cfg, "clip", "rewards_config.standardizer")),
+        )
+
+
+@dataclass(frozen=True)
 class RewardParamsConfig:
     """Reward-specific hyperparameters - all required."""
 
@@ -490,6 +545,8 @@ class RewardParamsConfig:
     # New: line-specific duplicate and pattern penalties (flattened 'line' sub-blocks)
     duplicate_penalty: Optional[Dict[str, Any]] = None
     pattern_penalty: Optional[Dict[str, Any]] = None
+    # Optional: standardizer hyperparameters
+    standardizer: Optional["StandardizerConfig"] = None
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "RewardParamsConfig":
@@ -565,6 +622,11 @@ class RewardParamsConfig:
                     "rewards_config.line_giou.buffer_frac must be a float"
                 )
 
+        std_cfg = cfg.get("standardizer")
+        std_parsed = (
+            StandardizerConfig.from_dict(std_cfg) if isinstance(std_cfg, dict) else None
+        )
+
         return RewardParamsConfig(
             clip_sigma=_require(cfg, "clip_sigma", "rewards_config"),
             tau_iou=_require(cfg, "tau_iou", "rewards_config"),
@@ -576,6 +638,7 @@ class RewardParamsConfig:
             line_giou=line_giou_cfg,
             duplicate_penalty=_extract_duplicate_penalty(cfg),
             pattern_penalty=_extract_pattern_penalty(cfg),
+            standardizer=std_parsed,
         )
 
 

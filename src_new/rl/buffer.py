@@ -109,6 +109,8 @@ def generate_and_score(
     cap_hit_flags: List[int] = []
     # Generation-policy log-probs per completion (to be filled from generate())
     generation_logps_list: List[torch.Tensor] = []
+    # Duplication diagnostics per sample (exact string equality)
+    dup_exact_ratios: List[float] = []
 
     gen_kwargs = {"top_p": float(top_p)}
     if repetition_penalty is not None:
@@ -243,15 +245,7 @@ def generate_and_score(
                     had_eos = 1
             completion_has_eos.append(int(had_eos))
 
-            # Effective generated length = sum of mask (includes EOS if present)
-            eff_len = int(mask_vec.long().sum().item())
-            gen_len_tok = eff_len
-            gen_len_tok_list.append(gen_len_tok)
-            if gt_len_tok is not None:
-                gt_len_tok_list.append(int(gt_len_tok))
-            else:
-                # keep lists aligned
-                gt_len_tok_list.append(0)
+            # (length handling moved below after optional truncation masking)
 
             # When hard_cap is disabled, mask overflow tokens beyond per-sample cap (only if no EOS)
             try:
@@ -276,7 +270,10 @@ def generate_and_score(
                     and per_sample_cap > 0
                     and int(had_eos) == 0
                 ):
-                    cap_hit_flags.append(1 if gen_len_tok >= int(gen_cap_to_use) else 0)
+                    _cur_eff_len = int(mask_vec.long().sum().item())
+                    cap_hit_flags.append(
+                        1 if _cur_eff_len >= int(gen_cap_to_use) else 0
+                    )
                 else:
                     cap_hit_flags.append(0)
             except Exception:
@@ -290,9 +287,28 @@ def generate_and_score(
             except Exception:
                 completion_truncated.append(0)
 
+            # NEW: Skip non-EOS completions if configured by zeroing their masks
+            try:
+                if bool(mask_truncated_completions) and int(had_eos) == 0:
+                    # Keep one token to avoid effective_len=0, which can desync ranks
+                    if mask_vec.numel() > 0:
+                        mask_vec[:] = 0
+                        mask_vec[0:1] = 1
+            except Exception:
+                pass
+
+            # Effective generated length = sum of mask (includes EOS if present)
+            eff_len = int(mask_vec.long().sum().item())
+            gen_len_tok_list.append(eff_len)
+            if gt_len_tok is not None:
+                gt_len_tok_list.append(int(gt_len_tok))
+            else:
+                # keep lists aligned
+                gt_len_tok_list.append(0)
+
             completion_masks.append(mask_vec)
             completions_raw.append(completion)
-            completion_lengths.append(int(mask_vec.long().sum().item()))
+            completion_lengths.append(eff_len)
             prompt_index_repeat.append(sample_idx)
             completions_text_sample.append(
                 tokenizer.decode(completion[:eff_len], skip_special_tokens=False)
@@ -326,11 +342,26 @@ def generate_and_score(
             # Always include GT length when available (critical for length_vs_gt reward)
             if gt_len_tok is not None:
                 m["gt_len_tokenizer"] = int(gt_len_tok)
-            # Always include generation length
-            m["gen_len_tokenizer"] = int(gen_len_tok)
+            # Always include generation length (use effective masked length)
+            m["gen_len_tokenizer"] = int(eff_len)
             meta_per_completion.append(m)
 
         completions_per_sample.append(completions_text_sample)
+        # Duplication detection for this prompt (exact string match)
+        try:
+            if len(completions_text_sample) > 1:
+                uniq = len(set(completions_text_sample))
+                n = float(len(completions_text_sample))
+                dup_ratio = 1.0 - (float(uniq) / n)
+                dup_exact_ratios.append(float(dup_ratio))
+                if uniq == 1:
+                    _LOGGER.warning(
+                        "Identical completions detected for sample_idx=%d (K=%d). Consider increasing temperature/top_p or repetition_penalty.",
+                        int(sample_idx),
+                        int(n),
+                    )
+        except Exception:
+            pass
         # Proactively free per-sample GPU memory to prevent accumulation across samples
         try:
             del seqs
@@ -444,6 +475,13 @@ def generate_and_score(
             values_tensor = reward_standardizer.update_and_standardize(
                 reward_name, values_tensor
             )
+            # Guard against NaN/Inf after standardization to avoid rank divergence
+            values_tensor = torch.nan_to_num(
+                values_tensor,
+                nan=0.0,
+                posinf=float(clip_sigma),
+                neginf=-float(clip_sigma),
+            )
         per_func_values.append(values_tensor)
 
     rewards_per_func = torch.stack(per_func_values, dim=1) if per_func_values else None
@@ -482,6 +520,20 @@ def generate_and_score(
             min=-float(max_advantage_magnitude),
             max=float(max_advantage_magnitude),
         )
+
+    # Optionally zero advantages for truncated/no‑EOS completions when masking is enabled
+    try:
+        if (
+            bool(mask_truncated_completions)
+            and len(completion_truncated) == advantages.numel()
+        ):
+            trunc_mask = torch.tensor(
+                completion_truncated, dtype=torch.float32, device=device
+            )
+            # Keep gradients only for EOS-terminated completions
+            advantages = advantages * (1.0 - trunc_mask)
+    except Exception:
+        pass
 
     # Vision tensor packing
     pixel_chunks: List[torch.Tensor] = []
@@ -579,6 +631,20 @@ def generate_and_score(
             result["completions/zero_len_ratio"] = float(zero_cnt) / float(
                 max(len(completion_lengths), 1)
             )
+        # Duplication metrics across prompts (mean of per-sample ratios)
+        if dup_exact_ratios:
+            try:
+                mean_dup = float(
+                    sum(dup_exact_ratios) / float(max(len(dup_exact_ratios), 1))
+                )
+                result["completions/dup_exact_mean"] = mean_dup
+                if mean_dup >= 0.5:
+                    _LOGGER.warning(
+                        "High duplication across prompts: dup_exact_mean=%.3f. Increase temperature/top_p, set repetition_penalty, or reduce steps_per_generation.",
+                        mean_dup,
+                    )
+            except Exception:
+                pass
     except Exception:
         pass
 

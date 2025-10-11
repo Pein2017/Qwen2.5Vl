@@ -42,11 +42,15 @@ class ConsoleFormatter:
             f"step={step}",
             f"epoch={epoch:.3f}",
             f"reward={reward_mean:.4f}±{reward_std:.4f}",
-            f"raw_reward={raw_reward_mean:.4f}±{raw_reward_std:.4f}",
             f"lr={learning_rate:.3e}",
             f"grad_norm={grad_norm:.3f}",
             f"eta={eta_minutes:.1f}min",
         ]
+        # Only print raw_reward when available in logs (prevents 0.0000±0.0000 noise)
+        if "raw_reward" in logs and "raw_reward_std" in logs:
+            parts.insert(
+                3, f"raw_reward={logs['raw_reward']:.4f}±{logs['raw_reward_std']:.4f}"
+            )
 
         # Add advantages if available
         if "advantages/std" in logs:
@@ -86,11 +90,14 @@ class ConsoleFormatter:
             f"epoch={logs.get('epoch', 0.0):.3f}",
             f"loss={logs.get('loss', 0.0):.4f}",
             f"reward={logs.get('reward', 0.0):.4f}±{logs.get('reward_std', 0.0):.4f}",
-            f"raw_reward={logs.get('raw_reward', 0.0):.4f}±{logs.get('raw_reward_std', 0.0):.4f}",
             f"lr={logs.get('learning_rate', 0.0):.3e}",
             f"grad_norm={logs.get('grad_norm', 0.0):.3f}",
             f"eta={logs.get('eta_minutes', 0.0):.1f}min",
         ]
+        if "raw_reward" in logs and "raw_reward_std" in logs:
+            core.insert(
+                4, f"raw_reward={logs['raw_reward']:.4f}±{logs['raw_reward_std']:.4f}"
+            )
         lines.append("[CORE] " + " ".join(core))
 
         # Line 2: Advantages (local + global if present)

@@ -50,7 +50,20 @@ def _build_gt_text(meta: Dict[str, Any]) -> tuple[str | None, int | None]:
 
             conv = _Conv()
             objs = meta.get("objects") or []
-            gt_text = conv.convert_objects_to_tokens(objs)
+            out_lines: list[str] = []
+            for idx, obj in enumerate(objs):
+                # Use 'desc' directly as the caption (it contains the full hierarchical description)
+                desc = obj.get("desc", "")
+                if not isinstance(desc, str) or not desc.strip():
+                    _LOGGER.warning(
+                        f"Object {idx} missing non-empty 'desc' for GT caption, skipping"
+                    )
+                    continue
+                caption = desc.strip()
+                ref_text = conv.format_object_ref_for_user(caption)
+                geom_text = conv.format_geometry_for_user(obj)
+                out_lines.append(f"{ref_text}{geom_text}")
+            gt_text = "\n".join(out_lines)
             return gt_text, None  # length computed later with tokenizer
     except Exception as _e:
         _LOGGER.debug("Failed to build GT text from meta: %s", _e)

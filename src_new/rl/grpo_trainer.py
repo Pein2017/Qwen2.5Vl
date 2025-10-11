@@ -137,7 +137,7 @@ class BBUGRPOTrainer:
         self._drop_last_enabled = True
 
         # Sampling configuration (derive before Accelerator so we can set accumulation)
-        self._sample_k_per_rank = bool(rl_config.sampling.sample_k_per_rank)
+        # GLOBAL-K semantics: sample_k is total completions per prompt across all ranks
         # Resolve world size and rank from env (works before process group init)
         try:
             _ws_env = int(os.getenv("WORLD_SIZE", "1"))
@@ -156,12 +156,16 @@ class BBUGRPOTrainer:
         # Compute local sample_k for accumulation boundary
         k_total = int(self.manual_cfg.sample_k)
         prompt_batch_size_cfg = max(1, int(self.manual_cfg.prompt_batch_size))
-        if self._sample_k_per_rank or self.world_size <= 1:
+        if self.world_size <= 1:
             _local_k_for_acc = k_total
         else:
             _base = k_total // self.world_size
             _rem = k_total % self.world_size
-            _local_k_for_acc = _base + (1 if self.rank < _rem else 0)
+            if _rem != 0:
+                raise ValueError(
+                    "sampling.sample_k must be divisible by world_size (GLOBAL-K semantics)"
+                )
+            _local_k_for_acc = _base
         _local_completions_for_acc = max(
             1, int(_local_k_for_acc) * prompt_batch_size_cfg
         )
@@ -174,7 +178,10 @@ class BBUGRPOTrainer:
         init_pg_kwargs = InitProcessGroupKwargs(
             timeout=timedelta(seconds=nccl_timeout_seconds)
         )
-        ddp_kwargs = DistributedDataParallelKwargs()
+        ddp_kwargs = DistributedDataParallelKwargs(
+            broadcast_buffers=False,
+            find_unused_parameters=False,
+        )
 
         self.accelerator = Accelerator(
             mixed_precision=mp,
@@ -222,9 +229,41 @@ class BBUGRPOTrainer:
             buffer_step_idx=0,
         )
 
-        self._standardizer = (
-            RewardStandardizer() if self.manual_cfg.standardize_rewards else None
-        )
+        # Build reward standardizer from config when enabled
+        if self.manual_cfg.standardize_rewards:
+            from src_new.config.rl_config_v2 import StandardizerConfig
+
+            std_cfg = getattr(self.config.rewards.config, "standardizer", None)
+            if std_cfg is None:
+                raise ValueError(
+                    "standardize_rewards is True but 'rewards_config.standardizer' block is missing in YAML"
+                )
+            else:
+                # Accept either a StandardizerConfig instance or a dict
+                if isinstance(std_cfg, StandardizerConfig):
+                    std_config = std_cfg
+                else:
+                    std_config = StandardizerConfig.from_dict(std_cfg)
+                self._standardizer = RewardStandardizer(
+                    mode=std_config.mode,
+                    momentum=float(std_config.momentum),
+                    warmup_steps=int(std_config.warmup_steps),
+                    min_std=float(std_config.min_std),
+                    clip_abs=float(std_config.clip),
+                )
+            try:
+                _LOGGER.info(
+                    "Reward standardization: ENABLED (mode=%s, momentum=%.3f, warmup=%d, min_std=%.3f, clip=%.1f)",
+                    getattr(self._standardizer, "mode", "std_only"),
+                    getattr(self._standardizer, "momentum", 0.97),
+                    getattr(self._standardizer, "warmup_steps", 10),
+                    getattr(self._standardizer, "min_std", 0.05),
+                    getattr(self._standardizer, "clip_abs", 3.0),
+                )
+            except Exception:
+                pass
+        else:
+            self._standardizer = None
         if len(self.train_dataset) < int(self.manual_cfg.prompt_batch_size):
             raise ValueError(
                 "prompt_batch.prompt_batch_size exceeds available prompts; "
@@ -236,8 +275,7 @@ class BBUGRPOTrainer:
         # Sampling window (based on current world_size)
 
         # Derive accumulation strictly from the sampling configuration so each
-        # optimizer step always corresponds to a consistent set of completions
-        # (one per rank when sample_k_per_rank=false).
+        # optimizer step always corresponds to a consistent set of completions.
         self._configure_sampling_window()
 
         # Prompt batch telemetry tracker (per-rank expected trajectories)
@@ -305,6 +343,9 @@ class BBUGRPOTrainer:
         # Vision cache for cached vision tensors
         self._vision_cache = None
 
+        # Warn-once flag used in cross-rank advantage normalization
+        self._warned_rewards_mismatch: bool = False
+
     @property
     def _global_step(self) -> int:
         """Backward compatibility property for _global_step."""
@@ -347,16 +388,17 @@ class BBUGRPOTrainer:
             raw_reward_mean = float(raw_for_log.mean().item())
             raw_reward_std = float(raw_for_log.std(unbiased=False).item())
         else:
-            raw_reward_mean = 0.0
-            raw_reward_std = 0.0
+            raw_reward_mean = None
+            raw_reward_std = None
 
         metrics = {
             "loss": loss_value,
             "reward": reward_mean,
             "reward_std": reward_std,
-            "raw_reward": raw_reward_mean,
-            "raw_reward_std": raw_reward_std,
         }
+        if raw_reward_mean is not None and raw_reward_std is not None:
+            metrics["raw_reward"] = raw_reward_mean
+            metrics["raw_reward_std"] = raw_reward_std
         self._state_manager.accumulate_loss_components(metrics)
 
         buffer_is_fresh = bool(generation_result.get("buffer/is_fresh", False))
@@ -461,8 +503,6 @@ class BBUGRPOTrainer:
                     "step": self._global_step,
                     "reward": reward_mean,
                     "reward_std": reward_std,
-                    "raw_reward": raw_reward_mean,
-                    "raw_reward_std": raw_reward_std,
                     "temperature": float(generation_result.get("temperature", 0.0)),
                     "learning_rate": current_lr,
                     "beta": generation_result.get("beta", 0.0),
@@ -480,6 +520,10 @@ class BBUGRPOTrainer:
                     ),
                 }
             )
+            # Only keep raw reward metrics if available
+            if raw_reward_mean is not None and raw_reward_std is not None:
+                logs["raw_reward"] = raw_reward_mean
+                logs["raw_reward_std"] = raw_reward_std
             # Remove redundant time metrics from RL logs to reduce clutter
             logs.pop("train_runtime", None)
             logs.pop("train_samples_per_second", None)
@@ -1068,26 +1112,13 @@ class BBUGRPOTrainer:
         raw_local_k = int(self._local_sample_k())
         if raw_local_k <= 0:
             raise ValueError(
-                "Computed per-rank sample_k is 0. Ensure grpo.sample_k >= world_size"
-                " when grpo.sample_k_per_rank is false, or enable sample_k_per_rank."
-            )
-
-        if (
-            not self._sample_k_per_rank
-            and self.world_size > 1
-            and self.manual_cfg.sample_k % self.world_size != 0
-        ):
-            raise ValueError(
-                "grpo.sample_k must be divisible by world_size when sample_k_per_rank=false"
+                "Computed per-rank sample_k is 0. Ensure sampling.sample_k >= world_size and divisible by it."
             )
 
         self.global_sample_k = int(self.manual_cfg.sample_k)
         self.local_sample_k = raw_local_k
         self.prompts_per_cycle = int(self.manual_cfg.prompt_batch_size)
-        if self._sample_k_per_rank:
-            completions_per_update = self.local_sample_k * max(self.world_size, 1)
-        else:
-            completions_per_update = self.global_sample_k
+        completions_per_update = self.global_sample_k
         self.global_completions_per_update = completions_per_update
         self.local_completions_per_cycle = self.local_sample_k * self.prompts_per_cycle
 
@@ -1105,20 +1136,15 @@ class BBUGRPOTrainer:
             )
 
     def _local_sample_k(self) -> int:
-        """Compute per-rank sample_k.
-
-        If grpo.sample_k_per_rank is true (YAML), interpret sample_k as per-rank K.
-        Otherwise, split global K across ranks (legacy behavior).
-        """
+        """Compute per-rank sample_k under GLOBAL-K semantics."""
         k_total = int(self.manual_cfg.sample_k)
-        if self._sample_k_per_rank:
-            return k_total
         if not (self.world_size > 1):
             return k_total
-        # Cross-rank sampling: each rank produces ceil(sample_k / world_size)
-        base = k_total // self.world_size
-        rem = k_total % self.world_size
-        return base + (1 if self.rank < rem else 0)
+        if k_total % self.world_size != 0:
+            raise ValueError(
+                "sampling.sample_k must be divisible by world_size (GLOBAL-K semantics)"
+            )
+        return k_total // self.world_size
 
     def _check_cross_rank_buffer_sync(self) -> bool:
         """Check if any rank needs new buffer (cross-rank sync)."""
@@ -1397,11 +1423,7 @@ class BBUGRPOTrainer:
                 min_new_tokens=self.manual_cfg.min_new_tokens,
                 temperature=gen_cfg["temperature"],
                 top_p=gen_cfg["top_p"],
-                repetition_penalty=(
-                    float(os.getenv("REPETITION_PENALTY"))
-                    if os.getenv("REPETITION_PENALTY") is not None
-                    else None
-                ),
+                repetition_penalty=self.config.generation.repetition_penalty,
                 mask_truncated_completions=self.manual_cfg.mask_truncated_completions,
                 scale_rewards=self.manual_cfg.scale_rewards,
                 max_advantage_magnitude=self.manual_cfg.max_advantage_magnitude,
@@ -1926,6 +1948,28 @@ class BBUGRPOTrainer:
                     "clip_region_ratio"
                 ]
 
+                # Buffer reuse logging metadata to gate full logging to the first reuse step
+                try:
+                    is_fresh = bool(
+                        self._training_state.buffer_step_idx
+                        == self.local_completions_per_cycle
+                    )
+                except Exception:
+                    is_fresh = False
+                generation_result_for_log["buffer/is_fresh"] = is_fresh
+                generation_result_for_log["buffer/step_in_cycle"] = int(
+                    self._training_state.buffer_step_idx
+                )
+                generation_result_for_log["buffer/completions_per_cycle"] = int(
+                    self.local_completions_per_cycle
+                )
+                try:
+                    generation_result_for_log["buffer/completions_total"] = int(
+                        gen_buffer.get_total_completions()
+                    )
+                except Exception:
+                    pass
+
                 # Add prompt batch telemetry
                 prompt_batch_metrics = (
                     self._prompt_batch_telemetry.compute_cycle_metrics()
@@ -2192,7 +2236,7 @@ class BBUGRPOTrainer:
             prompt_batch_size * sample_k
         )  # Will be adjusted by world_size
 
-        grad_accum = getattr(rl_config.training, "gradient_accumulation_steps", 1)
+        grad_accum = rl_config.training.gradient_accumulation_steps
 
         # Compute max_steps from epochs and dataset size
         dataset_size = rl_config.training.dataset_size
@@ -2213,10 +2257,8 @@ class BBUGRPOTrainer:
         )
 
         # Beta annealing schedule (computed from ratio after max_steps)
-        per_device_train_batch = getattr(
-            rl_config.training, "per_device_train_batch_size", 1
-        )
-        standardize_rewards = getattr(rl_config.grpo, "standardize_rewards", False)
+        per_device_train_batch = rl_config.training.per_device_train_batch_size
+        standardize_rewards = rl_config.grpo.standardize_rewards
 
         beta_start = rl_config.grpo.beta_start
         beta_schedule = None
@@ -2234,17 +2276,9 @@ class BBUGRPOTrainer:
                 max_steps,
             )
 
-        # Auto-default steps_per_generation to 1 (current behavior) if not specified
-        # TODO: Change default to gradient_accumulation_steps after full buffer reuse integration
+        # Steps per generation - required field
         steps_per_gen = rl_config.grpo.steps_per_generation
-        if steps_per_gen is None:
-            steps_per_gen = 1  # Default to current behavior (no buffer reuse)
-            _LOGGER.info(
-                "steps_per_generation not specified; defaulting to 1 (current behavior). "
-                "Set to gradient_accumulation_steps=%d to enable Swift-style buffer reuse (experimental).",
-                grad_accum,
-            )
-        elif steps_per_gen > 1:
+        if steps_per_gen > 1:
             _LOGGER.warning(
                 "steps_per_generation=%d > 1: Buffer reuse is EXPERIMENTAL. "
                 "Core infrastructure is ready but full integration pending. Use with caution.",
