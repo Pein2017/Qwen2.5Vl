@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,7 +23,9 @@ class RLGroupQCDataset(Dataset):
 
     Supported sources:
       - JSONL file: each line {"images": [...], "label": "pass"|"fail", "meta": {...}}
-      - Directory: {root}/{审核通过|审核不通过}/{group_id}/*.(jpg|jpeg|png)
+      - Directory (two patterns):
+        A) {root}/{审核通过|审核不通过}/{group_id}/*.(jpg|jpeg|png)
+        B) {root}/{mission}/{审核通过|审核不通过}/{group_id}/*.(jpg|jpeg|png)
     """
 
     def __init__(self, jsonl_or_dir_path: str, preload: bool = False) -> None:
@@ -49,37 +50,74 @@ class RLGroupQCDataset(Dataset):
             return "fail"
         return None
 
+    def _collect_groups_under_label_dir(self, label_dir: Path, label_norm: str, mission: Optional[str]) -> int:
+        """Collect groups under a normalized label directory. Returns number of groups found."""
+        count = 0
+        for group_dir in sorted([d for d in label_dir.iterdir() if d.is_dir()]):
+            imgs: List[str] = []
+            for f in sorted(group_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                ext = f.suffix.lower()
+                if ext in {".jpg", ".jpeg", ".png"}:
+                    imgs.append(str(f.resolve()))
+            if not imgs:
+                continue
+            meta: Dict[str, Any] = {"group_id": group_dir.name, "label_dir": label_dir.name}
+            if mission:
+                meta["mission"] = mission
+            self._samples.append(
+                GroupSample(
+                    image_paths=imgs,
+                    label=label_norm,
+                    meta=meta,
+                )
+            )
+            count += 1
+        return count
+
     def _load_from_dir(self, root: Path) -> None:
         if not root.is_dir():
             raise FileNotFoundError(f"Directory not found: {root}")
 
-        label_dirs = [d for d in root.iterdir() if d.is_dir()]
-        if not label_dirs:
+        # Detect pattern A: root contains label dirs directly
+        first_level_dirs = [d for d in root.iterdir() if d.is_dir()]
+        if not first_level_dirs:
             raise ValueError(
-                f"No label subdirectories found under {root}. Expected structure: {root}/审核通过|审核不通过/{group_id}/*.jpeg"
+                f"No subdirectories found under {root}. Expected at least label or mission directories"
             )
 
-        for ldir in sorted(label_dirs):
-            label_norm = self._normalize_label_name(ldir.name)
-            if label_norm is None:
-                # skip unrelated dirs
-                continue
-            for group_dir in sorted([d for d in ldir.iterdir() if d.is_dir()]):
-                imgs: List[str] = []
-                for f in sorted(group_dir.iterdir()):
-                    if not f.is_file():
-                        continue
-                    ext = f.suffix.lower()
-                    if ext in {".jpg", ".jpeg", ".png"}:
-                        imgs.append(str(f.resolve()))
-                if not imgs:
+        # If any first-level dir is a label dir, treat as Pattern A
+        any_label = any(self._normalize_label_name(d.name) is not None for d in first_level_dirs)
+        if any_label:
+            # Pattern A: root/{label}/{group_id}
+            for ldir in sorted(first_level_dirs):
+                label_norm = self._normalize_label_name(ldir.name)
+                if label_norm is None:
+                    # skip unrelated dirs at this level
                     continue
-                self._samples.append(
-                    GroupSample(
-                        image_paths=imgs,
-                        label=label_norm,
-                        meta={"group_id": group_dir.name, "label_dir": ldir.name},
-                    )
+                self._collect_groups_under_label_dir(ldir, label_norm, mission=None)
+        else:
+            # Pattern B: root/{mission}/{label}/{group_id}
+            total_groups = 0
+            for mission_dir in sorted(first_level_dirs):
+                if not mission_dir.is_dir():
+                    continue
+                mission_name = mission_dir.name
+                label_dirs = [d for d in mission_dir.iterdir() if d.is_dir()]
+                if not label_dirs:
+                    continue
+                for ldir in sorted(label_dirs):
+                    label_norm = self._normalize_label_name(ldir.name)
+                    if label_norm is None:
+                        # Strict fail-fast for unknown label names under mission
+                        raise ValueError(
+                            f"Unknown label directory under mission '{mission_name}': {ldir.name}. Expected one of: 审核通过|审核不通过|通过|不通过|pass|fail"
+                        )
+                    total_groups += self._collect_groups_under_label_dir(ldir, label_norm, mission=mission_name)
+            if total_groups == 0:
+                raise ValueError(
+                    f"No labeled groups found under {root}. Expected structure: {root}/<mission>/审核通过|审核不通过/<group_id>/*.jpeg"
                 )
 
         if not self._samples:
