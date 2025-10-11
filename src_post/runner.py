@@ -115,6 +115,24 @@ class RLRunner:
         device = _bind_device(str(cfg.device))
         _maybe_init_ddp()
 
+        # Debug toggles
+        debug_verbose = (str(os.environ.get("DEBUG_GROUP_QC", "0")).strip().lower() in {"1", "true", "yes"}) or bool(getattr(cfg, 'debug_verbose', False))
+        stop_after_updates_env = os.environ.get("STOP_AFTER_UPDATES", "0")
+        try:
+            stop_after_updates: int = int(stop_after_updates_env) if str(stop_after_updates_env).strip() else 0
+        except Exception:
+            stop_after_updates = 0
+        if debug_verbose:
+            logger.info(
+                f"[debug] mission={cfg.mission} | K_B={cfg.K_B} K_A={cfg.K_A} adv_clip={cfg.adv_clip} "
+                f"tempA/B={getattr(cfg,'temperature_stage_a', cfg.temperature)}/{getattr(cfg,'temperature_stage_b', cfg.temperature)} "
+                f"top_pA/B={getattr(cfg,'top_p_stage_a', cfg.top_p)}/{getattr(cfg,'top_p_stage_b', cfg.top_p)} "
+                f"len_norm={cfg.length_norm} | use_ref_kl={cfg.use_ref_kl} | group_reward_mode={cfg.group_reward_mode}"
+            )
+            logger.info(f"[debug] output_dir={cfg.output_dir} results={cfg.results_jsonl} metrics={cfg.metrics_jsonl} tb_log_dir={cfg.tb_log_dir} run_name={cfg.run_name}")
+            if stop_after_updates > 0:
+                logger.info(f"[debug] STOP_AFTER_UPDATES={stop_after_updates} (early-stop enabled)")
+
         # Reduce verbosity on non-zero ranks
         try:
             rank, world_size, _ = _get_dist_info()
@@ -250,6 +268,8 @@ class RLRunner:
             return
         dataset = RLGroupQCDataset(jsonl_or_dir_path=ds_path, preload=False)
         logger.info(f"Loaded dataset: {ds_path} with {len(dataset)} groups")
+        if debug_verbose:
+            logger.info(f"[debug] Dataset path resolved to: {Path(ds_path).resolve()}")
 
         # Freeze and build optimizer param groups
         params_groups = apply_freeze_and_param_groups(policy, processor.tokenizer, cfg)
@@ -283,6 +303,8 @@ class RLRunner:
                 num_warmup_steps=warmup_steps,
                 num_training_steps=total_steps,
             )
+            if debug_verbose:
+                logger.info(f"[debug] updates_per_epoch_rank={updates_per_epoch_rank} total_steps={total_steps} warmup_steps={warmup_steps}")
         except Exception:
             lr_scheduler = None
 
@@ -308,6 +330,7 @@ class RLRunner:
         skip_save = skip_save_env in ("1", "true", "yes") or bool(cfg.skip_save_checkpoints)
 
         # Epoch loop
+        early_stop = False
         for epoch_round in range(int(max(1, cfg.epochs))):
             epoch_idx = epoch_round
             if bool(getattr(cfg, 'balance_pass_fail', False)):
@@ -348,6 +371,8 @@ class RLRunner:
             epoch_total_local_len = len(indices)
 
             for batch_indices in iter_batches(indices, cfg.batch_size, cfg.drop_last):
+                if early_stop:
+                    break
                 update_start_ts = time.time()
                 # Accumulators per batch
                 total_loss = 0.0
@@ -402,6 +427,9 @@ class RLRunner:
                             f"K_B={int(cfg.K_B)} K_A={int(cfg.K_A)} mode_A={cfg.train_stage_a_mode} "
                             f"pairwise={bool(cfg.pairwise_credit_enabled)}"
                         )
+                        if debug_verbose:
+                            img_names = [Path(p).name for p in sample.get("image_paths", [])]
+                            logger.info(f"[debug] image_paths={img_names}")
                     except Exception:
                         pass
 
@@ -425,6 +453,8 @@ class RLRunner:
                         dt_a = time.time() - t_a_start
                         preview = ", ".join([str(s)[:] for s in context_lines[:]])
                         logger.info(f"[stage-a] done in {dt_a:.2f}s | lines={len(context_lines)} | preview={preview}")
+                        if debug_verbose:
+                            logger.info(f"[debug] stage_a_full={context_lines}")
                     except Exception:
                         pass
 
@@ -452,6 +482,11 @@ class RLRunner:
                     conv_builder.validate_image_placeholder_count(text_b, 0)
                     enc_b = processor(text=[text_b], images=None, return_tensors="pt", padding=True)
                     enc_b = to_device_and_cast(enc_b, device)
+                    if debug_verbose:
+                        try:
+                            logger.info(f"[debug] stage_b_prompt_len={len(text_b)} input_ids={int(enc_b['input_ids'].size(1))}")
+                        except Exception:
+                            pass
 
                     # Sync params/buffers before DDP forward
                     if ddp_policy is not None and dist.is_initialized():
@@ -583,6 +618,8 @@ class RLRunner:
                                     _r = _r[3:].strip()
                                 _raw_reasons.append(_r)
                             logger.info(f"[stage-b/sample] K_B={len(rewards_b)} in {dt_b_samp:.2f}s | reward_mean={_mean:.3f} std={_std:.3f} | labels={pred_labels} | reasons={_raw_reasons}")
+                            if debug_verbose:
+                                logger.info(f"[debug] stage_b_raw_best={replies_text[int(max(range(len(rewards_b)), key=lambda i: rewards_b[i]))]}")
                         else:
                             logger.info(f"[stage-b/sample] K_B=0 in {dt_b_samp:.2f}s")
                     except Exception:
@@ -823,6 +860,8 @@ class RLRunner:
                             d_best = float(diags_a.get("best_single_delta", 0.0)) if isinstance(diags_a, dict) else 0.0
                             ent_m = float(diags_a.get("phase_a_entropy_mean", 0.0)) if isinstance(diags_a, dict) else 0.0
                             logger.info(f"[stage-a/grpo] done in {dt_a_grpo:.2f}s | best_single_delta={d_best:.4f} ent_mean={ent_m:.3f}")
+                            if debug_verbose:
+                                logger.info(f"[debug] stage_a_diags={diags_a}")
                         except Exception:
                             pass
                         # Pairwise fallback when enabled and stage-B best != GT and deltas weak
@@ -934,7 +973,7 @@ class RLRunner:
                             for j in range(len(replies_text)):
                                 cands.append({
                                     "raw": replies_text[j],
-                                    "reward": float(rewards_b[j]) if j < len(rewards_b) else 0.0,
+                                    "reward": float(rewards_b[j]) if j < len(replies_text) else 0.0,
                                     "pred_label": pred_labels[j] if j < len(pred_labels) else None,
                                 })
                             rec["candidates"] = cands
@@ -1053,56 +1092,40 @@ class RLRunner:
                         do_log = force_every_step_env or (update <= 3) or ((update % step_mod) == 0) or end_of_epoch
                         if do_log:
                             rank0_log(logger, tb_writer, metrics_writer, update, prefix, scalars_to_log, lrs)
+                        # Early stop when reaching STOP_AFTER_UPDATES
+                        if stop_after_updates > 0 and update >= stop_after_updates:
+                            logger.info(f"[debug] STOP_AFTER_UPDATES reached at update={update}; early stopping...")
+                            early_stop = True
+                    # Respect early-stop across ranks
+                    if world_size > 1 and dist.is_initialized():
+                        flag = torch.tensor([1.0 if early_stop else 0.0], device=dev)
+                        dist.all_reduce(flag, op=dist.ReduceOp.SUM)
+                        early_stop = (flag.item() > 0.0)
+                # end batch agg
+            # end batch loop
+            if early_stop:
+                break
+        # end epoch loop
 
-                        # Periodic checkpoint saving (per update)
-                        try:
-                            ss = int(getattr(cfg, 'save_step', 0) or 0)
-                            sl = int(getattr(cfg, 'save_limit', 0) or 0)
-                        except Exception:
-                            ss, sl = 0, 0
-                        do_periodic_save = (ss > 0) and ((update % ss) == 0)
-                        if do_periodic_save and not bool(cfg.skip_save_checkpoints):
-                            # Save with rolling limit
-                            tag = f"grpo_step{update}"
-                            try:
-                                save_if_rank0(policy, processor, cfg.output_dir, tag=tag, skip_save=False)
-                            except Exception as e:
-                                logger.warning(f"Periodic save failed at update {update}: {e}")
-                            # Enforce save_limit by removing oldest
-                            try:
-                                from pathlib import Path as _P
-                                ckpt_root = _P(cfg.output_dir) / "checkpoints"
-                                all_ckpts = sorted([p for p in ckpt_root.glob("grpo_step*") if p.is_dir()], key=lambda p: p.stat().st_mtime)
-                                if sl > 0 and len(all_ckpts) > sl:
-                                    to_del = all_ckpts[: max(0, len(all_ckpts) - sl)]
-                                    for d in to_del:
-                                        try:
-                                            import shutil as _sh
-                                            _sh.rmtree(str(d), ignore_errors=True)
-                                        except Exception:
-                                            pass
-                            except Exception:
-                                pass
-
-            # Finalize after last epoch
-            if (epoch_round + 1) == int(cfg.epochs):
+        # Finalize after last epoch
+        if True:
+            try:
+                save_if_rank0(policy, processor, cfg.output_dir, tag="grpo_final", skip_save=bool(skip_save))
+                if writer is not None:
+                    writer.close()
+                    logger.info(f"Results written: {results_path}")
+                if metrics_writer is not None:
+                    metrics_writer.close()
+                    logger.info(f"Metrics written: {metrics_path}")
                 try:
-                    save_if_rank0(policy, processor, cfg.output_dir, tag="grpo_final", skip_save=bool(skip_save))
-                    if writer is not None:
-                        writer.close()
-                        logger.info(f"Results written: {results_path}")
-                    if metrics_writer is not None:
-                        metrics_writer.close()
-                        logger.info(f"Metrics written: {metrics_path}")
-                    try:
-                        if tb_writer is not None:
-                            tb_writer.flush(); tb_writer.close()
-                    except Exception:
-                        pass
-                    if dist.is_initialized():
-                        dist.barrier()
-                except Exception as e:
-                    logger.warning(f"Finalize error: {e}")
+                    if tb_writer is not None:
+                        tb_writer.flush(); tb_writer.close()
+                except Exception:
+                    pass
+                if dist.is_initialized():
+                    dist.barrier()
+            except Exception as e:
+                logger.warning(f"Finalize error: {e}")
 
         # Destroy DDP
         try:
