@@ -46,6 +46,49 @@ description: "Task list for GRPO Post-Training Diagnostics and Error Detection"
 
 ---
 
+## Phase 2.5: Discovery Updates (Priority: P1)
+
+**Purpose**: Reflect updated hypotheses from EOS investigation and config review; ensure generation kwargs parity and add guardrails before continuing.
+
+- [ ] T076 [P] Generation kwargs parity in RL
+  - Verify `do_sample`, `temperature`, `top_p`, `repetition_penalty`, and `max_new_tokens` from `configs/dense_rl/*` are passed unchanged into `model.generate()` in `src_new/rl/generation.py::sample_k`
+  - Add assertions + runtime logging of the actual kwargs used; unit test in `tests/rl/diagnostics/test_generation_kwargs.py`
+
+- [X] T077 [P] Runtime generation diagnostics (EOS/cap/length)
+  - Log `generation/term_ratio`, `generation/cap_hit_ratio`, and completion length stats at each logging step (trainer)
+  - Ensure TB keys populated and optionally export JSON into `{output_dir}/diagnostics/{step:06d}/generation_metrics.json`
+
+- [ ] T078 [P] Trust-region denominator validation
+  - Enforce use of stored `generation_logps` as denominator; add assert in `completion_loss.py` and fallback warning
+  - Add a test that ratios deviate from 1.0 when `generation_logps` are present
+
+- [ ] T079 [P] Prompt/template parity between RL and inference
+  - Compare prompt construction (builder/template) used in `buffer.generate_and_score` vs `src_new/inference.py`
+  - Add a validator that decodes the prompt and confirms image placeholder count matches `image_grid_thw`
+
+- [X] T080 [P] RL checkpoint EOS sanity
+  - Add a small script or CLI flag to run `src_new/inference.py` on a post-GRPO checkpoint to measure EOS ability and report `term_ratio`
+  - Store results under `outputs/diagnostics_test/rl_checkpoint_eos.json`
+
+- [ ] T081 [P] Config fixes and validation gates
+  - Update `configs/dense_rl/standard.yaml`: set `loss.student_loss_weight: 1.0`; add explicit `rewards_config` weights for detection rewards; adjust `generation.max_new_tokens: 4096`, `temperature: 0.7`
+  - Extend `src_new/rl/diagnostics/config_validator.py` to error on `student_loss_weight<=0` and missing detection weights; add tests
+
+- [X] T082 [P] Early decision gate in trainer
+  - If after N steps `term_ratio == 0` and `cap_hit_ratio > 0.9`, emit high-severity warning and suggest: increase max tokens, enable EOS reward, or switch SFT checkpoint; make threshold configurable
+
+- [ ] T083 [P] Finalize diagnostic configs
+  - Fill `configs/dense_rl/diagnostic.yaml` and `configs/dense_rl/checkpoint_diversity_test.yaml` with the latest parameters from findings
+  - Ensure paths are absolute (rooted at `/data3/Qwen2.5-VL-main`) and TB dirs are writable
+
+- [ ] T084 [P] Script hardening for diagnostics
+  - Update `launch_diagnostic.sh` to print effective generation kwargs and cleanup prior runs; ensure conda env `ms` activation notes documented
+
+- [ ] T085 [P] Quickstart updates
+  - Update `specs/004-grpo-post-training/quickstart.md` to include the new metrics, the decision gate, and the generation kwargs parity checklist
+
+---
+
 ## Phase 3: User Story 1 - Trust Region Validation (Priority: P1) 🎯
 
 **Goal**: Detect degenerate GRPO ratios (π_current / π_generation ≈ 1.0) caused by missing generation_logps
@@ -194,7 +237,7 @@ description: "Task list for GRPO Post-Training Diagnostics and Error Detection"
   - Add within-group/between-group variance to reward logs
   - Flag collapsed rewards (std < 0.01)
 
-- [ ] T040a [US3] Add EOS termination, completion length, and cap-hit ratio logging to `RewardProfile`
+- [X] T040a [US3] Add EOS termination, completion length, and cap-hit ratio logging to `RewardProfile`
   - Compute EOS termination ratio (count of completions ending with `<|im_end|>` / total completions)
   - Compute completion length distribution (mean, std, min, max) relative to ground-truth length
   - Compute cap-hit ratio (count of completions hitting max_new_tokens / total completions)
@@ -423,6 +466,7 @@ All user stories are independently testable and can be implemented in parallel.
 
 **Phase 1 (Setup)**: All tasks [P] can run in parallel
 **Phase 2 (Foundational)**: T006-T010 all marked [P] can run in parallel
+**Phase 2.5 (Discovery Updates)**: T076-T085 all marked [P] can run in parallel
 **Phase 3-8 (User Stories)**: Once Foundational complete, all 6 user stories can start in parallel
 **Phase 9 (Polish)**: T069-T073, T075 all marked [P] can run in parallel
 

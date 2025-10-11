@@ -264,28 +264,136 @@ def pairing_ratio(text: str, *, meta: Dict | None = None) -> float:
 
 
 def duplicate_penalty(text: str) -> float:
-    """Penalize duplicate coordinate lists inside geometry wrappers (0..1).
+    """Within-line duplicate penalty specialized for 'line' geometry (0..1).
 
-    1.0 when all geometry lists are unique (or none present), decreases as
-    duplicates appear.
+    - Extract only line coordinate lists
+    - Penalize zero-length segments and near-duplicate adjacent vertices
+    - Returns 1.0 (no penalty) when no line geometry present
+    Optional params are injected by runner via rewards_config.duplicate_penalty.line
     """
-    sections = _iter_coord_sections_within_wrappers(text)
-    n = len(sections)
-    if n <= 0:
+    # Extract line sections only
+    sections: List[str] = []
+    for m in re.finditer(
+        re.escape(LINE_S) + r"\s*\[(.*?)\]\s*" + re.escape(LINE_E), text, re.DOTALL
+    ):
+        sections.append(m.group(1))
+
+    if not sections:
         return 1.0
-    try:
-        # Normalize by stripping whitespace to make duplicates robust to spacing
-        norm = [re.sub(r"\s+", "", s) for s in sections]
-        unique = set(norm)
-        duplicates = max(n - len(unique), 0)
-        score = 1.0 - (float(duplicates) / float(max(n, 1)))
-        if score < 0.0:
-            score = 0.0
-        if score > 1.0:
-            score = 1.0
-        return float(score)
-    except Exception:
-        return 0.0
+
+    # Defaults; runner may inject overrides by signature matching
+    min_vertex_separation = 2
+    zero_length_seg_penalty = 0.02
+    per_duplicate_vertex = 0.01
+    max_penalty = 0.20
+
+    def _score_one(sec: str) -> float:
+        vals = _extract_coord_values(sec)
+        if len(vals) < 4 or len(vals) % 2 != 0:
+            return 0.0
+        pts: List[tuple[int, int]] = []
+        it = iter(vals)
+        for x in it:
+            try:
+                y = next(it)
+            except StopIteration:
+                break
+            pts.append((int(x), int(y)))
+        if len(pts) < 2:
+            return 0.0
+        zero_len = 0
+        dup_adj = 0
+        for i in range(1, len(pts)):
+            dx = abs(pts[i][0] - pts[i - 1][0])
+            dy = abs(pts[i][1] - pts[i - 1][1])
+            if dx == 0 and dy == 0:
+                zero_len += 1
+            elif (dx + dy) < int(min_vertex_separation):
+                dup_adj += 1
+        penalty = zero_len * float(zero_length_seg_penalty) + dup_adj * float(
+            per_duplicate_vertex
+        )
+        penalty = min(float(max_penalty), float(penalty))
+        return float(max(0.0, 1.0 - penalty))
+
+    scores = [_score_one(sec) for sec in sections]
+    return float(sum(scores) / float(len(scores)))
+
+
+def pattern_penalty(
+    text: str,
+    *,
+    axis_run_max_ratio: float = 0.40,
+    step_repeat_max_ratio: float = 0.40,
+    per_overshoot: float = 0.05,
+    max_penalty: float = 0.20,
+) -> float:
+    """Penalty in [0,1] for low-diversity line patterns (axis runs, repeated steps).
+
+    Returns 1.0 when no line geometry is present. Runner can inject thresholds via
+    rewards_config.pattern_penalty.line.*
+    """
+    # Extract line sections only
+    sections: List[str] = []
+    for m in re.finditer(
+        re.escape(LINE_S) + r"\s*\[(.*?)\]\s*" + re.escape(LINE_E), text, re.DOTALL
+    ):
+        sections.append(m.group(1))
+    if not sections:
+        return 1.0
+
+    def _ratios(sec: str) -> tuple[float, float]:
+        vals = _extract_coord_values(sec)
+        if len(vals) < 4 or len(vals) % 2 != 0:
+            return 1.0, 1.0
+        pts: List[tuple[int, int]] = []
+        it = iter(vals)
+        for x in it:
+            try:
+                y = next(it)
+            except StopIteration:
+                break
+            pts.append((int(x), int(y)))
+        if len(pts) < 2:
+            return 1.0, 1.0
+        segs = []
+        for i in range(1, len(pts)):
+            dx = pts[i][0] - pts[i - 1][0]
+            dy = pts[i][1] - pts[i - 1][1]
+            segs.append((dx, dy))
+        if not segs:
+            return 1.0, 1.0
+        # Axis-run ratio
+        axis = sum(1 for (dx, dy) in segs if dx == 0 or dy == 0) / float(len(segs))
+
+        # Step-repeat ratio (most frequent delta)
+        # Quantize tiny deltas to reduce sensitivity to small noise
+        def _q(v: int) -> int:
+            return int(v)
+
+        hist: Dict[tuple[int, int], int] = {}
+        for dx, dy in segs:
+            key = (_q(dx), _q(dy))
+            hist[key] = hist.get(key, 0) + 1
+        repeat = max(hist.values()) / float(len(segs)) if hist else 1.0
+        return float(axis), float(repeat)
+
+    axes: List[float] = []
+    reps: List[float] = []
+    for sec in sections:
+        a, r = _ratios(sec)
+        axes.append(a)
+        reps.append(r)
+    # Average across lines in completion
+    axis_ratio = sum(axes) / float(len(axes)) if axes else 1.0
+    step_ratio = sum(reps) / float(len(reps)) if reps else 1.0
+    overshoot = 0.0
+    if axis_ratio > float(axis_run_max_ratio):
+        overshoot += axis_ratio - float(axis_run_max_ratio)
+    if step_ratio > float(step_repeat_max_ratio):
+        overshoot += step_ratio - float(step_repeat_max_ratio)
+    penalty = min(float(max_penalty), float(per_overshoot) * float(overshoot))
+    return float(max(0.0, 1.0 - penalty))
 
 
 ## Removed legacy proxy length rewards (length_score, length_window)
@@ -295,30 +403,30 @@ def length_vs_gt(
     text: str,
     *,
     meta: Dict | None = None,
-    gen_len: int | None = None,
-    gt_len: int | None = None,
-    estimator: str = "tokenizer",
-    lower: float = 0.7,
-    upper: float = 1.2,
-    gamma: float = 3.0,
-    tail_numeric_weight: float = 0.4,
-    alpha: float = 1.1,
+    # Minimal Gaussian params (wired from rewards_config.length_vs_gt)
+    use_ratio: bool = True,
+    sigma_ratio: float = 0.20,
+    sigma_tokens: int = 128,
+    min_reward: float = 0.0,
 ) -> float:
-    """Length-to-GT reward in [0,1] with strong overflow penalty.
+    """Gaussian length-vs-GT reward in [min_reward, 1.0].
 
-    Always prefers tokenizer-aligned lengths injected via meta keys
-    `gen_len_tokenizer` and `gt_len_tokenizer`. Falls back to simple
-    numeric proxy only if unavailable.
+    r = exp(-((L_pred - L_gt) / sigma)^2) with sigma derived from GT length
+    when use_ratio=True, otherwise fixed token sigma.
+
+    Prefers tokenizer-aligned lengths in meta: 'gt_len_tokenizer' and optionally
+    'gen_len_tokenizer'. Falls back to a simple numeric proxy for gen_len only.
     """
     # Prefer tokenizer-based lengths if meta provides them
-    if gen_len is None and isinstance(meta, dict):
+    gen_len = None
+    gt_len = None
+    if isinstance(meta, dict):
         try:
             val = meta.get("gen_len_tokenizer")
             if isinstance(val, int):
                 gen_len = int(val)
         except Exception:
             pass
-    if gt_len is None and isinstance(meta, dict):
         try:
             val = meta.get("gt_len_tokenizer")
             if isinstance(val, int):
@@ -326,17 +434,15 @@ def length_vs_gt(
         except Exception:
             pass
 
-    # Fallback estimators when explicit lengths not provided
+    # Fallback: estimate lengths when explicit not provided
     def _proxy_len(txt: str) -> int:
         return int(len(_NUM.findall(txt)) + txt.count(OBJ_S))
 
     if gen_len is None:
         gen_len = _proxy_len(text)
 
-    # CRITICAL: Do NOT use generated text as GT fallback (causes reward to always be 1.0)
-    # If GT length is unavailable after checking meta, return neutral reward
+    # If GT still unavailable, try last-resort from meta.objects
     if gt_len is None:
-        # Try to extract from meta.objects as last resort
         if isinstance(meta, dict) and meta.get("objects"):
             try:
                 from src_new.processing.coordinate_converter import (
@@ -346,41 +452,30 @@ def length_vs_gt(
                 conv = CoordinateTokenConverter()
                 objs = meta.get("objects") or []
                 gt_text = conv.convert_objects_to_tokens(objs)
-                gt_len = _proxy_len(gt_text)  # Use proxy on GT text, not generated!
+                # Tokenizer not available here; use proxy on GT text
+                gt_len = _proxy_len(gt_text)
             except Exception:
                 pass
-
-        # If still unavailable, return neutral reward instead of comparing to self
         if gt_len is None:
-            return 0.5  # Neutral reward when GT unavailable
+            # Neutral when true GT length unknown
+            return max(0.5, float(min_reward))
 
     gt_len = int(max(1, int(gt_len)))
     gen_len = int(max(0, int(gen_len)))
 
-    r = float(gen_len) / float(gt_len)
-    if r < float(lower):
-        base = max(0.0, r / float(max(lower, 1e-6)))
-    elif r <= float(upper):
-        base = 1.0
+    # Sigma selection
+    if bool(use_ratio):
+        sigma = max(1.0, float(sigma_ratio) * float(gt_len))
     else:
-        base = math.exp(-float(gamma) * (r - float(upper)))
+        sigma = max(1.0, float(sigma_tokens))
 
-    # Tail numeric penalty beyond alpha*gt_len
-    tail_pen = 0.0
-    try:
-        cutoff = int(math.ceil(float(alpha) * float(gt_len)))
-        if gen_len > cutoff and float(tail_numeric_weight) > 0.0:
-            nums = len(_NUM.findall(text))
-            digits = sum(ch.isdigit() for ch in text)
-            total = max(1, len(text))
-            frac_num = max(
-                float(nums) / float(max(1, gen_len)), float(digits) / float(total)
-            )
-            tail_pen = float(tail_numeric_weight) * max(0.0, min(1.0, frac_num))
-    except Exception:
-        tail_pen = 0.0
-
-    return max(0.0, min(1.0, float(base) - float(tail_pen)))
+    delta = float(gen_len - gt_len)
+    val = math.exp(-((delta / sigma) ** 2))
+    if val < float(min_reward):
+        val = float(min_reward)
+    if val > 1.0:
+        val = 1.0
+    return float(val)
 
 
 def compute_reward(text: str, weights: Dict[str, float]) -> float:
@@ -412,6 +507,7 @@ __all__ = [
     "parse_reward",
     "pairing_ratio",
     "duplicate_penalty",
+    "pattern_penalty",
     "length_vs_gt",
     "compute_reward",
 ]

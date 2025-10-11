@@ -118,7 +118,7 @@ class ConsoleFormatter:
         # Line 4: Generation params
         gen_parts = [
             f"temperature={logs.get('temperature', 0.0):.4f}",
-            f"beta={logs.get('beta', 0.0):.4f}",
+            f"beta={logs.get('beta', 0.0):.6f}",
         ]
         if "completions/terminated_ratio" in logs:
             gen_parts.append(f"term_ratio={logs['completions/terminated_ratio']:.3f}")
@@ -151,8 +151,6 @@ class ConsoleFormatter:
             dyn_parts = ["enabled=true"]
             if "dynamic_length/mean_cap" in logs:
                 dyn_parts.append(f"mean={logs['dynamic_length/mean_cap']:.0f}")
-            if "dynamic_length/min_cap" in logs:
-                dyn_parts.append(f"min={logs['dynamic_length/min_cap']:.0f}")
             if "dynamic_length/max_cap" in logs:
                 dyn_parts.append(f"max={logs['dynamic_length/max_cap']:.0f}")
             lines.append("[DYNAMIC_CAP] " + " ".join(dyn_parts))
