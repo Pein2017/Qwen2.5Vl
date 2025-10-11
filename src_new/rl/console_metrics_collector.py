@@ -54,8 +54,7 @@ class ConsoleMetricsCollector:
             "loss": loss_value,
             "reward": reward_mean,
             "reward_std": reward_std,
-            "raw_reward": raw_reward_mean,
-            "raw_reward_std": raw_reward_std,
+            # raw rewards are added below only when not None
             "learning_rate": current_lr,
             "grad_norm": grad_norm,
             "eta_minutes": eta_minutes,
@@ -63,6 +62,11 @@ class ConsoleMetricsCollector:
             "beta": generation_result.get("beta", 0.0),
             "completions/terminated_ratio": term_ratio,
         }
+
+        # Add raw_reward only when available (avoid None formatting downstream)
+        if raw_reward_mean is not None and raw_reward_std is not None:
+            console_logs["raw_reward"] = raw_reward_mean
+            console_logs["raw_reward_std"] = raw_reward_std
 
         # Add advantage metrics
         self._add_if_present(

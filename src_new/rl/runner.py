@@ -264,32 +264,19 @@ def train(config_path: str) -> None:
     # Use typed config for sampling parameters
     prompt_batch_size = rl_config.sampling.prompt_batch_size
     sample_k = rl_config.sampling.sample_k
-    sample_k_per_rank = rl_config.sampling.sample_k_per_rank
 
     # Compute expected trajectories
     # Get world_size from environment (set by torch.distributed.run)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    if sample_k_per_rank:
-        expected_trajectories = prompt_batch_size * sample_k
-    else:
-        if sample_k % world_size != 0:
-            raise ValueError(
-                f"sample_k={sample_k} must be divisible by world_size={world_size} when sample_k_per_rank=False"
-            )
-        expected_trajectories = prompt_batch_size * (sample_k // world_size)
+    if world_size > 1 and sample_k % world_size != 0:
+        raise ValueError(
+            f"sampling.sample_k={sample_k} must be divisible by world_size={world_size} (GLOBAL-K semantics)"
+        )
 
     # Log both global and per-rank expectations for clarity
-    per_rank_expected = (
-        expected_trajectories
-        if sample_k_per_rank
-        else (prompt_batch_size * (sample_k // max(world_size, 1)))
-    )
-    global_expected = (
-        prompt_batch_size * sample_k
-        if sample_k_per_rank
-        else expected_trajectories * max(world_size, 1)
-    )
+    per_rank_expected = prompt_batch_size * (sample_k // max(world_size, 1))
+    global_expected = prompt_batch_size * sample_k
     _LOGGER.info(
         "Prompt batching configured | prompts=%d | sample_k=%d | world_size=%d | expected_per_rank=%d | expected_global=%d",
         prompt_batch_size,
@@ -469,8 +456,13 @@ def train(config_path: str) -> None:
     # No manual DDP wrapping when using Accelerate
 
     # Use typed config for output directories
-    output_dir = rl_config.paths.output_dir
+    # Concatenate run_name to output_dir for better checkpoint organization
+    base_output_dir = rl_config.paths.output_dir
+    run_name = rl_config.experiment.run_name
+    output_dir = os.path.join(base_output_dir, run_name)
     os.makedirs(output_dir, exist_ok=True)
+    _LOGGER.info("Output directory (with run_name): %s", output_dir)
+
     # Ensure tb_dir exists (run_name subfolder created by trainer)
     tb_dir = rl_config.paths.tb_dir
     os.makedirs(tb_dir, exist_ok=True)
