@@ -2,10 +2,10 @@
 # Group-level Quality Control with GRPO - DEBUG (src_post.runner)
 
 # Required paths
-checkpoint: /abs/path/to/sft_checkpoint
-processor:  /abs/path/to/processor
-output_dir: /abs/path/to/output_post/grpo_debug
-train_data_dir: /abs/path/to/train_groups
+checkpoint: outputs/summary/9-23-summary/checkpoint-600
+processor:  outputs/summary/9-23-summary/checkpoint-600
+output_dir: outputs/group_qc/grpo_debug
+train_data_dir: group_data/bbu_scene_2.0_order/挡风板安装检查
 mission: 挡风板安装检查
 
 # Runtime
@@ -14,8 +14,8 @@ seed: 17
 limit_groups: 100
 
 # Logging & outputs
-results_jsonl: /abs/path/to/output_post/results.debug.jsonl
-metrics_jsonl: /abs/path/to/output_post/metrics.debug.jsonl
+results_jsonl: outputs/group_qc/results.debug.jsonl
+metrics_jsonl: outputs/group_qc/metrics.debug.jsonl
 tb_log_dir: tb_post
 run_name: debug
 log_step: 1
@@ -23,7 +23,7 @@ log_step: 1
 # Generation (Stage-A/B)
 temperature: 0.7
 top_p: 0.95
-max_new_tokens_stage_a: 32
+max_new_tokens_stage_a: 64
 max_new_tokens_stage_b: 96
 mask_geometry_tokens: false
 mask_coordinate_tokens: false
@@ -43,7 +43,7 @@ batch_size: 1
 learning_rate: 1.0e-5
 weight_decay: 1.0e-3
 max_grad_norm: 0.5
-drop_last: false
+drop_last: true
 
 # Selective unfreeze & LRs
 llm_top_k_block: 1
@@ -55,15 +55,15 @@ llm_lr: 8.0e-6
 vision_lr: 4.0e-6
 
 # KL to reference
-use_ref_kl: true
-ref_checkpoint: /abs/path/to/sft_checkpoint
+use_ref_kl: false
+ref_checkpoint: outputs/summary/9-23-summary/checkpoint-600
 lambda_kl_stage_b: 0.02
 lambda_kl_stage_a: 0.02
 
 # Stage‑A training mode
 train_stage_a_mode: conditional
 stage_a_weight: 1.0
-max_images_tf: 1
+max_images_tf: 99
 
 # Stage‑B controls
 train_stage_b: true
@@ -71,9 +71,9 @@ stage_b_weight: 1.0
 freeze_stage_b_steps: 0
 use_mission_checklist: true
 
-# Rewards (combined)
-reward_fns: group_margin,decision_strict,cleanliness,special_penalty,rep_penalty,quote_penalty,coverage,taxonomy,consistency
-reward_weights: 1.0,3.0,0.2,-0.2,-0.7,-0.4,0.8,0.2,0.3
+# Rewards (registry-supported)
+reward_fns: group_margin,coverage,table_lexicon,soft_lexicon,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.8,0.3,0.2,-0.7,-0.4,-0.2
 group_reward_mode: combined
 
 # Pairwise/uncertainty/diagnostics
