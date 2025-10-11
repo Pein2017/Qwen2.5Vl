@@ -13,6 +13,11 @@
 - Q: 初始训练日程与权重如何设定为默认基线？ → A: 先训练 Stage‑B，再协同训练
 - Q: 默认的组级奖励配置选择哪种？ → A: 组合（任务感知）：在基础组合上加入 coverage/taxonomy/consistency
 - Q: Stage‑B 提示默认是否包含 mission checklist？ → A: 始终包含 checklist
+- Q: 训练资源与规模基线？ → A: 8卡A100‑80G + Accelerate
+- Q: Stage‑B 采样与温度默认？ → A: K_B=2, temperature=0.7, top_p=0.95
+- Q: KL 参考策略来源？ → A: 使用当前 SFT checkpoint 作为参考
+- Q: 条件式 Stage‑A 的不确定性门控默认？ → A: 开启门控，熵阈=1.2
+- Q: 结果衡量的主KPI？ → A: 准确率为主，边际为辅
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -96,12 +101,15 @@
   - 默认（任务感知组合）：`group_reward_mode=combined`，包含
     `group_margin, decision_strict, cleanliness, special_penalty, rep_penalty, quote_penalty, coverage, taxonomy, consistency`；
     建议权重示例（可微调）：`1.0, 3.0, 0.2, -0.2, -0.7, -0.4, 0.8, 0.2, 0.3`。
+  - 默认采样参数（Stage‑B）：`K_B=2, temperature=0.7, top_p=0.95`；
+  - 默认 KL 参考：`use_ref_kl=true`，`ref_checkpoint=当前 SFT checkpoint`。
 
 - **FR-004 信用分配（Stage‑A）**：
   - 条件式：固定其他摘要，仅替换第 i 张的候选集合并重算组级奖励差分；优势传到该图摘要 token 的 TF 对数似然；
   - 可选配对回退：当 `best_single_delta < 阈值` 且组级预测错误时，抽取 1–2 对图组合替换并平均回传优势；
   - 可选不确定性门控：基于候选摘要的 TF‑logits 熵阈值，仅对“高熵且提升边际”的候选给优势或放大优势；
-  - 预算控制：`K_A/K_set/max_images_tf/stage_a_top_m` 控制成本与聚焦度。
+  - 预算控制：`K_A/K_set/max_images_tf/stage_a_top_m` 控制成本与聚焦度；
+  - 默认门控：`use_uncertainty_gate=true`，`uncertainty_gate_min_entropy=1.2`。
 
 - **FR-005 配置与校验（fail‑fast）**：
   - 使用 `src_post/config.RLRunnerConfig` 严格校验必填键（路径、采样、训练、冻结、奖励、门控、保存等）；
@@ -126,9 +134,10 @@
   - 指标：`metrics.rank0.jsonl` + 可选 TensorBoard（`tb_log_dir/run_name`）；
   - 关键统计：`reward_best_mean/std/acc_best/any_hit/resp_len/kl_b/skip_std0/pairwise_trigger_rate/decision_ce_ema/eta_hours` 等。
 
-- **FR-009 DDP 多卡**：
-  - 启用后参数/缓冲区在步前同步；rank 粒度上做奖励采样与 teacher‑forcing，梯度全归约；
-  - 数据以 index 取模方式分片；不使用 `DistributedSampler`。
+- **FR-009 并行与多卡**：
+  - 默认硬件与并行：`8×A100‑80G`，优先使用 HuggingFace Accelerate 启动多卡训练；
+  - 兼容 `torch.distributed.run` / DDP；`WORLD_SIZE=8` 时按 rank 切分样本索引；
+  - 各 rank 独立采样候选与计算优势；teacher‑forcing/KL 在 DDP 包裹下做全归约。
 
 - **FR-010 数据输入**：
   - 目录布局：`审核通过|审核不通过/{group_id}/*.jpg`；或 JSONL（每行含 `images: [..], label: pass|fail`）。
@@ -146,7 +155,8 @@
 
 ### Measurable Outcomes
 
-- **SC-001 组级准确率/边际提升**：在固定验证集上，训练 1 个 epoch 或等价步数后，较初始 SFT：
+- **SC-001 组级准确率/边际提升（KPI优先级）**：主KPI=组级准确率；辅KPI=决策对数边际。
+  - 在固定验证集上，训练 1 个 epoch 或等价步数后，较初始 SFT：
   - 组级准确率提升 ≥ +3% 或
   - 决策对数边际均值提升 ≥ +0.2。
 - **SC-002 训练稳定性**：全程无 NaN/Inf；`reward_std==0` 的步占比 ≤ 10%；无死锁；显存峰值稳定在可接受范围内。
