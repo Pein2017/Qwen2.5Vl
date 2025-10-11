@@ -51,7 +51,7 @@ Note: 所有测试脚本需放置在 `./tests/group_qc` 目录下。
   - 运行: 8 张组样本，200 步；记录 `decision_ce_ema` 下降趋势、`accuracy` 上扬或不跌、`reward_std>0`。
   - 若发散: 小幅提高 KL；若 FN 偏高: 保持 KL 并尝试 pairwise 回退 1 对。
 
-- T070 文档微调与交付核对 [P]
+- T070 文档微调与交付核对 [X]
   - 更新 `/specs/005-group_decision/spec.md` 的 Success Criteria：保留主KPI=accuracy、辅KPI=group_margin，并加入 `FN_rate` 作为次级监控（不高于基线或下降）。
   - 快速核对 `/specs/005-group_decision/contracts/logging_outputs.md` 是否包含新增指标。
 

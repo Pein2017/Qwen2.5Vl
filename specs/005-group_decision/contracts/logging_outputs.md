@@ -7,7 +7,7 @@
 - (optional) candidates: [{raw, reward, pred_label}]
 
 ## Metrics JSONL (rank0)
-- loss, reward_best_mean/std, acc_best, acc_any
+- loss, reward_best_mean/std, acc_best, acc_any, accuracy, fn_rate
 - resp_len_mean, grad_norm_mean
 - kl_b_mean, skip_updates_std0
 - pairwise_trigger_rate, phase_a_entropy_mean

@@ -1,0 +1,108 @@
+# ===== GROUP QC RL STANDARD CONFIGURATION =====
+# Group-level Quality Control with GRPO - STANDARD (src_post.runner)
+
+# Required paths
+checkpoint: /abs/path/to/sft_checkpoint
+processor:  /abs/path/to/processor
+output_dir: /abs/path/to/output_post/grpo
+train_data_dir: /abs/path/to/train_groups
+mission: 挡风板安装检查
+
+# Runtime
+device: cuda
+seed: 17
+limit_groups: -1
+
+# Logging & outputs
+results_jsonl: /abs/path/to/output_post/results.jsonl
+metrics_jsonl: /abs/path/to/output_post/metrics.jsonl
+tb_log_dir: tb_post
+run_name: standard
+log_step: 10
+
+# Generation (Stage-A/B)
+temperature: 0.7
+top_p: 0.95
+max_new_tokens_stage_a: 48
+max_new_tokens_stage_b: 128
+mask_geometry_tokens: false
+mask_coordinate_tokens: false
+sanitize_stage_a: false
+
+# GRPO sampling
+K_B: 2
+K_A: 2
+K_set: 1
+adv_clip: 1.5
+length_norm: true
+
+# Training
+tain: true
+train: true
+epochs: 1
+batch_size: 1
+learning_rate: 1.0e-5
+weight_decay: 1.0e-3
+max_grad_norm: 0.5
+drop_last: false
+
+# Selective unfreeze & LRs
+llm_top_k_block: 1
+vision_top_k_block: 0
+freeze_patch_embed: true
+train_aligner: true
+aligner_lr: 1.5e-5
+llm_lr: 8.0e-6
+vision_lr: 4.0e-6
+
+# KL to reference
+use_ref_kl: true
+ref_checkpoint: /abs/path/to/sft_checkpoint
+lambda_kl_stage_b: 0.02
+lambda_kl_stage_a: 0.02
+
+# Stage‑A training mode
+train_stage_a_mode: conditional
+stage_a_weight: 1.0
+max_images_tf: 1
+
+# Stage‑B controls
+train_stage_b: true
+stage_b_weight: 1.0
+freeze_stage_b_steps: 0
+use_mission_checklist: true
+
+# Rewards (combined)
+reward_fns: group_margin,decision_strict,cleanliness,special_penalty,rep_penalty,quote_penalty,coverage,taxonomy,consistency
+reward_weights: 1.0,3.0,0.2,-0.2,-0.7,-0.4,0.8,0.2,0.3
+group_reward_mode: combined
+
+# Pairwise/uncertainty/diagnostics
+pairwise_credit_enabled: false
+pairwise_pairs_per_group: 0
+pairwise_delta_threshold: 0.02
+use_uncertainty_gate: true
+uncertainty_gate_min_entropy: 1.2
+enable_phase_a_diagnostics: false
+
+# Extras
+grad_accum_steps: 1
+decision_ce_ema_beta: 0.9
+
+# Enhancements (disabled by default)
+enable_clipped_grpo: false
+epsilon_low: 0.2
+loss_type_stage_b: grpo
+enable_entropy_mask_stage_b: false
+entropy_top_quantile_stage_b: 0.2
+max_resample_times: 1
+stage_a_top_m: 0
+uncertainty_decay_factor: 0.0
+pairwise_select: heuristic
+log_all_candidates: false
+soft_overlong_penalty_enabled: false
+soft_overlong_penalty_weight: 0.2
+
+# Checkpoint saving
+save_step: 0
+save_limit: 3
