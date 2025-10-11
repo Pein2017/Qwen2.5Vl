@@ -16,6 +16,7 @@
   - weights: List[float]
   - group_margin: float
   - std: float（同组内 K_B 方差）
+  - notes: str（可选，记录“std≈0但文本不同”等告警摘要）
 
 ## RL Config (required keys)
 - Paths: checkpoint, processor, output_dir, {train_data_dir|eval_data_dir}
@@ -28,6 +29,8 @@
 - Stage‑A: train_stage_a_mode, stage_a_weight, max_images_tf
 - Group reward: group_reward_mode, use_mission_checklist
 - Pairwise/Uncertainty: pairwise_credit_enabled, pairwise_pairs_per_group, pairwise_delta_threshold, use_uncertainty_gate, uncertainty_gate_min_entropy
+  - Sampling balance: balance_pass_fail（当类别不均衡时建议开启）
+  - Stage‑A 解码去重（可选）：no_repeat_ngram_size_stage_a（用于降低 K_A 内重复）
 - Logging/Save: tb_log_dir, run_name, save_step, save_limit
 
 ## Defaults (from spec)

@@ -23,3 +23,14 @@
 - K_B=2 足以产生稳定方差，K_B=3 性价比视数据而定；
 - 小权重 KL 有助稳定，不显著损害探索；
 - 熵阈=1.2 相比 1.5 更灵敏，能过滤部分“低熵且误导”的候选。
+
+## Findings — 2025-10-11 (Debug, 10 steps)
+
+- 奖励方差：在 `K_B=4, temp=1.0, top_p=0.97` 下，多步 `reward_best_std≈0`，候选文本几乎一致；亦出现“std≈0但文本不同”的新告警，指示奖励塑形对语义差异不敏感。
+- 采样平衡：启用 `balance_pass_fail=true` 后，fail 组被纳入，但 FN 仍较高（fail 样本常被判 pass，且 `group_margin` 较高）。
+- Stage‑A：`phase_a_entropy_mean≈0.02–0.12`，多次 K_A 候选完全相同；`best_single_delta` 多为 0，偶有 0.45–0.55。
+- 建议：
+  - Stage‑A 去重：`no_repeat_ngram_size_stage_a: 12`；必要时 `K_A: 4`。
+  - 奖励：降低 `coverage` 权重至 0.8，并对“标签/无法识别/不清楚”在缺少其它正证据时施加轻惩，以形成条件性判断信号。
+  - 可选：引入小权重 KL（`lambda_kl≈0.02`）。
+

@@ -99,6 +99,30 @@ scripts/
 - 默认门控与 KL/采样参数写入 YAML；
 - 所有失败回退（std≈0、路径/清单缺失、解析失败）均 fail‑fast 或计数并显式日志。
 
+## Diagnostics (2025-10-11)
+
+- 实验配置（短跑10步）：
+  - 采样与温度：`K_B=4`，`temperature_stage_a=1.0`，`temperature_stage_b=1.0`，`top_p=0.97`；`K_A=3`；`uncertainty_gate_min_entropy=4.0`；`balance_pass_fail=true`；`coverage` 权重=0.9。
+  - 其他：启用“std≈0但文本不同”的告警；保留 `enable_clipped_grpo=true` 与 `enable_entropy_mask_stage_b=true`（掩码比≈0.2）。
+
+- 主要发现：
+  - Stage‑B 奖励方差：多步 `reward_best_std≈0`，K_B 候选文本几乎一致；新增“std≈0但文本不同”告警亦触发，说明当前奖励组合对语义差异不敏感。
+  - FN（审核不通过样本被判通过）：平衡采样生效后，多个 `gt=fail` 样本的最优仍为 `pass`，且 `group_margin` 较高（自信错误），`pairwise_triggered=1` 但无显著改善（仍 std≈0）。
+  - Stage‑A 多样性：多次出现“K_A 全相同”，`phase_a_entropy_mean≈0.02–0.12`，`best_single_delta` 多为 0 或偶有 0.45–0.55，整体欠发散。
+  - 训练稳定性：无 NaN/Inf；clip 比例≈0；ETA/吞吐稳定。
+
+- 风险与根因假设：
+  - 奖励平坦：`group_margin + shaping` 对“标签/无法识别”等模糊证据的条件性区分不足；在其它正证据充足时倾向“一票通过”。
+  - Stage‑A 采样坍缩：温度提升不够抵消模型偏置；去重约束缺失导致 K_A 内重复。
+
+- 已采取与建议动作：
+  - 已启用平衡采样、提高温度、提高熵门槛、增加 std 告警。
+  - 建议最小改动（不改架构）：
+    - Stage‑A 去重与发散：在 YAML 增加 `no_repeat_ngram_size_stage_a: 12`；若仍重复，将 `K_A: 4`。
+    - 奖励敏感度：将 `coverage` 权重从 0.9 降至 0.8；在奖励注册中对“标签/无法识别/不清楚”在缺少其他正证据时叠加轻惩（可落在 `soft_lexicon`/`special_penalty`），以学习“有条件通过/不通过”。
+    - 可选稳态：小权重 KL（`lambda_kl≈0.02`）抑制输出风格漂移。
+
+
 ## Progress Tracking
 - Phase 0: DONE（research.md 已生成）
 - Phase 1: DONE（data-model.md / contracts/* / quickstart.md 已生成）

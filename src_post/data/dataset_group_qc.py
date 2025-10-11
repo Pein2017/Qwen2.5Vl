@@ -50,7 +50,9 @@ class RLGroupQCDataset(Dataset):
             return "fail"
         return None
 
-    def _collect_groups_under_label_dir(self, label_dir: Path, label_norm: str, mission: Optional[str]) -> int:
+    def _collect_groups_under_label_dir(
+        self, label_dir: Path, label_norm: str, mission: Optional[str]
+    ) -> int:
         """Collect groups under a normalized label directory. Returns number of groups found."""
         count = 0
         for group_dir in sorted([d for d in label_dir.iterdir() if d.is_dir()]):
@@ -63,7 +65,10 @@ class RLGroupQCDataset(Dataset):
                     imgs.append(str(f.resolve()))
             if not imgs:
                 continue
-            meta: Dict[str, Any] = {"group_id": group_dir.name, "label_dir": label_dir.name}
+            meta: Dict[str, Any] = {
+                "group_id": group_dir.name,
+                "label_dir": label_dir.name,
+            }
             if mission:
                 meta["mission"] = mission
             self._samples.append(
@@ -88,7 +93,9 @@ class RLGroupQCDataset(Dataset):
             )
 
         # If any first-level dir is a label dir, treat as Pattern A
-        any_label = any(self._normalize_label_name(d.name) is not None for d in first_level_dirs)
+        any_label = any(
+            self._normalize_label_name(d.name) is not None for d in first_level_dirs
+        )
         if any_label:
             # Pattern A: root/{label}/{group_id}
             for ldir in sorted(first_level_dirs):
@@ -114,14 +121,18 @@ class RLGroupQCDataset(Dataset):
                         raise ValueError(
                             f"Unknown label directory under mission '{mission_name}': {ldir.name}. Expected one of: 审核通过|审核不通过|通过|不通过|pass|fail"
                         )
-                    total_groups += self._collect_groups_under_label_dir(ldir, label_norm, mission=mission_name)
+                    total_groups += self._collect_groups_under_label_dir(
+                        ldir, label_norm, mission=mission_name
+                    )
             if total_groups == 0:
                 raise ValueError(
                     f"No labeled groups found under {root}. Expected structure: {root}/<mission>/审核通过|审核不通过/<group_id>/*.jpeg"
                 )
 
         if not self._samples:
-            raise ValueError(f"No groups found under {root} with expected image extensions")
+            raise ValueError(
+                f"No groups found under {root} with expected image extensions"
+            )
 
     def _load_jsonl(self, path: Path) -> None:
         if not path.is_file():
@@ -134,12 +145,22 @@ class RLGroupQCDataset(Dataset):
                 obj = json.loads(line)
                 images = obj.get("images", [])
                 if not isinstance(images, list) or len(images) == 0:
-                    raise ValueError("Each JSONL row must have a non-empty 'images' list")
+                    raise ValueError(
+                        "Each JSONL row must have a non-empty 'images' list"
+                    )
                 label = obj.get("label", None)
                 if not isinstance(label, str):
-                    raise ValueError("Each JSONL row must have string 'label' (e.g., 'pass'|'fail')")
+                    raise ValueError(
+                        "Each JSONL row must have string 'label' (e.g., 'pass'|'fail')"
+                    )
                 meta = obj.get("meta", {}) or {}
-                self._samples.append(GroupSample(image_paths=[str(Path(p).resolve()) for p in images], label=label, meta=meta))
+                self._samples.append(
+                    GroupSample(
+                        image_paths=[str(Path(p).resolve()) for p in images],
+                        label=label,
+                        meta=meta,
+                    )
+                )
 
     def _preload_images(self) -> None:
         self._preloaded_images = []

@@ -11,13 +11,16 @@ set -euo pipefail
 #   RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true bash scripts/run_group_qc_rl.sh
 #
 # ENVIRONMENT VARIABLES:
-#   RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
+#   RL_CONFIG_PATH       RL config file (default: configs/group_qc_rl/standard.yaml)
 #   RL_GPU_DEVICES       GPUs to use (default: 0)
 #   RL_TO_CONSOLE       Output to console: true|false (default: false)
 #   RL_MASTER_PORT      Master port for distributed training (default: 29511)
 #   RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
 #   RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
 #   RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
+#   RL_LAUNCHER         Launcher: ddp|accelerate (default: ddp)
+#   RL_NUM_PROCESSES    Num processes when using accelerate (default: auto from RL_GPU_DEVICES)
+#   RL_MIXED_PRECISION  accelerate mixed precision: no|fp16|bf16 (default: bf16)
 # =============================================================================
 
 show_help() {
@@ -30,13 +33,16 @@ USAGE:
     RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true $0
 
 ENVIRONMENT VARIABLES:
-    RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
+    RL_CONFIG_PATH       RL config file (default: configs/group_qc_rl/standard.yaml)
     RL_GPU_DEVICES       GPUs to use (default: 0)
     RL_TO_CONSOLE       Output to console: true|false (default: false)
     RL_MASTER_PORT      Master port for distributed training (default: 29511)
     RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
     RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
     RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
+    RL_LAUNCHER         Launcher: ddp|accelerate (default: ddp)
+    RL_NUM_PROCESSES    Num processes when using accelerate (default: auto from RL_GPU_DEVICES)
+    RL_MIXED_PRECISION  accelerate mixed precision: no|fp16|bf16 (default: bf16)
 
 EXAMPLES:
     $0                                        # Default training
@@ -61,7 +67,7 @@ fi
 # =====================
 # Configuration with environment variables and sensible defaults
 # =====================
-CONFIG_PATH="${RL_CONFIG_PATH:-configs/rl/group_qc_grpo.yaml}"
+CONFIG_PATH="${RL_CONFIG_PATH:-configs/group_qc_rl/standard.yaml}"
 GPU_DEVICES="${RL_GPU_DEVICES:-0}"                   # e.g. "0" for single GPU; "0,1,2,3" for 4 GPUs; use "cpu" to force CPU
 TO_CONSOLE="${RL_TO_CONSOLE:-false}"                 # true to output to console, false to output to log file
 MASTER_PORT="${RL_MASTER_PORT:-29511}"
@@ -70,6 +76,9 @@ LOG_NAME="${RL_LOG_NAME:-run_group_qc_rl.log}"
 DS_CONFIG="scripts/zero2.json"
 # Runtime toggles
 SKIP_SAVE="${RL_SKIP_SAVE:-1}"             # 1 to skip saving checkpoints; 0 to save
+LAUNCHER="${RL_LAUNCHER:-ddp}"
+NUM_PROCS_ENV="${RL_NUM_PROCESSES:-}"
+MIXED_PRECISION="${RL_MIXED_PRECISION:-bf16}"
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -91,6 +100,7 @@ echo "   🖥️  GPUs: $GPU_DEVICES"
 echo "   📝  Console output: $TO_CONSOLE"
 
 echo "Using DeepSpeed ZeRO-2 config: $DS_CONFIG"
+echo "Launcher: $LAUNCHER"
 
 # =====================
 # Self-test mode (optional): run single-GPU and multi-GPU (2 GPUs) quick checks
@@ -135,14 +145,22 @@ fi
 export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
 IFS=',' read -r -a GPU_ARR <<< "$GPU_DEVICES"
 NPROC=${#GPU_ARR[@]}
+if [[ -n "$NUM_PROCS_ENV" ]]; then
+  NPROC="$NUM_PROCS_ENV"
+fi
 
 # =====================
-# Launch (torchrun DDP only)
+# Launch
 # =====================
-if [ "$NPROC" -le 1 ]; then
-  echo "Running (single GPU): $PY -m src_post.runner --config \"$CONFIG_PATH\""
-  eval "SKIP_SAVE=$SKIP_SAVE $PY -m src_post.runner --config \"$CONFIG_PATH\""
+if [[ "$LAUNCHER" == "accelerate" ]]; then
+  echo "Running (accelerate, nproc=$NPROC, mp=$MIXED_PRECISION): accelerate launch --num_processes $NPROC --mixed_precision $MIXED_PRECISION $PY -m src_post.runner --config \"$CONFIG_PATH\""
+  eval "SKIP_SAVE=$SKIP_SAVE accelerate launch --num_processes $NPROC --mixed_precision $MIXED_PRECISION $PY -m src_post.runner --config \"$CONFIG_PATH\""
 else
-  echo "Running (multi GPU, nproc=$NPROC, DDP): $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
-  eval "SKIP_SAVE=$SKIP_SAVE $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+  if [ "$NPROC" -le 1 ]; then
+    echo "Running (single GPU): $PY -m src_post.runner --config \"$CONFIG_PATH\""
+    eval "SKIP_SAVE=$SKIP_SAVE $PY -m src_post.runner --config \"$CONFIG_PATH\""
+  else
+    echo "Running (multi GPU, nproc=$NPROC, DDP): $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+    eval "SKIP_SAVE=$SKIP_SAVE $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+  fi
 fi

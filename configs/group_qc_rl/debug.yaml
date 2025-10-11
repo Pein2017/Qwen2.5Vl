@@ -4,7 +4,7 @@
 # Required paths
 checkpoint: outputs/summary/9-23-summary/checkpoint-600
 processor:  outputs/summary/9-23-summary/checkpoint-600
-output_dir: outputs/group_qc/grpo_debug
+output_dir: outputs_post/group_qc/grpo_debug
 train_data_dir: group_data/bbu_scene_2.0_order/挡风板安装检查
 mission: 挡风板安装检查
 
@@ -12,10 +12,11 @@ mission: 挡风板安装检查
 device: cuda
 seed: 17
 limit_groups: 100
+balance_pass_fail: true
 
 # Logging & outputs
-results_jsonl: outputs/group_qc/results.debug.jsonl
-metrics_jsonl: outputs/group_qc/metrics.debug.jsonl
+results_jsonl: outputs_post/group_qc/results.debug.jsonl
+metrics_jsonl: outputs_post/group_qc/metrics.debug.jsonl
 tb_log_dir: tb_post
 run_name: debug
 log_step: 1
@@ -30,8 +31,8 @@ mask_coordinate_tokens: false
 sanitize_stage_a: false
 
 # GRPO sampling
-K_B: 2
-K_A: 2
+K_B: 4
+K_A: 3
 K_set: 1
 adv_clip: 1.5
 length_norm: true
@@ -64,25 +65,29 @@ lambda_kl_stage_a: 0.02
 train_stage_a_mode: conditional
 stage_a_weight: 1.0
 max_images_tf: 99
+temperature_stage_a: 1.0
+top_p_stage_a: 0.97
 
 # Stage‑B controls
 train_stage_b: true
 stage_b_weight: 1.0
 freeze_stage_b_steps: 0
 use_mission_checklist: true
+temperature_stage_b: 1.0
+top_p_stage_b: 0.97
 
 # Rewards (registry-supported)
 reward_fns: group_margin,coverage,table_lexicon,soft_lexicon,rep_penalty,quote_penalty,special_penalty
-reward_weights: 1.0,0.8,0.3,0.2,-0.7,-0.4,-0.2
+reward_weights: 1.0,0.9,0.3,0.2,-0.7,-0.4,-0.2
 group_reward_mode: combined
 
 # Pairwise/uncertainty/diagnostics
-pairwise_credit_enabled: false
-pairwise_pairs_per_group: 0
-pairwise_delta_threshold: 0.02
+pairwise_credit_enabled: true
+pairwise_pairs_per_group: 1
+pairwise_delta_threshold: 0.2
 use_uncertainty_gate: true
-uncertainty_gate_min_entropy: 1.2
-enable_phase_a_diagnostics: false
+uncertainty_gate_min_entropy: 4.0
+enable_phase_a_diagnostics: true
 
 # Extras
 grad_accum_steps: 1
@@ -95,11 +100,11 @@ epsilon_high: 0.0
 loss_type_stage_b: grpo
 enable_entropy_mask_stage_b: true
 entropy_top_quantile_stage_b: 0.2
-max_resample_times: 1
-stage_a_top_m: 0
-uncertainty_decay_factor: 0.0
+max_resample_times: 2
+stage_a_top_m: 1
+uncertainty_decay_factor: 0.6
 pairwise_select: heuristic
-log_all_candidates: false
+log_all_candidates: true
 soft_overlong_penalty_enabled: false
 soft_overlong_penalty_weight: 0.2
 

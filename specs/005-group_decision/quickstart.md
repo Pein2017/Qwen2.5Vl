@@ -22,6 +22,16 @@
   - Stage‑A：`mask_geometry_tokens: true`, `mask_coordinate_tokens: true`
   - Stage‑B：`mask_geometry_tokens: false`, `mask_coordinate_tokens: false`
 
+## Tuning Tips — Diagnostics‑Driven
+
+- 若 `reward_best_std≈0` 且候选文本几乎一致：
+  - 提升 `temperature`/`top_p` 或增大 `K_B`（已达上限则考虑奖励塑形对差异更敏感）。
+  - 在奖励侧对“标签/无法识别/不清楚”结合上下文施加轻惩，避免“一票通过”。
+- 若 Stage‑A 候选重复、`phase_a_entropy_mean` 低：
+  - 设置 `no_repeat_ngram_size_stage_a: 12`，必要时将 `K_A: 4`。
+- 类别不均衡：
+  - 开启 `balance_pass_fail: true`，保证每步 pass/fail 均衡采样。
+
 ## Run (Accelerate)
 ```
 accelerate launch --num_processes 8 --mixed_precision bf16 \

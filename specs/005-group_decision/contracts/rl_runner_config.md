@@ -14,12 +14,23 @@
 - use_uncertainty_gate, uncertainty_gate_min_entropy
 - tb_log_dir, run_name, save_step, save_limit
 
+## Optional Generation Overrides (stage-specific)
+- temperature_stage_a|temperature_stage_b
+- top_p_stage_a|top_p_stage_b
+- repetition_penalty_stage_a|repetition_penalty_stage_b
+- min_new_tokens_stage_a|min_new_tokens_stage_b
+- no_repeat_ngram_size_stage_a|no_repeat_ngram_size_stage_b
+
 ## Spec‑Aligned Defaults
 - use_mission_checklist=true
 - Stage‑B: K_B=2, temperature=0.7, top_p=0.95
 - KL: use_ref_kl=true（ref=当前SFT）
 - Stage‑A 门控：use_uncertainty_gate=true, entropy_threshold=1.2
 - 并行：8×A100‑80G + Accelerate
+
+### Practical toggles from debugging
+- balance_pass_fail=true（数据不均衡时建议开启）
+- no_repeat_ngram_size_stage_a（降低 K_A 重复，示例：12）
 
 ## Fail‑Fast
 - 所有路径必须存在；枚举越界直接报错；奖励名需在注册表中；日志/保存路径提前创建。

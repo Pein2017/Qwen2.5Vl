@@ -1,10 +1,15 @@
 # Contract — Logging Outputs
 
 ## Results JSONL (per-rank)
-- group_index, mission, gt_label, pred_label, reward
-- images: [{image_id, caption}], stage_b_raw
+- group_index, group_id, mission, gt_label
+- images: [{image_id}]
 - k_b, k_a, used_minimal_prompt, pairwise_triggered
-- (optional) candidates: [{raw, reward, pred_label}]
+- stage_b:
+  - best: {pred_label, reward, raw}
+  - candidates: [{raw, reward, pred_label}]  # 全量 K_B
+- stage_a:
+  - [{image_index, candidates: [{text, reward, margin}]}]  # 每图 K_A 候选（诊断）
+- 说明：为精简体积，已移除 item-level 诊断中的 `present_pass_tokens` 与 `present_fail_tokens` 字段。
 
 ## Metrics JSONL (rank0)
 - loss, reward_best_mean/std, acc_best, acc_any, accuracy, fn_rate

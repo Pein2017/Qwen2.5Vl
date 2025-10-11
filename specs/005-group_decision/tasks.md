@@ -59,6 +59,12 @@ Note: 所有测试脚本需放置在 `./tests/group_qc` 目录下。
 - 可并行 [P]: T021/T030/T031/T040/T070（不同文件/文档/测试；互不冲突）。
 - 顺序依赖: T003→T010→T020→T021；T030→T031；T050 在 T010 后执行；T060 最后。
 
+## Optional Test Pruning
+
+- 为缩短调参迭代周期，可临时跳过以下较重或重复覆盖的测试（提交前再恢复）：
+  - 复杂组合奖励路径的端到端对比（若日志+TB 指标已覆盖）。
+  - 与 `src_new` 无关的边缘用例重复校验（已由 fail‑fast 捕获的场景）。
+
 ## Example Commands
 - 单卡冒烟: `python -m src_post.runner --config /abs/config.yaml`
 - 8卡 Accelerate: `accelerate launch --num_processes 8 --mixed_precision bf16 /root/miniconda3/envs/ms/bin/python -m src_post.runner --config /abs/config.yaml`

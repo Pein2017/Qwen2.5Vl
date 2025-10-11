@@ -1,5 +1,6 @@
-from pathlib import Path
 import json
+from pathlib import Path
+
 import pytest
 
 from src_post.data.dataset_group_qc import RLGroupQCDataset

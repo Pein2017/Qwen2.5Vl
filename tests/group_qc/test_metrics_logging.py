@@ -17,6 +17,7 @@ class _DummyTB:
 class _DummyWriter:
     def __init__(self):
         self.buf = io.StringIO()
+
     def write(self, s: str):
         self.buf.write(s)
 
