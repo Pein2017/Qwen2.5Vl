@@ -6,6 +6,14 @@
 **Constitution Version**: 4.0.0  
 **Input**: User description: "我现在需要创立一个spec，专门来负责的AI质检项目来进行多张图片的审核。"
 
+## Clarifications
+
+### Session 2025-10-11
+
+- Q: 初始训练日程与权重如何设定为默认基线？ → A: 先训练 Stage‑B，再协同训练
+- Q: 默认的组级奖励配置选择哪种？ → A: 组合（任务感知）：在基础组合上加入 coverage/taxonomy/consistency
+- Q: Stage‑B 提示默认是否包含 mission checklist？ → A: 始终包含 checklist
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - 端到端组级判定（仅有组级GT，GRPO训练）(Priority: P1)
@@ -85,6 +93,9 @@
   - `group_reward_mode ∈ {margin_only, combined}`；`combined` 可叠加 `decision_strict/cleanliness/coverage/...` 塑形；
   - 采样 `K_B≥2`，对同一提示计算 z‑score 优势并裁剪到 `[-adv_clip, +adv_clip]`；可选 KL 到参考策略；
   - 可启用“分段裁剪”与“熵掩码”在回答 token 维度稳定更新（可选）。
+  - 默认（任务感知组合）：`group_reward_mode=combined`，包含
+    `group_margin, decision_strict, cleanliness, special_penalty, rep_penalty, quote_penalty, coverage, taxonomy, consistency`；
+    建议权重示例（可微调）：`1.0, 3.0, 0.2, -0.2, -0.7, -0.4, 0.8, 0.2, 0.3`。
 
 - **FR-004 信用分配（Stage‑A）**：
   - 条件式：固定其他摘要，仅替换第 i 张的候选集合并重算组级奖励差分；优势传到该图摘要 token 的 TF 对数似然；
@@ -101,9 +112,13 @@
   - 选择性解冻：aligner/merger 必训；可按 `llm_top_k_block/vision_top_k_block` 仅放开末端少量层；
   - 三组学习率：`aligner_lr/llm_lr/vision_lr`；支持余弦+warmup；梯度裁剪与梯度累积；
   - 可按步保存检查点并滚动保留 `save_limit` 个目录。
+  - 默认训练日程（基线）：
+    - 阶段1（Stage‑B 预热）：`train_stage_a_mode=off`，`train_stage_b=true`，`stage_b_weight=1.0`，可选小权重 KL 到参考（`lambda_kl_stage_b≈0.02`）。
+    - 阶段2（协同训练）：`train_stage_a_mode=conditional`，`stage_a_weight=1.0`，`stage_b_weight=1.0`，`K_A∈{2,3}`，可保留小 KL 稳定风格。
 
 - **FR-007 生成与约束**：
   - Stage‑B 允许最小偏置提示或带 mission checklist 的提示；
+  - 默认：`use_mission_checklist=true`；
   - 运行期可选择屏蔽几何/坐标 token（仅解码期，不影响梯度）。
 
 - **FR-008 日志与产物**：
