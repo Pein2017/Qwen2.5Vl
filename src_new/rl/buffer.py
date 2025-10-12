@@ -11,8 +11,10 @@ from torch.nn.utils.rnn import pad_sequence
 from src_new.rl import generation
 from src_new.rl import logprobs as rl_logprobs
 from src_new.rl import validators as rl_validators
+from src_new.rl.generation import build_generation_args
 from src_new.rl.rewards.sanitizer import sanitize_tail_geometry_block
 from src_new.rl.rewards.standardizer import RewardStandardizer
+from src_new.rl.types import GenerationResult
 from src_new.rl.utils import resolve_im_end_id
 
 
@@ -112,14 +114,16 @@ def generate_and_score(
     # Duplication diagnostics per sample (exact string equality)
     dup_exact_ratios: List[float] = []
 
-    gen_kwargs = {"top_p": float(top_p)}
-    if repetition_penalty is not None:
-        try:
-            gen_kwargs["repetition_penalty"] = float(repetition_penalty)
-        except Exception:
-            pass
-    if min_new_tokens is not None:
-        gen_kwargs["min_new_tokens"] = int(min_new_tokens)
+    gen_kwargs = build_generation_args(
+        tokenizer=tokenizer,
+        max_new_tokens=int(max_new_tokens),
+        temperature=float(temperature),
+        top_p=float(top_p) if top_p is not None else None,
+        min_new_tokens=int(min_new_tokens) if min_new_tokens is not None else None,
+        repetition_penalty=float(repetition_penalty)
+        if repetition_penalty is not None
+        else None,
+    )
 
     dynamic_caps: List[int] = []
     gt_length_computed_count = 0  # Track successful GT length computations
@@ -667,7 +671,52 @@ def generate_and_score(
     if rewards_per_func_raw is not None:
         result["raw_rewards_per_func"] = rewards_per_func_raw.to(device)
         result["raw_rewards"] = raw_rewards.to(device)
-    return result
+
+    # Build a typed dataclass for downstream consumers (bridge back to dict)
+    try:
+        dc_extra: Dict[str, Any] = {}
+        for k in (
+            "sanitizer/applied_ratio",
+            "dynamic_length/mean_cap",
+            "dynamic_length/max_cap",
+            "completions/mean_len_tok",
+            "gt/mean_len_tok",
+            "completions/cap_hit_ratio",
+            "completions/zero_len_ratio",
+            "completions/dup_exact_mean",
+        ):
+            if k in result:
+                dc_extra[k] = result[k]
+
+        gen_dc = GenerationResult(
+            prompt_ids=result["prompt_ids"],
+            prompt_mask=result["prompt_mask"],
+            completion_ids=result["completion_ids"],
+            completion_mask=result["completion_mask"],
+            advantages=result["advantages"],
+            rewards=result["rewards"],
+            reward_names=list(result.get("reward_names", [])),
+            raw_rewards=result.get("raw_rewards"),
+            rewards_per_func=result.get("rewards_per_func"),
+            raw_rewards_per_func=result.get("raw_rewards_per_func"),
+            generation_logps=result.get("generation_logps"),
+            pixel_values=result.get("pixel_values"),
+            image_grid_thw=result.get("image_grid_thw"),
+            images_per_sample=result.get("images_per_sample"),
+            completion_lengths=result.get("completion_lengths"),
+            terminated_with_eos=result.get("terminated_with_eos"),
+            truncated_flags=result.get("truncated_flags"),
+            prompts=list(result.get("prompts", [])),
+            completions=list(result.get("completions", [])),
+            meta=list(result.get("meta", [])),
+            temperature=float(temperature),
+            beta=0.0,
+            extra=dc_extra,
+        )
+        return gen_dc.to_dict()
+    except Exception:
+        # Fallback to legacy dict if dataclass construction fails for any reason
+        return result
 
 
 def split_buffer(

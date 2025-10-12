@@ -43,6 +43,7 @@ From the Swift framework analysis, buffer reuse provides:
    - Added `buffer/steps_per_generation`
    - Added `buffer/reuse_count`
    - Added `buffer/generation_efficiency`
+   - Added `buffer/reuse_active` (currently `0` — reuse not activated yet)
 
 6. **Configuration Files**
    - `configs/dense_rl/standard.yaml`: `steps_per_generation: 1`
@@ -51,9 +52,9 @@ From the Swift framework analysis, buffer reuse provides:
 ### ⚠️ Pending Integration
 
 **Main Training Loop Refactor** (`src_new/rl/grpo_trainer.py::train()`)
-- Current loop uses `_buffer_chunks` mechanism (lines ~1356-2000+)
-- Need to integrate new `_generate_buffer()` and `_compute_loss_for_single_completion()`
-- Replace existing generation/forward loop with buffer reuse cycle
+- Current loop uses a single-cycle GenerationBuffer with streamed completions
+- To activate reuse, iterate the same buffer S times (or split into S chunks) before regeneration
+- Adjust gradient accumulation to include S; update telemetry accordingly
 - Maintain backward compatibility with `steps_per_generation=1`
 
 **Why Not Completed:**

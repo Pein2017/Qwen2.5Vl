@@ -55,7 +55,12 @@ class TensorBoardLogger:
         self.writer.add_scalar("train/epoch", epoch, step)
         self.writer.add_scalar("temperature", temperature, step)
         self.writer.add_scalar("beta", beta, step)
-        self.writer.add_scalar("train/eta_minutes", eta_minutes, step)
+        try:
+            eta_hours = float(eta_minutes) / 60.0
+        except Exception:
+            eta_hours = 0.0
+        # Log ETA in hours as requested
+        self.writer.add_scalar("train/eta", eta_hours, step)
         self.writer.add_scalar("step", step, step)
 
     def log_completion_metrics(self, metrics: Dict[str, float], step: int) -> None:
@@ -197,6 +202,34 @@ class TensorBoardLogger:
                 eta_minutes=logs.get("eta_minutes", 0.0),
             )
 
+            # Alias tags for overall average rewards
+            try:
+                self.writer.add_scalar(
+                    "reward/mean/average_reward", logs["reward"], step
+                )
+            except Exception:
+                pass
+            if "reward_std" in logs:
+                try:
+                    self.writer.add_scalar(
+                        "reward/std/average_reward", logs["reward_std"], step
+                    )
+                except Exception:
+                    pass
+            try:
+                self.writer.add_scalar(
+                    "raw_reward/mean/average_reward", logs["raw_reward"], step
+                )
+            except Exception:
+                pass
+            if "raw_reward_std" in logs:
+                try:
+                    self.writer.add_scalar(
+                        "raw_reward/std/average_reward", logs["raw_reward_std"], step
+                    )
+                except Exception:
+                    pass
+
         # Loss
         if "loss" in logs:
             self.log_loss(logs["loss"], step)
@@ -229,6 +262,17 @@ class TensorBoardLogger:
         if norm_components:
             self.log_per_reward_components(norm_components, step, prefix="rewards")
 
+        # Duplicate normalized per-reward components under alias prefixes
+        for name, stats in norm_components.items():
+            try:
+                self.writer.add_scalar(f"reward/mean/{name}", stats["mean"], step)
+            except Exception:
+                pass
+            try:
+                self.writer.add_scalar(f"reward/std/{name}", stats["std"], step)
+            except Exception:
+                pass
+
         # Per-reward components (raw)
         raw_components = {}
         for name in reward_names:
@@ -241,6 +285,17 @@ class TensorBoardLogger:
                 }
         if raw_components:
             self.log_per_reward_components(raw_components, step, prefix="raw_rewards")
+
+        # Duplicate raw per-reward components under alias prefixes
+        for name, stats in raw_components.items():
+            try:
+                self.writer.add_scalar(f"raw_reward/mean/{name}", stats["mean"], step)
+            except Exception:
+                pass
+            try:
+                self.writer.add_scalar(f"raw_reward/std/{name}", stats["std"], step)
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Close the TensorBoard writer."""

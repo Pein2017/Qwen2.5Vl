@@ -25,6 +25,13 @@ from src_new.rl import buffer, logprobs, losses, schedules
 from src_new.rl.eval import compute_absolute_metrics as _abs_metrics
 from src_new.rl.eval_utils import dump_samples
 from src_new.rl.generation_buffer import GenerationBuffer
+from src_new.rl.metrics_aggregator import MetricsAggregator
+from src_new.rl.metrics_keys import (
+    BUFFER_EFFICIENCY,
+    BUFFER_REUSE_ACTIVE,
+    BUFFER_REUSE_COUNT,
+    BUFFER_STEPS_PER_GEN,
+)
 from src_new.rl.reward_logger import RewardLogger
 from src_new.rl.rewards.standardizer import RewardStandardizer
 from src_new.rl.training_state import GRPOTrainingState
@@ -196,6 +203,11 @@ class BBUGRPOTrainer:
 
         # Training utilities
         self._device = self.accelerator.device
+        # Metrics aggregator for consistent cross-rank stats
+        try:
+            self._metrics_aggregator = MetricsAggregator(self.accelerator, self._device)
+        except Exception:
+            self._metrics_aggregator = None
         self._pad_token_id = _get_pad_token_id(tokenizer, model)
         self._reward_weights_tensor = torch.tensor(
             self.reward_weight_list, dtype=torch.float32, device=self._device
@@ -318,15 +330,25 @@ class BBUGRPOTrainer:
             os.getenv("DEBUG_TIMING", "0").lower() in ("1", "true", "yes")
         )
         # Generation warning threshold (seconds) - warn if generation takes longer
-        self._generation_warn_threshold: float = float(
-            os.getenv("GENERATION_WARN_THRESHOLD", "60.0")
-        )
+        # Centralized diagnostics settings (no behavior change)
+        try:
+            from src_new.rl.diagnostics.settings import SETTINGS as _DBG
+
+            self._generation_warn_threshold = float(_DBG.generation_warn_threshold)
+            self._debug_timing = bool(_DBG.debug_timing)
+        except Exception:
+            self._generation_warn_threshold = float(
+                os.getenv("GENERATION_WARN_THRESHOLD", "60.0")
+            )
 
         # Gradient norm tracking (initialized before first step)
         self._last_grad_norm: float = 0.0
 
         # Console summary cache
         self._last_console_summary: str = ""
+
+        # Ensure we log to console/TensorBoard at most once per optimizer step
+        self._last_logged_step: int = -1
 
         # Evaluation configuration (from config)
         self._eval_enabled: bool = rl_config.evaluation.enabled
@@ -369,6 +391,9 @@ class BBUGRPOTrainer:
     def _log_step(
         self, loss_value: float, generation_result: Dict[str, Any], current_lr: float
     ) -> None:
+        # Guard against duplicate logging within the same optimizer step
+        if self._last_logged_step == self._global_step:
+            return
         # Gather all metrics across ranks FIRST, then log only on rank 0
         rewards = generation_result.get("rewards")
         if rewards is None:
@@ -403,19 +428,28 @@ class BBUGRPOTrainer:
 
         buffer_is_fresh = bool(generation_result.get("buffer/is_fresh", False))
         if buffer_is_fresh or (self._global_step % self.manual_cfg.logging_steps == 0):
-            # Gather advantages across ranks
+            # Gather advantages across ranks via aggregator
             adv_tensor = generation_result.get("advantages")
             adv_std = 0.0
             adv_max = 0.0
             if adv_tensor is not None:
-                adv_det = adv_tensor.detach()
-                # Move to GPU before gather if needed
-                if adv_det.device.type == "cpu":
-                    adv_det = adv_det.to(self.accelerator.device)
-                if self.world_size > 1:
-                    adv_det = self.accelerator.gather(adv_det)
-                adv_std = float(adv_det.std(unbiased=False).item())
-                adv_max = float(adv_det.abs().max().item())
+                try:
+                    if self._metrics_aggregator is not None:
+                        _adv = self._metrics_aggregator.gather_advantage_stats(
+                            generation_result
+                        )
+                        adv_std = float(_adv.get("std", 0.0))
+                        adv_max = float(_adv.get("max_abs", 0.0))
+                    else:
+                        adv_det = adv_tensor.detach()
+                        if adv_det.device.type == "cpu":
+                            adv_det = adv_det.to(self.accelerator.device)
+                        if self.world_size > 1:
+                            adv_det = self.accelerator.gather(adv_det)
+                        adv_std = float(adv_det.std(unbiased=False).item())
+                        adv_max = float(adv_det.abs().max().item())
+                except Exception:
+                    pass
 
             # Gather per-reward components across ranks (normalized)
             rewards_per_func = generation_result.get("rewards_per_func")
@@ -441,17 +475,26 @@ class BBUGRPOTrainer:
                 else:
                     raw_pf = raw_pf_det
 
-            # Gather termination flags across ranks
-            terminated_flags = generation_result.get("terminated_with_eos")
-            if terminated_flags is not None:
-                term = terminated_flags.detach().float()
-                # Move to GPU before gather if needed
-                if term.device.type == "cpu":
-                    term = term.to(self.accelerator.device)
-                if self.world_size > 1:
-                    term = self.accelerator.gather(term)
-                term_ratio = float(term.mean().item())
-            else:
+            # Gather termination ratio via aggregator
+            try:
+                if self._metrics_aggregator is not None:
+                    term_ratio = float(
+                        self._metrics_aggregator.gather_termination_ratio(
+                            generation_result
+                        )
+                    )
+                else:
+                    terminated_flags = generation_result.get("terminated_with_eos")
+                    if terminated_flags is not None:
+                        term = terminated_flags.detach().float()
+                        if term.device.type == "cpu":
+                            term = term.to(self.accelerator.device)
+                        if self.world_size > 1:
+                            term = self.accelerator.gather(term)
+                        term_ratio = float(term.mean().item())
+                    else:
+                        term_ratio = 0.0
+            except Exception:
                 term_ratio = 0.0
 
             # Warn if truncation is being forced frequently
@@ -542,23 +585,43 @@ class BBUGRPOTrainer:
                 logs["advantages/std"] = adv_std
                 logs["advantages/max_abs"] = adv_max
 
-            # Console logging - ONLY ON RANK 0
+            # Console logging - ONLY ON RANK 0 (single concise line per optimizer step)
             if self.accelerator.is_main_process:
-                self._log_to_console(
-                    logs=logs,
-                    generation_result=generation_result,
-                    loss_value=loss_value,
-                    reward_mean=reward_mean,
-                    reward_std=reward_std,
-                    raw_reward_mean=raw_reward_mean,
-                    raw_reward_std=raw_reward_std,
-                    current_lr=current_lr,
-                    eta_minutes=eta_minutes,
-                    epoch_progress=epoch_progress,
-                    term_ratio=term_ratio,
+                try:
+                    eta_hours = float(eta_minutes) / 60.0
+                except Exception:
+                    eta_hours = 0.0
+                _LOGGER.info(
+                    "[step=%d reward=%.4f±%.4f raw=%.4f±%.4f lr=%.3e grad=%.3f eta=%.2fh]",
+                    self._global_step,
+                    reward_mean,
+                    reward_std,
+                    0.0 if raw_reward_mean is None else raw_reward_mean,
+                    0.0 if raw_reward_std is None else raw_reward_std,
+                    float(current_lr),
+                    float(self._last_grad_norm),
+                    eta_hours,
                 )
+                # Print per-reward raw metrics once per optimizer step
+                try:
+                    reward_names = generation_result.get(
+                        "reward_names", self.reward_func_names
+                    )
+                    parts = []
+                    for name in reward_names:
+                        key = f"raw_rewards/{name}/mean"
+                        if key in logs:
+                            try:
+                                val = float(logs[key])
+                                parts.append(f"{name}={val:.3f}")
+                            except Exception:
+                                continue
+                    if parts:
+                        _LOGGER.info("[REWARDS_RAW] " + " ".join(parts))
+                except Exception:
+                    pass
 
-            # TensorBoard logging - ONLY ON RANK 0
+            # TensorBoard logging - ONLY ON RANK 0 (once per optimizer step)
             if self.accelerator.is_main_process and self._tb_logger is not None:
                 reward_names = generation_result.get(
                     "reward_names", self.reward_func_names
@@ -573,28 +636,11 @@ class BBUGRPOTrainer:
 
             self._state_manager.reset_metrics_state()
         else:
-            # Compact one-liner for reuse steps (avoid repeating full block)
-            try:
-                step_in_cycle = int(generation_result.get("buffer/step_in_cycle", 0))
-                comps_per_cycle = int(
-                    generation_result.get("buffer/completions_per_cycle", 1)
-                )
-                reuse_idx = max(1, step_in_cycle // max(1, comps_per_cycle))
-                reuse_total = int(self.manual_cfg.steps_per_generation)
-            except Exception:
-                reuse_idx, reuse_total = 1, int(self.manual_cfg.steps_per_generation)
-            if self.accelerator.is_main_process:
-                _LOGGER.info(
-                    "[CORE] step=%d (reuse %d/%d) loss=%.4f reward=%.4f±%.4f lr=%.3e grad_norm=%.3f",
-                    self._global_step,
-                    reuse_idx,
-                    reuse_total,
-                    float(metrics.get("loss", 0.0)),
-                    reward_mean,
-                    reward_std,
-                    float(current_lr),
-                    float(self._last_grad_norm),
-                )
+            # Silence compact one-liner to avoid repeated logs within the prompt batch window
+            pass
+
+        # Mark this step as logged
+        self._last_logged_step = self._global_step
 
     def _add_reward_components_to_logs(
         self,
@@ -727,11 +773,11 @@ class BBUGRPOTrainer:
         # Buffer reuse metrics (Swift-style)
         try:
             steps_per_gen = self.manual_cfg.steps_per_generation
-            logs["buffer/steps_per_generation"] = int(steps_per_gen)
-            logs["buffer/reuse_count"] = int(steps_per_gen)
-            logs["buffer/generation_efficiency"] = float(
-                steps_per_gen
-            )  # 1.0 = no reuse, 4.0 = 4× efficiency
+            logs[BUFFER_STEPS_PER_GEN] = int(steps_per_gen)
+            logs[BUFFER_REUSE_COUNT] = int(steps_per_gen)
+            logs[BUFFER_EFFICIENCY] = float(steps_per_gen)
+            # Clarify: reuse currently not active (no multi-step buffer reuse yet)
+            logs[BUFFER_REUSE_ACTIVE] = 0
         except Exception:
             pass
 

@@ -16,6 +16,16 @@
   - Train: `python -m src_new.rl.runner --config configs/dense_rl/debug.yaml --mode train`
 - **Benefits**: Fail-fast validation with clear errors; no hidden defaults; IDE-friendly typed access; reproducible configs; HF-first dataflow unchanged.
 
+### Quality consolidation (2025-10-12)
+- **Status**: COMPLETE
+- **Key additions (no tensor changes)**:
+  - Dataclasses for payloads in `src_new/rl/types.py` (`GenerationResult`, `CompletionSlice`, `ClipDiagnostics`, `PromptBatchMetrics`, `BufferTelemetry`, `TrainingLogs`).
+  - Central metric keys in `src_new/rl/metrics_keys.py` to avoid string drift.
+  - Diagnostics toggles in `src_new/rl/diagnostics/settings.py` (e.g., `DEBUG_TIMING`, `GENERATION_WARN_THRESHOLD`, `RL_CLEAR_CACHE`).
+  - Memory policy wrapper `src_new/rl/memory_policy.py` (`maybe_clear_gpu_cache`) with defaults preserving current behavior.
+  - Unified generation args helper `generation.build_generation_args()` used in train/eval paths to align optional kwargs.
+  - Trainer uses `MetricsAggregator` for cross-rank stats and clarifies buffer reuse logging (`buffer/reuse_active`).
+
 
 ## Modular Architecture
 
@@ -44,6 +54,12 @@ The trainer has been refactored from a monolithic 2052-line file into specialize
 5. **`advantage_normalizer.py`** (190 lines) - Cross-rank advantage normalization
    - `normalize_advantages_cross_rank()` - handles padding, global stats, magnitude clipping
    - Eliminates ~130 lines of complex multi-rank logic
+
+### Shared types & utilities (consolidation)
+- **`types.py`** - Runtime dataclasses (`GenerationResult`, `CompletionSlice`, etc.).
+- **`metrics_keys.py`** - Centralized scalar/logging key names.
+- **`diagnostics/settings.py`** - Env-driven debug toggles (read once).
+- **`memory_policy.py`** - Optional cache clearing policy wrapper.
 
 ### Integration
 
@@ -238,10 +254,25 @@ If dataset has fewer prompts than `prompt_batch_size`:
 
 
 ## Logging, Checkpointing, and Evaluation
-- **Logging**
-  - Unified reward logger automatically mirrors registry names to both console and TensorBoard (`rewards/{name}/{mean,std}`).
-  - Core RL metrics include reward mean/std, temperature, KL beta, gradient norm, ETA, EOS termination ratio, dynamic-length stats, clipping ratios, and prompt batch telemetry.
-  - Modular `TensorBoardLogger` provides structured logging methods for all metric categories.
+- **Logging (updated)**
+  - Logging occurs exactly once per optimizer step (i.e., once per prompt-batch accumulation), avoiding duplicate logs within a cycle.
+  - Console prints a concise one-liner with overall reward, raw reward, LR, grad, and ETA in hours, plus a second line with per-reward RAW means only.
+    - Example:
+      - `[step=189 reward=7.4314±1.0626 raw=6.1288±0.9441 lr=1.631e-07 grad=0.021 eta=0.12h]`
+      - `[REWARDS_RAW] bbox_giou=0.674 grounding_acc=0.588 line_giou=0.644 ...`
+  - TensorBoard logging per optimizer step includes:
+    - Overall (normalized): `reward`, `reward_std`
+    - Overall (raw): `raw_reward`, `raw_reward_std`
+    - Per-reward components (normalized): `rewards/{name}/{mean,std}` and aliases `reward/mean/{name}`, `reward/std/{name}`
+    - Per-reward components (raw): `raw_rewards/{name}/{mean,std}` and aliases `raw_reward/mean/{name}`, `raw_reward/std/{name}`
+    - Overall aliases for easy dashboards: `reward/mean/average_reward`, `reward/std/average_reward`, `raw_reward/mean/average_reward`, `raw_reward/std/average_reward`
+    - Core scalars: `train/learning_rate`, `train/grad_norm`, `train/epoch`, `train/eta` (hours)
+  - Notes:
+    - Normalized reward ("reward") is useful when reward standardization is enabled; otherwise prioritize raw metrics for comparability.
+    - ETA is logged as hours at `train/eta`.
+  - Buffer reuse metrics (clarified):
+    - `buffer/steps_per_generation`, `buffer/reuse_count`, `buffer/generation_efficiency` (S as float), and `buffer/reuse_active` (0 for current behavior).
+  - Keys are centralized in `src_new/rl/metrics_keys.py`.
 - **Checkpointing**
   - Periodic step-based saves with a best-checkpoint manager keyed to reward; model/processor/tokenizer and minimal generation config are persisted.
 - **Evaluation harness**
@@ -306,6 +337,10 @@ optimizer.zero_grad()
 - `rl/validators.py`: Debug and strict validators for image-token alignment and packed vision integrity.
 - `rl/schedules.py`: Temperature and beta schedules; simple curriculum helper.
 - `rl/eval.py` & `rl/eval_utils.py`: Lightweight evaluation harness and utilities for saving sample predictions and converting objects to simple boxes.
+- `rl/types.py`: Dataclasses for typed payloads across modules.
+- `rl/metrics_keys.py`: Central constants for logging keys.
+- `rl/diagnostics/settings.py`: Env-driven diagnostics toggles.
+- `rl/memory_policy.py`: GPU cache clearing policy wrapper.
 
 
 ## Contracts & Invariants (checklist)
@@ -326,51 +361,61 @@ optimizer.zero_grad()
 - **Evaluation**: Add absolute metrics or richer sample exports without changing training internals.
 - **Modular components**: Extend or swap `MetricsAggregator`, `TensorBoardLogger`, `CompletionLossComputer`, `AdvantageNormalizer`, or `ConsoleFormatter` for different RL algorithms (PPO, DPO) or custom logging/metrics.
 
-## Buffer Reuse via steps_per_generation
+## Buffer Reuse via steps_per_generation (experimental)
 
-### Why
-Generate once, optimize S times. This reduces expensive generation calls and increases sample efficiency by reusing each completion across multiple optimizer steps.
+The infrastructure for Swift-style buffer reuse is present (`GenerationBuffer` on CPU, streamed optimization), but full multi-step reuse is experimental and not the default. See `src_new/rl/BUFFER_REUSE_STATUS.md` for the latest status.
 
-### How it works
-- Generation builds a `GenerationBuffer` on CPU containing prompts, K completions per prompt, masks, rewards/advantages, and generation-policy log-probs.
-- Training streams one completion per micro-step from the buffer and performs GRPO with optional KL to a frozen reference.
-- After `steps_per_generation = S` optimizer steps, the buffer is considered exhausted and a new buffer is generated.
+### Current behavior
+- Default `grpo.steps_per_generation: 1` (generate each cycle, then optimize once).
+- A single `GenerationBuffer` covers one prompt-batch cycle; completions are streamed per micro-step; optimizer steps once at the accumulation boundary.
 
-### Configuration (YAML)
-```yaml
-grpo:
-  steps_per_generation: 4   # Reuse each generation for 4 optimizer steps
-  epsilon_low: 0.2
-  epsilon_high: 0.2
-  beta_start: 0.05          # Enable KL with a frozen ref model
-  beta_anneal:
-    type: cosine
-    ratio: 0.67             # Anneal across 2/3 of training
-```
+### Guidance
+- If you enable `steps_per_generation > 1`, expect experimental behavior; verify trust-region ratios and watch for overfitting. Prefer keeping `steps_per_generation: 1` unless you actively validate reuse.
 
-### Batch math (distributed)
-Let `world_size = W`:
-- local_k = sample_k / W (require divisibility)
-- gradient_accumulation_steps = local_k × prompt_batch_size × steps_per_generation
+### Submodule index (complete, for quick discovery)
 
-Example (8 GPUs):
-- pb=4, k=8, spg=4 → local_k=1 → accumulation=1×4×4 = 16
-- pb=4, k=16, spg=2 → local_k=2 → accumulation=2×4×2 = 16
+- Core training & generation
+  - `runner.py`: CLI entry; loads typed config, builds datasets/rewards/model, applies phase-freeze.
+  - `grpo_trainer.py`: Manual GRPO trainer (Accelerate); sampling window, buffer, loss, logging, eval.
+  - `buffer.py`: `generate_and_score`, dynamic caps, K sampling, reward compute, advantage build, `split_buffer`.
+  - `generation.py`: Safe `generate` wrappers, `sample_k`, `build_generation_args` (shared by train/eval).
+  - `logprobs.py`: Per-token log-probs over completion slices; packed vision slicing utilities; GPU cleanup.
+  - `losses.py`: GRPO clipped objective and TRL-style KL proxy.
+  - `validators.py`: Debug and strict validators for image-token alignment and packed vision integrity.
+  - `schedules.py`: Temperature/beta schedules and simple curriculum.
+  - `training_state.py`: Persistent state (global step, sampler pos, buffer reuse counters).
+  - `tensor_utils.py`: Small tensor helpers (e.g., THW normalization).
 
-### Logging behavior
-You will observe logs clustered in groups of `steps_per_generation`. Each cluster corresponds to optimizer steps that reuse the same generation buffer.
+- Data & prompting
+  - `data/dataset.py`: RL dataset reconstruction via `ConversationBuilder` (single-turn, packed vision tensors, `meta`).
+  - `prompting/conversation.py`: Conversation utilities for dense RL (training-matched prompts).
 
-### Recipes (8 GPUs)
-- Balanced (default):
-  - `sampling.prompt_batch_size: 4`
-  - `sampling.sample_k: 16`
-  - `grpo.steps_per_generation: 2`
-- Prompt-heavy (more coverage):
-  - `prompt_batch_size: 8`, `sample_k: 16`, `steps_per_generation: 1`
-- Response-heavy (more stability per prompt):
-  - `prompt_batch_size: 4`, `sample_k: 8`, `steps_per_generation: 4`
+- Rewards (registry-backed)
+  - `rewards/registry.py`: Name→function registry discovery and wiring.
+  - `rewards/format_rewards.py`: Formatting/structure rewards (parse, wrappers, coords, separators, vocab, length/length_window).
+  - `rewards/detection_rewards.py`: Geometry/detection rewards (coverage, ordering, bbox_giou, quad_l1, line_l1, geometry_sanity, caption_f1, grounding_acc).
+  - `rewards/standardizer.py`: Online reward standardization helpers.
+  - `rewards/sanitizer.py`: Reward sanitization and bounds.
+  - `metrics_keys.py`: Centralized metric key names used across logging.
 
-### Tips
-- Increase `steps_per_generation` first if generation cost dominates, but monitor overfitting to reused samples.
-- With KL enabled (`beta_start > 0`), memory increases; if OOM, lower `prompt_batch_size`, then `sample_k`, then `steps_per_generation`.
-  
+- Logging, diagnostics, and utilities
+  - `tensorboard_logger.py`: Structured TB logging (training, completion, dynamic-length, clip ratios, per-reward, eval).
+  - `console_formatter.py`: Concise console one-liners and detailed summaries.
+  - `console_metrics_collector.py`: Consolidates scalar/histogram snippets for console/TB.
+  - `metrics_aggregator.py`: Cross-rank gather/reduce for rewards/advantages/termination and per-reward components.
+  - `prompt_batch_telemetry.py`: Prompt-batch accumulation telemetry and smoothing windows.
+  - `reward_logger.py`: Per-reward means/std formatters for console/TB.
+  - `diagnostics/settings.py`: Env-driven toggles (timing thresholds, cache policy, warnings).
+  - `memory_policy.py`: Optional GPU cache clearing policy wrapper.
+  - `text_dump.py`: Generation text sample dumping for inspection.
+  - `distributed.py`: Thin distributed helpers used by the trainer.
+  - `utils.py`: Misc small helpers (IM_END resolution, conversation builder, device utils, trimming).
+
+- Buffer reuse (experimental)
+  - `generation_buffer.py`: CPU-side buffer for multi-step reuse (`steps_per_generation`).
+  - `BUFFER_REUSE_STATUS.md`: Current guidance and caveats for reuse.
+
+- Evaluation
+  - `eval.py`: Lightweight eval harness; generates one sample per rank and aggregates metrics.
+  - `eval_utils.py`: Helpers for dumping samples and converting objects to simple boxes.
+

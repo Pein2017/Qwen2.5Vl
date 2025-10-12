@@ -309,6 +309,43 @@ def sample_k(
     return torch.stack(padded, dim=0), gen_logps_list
 
 
+def build_generation_args(
+    *,
+    tokenizer: Any,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: Optional[float] = None,
+    min_new_tokens: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
+) -> dict:
+    """Assemble standard generate kwargs (excluding eos and required args).
+
+    Keeps behavior identical to callers by only supplying optional knobs.
+    """
+    args: dict = {}
+    # top_p
+    if top_p is not None:
+        try:
+            args["top_p"] = float(top_p)
+        except Exception:
+            pass
+    # repetition penalty
+    if repetition_penalty is not None:
+        try:
+            args["repetition_penalty"] = float(repetition_penalty)
+        except Exception:
+            pass
+    # min_new_tokens
+    if min_new_tokens is not None:
+        try:
+            args["min_new_tokens"] = int(min_new_tokens)
+        except Exception:
+            pass
+    # Note: max_new_tokens and temperature are passed as explicit params in callers
+    # to avoid accidental precedence issues; we leave them to the call site.
+    return args
+
+
 __all__ = [
     "prepare_generate_inputs",
     "generate_completions",
