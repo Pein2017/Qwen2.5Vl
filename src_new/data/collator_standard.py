@@ -4,14 +4,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import torch
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src_new.types.arrays import (
-    jaxtyped_beartype,
+from src_new.data.collator_shared import (
+    extract_image_grid_thw,
+    extract_pixel_values,
+    pad_sequence,
+    validate_multimodal_batch,
 )
+from src_new.types.arrays import jaxtyped_beartype
 from src_new.types.batch import MultimodalBatch
-from src_new.types.shapes import (
-    IMAGE_GRID_THW_SHAPE_DESC,
-    PIXEL_VALUES_STANDARD_SHAPE_DESC,
-)
 
 from .collator_utils import get_collator_logger
 
@@ -46,75 +46,12 @@ class StandardDataCollator:
         attention_mask = [f["attention_mask"] for f in features]
         labels = [f["labels"] for f in features]
 
-        pixel_values = None
-        image_grid_thw = None
-        pixel_values_present = any(
-            ("pixel_values" in f) and (f["pixel_values"] is not None) for f in features
-        )
-        if pixel_values_present:
-            pixel_values_list = []
-            for f in features:
-                if "pixel_values" not in f or f["pixel_values"] is None:
-                    continue
-                pv = f["pixel_values"]
-                if pv.dim() == 2:
-                    pixel_values_list.append(pv)
-                elif pv.dim() == 4:
-                    for i in range(pv.shape[0]):
-                        pixel_values_list.append(pv[i])
-                elif pv.dim() == 3:
-                    pixel_values_list.append(pv)
-                else:
-                    raise ValueError(
-                        f"Invalid pixel_values dims={pv.dim()} shape={pv.shape} (expected {PIXEL_VALUES_STANDARD_SHAPE_DESC})"
-                    )
-            if pixel_values_list:
-                if pixel_values_list[0].dim() == 2:
-                    pixel_values = torch.cat(pixel_values_list, dim=0)
-                else:
-                    pixel_values = torch.stack(pixel_values_list)
+        pixel_values = extract_pixel_values(features)
+        image_grid_thw = extract_image_grid_thw(features)
 
-        image_grid_present = any(
-            ("image_grid_thw" in f) and (f["image_grid_thw"] is not None) for f in features
-        )
-        if image_grid_present:
-            image_grid_thw_list = []
-            for f in features:
-                grid_thw = f.get("image_grid_thw")
-                if grid_thw is None:
-                    continue
-                if grid_thw.dim() == 2:
-                    if grid_thw.shape[0] == 1 and grid_thw.shape[1] == 3:
-                        image_grid_thw_list.append(grid_thw.squeeze(0))
-                    elif grid_thw.shape[0] >= 1 and grid_thw.shape[1] == 3:
-                        for i in range(grid_thw.shape[0]):
-                            image_grid_thw_list.append(grid_thw[i])
-                    else:
-                        raise ValueError(
-                            f"Unsupported image_grid_thw shape {grid_thw.shape} (expected {IMAGE_GRID_THW_SHAPE_DESC})"
-                        )
-                elif grid_thw.dim() == 1:
-                    if grid_thw.shape[0] == 3:
-                        image_grid_thw_list.append(grid_thw)
-                    elif grid_thw.shape[0] == 2:
-                        h, w = grid_thw
-                        image_grid_thw_list.append(
-                            torch.tensor([1, h, w], dtype=grid_thw.dtype, device=grid_thw.device)
-                        )
-                    else:
-                        raise ValueError(
-                            f"Invalid 1D image_grid_thw shape {grid_thw.shape} (expected 3 elements for THW)"
-                        )
-                else:
-                    raise ValueError(
-                        f"Invalid image_grid_thw dims={grid_thw.dim()} shape={grid_thw.shape} (expected {IMAGE_GRID_THW_SHAPE_DESC})"
-                    )
-            if image_grid_thw_list:
-                image_grid_thw = torch.stack(image_grid_thw_list)
-
-        padded_input_ids = self._pad_sequence(input_ids, self.pad_token_id)
-        padded_attention_mask = self._pad_sequence(attention_mask, 0)
-        padded_labels = self._pad_sequence(labels, self.label_pad_token_id)
+        padded_input_ids = pad_sequence(input_ids, self.pad_token_id)
+        padded_attention_mask = pad_sequence(attention_mask, 0)
+        padded_labels = pad_sequence(labels, self.label_pad_token_id)
 
         batch: Dict[str, torch.Tensor] = {
             "input_ids": padded_input_ids,
@@ -128,76 +65,45 @@ class StandardDataCollator:
             logger.debug(
                 f"Added image_grid_thw to batch: {image_grid_thw.shape} = {image_grid_thw}"
             )
-        if pixel_values is not None and image_grid_thw is None:
-            raise ValueError(
-                "Standard collator: pixel_values present but image_grid_thw missing; cannot build multimodal batch."
-            )
-
+        validate_multimodal_batch(pixel_values, image_grid_thw)
 
         # Propagate assistant spans so grouped losses (caption/grounding/formatting) work identically to packed
         try:
             if "teacher_assistant_spans" in features[0]:
-                batch["teacher_assistant_spans"] = [f.get("teacher_assistant_spans", []) for f in features]
+                batch["teacher_assistant_spans"] = [
+                    f.get("teacher_assistant_spans", []) for f in features
+                ]
             if "student_assistant_spans" in features[0]:
-                batch["student_assistant_spans"] = [f.get("student_assistant_spans", []) for f in features]
+                batch["student_assistant_spans"] = [
+                    f.get("student_assistant_spans", []) for f in features
+                ]
             if "assistant_spans" in features[0]:
                 # Unified spans fallback (treated as student spans in the wrapper/loss manager)
-                batch["assistant_spans"] = [f.get("assistant_spans", []) for f in features]
+                batch["assistant_spans"] = [
+                    f.get("assistant_spans", []) for f in features
+                ]
             if "conversation_variant" in features[0]:
                 batch["conversation_variant"] = features[0]["conversation_variant"]
             # Provide original batch size for diagnostics (optional)
             try:
-                batch["num_items_in_batch"] = torch.tensor([len(features)], dtype=torch.long)
+                batch["num_items_in_batch"] = torch.tensor(
+                    [len(features)], dtype=torch.long
+                )
             except Exception:
                 pass
             # Fail-fast: ensure at least student or unified spans present per item
-            spans_all = batch.get("student_assistant_spans") or batch.get("assistant_spans")
+            spans_all = batch.get("student_assistant_spans") or batch.get(
+                "assistant_spans"
+            )
             if not spans_all or not any(len(s) > 0 for s in spans_all):
-                raise ValueError("Collator: missing assistant spans in batch; cannot compute grouped losses.")
+                raise ValueError(
+                    "Collator: missing assistant spans in batch; cannot compute grouped losses."
+                )
         except Exception as e:
             logger.error(f"Failed to attach assistant spans in standard collator: {e}")
             raise
 
-        try:
-            if "pixel_values" in batch and "image_grid_thw" in batch:
-                pv = batch["pixel_values"]
-                grid = batch["image_grid_thw"]
-                if pv.dim() not in (2,):
-                    raise ValueError(
-                        f"Standard collator: pixel_values must be {PIXEL_VALUES_STANDARD_SHAPE_DESC}, got {pv.shape}"
-                    )
-                if grid.dim() != 2 or grid.shape[1] != 3:
-                    raise ValueError(
-                        f"Standard collator: image_grid_thw must be {IMAGE_GRID_THW_SHAPE_DESC}, got {grid.shape}"
-                    )
-                expected = int((grid[:, 0] * grid[:, 1] * grid[:, 2]).sum().item())
-                actual = int(pv.shape[0])
-                if expected != actual:
-                    raise ValueError(
-                        f"Standard collator: pixel_values rows ({actual}) != sum(t*h*w) ({expected}) from image_grid_thw"
-                    )
-        except Exception as e:
-            logger.error(f"Multimodal validation failure (standard): {e}")
-            raise
-
         return batch
-
-    @jaxtyped_beartype
-    def _pad_sequence(
-        self, sequences: List[torch.Tensor], pad_value: int
-    ) -> torch.Tensor:
-        lengths = [seq.size(0) for seq in sequences]
-        max_len = max(lengths)
-        padded_sequences = []
-        for seq in sequences:
-            padding_length = max_len - seq.size(0)
-            if padding_length > 0:
-                padding = torch.full((padding_length,), pad_value, dtype=seq.dtype)
-                padded_seq = torch.cat([seq, padding], dim=0)
-            else:
-                padded_seq = seq
-            padded_sequences.append(padded_seq)
-        return torch.stack(padded_sequences)
 
 
 __all__ = ["StandardDataCollator"]

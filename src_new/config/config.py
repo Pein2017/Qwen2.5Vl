@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Union
 
 import yaml
 

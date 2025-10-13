@@ -14,27 +14,25 @@ Key Features:
 import json
 import logging
 import random
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
 from PIL import Image
 from torch.utils.data import Dataset as TorchDataset
-from transformers import Qwen2VLImageProcessor, Qwen2_5_VLProcessor
+from transformers import Qwen2_5_VLProcessor, Qwen2VLImageProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src_new.config.config import Config
 from src_new.config.augmentation_config import SmartResizeConfig
+from src_new.config.config import Config
 from src_new.data.teacher_pool import TeacherPoolManager
 from src_new.processing.conversation import ConversationBuilder
+from src_new.processing.span_mapping import map_spans_unexpanded_to_expanded
 from src_new.processing.special_tokens import (
-    ASSISTANT_SPAN_PATTERN,
     GEOMETRY_TOKENS,
     IM_END,
     IMAGE_PAD,
 )
-from src_new.processing.span_mapping import map_spans_unexpanded_to_expanded
 from src_new.types.arrays import (
     jaxtyped_beartype,
 )
@@ -327,7 +325,8 @@ class Dataset(TorchDataset):
         if getattr(self.config, "dynamic_pairing_enabled", False) and not self.is_eval and has_samples:
             # Use modular pairing engine
             # Delayed import to avoid heavy dependencies at module import time
-            from src_new.sampler.random_bucket import RandomBucketSampler as _Sampler, RandomBucketConfig as _SamplerCfg
+            from src_new.sampler.random_bucket import RandomBucketConfig as _SamplerCfg
+            from src_new.sampler.random_bucket import RandomBucketSampler as _Sampler
 
             base_seed = int(getattr(self.config, "seed", 12345))
 
@@ -416,7 +415,6 @@ class Dataset(TorchDataset):
             from src_new.processing.special_tokens import (
                 require_core_special_tokens,
                 require_geometry_tokens,
-                require_coordinate_token_range,
             )
             # Core chat/image tokens must exist
             require_core_special_tokens(tok)
@@ -1026,7 +1024,9 @@ class Dataset(TorchDataset):
                     truncation=False,
                 )
                 offset_fb = tokenized_with_offsets_fb["offset_mapping"][0]
-                from src_new.processing.span_extraction import find_assistant_spans as _find
+                from src_new.processing.span_extraction import (
+                    find_assistant_spans as _find,
+                )
                 spans_fb = _find(
                     full_text=full_text,
                     offset_mapping=offset_fb,

@@ -16,7 +16,7 @@ from typing import Dict
 
 import torch
 
-from .metrics_registry import ROLE_NAMES, GROUP_NAMES, compute_group_totals_from_flat
+from .metrics_registry import ROLE_NAMES, compute_group_totals_from_flat
 
 
 def adapt_group_losses(prefix: str, diagnostics: Dict[str, torch.Tensor]) -> Dict[str, float]:

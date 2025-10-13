@@ -20,9 +20,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import torch
 import torch.nn as nn
 from transformers.tokenization_utils import PreTrainedTokenizer
-from transformers.training_args import TrainingArguments
 from transformers.trainer import Trainer as HFTrainer
-from transformers.trainer_callback import TrainerCallback
+from transformers.training_args import TrainingArguments
 
 
 if TYPE_CHECKING:
@@ -34,8 +33,8 @@ from ..utils.rank_aware_logging import (
     rank0_only,
 )
 from .checkpoint_saver import BestCheckpointManager, CheckpointSaver
-from .training_state_manager import TrainingStateManager
 from .metrics_adapter import adapt_group_losses
+from .training_state_manager import TrainingStateManager
 
 
 # Import debug logging utilities
@@ -249,7 +248,9 @@ class BBUTrainer(HFTrainer):
                                 self._embedding_debug["ids"] = ids
                                 self._embedding_debug["baseline"] = selected
                                 try:
-                                    from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
+                                    from src_new.utils.rank_aware_logging import (
+                                        get_rank_aware_logger as _get,
+                                    )
                                     _get("training.embedding_debug").debug(
                                         "Tracking %d embedding rows for L2 delta debug", len(ids)
                                     )
@@ -426,13 +427,14 @@ class BBUTrainer(HFTrainer):
                             emb = p.detach().cpu()
                             break
                     if emb is not None:
-                        import torch
                         current = emb[ids]
                         deltas = (current - baseline).norm(dim=1)
                         # Log coord-slice LR if available
                         clr = None
                         try:
-                            from src_new.utils.rank_aware_logging import get_rank_aware_logger as _get
+                            from src_new.utils.rank_aware_logging import (
+                                get_rank_aware_logger as _get,
+                            )
                             _get("training.embedding_debug").debug(
                                 "🧪 Embedding L2 deltas (mean=%.6f, max=%.6f) on %d rows; lr_coord_slice=%s",
                                 deltas.mean().item(), deltas.max().item(), len(ids), str(clr)

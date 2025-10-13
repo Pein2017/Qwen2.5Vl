@@ -92,23 +92,13 @@ class ConsoleMetricsCollector:
             [
                 "completions/mean_len_tok",
                 "gt/mean_len_tok",
-                "completions/cap_hit_ratio",
                 "completions/ratio_to_gt_mean",
                 "completions/over_upper_ratio",
                 "completions/under_lower_ratio",
             ],
         )
 
-        # Add dynamic length metrics
-        self._add_if_present(
-            console_logs,
-            logs,
-            [
-                "dynamic_length/enabled",
-                "dynamic_length/mean_cap",
-                "dynamic_length/max_cap",
-            ],
-        )
+        # Dynamic length metrics removed
 
         # Add clipping metrics
         self._add_if_present(

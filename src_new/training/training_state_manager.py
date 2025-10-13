@@ -17,7 +17,6 @@ from typing import Any, Dict, Optional
 
 import torch
 
-from ..models.coord_metrics import DIAGNOSTIC_METRIC_NAMES
 from ..utils.rank_aware_logging import get_rank_aware_logger
 
 
@@ -311,7 +310,7 @@ class TrainingStateManager:
         if "loss" not in logs:
             return
 
-        total_loss = logs["loss"]
+        logs["loss"]
         component_sum = 0.0
 
         # Sum per-role LLM and group losses (all weighted). Groups must sum to role LLM; roles sum to total.

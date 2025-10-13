@@ -24,21 +24,20 @@ punctuation sets are internal and conservative by default.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
-import re
 import os
-import logging
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import torch
 
-from src_new.processing.special_tokens import IM_END
-from .grouping_core import (
-    build_id_sets,
-    build_base_predicates,
-    assign_residual_to_formatting,
-)
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
+
+from .grouping_core import (
+    assign_residual_to_formatting,
+    build_base_predicates,
+    build_id_sets,
+)
+
 
 _dbg_logger = get_rank_aware_logger(__name__)
 _DEBUG_GROUPING: bool = os.getenv("BBU_DEBUG_GROUPING", "0").strip() not in ("", "0", "false", "False")

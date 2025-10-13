@@ -182,7 +182,7 @@ def compute_absolute_metrics(
         float(nums) / float(max(1, len(text.split()))), float(digits) / float(total)
     )
 
-    return {
+    out = {
         "object_count_mae": float(
             abs(len(pred_objs) - (len(gt_objs) if isinstance(gt_objs, list) else 0))
         ),
@@ -194,6 +194,16 @@ def compute_absolute_metrics(
         "banned_vocab_rate": banned_rate,
         "numeric_tail_fraction": float(numeric_tail_fraction),
     }
+
+    # Optional: include assignment_f1 if registry is available
+    try:
+        from src_new.rl.rewards.assignment import assignment_f1 as _assign
+
+        out["assignment_f1_mean"] = float(_assign(text, meta=meta))
+    except Exception:
+        pass
+
+    return out
 
 
 def evaluate(config_path: str) -> Dict[str, Any]:

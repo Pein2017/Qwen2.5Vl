@@ -3,7 +3,7 @@ import random
 import unittest
 
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
-from src_new.processing.variants import TextOnlyHandler, TEXT_ONLY_USER_NOISE_ENABLED
+from src_new.processing.variants import TEXT_ONLY_USER_NOISE_ENABLED, TextOnlyHandler
 
 
 class TestTextOnlyUserNoise(unittest.TestCase):

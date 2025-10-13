@@ -6,12 +6,11 @@ from typing import Any, Dict, List, Tuple
 
 import torch
 from PIL import Image
-
 from transformers import Qwen2_5_VLProcessor
 
-from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.data.dataset import Dataset
 from src_new.losses.token_grouping import TokenGroupingPlugin
+from src_new.processing.conversation_processor import ConversationProcessor
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:

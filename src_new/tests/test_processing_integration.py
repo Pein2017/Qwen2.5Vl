@@ -81,7 +81,7 @@ class TestProcessingIntegration(unittest.TestCase):
         )
         inputs = conv.create_simple_conversation(sample=sample_out, images=imgs_out)
         input_ids = inputs["input_ids"][0].tolist()
-        text = self.processor.tokenizer.decode(input_ids, skip_special_tokens=False)
+        self.processor.tokenizer.decode(input_ids, skip_special_tokens=False)
 
         # 3) Expect raw numeric list present in assistant content
         teacher_spans, student_spans = build_assistant_spans_token_aligned(

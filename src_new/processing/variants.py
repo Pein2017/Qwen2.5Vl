@@ -14,13 +14,14 @@ Handlers return two callables:
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 import json
 import random
+from typing import Any, Dict, List, Optional, Protocol, Union
 
-from .geometry_text import format_geometry_for_user, format_object_ref
 from src_new.types import ConversationVariant
+
 from .coordinate_converter import CoordinateTokenConverter
+from .geometry_text import format_geometry_for_user, format_object_ref
 from .templates import CONSTANTS
 
 

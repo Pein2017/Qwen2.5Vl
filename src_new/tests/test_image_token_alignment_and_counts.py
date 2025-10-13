@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import unittest
+
 import torch
 from transformers import AutoTokenizer
 
 from src_new.processing.special_tokens import IMAGE_PAD
+
 
 MODEL_PATHS = [
     "outputs/7B-dynamic_pairing/phase_1/9-17-dynamic_pairing-phase_1/checkpoint-2000",

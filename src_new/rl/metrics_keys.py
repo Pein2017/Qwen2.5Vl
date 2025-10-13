@@ -22,16 +22,13 @@ LOSS = "loss"
 TERM_RATIO = "completions/terminated_ratio"
 MEAN_LEN_TOK = "completions/mean_len_tok"
 GT_MEAN_LEN_TOK = "gt/mean_len_tok"
-CAP_HIT_RATIO = "completions/cap_hit_ratio"
+# cap_hit_ratio removed with dynamic caps
 RATIO_TO_GT = "completions/ratio_to_gt_mean"
 OVER_UPPER = "completions/over_upper_ratio"
 UNDER_LOWER = "completions/under_lower_ratio"
 ZERO_LEN_RATIO = "completions/zero_len_ratio"
 
-# Dynamic length
-DYN_ENABLED = "dynamic_length/enabled"
-DYN_MEAN_CAP = "dynamic_length/mean_cap"
-DYN_MAX_CAP = "dynamic_length/max_cap"
+# Dynamic length metrics removed
 
 # Clipping ratios
 CLIP_LOW_MEAN = "clip_ratio/low_mean"
@@ -59,14 +56,12 @@ __all__ = [
     "TERM_RATIO",
     "MEAN_LEN_TOK",
     "GT_MEAN_LEN_TOK",
-    "CAP_HIT_RATIO",
+    # cap hit ratio removed
     "RATIO_TO_GT",
     "OVER_UPPER",
     "UNDER_LOWER",
     "ZERO_LEN_RATIO",
-    "DYN_ENABLED",
-    "DYN_MEAN_CAP",
-    "DYN_MAX_CAP",
+    # dynamic length keys removed
     "CLIP_LOW_MEAN",
     "CLIP_HIGH_MEAN",
     "CLIP_REGION_MEAN",

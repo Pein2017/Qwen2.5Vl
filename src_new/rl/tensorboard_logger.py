@@ -71,7 +71,6 @@ class TensorBoardLogger:
         completion_keys = [
             "completions/mean_len_tok",
             "gt/mean_len_tok",
-            "completions/cap_hit_ratio",
             "completions/ratio_to_gt_mean",
             "completions/over_upper_ratio",
             "completions/under_lower_ratio",
@@ -84,19 +83,7 @@ class TensorBoardLogger:
                 self.writer.add_scalar(key, metrics[key], step)
 
     def log_dynamic_length_metrics(self, metrics: Dict[str, float], step: int) -> None:
-        """Log dynamic length cap metrics."""
-        if not self.enabled:
-            return
-
-        dyn_keys = [
-            "dynamic_length/enabled",
-            "dynamic_length/mean_cap",
-            "dynamic_length/max_cap",
-        ]
-
-        for key in dyn_keys:
-            if key in metrics:
-                self.writer.add_scalar(key, metrics[key], step)
+        return  # dynamic length metrics removed
 
     def log_clip_ratios(self, metrics: Dict[str, float], step: int) -> None:
         """Log policy clipping ratios."""
@@ -243,8 +230,7 @@ class TensorBoardLogger:
         # Completion metrics
         self.log_completion_metrics(logs, step)
 
-        # Dynamic length
-        self.log_dynamic_length_metrics(logs, step)
+        # Dynamic length removed
 
         # Clipping ratios
         self.log_clip_ratios(logs, step)

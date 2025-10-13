@@ -2,7 +2,7 @@
 
 # Public types surface
 from .coords import CoordTokenRange
-from .format import FormatMode, ConversationVariant
+from .format import ConversationVariant, FormatMode
 
 
 __all__ = [

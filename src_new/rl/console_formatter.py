@@ -148,19 +148,11 @@ class ConsoleFormatter:
             bounds_parts.append(f"over={logs['completions/over_upper_ratio']:.3f}")
         if "completions/under_lower_ratio" in logs:
             bounds_parts.append(f"under={logs['completions/under_lower_ratio']:.3f}")
-        if "completions/cap_hit_ratio" in logs:
-            bounds_parts.append(f"cap_hit={logs['completions/cap_hit_ratio']:.3f}")
+        # cap_hit removed
         if bounds_parts:
             lines.append("[BOUNDS] " + " ".join(bounds_parts))
 
-        # Line 7: Dynamic length caps (if enabled)
-        if logs.get("dynamic_length/enabled", 0.0) > 0.5:
-            dyn_parts = ["enabled=true"]
-            if "dynamic_length/mean_cap" in logs:
-                dyn_parts.append(f"mean={logs['dynamic_length/mean_cap']:.0f}")
-            if "dynamic_length/max_cap" in logs:
-                dyn_parts.append(f"max={logs['dynamic_length/max_cap']:.0f}")
-            lines.append("[DYNAMIC_CAP] " + " ".join(dyn_parts))
+        # Dynamic length caps removed
 
         # Line 8: Policy clipping
         clip_parts = []

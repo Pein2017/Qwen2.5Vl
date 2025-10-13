@@ -117,27 +117,7 @@ class SamplingConfig:
         )
 
 
-@dataclass(frozen=True)
-class DynamicLengthConfig:
-    """Dynamic length - all required."""
-
-    enabled: bool
-    estimator: str
-    alpha: float
-    eos_margin: int
-    max_cap: int
-    hard_cap: bool
-
-    @staticmethod
-    def from_dict(cfg: Dict[str, Any]) -> "DynamicLengthConfig":
-        return DynamicLengthConfig(
-            enabled=_require(cfg, "enabled", "dynamic_length"),
-            estimator=_require(cfg, "estimator", "dynamic_length"),
-            alpha=_require(cfg, "alpha", "dynamic_length"),
-            eos_margin=_require(cfg, "eos_margin", "dynamic_length"),
-            max_cap=_require(cfg, "max_cap", "dynamic_length"),
-            hard_cap=_require(cfg, "hard_cap", "dynamic_length"),
-        )
+# DynamicLengthConfig removed — dynamic per-sample caps no longer supported
 
 
 @dataclass(frozen=True)
@@ -149,7 +129,6 @@ class GenerationConfig:
     temperature: float
     top_p: float
     repetition_penalty: float
-    dynamic_length: DynamicLengthConfig
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "GenerationConfig":
@@ -159,9 +138,6 @@ class GenerationConfig:
             temperature=_require(cfg, "temperature", "generation"),
             top_p=_require(cfg, "top_p", "generation"),
             repetition_penalty=_require(cfg, "repetition_penalty", "generation"),
-            dynamic_length=DynamicLengthConfig.from_dict(
-                _require(cfg, "dynamic_length", "generation")
-            ),
         )
 
 
@@ -200,7 +176,7 @@ class BetaAnnealConfig:
 
 @dataclass(frozen=True)
 class GRPOConfig:
-    """GRPO algorithm - all required except beta_anneal and max_advantage_magnitude."""
+    """GRPO algorithm - TRL-aligned. No custom standardizer or advantage clipping."""
 
     epsilon_low: float
     epsilon_high: float
@@ -208,14 +184,8 @@ class GRPOConfig:
     loss_type: str
     scale_rewards: bool
     mask_truncated_completions: bool
-    standardize_rewards: bool  # Per-component reward standardization
-    steps_per_generation: int  # Buffer reuse: 1=no reuse, >1=Swift-style (experimental)
-    beta_anneal: Optional[BetaAnnealConfig] = (
-        None  # Truly optional (must come after required)
-    )
-    max_advantage_magnitude: Optional[float] = (
-        None  # Truly optional (must come after required)
-    )
+    steps_per_generation: int  # Buffer reuse interval
+    beta_anneal: Optional[BetaAnnealConfig] = None
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "GRPOConfig":
@@ -238,28 +208,23 @@ class GRPOConfig:
             mask_truncated_completions=_require(
                 cfg, "mask_truncated_completions", "grpo"
             ),
-            standardize_rewards=_require(cfg, "standardize_rewards", "grpo"),
             steps_per_generation=steps_per_gen,
             beta_anneal=BetaAnnealConfig.from_dict(beta_anneal_dict)
             if beta_anneal_dict
             else None,
-            max_advantage_magnitude=cfg.get("max_advantage_magnitude"),  # Optional
         )
 
 
 @dataclass(frozen=True)
 class NormalizationConfig:
-    """Normalization config - all required."""
+    """Normalization config - retained for backward compat; no cross-rank advs."""
 
     cross_rank_advantages: bool
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "NormalizationConfig":
-        return NormalizationConfig(
-            cross_rank_advantages=_require(
-                cfg, "cross_rank_advantages", "normalization"
-            ),
-        )
+        # Always false: TRL normalizes per-prompt group locally
+        return NormalizationConfig(cross_rank_advantages=False)
 
 
 @dataclass(frozen=True)
@@ -536,15 +501,13 @@ class RewardParamsConfig:
     """Reward-specific hyperparameters - all required."""
 
     clip_sigma: float
-    tau_iou: float
-    tau_quad: float
-    tau_line: float
     length_vs_gt: LengthVsGTConfig
     # Optional per-reward params
-    line_giou: Optional[Dict[str, Any]] = None
     # New: line-specific duplicate and pattern penalties (flattened 'line' sub-blocks)
     duplicate_penalty: Optional[Dict[str, Any]] = None
     pattern_penalty: Optional[Dict[str, Any]] = None
+    # Assignment-specific params (lambda_caption, alpha, beta_fp, beta_fn, line_buffer_frac)
+    assignment_f1: Optional[Dict[str, Any]] = None
     # Optional: standardizer hyperparameters
     standardizer: Optional["StandardizerConfig"] = None
 
@@ -607,20 +570,22 @@ class RewardParamsConfig:
                         _ = float(line[k])
             return {"line": line} if line is not None else {}
 
-        line_giou_cfg = cfg.get("line_giou")
-        if line_giou_cfg is not None and not isinstance(line_giou_cfg, dict):
+        # Optional assignment_f1 block
+        assignment_cfg = cfg.get("assignment_f1")
+        if assignment_cfg is not None and not isinstance(assignment_cfg, dict):
             raise ConfigValidationError(
-                "rewards_config.line_giou must be a mapping when provided"
+                "rewards_config.assignment_f1 must be a mapping when provided"
             )
-        # If provided, validate known fields
-        if isinstance(line_giou_cfg, dict) and "buffer_frac" in line_giou_cfg:
-            bf = line_giou_cfg["buffer_frac"]
-            try:
-                _ = float(bf)
-            except Exception:
-                raise ConfigValidationError(
-                    "rewards_config.line_giou.buffer_frac must be a float"
-                )
+        if isinstance(assignment_cfg, dict):
+            for k in (
+                "lambda_caption",
+                "alpha",
+                "beta_fp",
+                "beta_fn",
+                "line_buffer_frac",
+            ):
+                if k in assignment_cfg:
+                    _ = float(assignment_cfg[k])
 
         std_cfg = cfg.get("standardizer")
         std_parsed = (
@@ -629,15 +594,12 @@ class RewardParamsConfig:
 
         return RewardParamsConfig(
             clip_sigma=_require(cfg, "clip_sigma", "rewards_config"),
-            tau_iou=_require(cfg, "tau_iou", "rewards_config"),
-            tau_quad=_require(cfg, "tau_quad", "rewards_config"),
-            tau_line=_require(cfg, "tau_line", "rewards_config"),
             length_vs_gt=LengthVsGTConfig.from_dict(
                 _require(cfg, "length_vs_gt", "rewards_config")
             ),
-            line_giou=line_giou_cfg,
             duplicate_penalty=_extract_duplicate_penalty(cfg),
             pattern_penalty=_extract_pattern_penalty(cfg),
+            assignment_f1=assignment_cfg,
             standardizer=std_parsed,
         )
 

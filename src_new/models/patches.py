@@ -303,7 +303,7 @@ def patch_qwen25_prepare_inputs_for_generation() -> None:
         Patched prepare_inputs_for_generation method with improved handling.
         """
         # Call original method
-        inputs = original_prepare_inputs(
+        model_inputs = original_prepare_inputs(
             self,
             input_ids=input_ids,
             past_key_values=past_key_values,
@@ -322,7 +322,14 @@ def patch_qwen25_prepare_inputs_for_generation() -> None:
 
         # Add custom handling if needed
 
-        return inputs
+        # Qwen2-5-VL position_ids are prepareed with rope_deltas in forward
+        model_inputs["position_ids"] = None
+
+        if cache_position[0] != 0:
+            model_inputs["pixel_values"] = None
+            model_inputs["pixel_values_videos"] = None
+
+        return model_inputs
 
     # Apply patch
     Qwen2_5_VLForConditionalGeneration.prepare_inputs_for_generation = (

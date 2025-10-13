@@ -7,7 +7,6 @@ compatibility with HuggingFace Trainer.
 """
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
@@ -515,6 +514,8 @@ class DetectionModel(nn.Module):
             "teacher_assistant_spans",
             "student_assistant_spans",
             "assistant_spans",
+            # TRL-specific hint not supported by base model; handled in wrapper (see RL path below)
+            "logits_to_keep",
         ]
         base_kwargs = {k: v for k, v in kwargs.items() if k not in excluded_args}
 
@@ -605,6 +606,24 @@ class DetectionModel(nn.Module):
                         base_outputs.loss = None
                     except Exception:
                         pass
+            # Minimal TRL compatibility: crop logits tail when `logits_to_keep` hint is provided.
+            # TRL passes `logits_to_keep = C + 1` and later excludes the last logit, yielding exactly C steps.
+            try:
+                if (
+                    "logits_to_keep" in kwargs
+                    and hasattr(base_outputs, "logits")
+                    and base_outputs.logits is not None
+                ):
+                    _ltkp = int(kwargs.get("logits_to_keep") or 0)
+                    if (
+                        _ltkp > 0
+                        and base_outputs.logits.dim() >= 2
+                        and base_outputs.logits.size(1) >= _ltkp
+                    ):
+                        base_outputs.logits = base_outputs.logits[:, -_ltkp:, :]
+            except Exception:
+                # Never fail RL path on cropping; fallback to full logits if anything goes wrong
+                pass
                 return base_outputs
 
             # SOLUTION 1: Handle both official and bypassed loss computation
@@ -673,7 +692,10 @@ class DetectionModel(nn.Module):
                     "Base model returned a loss but input_ids/labels were not provided to wrapper; strict mode requires spans and labels."
                 )
             else:
-                # No loss available -> hard error
+                # RL safety fallback: if labels are not provided, return logits-only outputs without error
+                if labels is None:
+                    return base_outputs
+                # Otherwise, supervised path without loss/spans is an error
                 raise RuntimeError(
                     "No loss available from base model and wrapper; ensure labels/spans are provided."
                 )
@@ -769,12 +791,13 @@ class DetectionModel(nn.Module):
             ),
         }
 
-    def generate(self, **kwargs) -> torch.Tensor:
+    def generate(self, *args, **kwargs) -> torch.Tensor:
         """
         Generate text with coordinate token support.
 
         Args:
-            **kwargs: Arguments for base model generate
+            *args: Positional arguments for base model generate (e.g., input_ids)
+            **kwargs: Keyword arguments for base model generate
 
         Returns:
             Generated token IDs
@@ -783,7 +806,7 @@ class DetectionModel(nn.Module):
         self.base_model.config.use_cache = True
 
         # Generate with base model
-        return self.base_model.generate(**kwargs)
+        return self.base_model.generate(*args, **kwargs)
 
     def get_loss_components(self) -> Optional[LossComponents]:
         """
@@ -951,39 +974,21 @@ class DetectionModel(nn.Module):
             else:
                 output_embeddings.weight = input_embeddings.weight
 
-    def save_pretrained(
-        self, save_directory: str, safe_serialization: bool = True, **kwargs
-    ) -> None:
+    # save_pretrained was removed; saving is handled by GRPOVLMTrainer.save_model
+
+    # ---- Checkpoint I/O delegation to avoid duplicate shared tensors ----
+    def state_dict(self, *args, **kwargs):  # type: ignore[override]
+        """Delegate state dict to the underlying base model to avoid duplicate module aliases.
+
+        Returning only the base_model parameters prevents safetensors from detecting
+        shared-storage duplicates like {"base_model.*", "model.*"} when the wrapper
+        keeps an alias to the same module.
         """
-        Save the model with proper handling of tied weights.
+        return self.base_model.state_dict(*args, **kwargs)
 
-        Args:
-            save_directory: Directory to save the model
-            safe_serialization: Whether to use safetensors format
-            **kwargs: Additional arguments passed to base model's save_pretrained
-        """
-        # Create directory if it doesn't exist
-        os.makedirs(save_directory, exist_ok=True)
-
-        try:
-            # Try normal save first
-            self.base_model.save_pretrained(
-                save_directory, safe_serialization=safe_serialization, **kwargs
-            )
-        except RuntimeError as e:
-            if "shared tensors" in str(e):
-                logger.warning(
-                    "⚠️ Shared tensor error detected, falling back to non-safe serialization"
-                )
-                # Fallback to non-safe serialization
-                self.base_model.save_pretrained(
-                    save_directory, safe_serialization=False, **kwargs
-                )
-            else:
-                raise e
-
-        # NOTE: Tokenizer and coordinate config are now saved centrally by CheckpointSaver
-        logger.info(f"Model saved to {save_directory}")
+    def load_state_dict(self, state_dict, strict: bool = True):  # type: ignore[override]
+        """Delegate loading to the underlying base model."""
+        return self.base_model.load_state_dict(state_dict, strict=strict)
 
     def add_model_tags(self, tags):
         """Add model tags for TRL compatibility."""

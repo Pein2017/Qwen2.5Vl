@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 from .random_bucket import (
     EpisodeSpec,
-    SamplerMetrics,
-    RandomBucketSampler,
     RandomBucketConfig,
+    RandomBucketSampler,
+    SamplerMetrics,
 )
+
 
 __all__ = [
     "EpisodeSpec",

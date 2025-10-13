@@ -1,79 +1,126 @@
-# TRL-Based GRPO Migration Plan (Minimal, Fresh Build)
+# TRL-Based GRPO Migration Plan (VLM‑ready, Consolidated)
 
-## Goals
-- Replace the manual GRPO stack (`src_new/rl/grpo_trainer.py`, `generation_buffer.py`, `metrics_aggregator.py`, etc.) with a lean implementation that leverages Hugging Face `trl.GRPOTrainer`.
-- Preserve HF-first multimodal processing defined in `src_new/processing` and documented in `src_new/UNIFIED_DOCUMENTATION.md` without introducing compatibility layers.
-- Reduce infrastructure surface area to the essentials required for dense captioning GRPO (single-turn, no teacher/student pairing).
+## Decision & Scope
+- Migrate from the manual GRPO stack to a TRL-based trainer for dense captioning RL, while preserving HF-first multimodal contracts (chat template → processor tensors) and trust-region correctness.
+- Target: A minimal fork/wrapper of TRL’s `GRPOTrainer` that supports image+text batches and true generation-policy logprobs (with and without vLLM).
+- Non-goals: Feature parity for all manual diagnostics; only essential metrics/logging will be kept initially.
 
-## Reference Baseline
-- Manual pipeline entry: `src_new/rl/runner.py:252` orchestrates dataset loading, reward wiring, and `BBUGRPOTrainer`.
-- Dataset builder: `src_new/rl/data/dataset.py:24` ensures prompts, `pixel_values`, `image_grid_thw`, and metadata align with the SFT stack.
-- Trust-region mechanics: `src_new/rl/generation.py`, `logprobs.py`, and reward registry `src_new/rl/rewards/registry.py`.
-- Logging/diagnostics: spread across `metrics_aggregator.py`, `tensorboard_logger.py`, and console formatting utilities.
-
-These inform success criteria for the new path (same contracts, fewer bespoke components).
+## Hard Constraints (must remain true)
+- HF-first processing: prompts built with `Qwen2_5_VLProcessor.apply_chat_template()`; images passed as typed data; never hand-craft `<|image_pad|>`.
+- Multimodal invariants: `<|image_pad|>` count ⇔ `image_grid_thw`; packed patch rows equal THW sum; fail fast on mismatch.
+- EOS discipline: Train on completion tokens up to the first `<|im_end|>`.
+- Trust region: Use generation-policy per-token logprobs as denominator (avoid ratio ≈ 1 degeneracy).
 
 ## Target Minimal Architecture
+1) Configuration (1:1 mapping)
+- Add `trl_grpo` (or reuse `grpo`) fields that map directly to TRL’s `GRPOConfig`:
+  - `num_generations`, `max_prompt_length`, `max_completion_length`, `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `loss_type`, `epsilon`, `epsilon_high`, `beta`, `scale_rewards`, `mask_truncated_completions`, `steps_per_generation`, `num_iterations`, `use_vllm`, `vllm_mode`, `vllm_tensor_parallel_size`.
+- Keep a single entrypoint (`scripts/train_new.py` → `src_new/rl/runner.py`) that builds TRL args directly; no manual/TRL branching.
 
-1. **Configuration**
-   - Define a new YAML schema section (e.g., `trl_grpo`) mapping 1:1 onto `trl.GRPOConfig`. Strict validation still lives in `RLConfig`, but the legacy manual-only fields (buffer reuse, manual schedulers) are dropped.
-   - Keep only one entrypoint (`scripts/train_new.py` continues to call `src_new/rl/runner.py`, which now builds TRL args directly). No manual/TRL branching.
+2) Dataset & Collator (VLM)
+- Reuse the SFT data helpers to avoid duplication:
+  - Import `read_jsonl`, `create_path_manager`, and the `ConversationBuilder` wrapper already used in SFT (`src_new/data/dataset.py`, `src_new/processing/conversation/builder.py`).
+  - Factor a prompt-only view of `StandardDataCollator` that reuses `_pad_sequence` and the multimodal checks; wrap it with `TrainerCompatibleDataCollator` so TRL still receives 2‑D tensors even without labels.
+- Dataset emits TRL-friendly records:
+```python
+{
+  "prompt": list[dict{role, content}],   # strictly via ConversationBuilder
+  "images": list[PIL.Image],            # raw RGB images, length = num images in prompt
+  "meta": dict | None                   # reward payload (objects, geometry, etc.)
+}
+```
+- Prompt-only collator (called inside the trainer) applies the processor to each batch:
+  - Uses `ConversationBuilder` + `Qwen2_5_VLProcessor.apply_chat_template()` to build canonical prompt text (same callsites as SFT).
+  - Runs the official processor to produce tensors: `input_ids`, `attention_mask`, `pixel_values`, `image_grid_thw`, optional `images_per_sample`, plus `conversation_text` for reward logging.
+  - Reuses the SFT collator’s invariant checks (token counts vs `image_grid_thw`, packed patch sums, `<|im_end|>` present). Any mismatch → `ValueError` (fail fast).
+  - Keeps dtype/device expectations identical to `build_hf_components()` so the tensors feed directly into `model.generate()` and reward code.
 
-2. **Dataset & Processing**
-   - Re-implement the RL dataset class to emit a TRL-friendly record:
-     ```python
-     {
-         "prompt": ctx.builder.build_prompt(sample),  # list[dict{role, content}]
-         "images": loaded PIL.Image list,
-         "meta": {...},  # optional reward payload
-     }
-     ```
-   - `ConversationBuilder` handles chat template + vision tensorization inside a new minimal collator invoked inside the trainer; no persisted `input_ids`/`pixel_values` on disk or adapter layer.
+3) Trainer (minimal fork/wrapper)
+- Add `src_new/rl/trl_vlm_trainer.py` that subclasses or lightly forks TRL’s `GRPOTrainer` with the following overrides:
+  - Data preparation: accept batches containing `prompt`+`images`; apply chat template and processor to build tensors.
+  - Generation paths:
+    - Transformers path: call `model.generate()` with vision tensors; compute per-token logprobs for the *chosen* tokens (the actual sequence produced) using `outputs.scores`, mirroring the manual implementation so the denominator reflects the generation policy.
+    - vLLM path (server/colocate): request chosen-token logprobs via vLLM’s `logprobs` API. If the deployed vLLM build does not expose them, document that the trust-region guarantee is weakened (ratios collapse toward 1) and gate this behavior behind a config toggle.
+  - Trust region: during loss, use stored generation logprobs as denominator and keep TRL’s clipping logic. KL regularization stays disabled by default (`beta=0`); no reference model will be instantiated unless explicitly configured later.
+  - Masking & length: build completion masks that stop after first `<|im_end|>`; honor `mask_truncated_completions`.
+  - Steps-per-generation: rely on TRL’s existing buffering (`steps_per_generation`) without rebuilding the CPU buffer; ensure stored generation logprobs persist across reuse cycles so ratios remain correct.
+  - Metrics: log core scalars (reward mean/std, clip ratios, completion lengths, termination ratio). Rich diagnostics can be reintroduced later as needed.
+  - Reuse existing helpers where possible: `src_new/rl/logprobs.get_per_token_logps` (vision slicing + trust-region math) and dynamic-cap logic from `src_new/rl/buffer.py`.
 
-3. **Trainer**
-   - Create `src_new/rl/trl_trainer.py` by forking the required pieces of `trl/trainer/grpo_trainer.py` to:
-     - Accept multimodal batches (`prompt`, `images`, `meta`) and call the existing Qwen processor to produce tensors before generation.
-     - Ensure stored generation log-probs use the generation policy (trust-region requirement).
-     - Stream rewards via lightweight hooks, reusing only the reward registry functions.
-   - Strip unused features (vLLM integration, PEFT toggles, dataset repetition heuristics) unless explicitly required by configs.
+> **Chosen-token logprobs** refer to the log probabilities that the generation policy assigned to each token it actually produced. They are required for GRPO’s trust-region ratio; we only store these values (no need for full distribution snapshots).
 
-4. **Rewards**
-   - Keep the existing reward registry functions but expose them directly through a thin list of callables passed to the new trainer. No observe-only plumbing unless needed—each active reward maps to its weight in YAML.
-   - Maintain optional normalization/standardization using current `RewardStandardizer` if empirically necessary; otherwise remove.
+4) Rewards
+- Reuse the existing registry; wire reward callables directly into TRL via `reward_funcs=[...]` and `reward_weights=[...]`.
+- Pass `meta` transparently from dataset → reward functions. Support sanitize/tail logic if required by metrics.
 
-5. **Logging**
-   - Replace the manual aggregators with simple per-step logging inside the trainer (reward mean/std, advantage stats, clip ratios). Use Accelerator’s `gather` utilities directly where cross-rank sync is needed.
-   - Retain TensorBoard logging only if required; otherwise emit console + JSONL summaries via standard `transformers.Trainer` callbacks.
+5) Runner
+- Update `src_new/rl/runner.py` to:
+  - Load YAML → build tokenizer/processor/model.
+  - Build RL dataset and new collator.
+  - Initialize `trl_vlm_trainer.GRPOVLMTrainer` (subclass/fork of TRL) with config, reward functions, datasets.
+  - Call `train()`; keep `evaluate()` path using the existing lightweight eval harness.
 
-6. **Runner**
-   - Rewrite `src_new/rl/runner.py` to: load YAML → instantiate tokenizer/processor/model (still via `build_hf_components`) → build the new dataset → initialize the TRL-based trainer → call `train()` or `evaluate()`. Remove manual buffer scheduling and Accelerate wiring now handled by TRL.
+## Config Mapping (old → TRL)
+- `sample_k` → `num_generations`
+- `max_new_tokens` → `max_completion_length`
+- `min_new_tokens` → include in `generation_kwargs`
+- `temperature/top_p/repetition_penalty` → same
+- `epsilon_low/epsilon_high` → `epsilon` / `epsilon_high`
+- `beta` → same (KL proxy)
+- `scale_rewards` → same
+- `mask_truncated_completions` → same
+- `steps_per_generation` → same (reuse) — ensure stored generation logprobs persist across steps
+- `gradient_accumulation_steps` → TRL’s Trainer arg (no change)
+- `generation.dynamic_length.*` → map to per-batch caps inside the wrapper while TRL still receives a fixed `max_completion_length`
+- (removed) `rewards.standardizer` → rely on TRL `scale_rewards`; no custom standardizer
+- vLLM: `use_vllm`, `vllm_mode`, `vllm_tensor_parallel_size`, plus a new flag `vllm_logprobs: true` (local extension) to request chosen-token logprobs
 
-## Implementation Steps
-1. **Scaffold**
-   - Delete manual trainer modules once the new trainer compiles (commit in feature branch).
-   - Add new dataset + trainer files with the minimal feature set above.
-2. **Wire Config**
-   - Update `RLConfig` dataclasses (+ schema tests) to reflect the trimmed parameter set.
-   - Adjust YAML configs under `configs/dense_rl/` to align with TRL fields (e.g., `num_generations`, `max_completion_tokens`, `temperature`).
-3. **Integrate Rewards**
-   - Port registry functions unchanged; pass them directly to the trainer in `runner.py`.
-   - Validate meta-dependent rewards still receive object data from the dataset.
-4. **Testing**
-   - Run `python -m src_new.rl.runner --config ... --mode load` to ensure processors and datasets build.
-   - Execute a short training dry run (small dataset, `max_steps=5`) to confirm generation, reward computation, and logging.
-   - Compare reward statistics against the manual baseline to confirm parity.
-5. **Cleanup**
-   - Remove now-unused modules (`generation_buffer.py`, `metrics_aggregator.py`, etc.) and update documentation (`GRPO_README.md`) to describe the new flow.
+## Milestones & Deliverables
+1) M0 — Baseline TRL text-only dry run (same repo, tiny dataset)
+- Verify end-to-end training loop and logging without images.
+- Deliver: small overfit run and logs.
+
+2) M1 — Multimodal collation + transformers generation
+- Extract the reusable prompt-only collator from SFT code; validate invariants; feed tensors to `generate()`; store generation logprobs from `outputs.scores`.
+- Deliver: 1–2 steps with images; show ratios not ≈ 1 and sane clip stats.
+
+3) M2 — vLLM integration with logprobs
+- Enable vLLM in colocate mode; request token logprobs; store generation logprobs; confirm trust-region ratios deviate from 1.
+- Deliver: short training confirming speedup and correct ratios.
+
+4) M3 — Steps-per-generation reuse parity
+- Ensure `steps_per_generation > 1` reuses completions while preserving stored generation logprobs across reuse; verify stability.
+- Deliver: compare reward/clip trends vs manual trainer at `S=1` and `S>1`.
+
+5) M4 — Validation & parity checks
+- Compare against manual trainer on a fixed debug config: reward mean/std, termination ratio, length stats, and clip ratios.
+- Deliver: brief report; accept within agreed tolerance.
+
+6) M5 — Cleanup & documentation
+- Update README/GRPO docs; mark manual modules deprecated; keep eval harness.
+- Deliver: documentation PR and deprecation note.
+
+## Success Criteria (must meet to cutover)
+- Multimodal invariants enforced with fail-fast errors.
+- Trust-region ratios not degenerate (distribution spans <1 and >1); clip ratios in expected ranges.
+- Reward/length/termination stats comparable to manual baseline on debug run.
+- vLLM path yields a measurable generation-time speedup without breaking memory.
+- Config validation remains strict (missing/extra fields surface as errors).
+- With `beta=0` (default path), training stays stable without a reference model.
 
 ## Risks & Mitigations
-- **Multimodal breakage**: Direct TRL use expects text-only prompts. Forked trainer must be tested with image-heavy samples and validated against `src_new/processing` invariants (token counts, `<|image_pad|>` alignment). Add assertions mirroring SFT fail-fast checks.
-- **Performance regressions**: TRL’s default batching may diverge from Swift-style buffer reuse. Start with `num_iterations=1`, `steps_per_generation=gradient_accumulation_steps` to match old behavior; profile generation cadence before tuning.
-- **Reward drift**: Simplifying logging/standardization can shift reward scaling. Monitor reward histograms on the first migration runs and reintroduce normalization only if instability appears.
-- **Code removal**: Deleting manual modules reduces traceability for past experiments. Archive a tag or branch before wiping to preserve historical reference.
+- VLM data path mismatch in TRL: Mitigation → subclass/fork trainer to accept processor outputs and vision tensors; add validators.
+- Missing vLLM logprobs: Mitigation → short-term recompute via current policy (warn), long-term require vLLM with logprob API and gate via `vllm_logprobs` flag.
+- Performance regression from buffer differences: Mitigation → use TRL `steps_per_generation`; profile; optionally add a minimal CPU-side cache if needed later.
+- Reward drift: Mitigation → keep weights/standardization identical; compare histograms on debug runs; iterate.
 
-## Next Actions
-1. Approve the trimmed config schema and new trainer surface.
-2. Implement dataset + trainer skeleton, focusing on end-to-end multimodal generation.
-3. Port reward wiring, validate on a debug config, then iterate on logging.
-4. Finalize documentation updates, remove legacy files, and cut a migration summary for the team.
+## Rollback / Hybrid Plan
+- Keep the manual trainer runnable behind a feature flag while validating TRL runs.
+- If vLLM logprobs are unavailable on the target infra, run transformers path until the dependency is upgraded.
 
+## Immediate Next Actions
+1) Extract shared dataset/collator utilities from SFT (`read_jsonl`, `_pad_sequence`, invariant checks) and expose prompt-only variants for RL.
+2) Add `trl_vlm_trainer.py` (subclass/fork scope as above) and hook the shared collator in.
+3) Extend config loader to build TRL `GRPOConfig` from YAML; add `vllm_logprobs` toggle.
+4) Wire rewards and dataset in `runner.py`; compile and run M0/M1.
+5) Add vLLM logprobs path (M2); validate ratios; iterate.

@@ -1,3 +1,4 @@
+
 """Manual GRPO trainer for Qwen2.5-VL (TRL-free path)."""
 
 from __future__ import annotations
@@ -499,7 +500,7 @@ class BBUGRPOTrainer:
 
             # Warn if truncation is being forced frequently
             try:
-                cap_hit = generation_result.get("completions/cap_hit_ratio")
+                cap_hit = None
                 trunc_flags = generation_result.get("truncated_flags")
                 trunc_ratio = None
                 if trunc_flags is not None:
@@ -513,7 +514,7 @@ class BBUGRPOTrainer:
                 if self.accelerator.is_main_process:
                     if isinstance(cap_hit, float) and cap_hit > 0.0:
                         self.logger.warning(
-                            f"Generation is hitting caps: cap_hit_ratio={cap_hit:.3f}; term_ratio={term_ratio:.3f}. Consider relaxing dynamic_length or hard_cap."
+                            f"Low EOS termination: term_ratio={term_ratio:.3f}. Consider increasing max_new_tokens or adjusting temperature/top_p."
                         )
                     if trunc_ratio is not None and trunc_ratio > 0.0:
                         self.logger.warning(
@@ -675,23 +676,7 @@ class BBUGRPOTrainer:
         logs: Dict[str, Any],
         generation_result: Dict[str, Any],
     ) -> None:
-        """Add dynamic length, GT ratios, and clipping metrics to logs."""
-        # Dynamic length status and stats
-        try:
-            dyn_enabled_cfg = self.config.generation.dynamic_length.enabled
-            logs["dynamic_length/enabled"] = 1.0 if bool(dyn_enabled_cfg) else 0.0
-        except Exception:
-            logs["dynamic_length/enabled"] = 0.0
-
-        for key in (
-            "dynamic_length/mean_cap",
-            "dynamic_length/max_cap",
-        ):
-            if key in generation_result:
-                try:
-                    logs[key] = float(generation_result.get(key, 0.0))
-                except Exception:
-                    pass
+        """Add GT ratios and clipping metrics to logs (dynamic caps removed)."""
 
         # GT-aligned length diagnostics
         try:
@@ -726,7 +711,7 @@ class BBUGRPOTrainer:
         for key in (
             "completions/mean_len_tok",
             "gt/mean_len_tok",
-            "completions/cap_hit_ratio",
+            # cap hit ratio removed
         ):
             if key in generation_result:
                 try:
@@ -1454,7 +1439,6 @@ class BBUGRPOTrainer:
 
             # Generate K completions for this prompt
             gen_start = time.time()
-            dyn_cfg = self.config.generation.dynamic_length
             single_gen = buffer.generate_and_score(
                 model=self.model,
                 tokenizer=self.tokenizer,
@@ -1474,12 +1458,6 @@ class BBUGRPOTrainer:
                 scale_rewards=self.manual_cfg.scale_rewards,
                 max_advantage_magnitude=self.manual_cfg.max_advantage_magnitude,
                 reward_clip_sigma=self.config.rewards.config.clip_sigma,
-                dyn_enabled=dyn_cfg.enabled,
-                dyn_alpha=dyn_cfg.alpha,
-                dyn_eos_margin=dyn_cfg.eos_margin,
-                dyn_max_cap=dyn_cfg.max_cap,
-                dyn_estimator=dyn_cfg.estimator,
-                dyn_hard_cap=dyn_cfg.hard_cap,
             )
 
             gen_duration = time.time() - gen_start

@@ -7,17 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict
 
+from .assignment import assignment_f1
 from .detection_rewards import (
-    caption_f1,
-    grounding_acc,
-    reward_bbox_giou,
-    reward_coverage,
     reward_geometry_sanity,
-    reward_line_giou,
-    reward_line_l1,
     reward_ordering,
-    reward_quad_giou,
-    reward_quad_l1,
 )
 from .format_rewards import (
     check_banned_vocab,
@@ -25,45 +18,29 @@ from .format_rewards import (
     check_wrappers,
     duplicate_penalty,
     length_vs_gt,
-    pairing_ratio,
     pattern_penalty,
     separators_score,
 )
 
 
 REGISTRY: Dict[str, Callable[[str], float]] = {
-    "pairing_ratio": pairing_ratio,
     "duplicate_penalty": duplicate_penalty,
     "pattern_penalty": pattern_penalty,
     "wrappers": check_wrappers,
     "coords": check_coords_counts,
     "separators": separators_score,
     "vocab": check_banned_vocab,
-    "coverage": reward_coverage,
     "geometry_sanity": reward_geometry_sanity,
-    # Only expose GIoU-based reward
-    "bbox_giou": reward_bbox_giou,
-    # New proximity rewards
-    "quad_l1": reward_quad_l1,
-    "line_l1": reward_line_l1,
-    "quad_giou": reward_quad_giou,
-    "line_giou": reward_line_giou,
-    # Ordering constraint reward
     "ordering": reward_ordering,
-    # New accuracy-style rewards
-    "caption_f1": caption_f1,
-    "grounding_acc": grounding_acc,
     "length_vs_gt": length_vs_gt,
+    # Assignment-based combined reward (primary)
+    "assignment_f1": assignment_f1,
 }
 
 
 # Metadata for reward display and categorization
 REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
     # Format rewards
-    "pairing_ratio": {
-        "category": "format",
-        "description": "Parsed objects per object-ref",
-    },
     "duplicate_penalty": {
         "category": "format",
         "description": "Penalty for duplicate geometry lists",
@@ -73,24 +50,22 @@ REGISTRY_METADATA: Dict[str, Dict[str, Any]] = {
     "separators": {"category": "format", "description": "Separator formatting quality"},
     "vocab": {"category": "format", "description": "Vocabulary compliance"},
     # Detection rewards
-    "coverage": {"category": "detection", "description": "Object count coverage"},
     "geometry_sanity": {
         "category": "detection",
         "description": "Geometry sanity checks",
     },
-    "bbox_giou": {"category": "detection", "description": "Bbox GIoU accuracy"},
-    "quad_l1": {"category": "detection", "description": "Quad L1 proximity"},
-    "line_l1": {"category": "detection", "description": "Line L1 proximity"},
-    "quad_giou": {"category": "detection", "description": "Quad polygon GIoU"},
-    "line_giou": {"category": "detection", "description": "Polyline buffered GIoU"},
     "ordering": {
         "category": "detection",
         "description": "Geometry ordering correctness",
     },
-    "caption_f1": {"category": "detection", "description": "Caption token F1"},
-    "grounding_acc": {
+    "length_vs_gt": {"category": "format", "description": "Completion length vs GT"},
+    "pattern_penalty": {
+        "category": "format",
+        "description": "Low-diversity line pattern penalty",
+    },
+    "assignment_f1": {
         "category": "detection",
-        "description": "Grounding threshold accuracy",
+        "description": "Hungarian assignment over geom+caption with FP/FN",
     },
 }
 
