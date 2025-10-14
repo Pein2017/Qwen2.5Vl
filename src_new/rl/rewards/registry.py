@@ -87,7 +87,12 @@ def combine(text: str, weights: Dict[str, float], meta: dict | None = None) -> f
             # Try with meta and per-reward params injected by outer wrapper (runner wraps with cfg)
             val = float(fn(text, meta=meta))
         except TypeError:
-            val = float(fn(text))
+            try:
+                val = float(fn(text))
+            except Exception:
+                val = 0.0
+        except Exception:
+            val = 0.0
         score += w * val
         total_w += w
     return float(score / total_w) if total_w > 0.0 else 0.0

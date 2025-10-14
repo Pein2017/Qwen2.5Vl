@@ -72,7 +72,7 @@ class CoordinateProcessor:
 
         from src_new_json.processing.special_tokens import get_coord_token_range
 
-        rng = get_coord_token_range(tokenizer)
+        get_coord_token_range(tokenizer)
         vocab = tokenizer.get_vocab()
 
         # JSON mode: coordinates disabled
@@ -94,7 +94,7 @@ class CoordinateProcessor:
 
         from src_new_json.processing.special_tokens import get_coord_token_range
 
-        rng = get_coord_token_range(tokenizer)
+        get_coord_token_range(tokenizer)
         # JSON mode: coordinates disabled
         vocab = tokenizer.get_vocab()
         self.original_vocab_size = len(vocab)
@@ -258,7 +258,6 @@ class DetectionModel(nn.Module):
             else tokenizer
         )
         if final_tokenizer is not None:
-            from src_new_json.processing.special_tokens import get_coord_token_range
 
             # Set tokenizer reference first
             self.coordinate_processor._tokenizer = final_tokenizer
@@ -378,7 +377,7 @@ class DetectionModel(nn.Module):
         # Using module-level rank-aware logger
 
         # OPTIMIZATION 1: Intelligent checkpoint detection
-        is_extended_checkpoint = cls.detect_extended_checkpoint(model_path)
+        cls.detect_extended_checkpoint(model_path)
 
         logger.info(f"�� Loading base model")
 

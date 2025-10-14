@@ -28,12 +28,18 @@ except ImportError as exc:  # pragma: no cover - enforce availability
         "Install it (pip install trl) or run with `--trainer manual`."
     ) from exc
 
+from src_new.training.checkpoint_saver import (  # added: unified saver for full checkpoints
+    BestCheckpointManager,
+    CheckpointSaver,
+)
+
 
 class GRPOVLMTrainer(_BaseGRPOTrainer):
     """TRL trainer wrapper tailored for Qwen2.5-VL dense captioning."""
 
     prompt_collator: Optional[PromptOnlyCollator]
     rl_config: Optional[RLConfig]
+    processor: Optional[Any]
 
     def __init__(
         self,
@@ -41,10 +47,12 @@ class GRPOVLMTrainer(_BaseGRPOTrainer):
         prompt_collator: Optional[PromptOnlyCollator] = None,
         rl_config: Optional[RLConfig] = None,
         use_native_generation: Optional[bool] = None,
+        processor: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         self.rl_config = rl_config
         self.prompt_collator = prompt_collator
+        self.processor = processor
         # No custom reward standardizer; rely on TRL's scale_rewards
         # Allow switching to TRL-native generation without changing strict config:
         # env wins if provided; param overrides env when explicitly set
@@ -55,6 +63,11 @@ class GRPOVLMTrainer(_BaseGRPOTrainer):
             else env_native
         )
         super().__init__(*args, **kwargs)
+        # Ensure textual logs container exists for downstream callbacks
+        if not hasattr(self, "_textual_logs") or not isinstance(
+            self._textual_logs, dict
+        ):
+            self._textual_logs = {"prompt": [], "completion": [], "advantages": []}
         if self.prompt_collator is not None:
             self.data_collator = self.prompt_collator
         # (removed) custom per-component standardizer
@@ -67,6 +80,8 @@ class GRPOVLMTrainer(_BaseGRPOTrainer):
             raise NotImplementedError(
                 "KL regularisation (beta>0) is not yet supported in GRPOVLMTrainer."
             )
+        # Best-checkpoint manager placeholder (metric wiring can be added later)
+        self._best_ckpt_manager = BestCheckpointManager()
 
     @staticmethod
     def _ensure_1d_tensor(value: Any, *, dtype: torch.dtype) -> torch.Tensor:
@@ -258,31 +273,66 @@ class GRPOVLMTrainer(_BaseGRPOTrainer):
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = True):  # type: ignore[override]
         import os
 
-        from safetensors.torch import save_file
-
         out_dir = output_dir or str(self.args.output_dir)
+        # Ensure directory exists on main process
         if self.accelerator.is_main_process:
             os.makedirs(out_dir, exist_ok=True)
 
-        # Ensure all ranks reach this point before gathering state dict
-        self.accelerator.wait_for_everyone()
+        # Build a minimal args shim for the saver
+        class _ArgsShim:  # local, minimal surface required by CheckpointSaver
+            def __init__(self, base_args: Any, output_dir: str, should_save: bool):
+                self.output_dir = output_dir
+                self.should_save = bool(should_save)
+                # Optional fields used by saver utilities
+                self.save_total_limit = getattr(base_args, "save_total_limit", None)
+                self.logging_steps = getattr(base_args, "logging_steps", 0)
+                self.eval_steps = getattr(base_args, "eval_steps", 0)
+                # Best-checkpoint gating knobs (optional)
+                self.best_checkpoint_interval_multiplier = getattr(
+                    base_args, "best_checkpoint_interval_multiplier", 10
+                )
+                self.best_checkpoint_min_interval_steps = getattr(
+                    base_args, "best_checkpoint_min_interval_steps", None
+                )
+                # Allow copying original YAML into checkpoint when provided
+                self.original_config_path = getattr(
+                    base_args, "original_config_path", None
+                )
 
-        # Prefer the underlying HF model if wrapped
-        to_save = getattr(self.model, "base_model", self.model)
+        saver = CheckpointSaver(
+            args=_ArgsShim(self.args, out_dir, self.accelerator.is_main_process),
+            checkpoint_manager=self._best_ckpt_manager,
+        )
 
-        # Use Accelerate to gather a full, consolidated state_dict (handles ZeRO-3)
-        state_dict = self.accelerator.get_state_dict(to_save)
+        # Detect DeepSpeed via Accelerate state
+        try:
+            deepspeed_enabled = (
+                getattr(self.accelerator.state, "deepspeed_plugin", None) is not None
+            )
+        except Exception:
+            deepspeed_enabled = False
 
-        # Write safetensors directly to avoid shared-tensor duplication from wrappers
-        if self.accelerator.is_main_process:
-            # Save config alongside weights for compatibility
-            try:
-                to_save.config.save_pretrained(out_dir)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            save_path = os.path.join(out_dir, "model.safetensors")
-            save_file(state_dict, save_path)
-        # Ensure the save is visible before proceeding
+        # Determine step for step-scoped checkpoint directory
+        try:
+            step = int(getattr(self.state, "global_step", 0) or 0)
+        except Exception:
+            step = 0
+        if step <= 0:
+            # Fallback to a small positive step to keep directory shape consistent
+            step = 1
+
+        # Save a full inference-ready checkpoint under .../checkpoint-<step>
+        saver.save_checkpoint(
+            model=self.model,
+            processing_class=self.processing_class,
+            processor=self.processor,
+            step=step,
+            current_metrics=None,
+            is_eval_step=False,
+            force_step_save=True,
+            is_deepspeed_enabled=deepspeed_enabled,
+        )
+        # Synchronize so all ranks observe a consistent filesystem state
         self.accelerator.wait_for_everyone()
 
 

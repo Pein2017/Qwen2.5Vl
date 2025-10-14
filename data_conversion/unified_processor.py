@@ -7,14 +7,13 @@ Merged SampleExtractor directly into UnifiedProcessor to eliminate redundancy.
 """
 
 import logging
-import statistics
 import sys
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # TeacherSelector now integrated as nested class
 from data_conversion.config import DataConversionConfig
+from data_conversion.constants import DEFAULT_LABEL_HIERARCHY
 from data_conversion.coordinate_manager import (
     CoordinateManager,
     DataValidator,
@@ -23,18 +22,17 @@ from data_conversion.coordinate_manager import (
 )
 from data_conversion.data_splitter import DataSplitter
 from data_conversion.flexible_taxonomy_processor import HierarchicalProcessor
-from data_conversion.utils.file_ops import FileOperations
-from data_conversion.validation_manager import ValidationManager
-from data_conversion.vision_process import ImageProcessor
-from data_conversion.teacher_selector import TeacherSelector
 from data_conversion.summary_builder import build_summary_from_objects
+from data_conversion.teacher_selector import TeacherSelector
+from data_conversion.utils.file_ops import FileOperations
 from data_conversion.utils.sanitizers import (
-    strip_occlusion_tokens,
     sanitize_text,
     standardize_label_description,
+    strip_occlusion_tokens,
 )
-from data_conversion.constants import DEFAULT_LABEL_HIERARCHY
 from data_conversion.utils.sorting import sort_objects_tlbr
+from data_conversion.validation_manager import ValidationManager
+from data_conversion.vision_process import ImageProcessor
 
 
 # Configure UTF-8 encoding for stdout/stderr if supported

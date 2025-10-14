@@ -2,23 +2,23 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
-
-from dataclasses import dataclass
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
+import torch
 from PIL import Image
 from transformers import Qwen2VLProcessor
-import torch
 
+from src_new_json.losses.token_grouping import TokenGroupingPlugin
 from src_new_json.processing.conversation_processor import ConversationProcessor
+from src_new_json.processing.span_extraction import find_assistant_spans
+from src_new_json.processing.special_tokens import IM_END, IM_START, IMAGE_PAD
 from src_new_json.types import ConversationVariant
 from src_new_json.utils.path_manager import create_path_manager
-from src_new_json.processing.special_tokens import IM_START, IM_END, IMAGE_PAD
-from src_new_json.processing.span_extraction import find_assistant_spans
-from src_new_json.losses.token_grouping import TokenGroupingPlugin
 
 
 def _load_samples(jsonl_path: str, limit: int, offset: int = 0) -> List[Dict[str, Any]]:

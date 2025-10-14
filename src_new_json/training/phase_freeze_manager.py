@@ -197,7 +197,6 @@ class PhaseFreezeManager:
         self, emb: torch.nn.Module, lm_head: torch.nn.Module, allowed_token_ids: List[int]
     ) -> None:
         try:
-            import torch.nn.functional as F
 
             # Build boolean masks over vocab dimension
             vocab_size = emb.weight.shape[0]

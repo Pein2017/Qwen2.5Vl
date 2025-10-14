@@ -97,7 +97,7 @@ class TrainingCoordinator:
     def setup_training(self) -> Dict[str, Any]:
         """
         Setup training state and initial configuration.
-        
+
         Note: Parameter management is now handled by TrainingStateManager.
 
         Returns:

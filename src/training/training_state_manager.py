@@ -720,7 +720,7 @@ class TrainingStateManager(BaseManager):
             return None
 
         # Define num_micro_batches for loss averaging
-        num_micro_batches = max(1, micro_batch_count)
+        max(1, micro_batch_count)
 
         try:
             # Get averaged losses from training coordinator
@@ -781,7 +781,7 @@ class TrainingStateManager(BaseManager):
 
         # Validate student samples are present
         student_lm_loss = component_logs["student_lm_loss"]
-        teacher_lm_loss = component_logs["teacher_lm_loss"]
+        component_logs["teacher_lm_loss"]
 
         # Use a small threshold instead of exact 0.0 to handle numerical precision issues
         student_loss_threshold = 1e-10

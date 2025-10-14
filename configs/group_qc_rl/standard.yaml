@@ -2,8 +2,8 @@
 # Group-level Quality Control with GRPO - STANDARD (src_post.runner)
 
 # Required paths
-checkpoint: outputs/summary/9-23-summary/checkpoint-600
-processor:  outputs/summary/9-23-summary/checkpoint-600
+checkpoint: outputs/summary/9-23-summary/best-200-eval_loss0.1945
+processor:  outputs/summary/9-23-summary/best-200-eval_loss0.1945
 output_dir: outputs_post/group_qc/grpo
 train_data_dir: group_data/bbu_scene_2.0_order/挡风板安装检查
 mission: 挡风板安装检查
@@ -48,7 +48,7 @@ max_grad_norm: 0.5
 drop_last: true
 
 # Selective unfreeze & LRs
-llm_top_k_block: 1
+llm_top_k_block: 4
 vision_top_k_block: 0
 freeze_patch_embed: true
 train_aligner: true
@@ -58,7 +58,7 @@ vision_lr: 4.0e-6
 
 # KL to reference
 use_ref_kl: false
-ref_checkpoint: outputs/summary/9-23-summary/checkpoint-600
+ref_checkpoint: outputs/summary/9-23-summary/best-200-eval_loss0.1945
 lambda_kl_stage_b: 0.02
 lambda_kl_stage_a: 0.02
 

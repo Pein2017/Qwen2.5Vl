@@ -142,7 +142,7 @@ class TestGroupedTokenLosses(unittest.TestCase):
         labels, t_spans, s_spans = self._build_synthetic_labels_and_spans()
         B, S = labels.shape
         V = 200
-        logits = torch.randn(B, S, V)
+        torch.randn(B, S, V)
         # LossManager path requires input_ids via plugin; this test focuses on mask building
         gm = self.plugin.build_group_masks(
             labels=labels, teacher_spans=t_spans, student_spans=s_spans, input_ids=labels

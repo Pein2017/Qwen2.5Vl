@@ -1,14 +1,19 @@
 
 from __future__ import annotations
 
+import logging
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-import logging
 
 from PIL import Image
 from transformers import Qwen2VLProcessor
-from src_new_json.processing.templates import COORD_TO_DESC_USER_PROMPT, DESC_TO_COORD_USER_PROMPT, BASE_USER_PROMPT, get_system_prompt
+
+from src_new_json.processing.templates import (
+    COORD_TO_DESC_USER_PROMPT,
+    DESC_TO_COORD_USER_PROMPT,
+    get_system_prompt,
+)
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -135,7 +140,6 @@ class TestConversationVariants(unittest.TestCase):
         # Dense caption
         dense_msgs = self._dense_caption_messages()
         dense_text = self._apply_template(dense_msgs, img)
-        expected_dense_suffix = "]"  # JSON array closes
         self._log(
             "DENSE_CAPTION (raw chat template)", dense_text
         )

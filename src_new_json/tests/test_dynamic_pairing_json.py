@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import os
-from typing import Dict, Any
 
 from src_new_json.config.config import load_config
 from src_new_json.data.dataset import Dataset
+
+
 # transformers imports are optional for this test (we don't need a tokenizer/processor)
 # from transformers import AutoTokenizer, Qwen2VLImageProcessor
 
@@ -59,7 +59,9 @@ def main():
                 num_with_teacher += 1
                 cidx = int(ep["context_idx"])  # type: ignore[index]
                 # Bucket check
-                from src_new_json.sampling.bucketed_sampling import BucketedSamplingEngine
+                from src_new_json.sampling.bucketed_sampling import (
+                    BucketedSamplingEngine,
+                )
                 mt_i = BucketedSamplingEngine._major_type_of(train_ds.samples[i])
                 mt_j = BucketedSamplingEngine._major_type_of(train_ds.samples[cidx])
                 if mt_i == mt_j:

@@ -439,7 +439,7 @@ class UnifiedTokenManager:
         model = AutoModel.from_pretrained(tokenizer_path, trust_remote_code=True)
 
         # Create token manager to add tokens
-        token_manager = cls(tokenizer, model, max_coord_value)
+        cls(tokenizer, model, max_coord_value)
 
         return tokenizer
 
@@ -1394,7 +1394,7 @@ class SimpleCoordinateManager:
         # Map geometry type keys to internal geometry types
         geometry_type_map = {"bbox_2d": "bbox", "line": "line", "square": "square"}
 
-        geometry_type = geometry_type_map.get(geometry_type_key, "bbox")
+        geometry_type_map.get(geometry_type_key, "bbox")
 
         # Create a clean object for the original format_object method
         clean_obj = {geometry_type_key: valid_coords, "desc": description}

@@ -71,7 +71,11 @@ src_post/
 ├── generation/              # 采样与前缀/掩码
 ├── data/                    # 组级数据集与加载
 ├── models.py                # 模型加载/冻结/分组学习率
-└── config.py                # RLRunnerConfig 校验
+└── config/                  # 配置包（公开API：src_post.config）
+    ├── __init__.py          # 导出 RLRunnerConfig / load_and_validate_config
+    ├── config.py            # RLRunnerConfig dataclass
+    ├── loader.py            # 分层加载与严格校验（extends 支持）
+    └── translation.py       # 兼容旧键翻译与告警
 
 scripts/
 ├── run_group_qc_rl.sh       # 多卡/Accelerate 启动脚本
@@ -97,7 +101,12 @@ scripts/
 - 顺序化 generate/TF 与 `no_sync` 累积；
 - DDP/Accelerate：rank 切分、独立采样、全归约 TF/KL；
 - 默认门控与 KL/采样参数写入 YAML；
+- 配置采用继承：`configs/group_qc_rl/base.yaml` + 实验增量 YAML（仅保留差异项），由 `src_post.config.loader` 的 layered extends 合并；
 - 所有失败回退（std≈0、路径/清单缺失、解析失败）均 fail‑fast 或计数并显式日志。
+
+### Emphasis Update — Sampling Diversity & Credit Assignment
+- 具体参数与阈值请以 `spec.md / Focus` 为准（单一事实源）。
+- 执行要点：优先拉升 Stage‑A 多样化，其次轻量化 Stage‑B 多样化；奖励先走 `margin_only` 再回 `combined`；KL≈0.02；冻结 B≈300 步；以 `std>0`、`phase_a_entropy_mean`、`best_single_delta`、`decision_ce_ema`、`fn_rate` 作门禁。
 
 ## Diagnostics (2025-10-11)
 

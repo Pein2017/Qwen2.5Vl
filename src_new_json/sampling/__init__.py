@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 from .bucketed_sampling import (
+    BucketedSamplingEngine,
     EpisodeSpec,
     SamplingConfig,
     SamplingMetrics,
-    BucketedSamplingEngine,
 )
+
 
 __all__ = [
     "EpisodeSpec",

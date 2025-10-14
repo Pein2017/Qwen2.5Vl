@@ -15,12 +15,13 @@ The JSON output schema is governed by JsonGeometryFormatter (compact by default)
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from src_new_json.types import ConversationVariant
-from .templates import CONSTANTS
+
 from .json_formatter import JsonGeometryFormatter
-import re
+from .templates import CONSTANTS
 
 
 class VariantHandler(Protocol):
@@ -133,7 +134,7 @@ class SummaryHandler:
         FIB_PROTECT_DETAILS = {"蛇形管", "铠装", "同时有蛇形管和铠装"}
         FIB_BEND_OK = "弯曲半径合理"
         FIB_BEND_BAD = "弯曲半径不合理（弯曲半径<4cm或者成环）"
-        
+
         WIRE_NEAT = "捆扎整齐"
         WIRE_MESS = "分布散乱"
 

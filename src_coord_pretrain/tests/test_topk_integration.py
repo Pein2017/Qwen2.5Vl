@@ -228,7 +228,7 @@ def test_mask_verification():
 
     # This should work normally
     try:
-        loss = trainer._compute_topk_unlikelihood_loss(logits, labels, assistant_mask)
+        trainer._compute_topk_unlikelihood_loss(logits, labels, assistant_mask)
         print("✅ Normal mask verification passed")
     except RuntimeError as e:
         print(f"❌ Unexpected mask verification error: {e}")

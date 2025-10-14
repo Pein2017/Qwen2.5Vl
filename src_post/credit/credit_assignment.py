@@ -111,8 +111,8 @@ class ConditionalAssigner(BaseCreditAssigner):
         use_mission_checklist: bool = bool(
             reward_cfg.get("use_mission_checklist", True)
         )
-        baseline_tf_p_pass: float = float(reward_cfg.get("baseline_tf_p_pass", 0.0))
-        baseline_tf_p_fail: float = float(reward_cfg.get("baseline_tf_p_fail", 0.0))
+        float(reward_cfg.get("baseline_tf_p_pass", 0.0))
+        float(reward_cfg.get("baseline_tf_p_fail", 0.0))
 
         # Prepare baseline margin for gating
         baseline_margin = decision_margin(
@@ -545,7 +545,7 @@ class PairwiseFallbackAssigner(BaseCreditAssigner):
         length_norm: bool = bool(tf_cfg.get("length_norm", True))
         logits_processors: LogitsProcessorList = tf_cfg.get("logits_processors")
         stopping = tf_cfg.get("stopping")
-        ddp_policy = tf_cfg.get("ddp_policy")
+        tf_cfg.get("ddp_policy")
         pairs_per_group: int = int(tf_cfg.get("pairs_per_group", 1))
         accum_scale: float = float(tf_cfg.get("accum_scale", 1.0))
 
@@ -557,7 +557,7 @@ class PairwiseFallbackAssigner(BaseCreditAssigner):
         lambda_kl_stage_a: float = float(reward_cfg.get("lambda_kl_stage_a", 0.0))
 
         # Baseline margin
-        baseline_margin = decision_margin(
+        decision_margin(
             enc_b_baseline, processor, train_model, length_norm=length_norm
         )
 

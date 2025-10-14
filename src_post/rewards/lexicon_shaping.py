@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Set, Tuple
 
+from src_post.prompting.schema import (
+    get_mission_checks,
+    get_mission_token_sets_by_outcome,
+)
 from src_post.rewards.lexicon import CANONICAL_SLOTS
-from src_post.prompting.schema import get_mission_token_sets_by_outcome, get_mission_checks
 from src_post.utils.text import _extract_keywords, split_candidates
-from difflib import SequenceMatcher
 
 
 # A small curated set of Traditional-only characters observed in this domain.

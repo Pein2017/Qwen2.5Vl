@@ -3,9 +3,9 @@
 Sanitizers for text/description cleanup in the data conversion pipeline.
 """
 
-from typing import Optional
 import re
 import unicodedata
+from typing import Optional
 
 
 def strip_occlusion_tokens(desc: Optional[str]) -> Optional[str]:

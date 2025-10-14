@@ -14,16 +14,17 @@ intersects with teacher/student spans and aligns to the shifted CE convention.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 import os
 import re
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import torch
 
-from src_new_json.processing.special_tokens import IM_END
-from .grouping_core import assign_residual_to_formatting
 from src_new_json.utils.rank_aware_logging import get_rank_aware_logger
+
+from .grouping_core import assign_residual_to_formatting
+
 
 _dbg_logger = get_rank_aware_logger(__name__)
 _DEBUG_GROUPING: bool = os.getenv("BBU_DEBUG_GROUPING", "0").strip() not in ("", "0", "false", "False")

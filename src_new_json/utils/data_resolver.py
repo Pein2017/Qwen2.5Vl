@@ -46,7 +46,7 @@ class DatasetPaths:
             )
         if not self.images_dir.is_dir():
             raise ValueError(f"Images path is not a directory: {self.images_dir}")
-        
+
         # Teacher pool file is optional when teacher_pool_required=False
         if self.teacher_pool_required and not self.teacher_pool_file.exists():
             raise FileNotFoundError(
@@ -88,7 +88,7 @@ class DataResolver:
         required_files = [cls.TRAIN_FILE, cls.VAL_FILE]
         if require_teacher_pool:
             required_files.append(cls.TEACHER_POOL_FILE)
-        
+
         # Validate input parameter and directory structure using centralized validation
         try:
             data_root_path, _ = PathValidator.validate_directory_structure(
@@ -187,7 +187,7 @@ class DataResolver:
         required_files = [cls.TRAIN_FILE, cls.VAL_FILE]
         if require_teacher_pool:
             required_files.append(cls.TEACHER_POOL_FILE)
-            
+
         return PathValidator.get_missing_items(
             root_path=data_root,
             required_files=required_files,

@@ -556,7 +556,7 @@ grpo:
   target_kl: 0.01
   
   # Loss type (inherited from TRL)
-  loss_type: "grpo"
+  loss_type: "dr_grpo"
   
   # Reward & advantage
   scale_rewards: true

@@ -377,7 +377,7 @@ class ObjectProcessor:
 class DataValidator:
     """
     Handles data validation and error checking.
-    
+
     DEPRECATED: This class is for legacy conversation format and is superseded by
     ValidationManager and DataValidator in coordinate_manager.py.
     Use ValidationManager for comprehensive validation with reporting.

@@ -426,7 +426,7 @@ class Config:
     # Otherwise the interval is computed as eval_steps * best_checkpoint_interval_multiplier.
     best_checkpoint_min_interval_steps: Optional[int] = None
     best_checkpoint_interval_multiplier: int = 10
-    
+
     # Removed: packed segment isolation no longer supported
 
 
@@ -889,13 +889,13 @@ def load_config(override_config_path: str) -> Config:
     if "dynamic_pairing_enabled" not in data:
         data["dynamic_pairing_enabled"] = False # Default to False if not set
     dynamic_pairing_enabled = bool(data["dynamic_pairing_enabled"])
-    
+
     # Base required paths (always needed)
     required_paths = ["train_data_path", "val_data_path"]
     # Only require teacher_pool_file if dynamic pairing is disabled
     if not dynamic_pairing_enabled:
         required_paths.append("teacher_pool_file")
-    
+
     missing_paths = [k for k in required_paths if k not in data or not data[k]]
     if missing_paths:
         if "data_root" not in data or not data["data_root"]:
@@ -907,7 +907,7 @@ def load_config(override_config_path: str) -> Config:
         try:
             # Don't require teacher pool when dynamic pairing is enabled
             ds_paths = DataResolver.resolve_dataset_paths(
-                data["data_root"], 
+                data["data_root"],
                 require_teacher_pool=not dynamic_pairing_enabled
             )
         except Exception as e:
@@ -1028,13 +1028,13 @@ def load_config(override_config_path: str) -> Config:
                 # Minimal options allowed alongside preset
                 if "rng_seed" not in aug_dict:
                     raise ValueError("augmentation.rng_seed must be explicitly provided when using 'preset'")
-                rng_seed = int(aug_dict["rng_seed"]) 
+                rng_seed = int(aug_dict["rng_seed"])
                 if "apply_to_teachers" not in aug_dict:
                     raise ValueError("augmentation.apply_to_teachers must be explicitly provided (true/false)")
-                apply_to_teachers = bool(aug_dict["apply_to_teachers"]) 
+                apply_to_teachers = bool(aug_dict["apply_to_teachers"])
                 # Default to identity (do not move lines at object-level) if omitted
-                lines_policy = str(aug_dict.get("lines_policy", "identity")) 
-                debug_visualization = bool(aug_dict.get("debug_visualization", False)) 
+                lines_policy = str(aug_dict.get("lines_policy", "identity"))
+                debug_visualization = bool(aug_dict.get("debug_visualization", False))
                 debug_output_dir = (
                     aug_dict["debug_output_dir"]
                     if "debug_output_dir" in aug_dict

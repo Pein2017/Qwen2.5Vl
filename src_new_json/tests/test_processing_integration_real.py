@@ -12,6 +12,7 @@ from transformers import Qwen2VLProcessor
 from src_new_json.augmentation import ObjectAwareAugmentationPipeline
 from src_new_json.config.augmentation_config import AugmentationConfig, ImageGeomConfig
 from src_new_json.processing.conversation_processor import ConversationProcessor
+
 # JSON mode: no CoordinateTokenConverter
 # JSON mode: no coord token range needed
 # JSON mode: no TokenProcessor

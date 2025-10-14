@@ -32,6 +32,17 @@
 - 类别不均衡：
   - 开启 `balance_pass_fail: true`，保证每步 pass/fail 均衡采样。
 
+### Diversity & Credit — Quick Config
+- 完整 YAML 请见 `spec.md` 的 Focus 章节（单一事实源）。
+  - Stage‑A：提高温度/去重、K_A=4、放宽熵门控；
+  - Stage‑B：轻度温度+去重、允许少量重采样；
+  - 奖励日程：前 200–500 步 `margin_only`，后切回 `combined`；KL≈0.02；冻结 B≈300 步。
+
+观察指标（建议阈，详见 spec.md）：
+- `stage_b` 采样 `std>0` 占比 ≥ 40%
+- `phase_a_entropy_mean ≥ 0.10`
+- `best_single_delta>0` 样本占比 ≥ 30%
+
 ## Run (Accelerate)
 ```
 accelerate launch --num_processes 8 --mixed_precision bf16 \
@@ -46,3 +57,20 @@ accelerate launch --num_processes 8 --mixed_precision bf16 \
 - 顺序化采样与前向；`no_sync` + 累积；
 - 解析失败/路径缺失/方差为0均会记录或 fail‑fast；
 - 若 FN 偏高，提升 KL 或启用 pairwise 回退。
+
+## Next Steps（实践建议）
+- Stage‑B 提示与多样化
+  - 提示中新增：
+    - “鼓励给出不同但合理的简洁理由，避免重复用语/模板化句式。”
+    - “若关键项不可确认（标签缺失/只显示部分/安装方向不明），请输出不通过，并给出简要原因。”
+  - YAML 侧增量：
+    - `temperature_stage_b: 1.0~1.2`, `top_p_stage_b: 0.97~0.98`, `K_B: 3~4`
+    - `no_repeat_ngram_size_stage_b: 12~16`, `repetition_penalty_stage_b: 1.05~1.10`, `max_resample_times: 2~3`
+- Stage‑A 摘要的负向线索强化
+  - 在系统/用户提示中强调：明确描述“无法确认/只显示部分/标签缺失/安装方向可疑”等；
+  - YAML：`no_repeat_ngram_size_stage_a: 12`，必要时 `K_A: 4`。
+- 奖励组合（降低 FN）
+  - 建议 `group_reward_mode: combined`，并引入：
+    - `label_match: +0.3~+0.5`，`neg_alignment: +0.2~+0.4`
+    - 保持 `coverage≈0.7`，`soft_lexicon/special_penalty/rep_penalty/quote_penalty` 维持轻惩方向；
+  - 不确定门：`uncertainty_gate_min_entropy: 1.5`；配对回退：`pairwise_pairs_per_group: 2`, `pairwise_delta_threshold: 0.15`。

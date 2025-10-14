@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Dict, List, Set, Tuple, Optional
-import os
 import json
+import os
+from functools import lru_cache
+from typing import Dict, List, Optional, Set, Tuple
 
-from src_post.utils.text import extract_parenthesized_tokens, _extract_keywords
+from src_post.utils.text import _extract_keywords, extract_parenthesized_tokens
 
 
 def _normalize_mission(name: Optional[str]) -> str:

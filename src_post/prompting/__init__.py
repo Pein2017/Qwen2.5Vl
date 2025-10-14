@@ -2,7 +2,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from src_post.prompting.conversation import GroupQCConversationBuilder, STAGE_A_SYSTEM_PROMPT
+from src_post.prompting.conversation import (
+    STAGE_A_SYSTEM_PROMPT,
+    GroupQCConversationBuilder,
+)
+
 
 __all__ = [
     "GroupQCConversationBuilder",

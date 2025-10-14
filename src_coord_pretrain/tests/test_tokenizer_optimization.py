@@ -328,7 +328,7 @@ class TestTokenizerOptimization(unittest.TestCase):
         )
 
         # Process a sample to trigger tokenization
-        sample = dataset[0]
+        dataset[0]
 
         # Verify tokenizer was called (exact parameters depend on implementation)
         self.mock_tokenizer.assert_called()

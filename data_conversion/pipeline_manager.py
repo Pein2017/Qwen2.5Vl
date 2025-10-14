@@ -202,7 +202,7 @@ class PipelineManager:
 
             # Determine language parameter
             lang_map = {"chinese": "zh", "english": "en"}
-            lang_param = lang_map.get(self.config.language, "both")
+            lang_map.get(self.config.language, "both")
 
             # Find and process JSON files
             json_files = FileOperations.find_json_files(input_dir)

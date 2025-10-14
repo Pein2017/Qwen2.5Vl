@@ -388,14 +388,19 @@ def generate_and_score(
                 meta=meta_repeated,
             )
         except TypeError:
-            values = fn(
-                prompts=prompts_repeated,
-                completions=(
-                    sanitized_completions
-                    if reward_name in SANITIZE_REWARDS
-                    else completions_text
-                ),
-            )
+            try:
+                values = fn(
+                    prompts=prompts_repeated,
+                    completions=(
+                        sanitized_completions
+                        if reward_name in SANITIZE_REWARDS
+                        else completions_text
+                    ),
+                )
+            except Exception:
+                values = [0.0 for _ in completions_text]
+        except Exception:
+            values = [0.0 for _ in completions_text]
         values = [float(v) if v is not None else float("nan") for v in values]
         # Raw (pre-clip, pre-standardize)
         values_tensor_raw = torch.tensor(values, dtype=torch.float32, device=device)

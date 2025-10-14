@@ -7,11 +7,11 @@ Note: 所有测试脚本需放置在 `./tests/group_qc` 目录下。
 
 ## Dependency‑Ordered Task List (numbered)
 
-- T003 代码审查: 关键路径核对（不改架构，仅核对）
+- T003 代码审查: 关键路径核对（不改架构，仅核对） [X]
   - 文件: `src_post/runner.py, src_post/config.py, src_post/data/dataset_group_qc.py, src_post/prompting/conversation.py, src_post/prompting/span_parser.py`
   - 核对点: HF‑first、占位/THW 校验、metrics 聚合是否包含 accuracy/FN 相关字段、KL/采样/门控键是否可用。
 
-- T010 集成冒烟: 现有实现最小闭环（单机单卡）
+- T010 集成冒烟: 现有实现最小闭环（单机单卡） [X]
   - YAML: 使用你的 SFT ckpt 和小样本（≤10组）；`K_B=2, temperature=0.7, top_p=0.95, use_mission_checklist=true`
   - 命令: `python -m src_post.runner --config /abs/config.yaml`
   - 验证: 生成 `results.rank*.jsonl` 与 `metrics.rank0.jsonl`；日志无异常；`reward_std>0`。
@@ -33,7 +33,7 @@ Note: 所有测试脚本需放置在 `./tests/group_qc` 目录下。
     - 若启用，示例: `epsilon_low=0.2, epsilon_high=0.0`；熵掩码二选一：`entropy_top_quantile_stage_b=0.2` 或 `entropy_min_threshold_stage_b=1.5`；
     - 解码屏蔽: Stage‑A `mask_geometry_tokens=true, mask_coordinate_tokens=true`；Stage‑B 两项均 false。
 
-- T031 A1/G4 验证: 开关影响对比（小样本） [P]
+- T031 A1/G4 验证: 开关影响对比（小样本） [P] [X]
   - 运行两组 YAML：默认关闭 vs 开启裁剪/熵掩码；
   - 采集: `loss`/`reward_std`/`sb_clip_*`/`sb_entropy_mask_ratio`；确认默认关闭下方差稳定、无退化。
 
@@ -54,6 +54,37 @@ Note: 所有测试脚本需放置在 `./tests/group_qc` 目录下。
 - T070 文档微调与交付核对 [X]
   - 更新 `/specs/005-group_decision/spec.md` 的 Success Criteria：保留主KPI=accuracy、辅KPI=group_margin，并加入 `FN_rate` 作为次级监控（不高于基线或下降）。
   - 快速核对 `/specs/005-group_decision/contracts/logging_outputs.md` 是否包含新增指标。
+
+- T061 多样化联调（Stage‑A/Stage‑B）
+  - YAML 以 `spec.md / Focus` 为准：上调温度/去重、`K_A=4`、放宽熵门控；Stage‑B 轻多样化 + `max_resample_times=2`。
+  - 验收：`std>0` 占比 ≥40%、`phase_a_entropy_mean ≥0.10`、`best_single_delta>0` 样本≥30%。
+
+- T062 信用分配与奖励日程
+  - 先跑 200–500 步 `group_reward_mode=margin_only`，再切回 `combined`（`coverage≈0.8` + `soft_lexicon` 轻惩）。
+  - 验收：`decision_ce_ema` 走低、`fn_rate` 下降；日志含 pairwise 回退触发与占比。
+
+## Run Notes — 2025-10-12
+- T031：默认关闭优于开启；`sb_entropy_mask_ratio≈0.21` 生效，但 `sb_clip_*` 基本未触发。
+- T060：`stage_b_reward_std≈0`、`duplicate_ratio=0`；`accuracy_win≈0.48`、`fn_rate_win≈0.48`；`decision_ce_ema` 无显著下降。
+- T061：提升温度/去重/K_A=4 后 `phase_a_coverage_win≈0.04`，但 Stage‑B 方差仍≈0，整体收益有限。
+- T062：margin→combined 两阶段窗口统计差异很小；FN 偏高未改善；需从“发散+奖励侧”同时推进。
+
+### Run Notes — 2025-10-12 (v2)
+- 实验：variance_push_v2（GPU6）、reward_sensitive_v2（GPU7），均已完成并成功写出 metrics/results。
+- 共同现象：
+  - 绝大多数步 `stage_b_reward_std=0`；少数步出现 `std≈0.059`，整体仍偏低；K_B 增长并未稳定提升方差。
+  - 多样化提示与 checklist 生效，日志显示原因文本聚焦“安装方向/保护措施/标签可识别/电线整理”等关键项；dummy 可见性词已被弱化。
+- reward_sensitive_v2：
+  - 多个 fail 组仍被判 pass（FN 未显著改善）；`decision_ce_ema≈0.8±` 波动；duplicate≈0，但候选语义差异度有限。
+  - 在个别样本上出现 fail 判定（如缺少挡风板/螺丝等），说明 checklist 负项触发具备效果，但覆盖度不足。
+- variance_push_v2：
+  - `K_B=7` 下仍大量步 `std=0`；原因文本去重明显，但奖励区分力不足导致 z‑score 无信号。
+  - 个别步出现 fail 候选与 pass 候选并存，但最优仍多为 pass。
+- 诊断与建议：
+  - 核心瓶颈仍在“奖励区分力”：当前组合对“负项命中/不可确认→不通过”的敏感度不够；建议提高 `label_match(+0.6)`、`neg_alignment(+0.4)`、`coverage(≈0.6)` 权重，并保留轻惩（`soft_lexicon/special/rep/quote`）。
+  - 继续拉升 Stage‑B 发散参数：`temperature_stage_b≈1.2~1.3`、`no_repeat_ngram_size_stage_b≈16~20`、`repetition_penalty_stage_b≈1.15`、`K_B=4`、`max_resample_times=3~4`。
+  - Stage‑A：保留负向线索提示与 dummy 过滤，必要时 `K_A=5`，并小幅提升摘要长度上限以容纳“备注”。
+  - 观测项：fail 组中 best reason 的负项命中率、`std>0` 占比、`fn_rate`、`decision_ce_ema`。
 
 ## Parallel Guidance
 - 可并行 [P]: T021/T030/T031/T040/T070（不同文件/文档/测试；互不冲突）。

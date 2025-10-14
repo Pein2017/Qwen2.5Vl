@@ -7,11 +7,11 @@ This module provides:
 """
 
 import json
+import math
 import os
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-import math
 
 
 if TYPE_CHECKING:
@@ -93,14 +93,14 @@ class TeacherPoolManager:
             # No teacher pool file and dynamic pairing enabled - use empty pool
             logger.info("No teacher pool file provided; using dynamic pairing from training data")
             self.teacher_pool = []
-        
+
         # Only build indices if teacher pool is not empty
         if self.teacher_pool:
             self.image_to_teachers = self._build_image_index()
             # Dynamic pairing indices
             self._teacher_metadata: List[Dict[str, Any]] = self._build_metadata_index()
             self._median_object_count: float = self._compute_median_object_count()
-            
+
             logger.info(f"✅ Teacher pool loaded with {len(self.teacher_pool)} examples")
             logger.info(f"✅ Image index built with {len(self.image_to_teachers)} images")
             logger.info(
@@ -111,7 +111,7 @@ class TeacherPoolManager:
             self.image_to_teachers = {}
             self._teacher_metadata = []
             self._median_object_count = 0.0
-            
+
             logger.info("✅ Teacher pool initialized as empty (max_teachers=0 mode)")
 
     def _load_teacher_pool(self) -> List[Dict[str, Any]]:

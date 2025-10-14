@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
+
 
 # Match variations like "总评: 通过" / "总评：通过" with flexible whitespace
 _DECISION_RE = re.compile(r"总评\s*[:：]\s*(通过|不通过|合格|否)", re.IGNORECASE)

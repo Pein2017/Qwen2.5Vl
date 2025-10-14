@@ -24,6 +24,13 @@
 - 小权重 KL 有助稳定，不显著损害探索；
 - 熵阈=1.2 相比 1.5 更灵敏，能过滤部分“低熵且误导”的候选。
 
+## New Experiments — Diversity & Credit
+- 变量与建议阈值统一参见 `spec.md / Focus`；本节只列对比设计：
+  - Stage‑A：多样化格点（温度/去重/K_A/熵门控）与“去 mission 偏置”的短期对照。
+  - Stage‑B：轻多样化（温度/去重/重采样）对 std>0 占比与 CE 轨迹的影响。
+  - 奖励日程：先 `margin_only` 后 `combined` vs 直接 `combined`。
+
+Metrics（补充，仅清单）：`std>0` 占比、`phase_a_entropy_mean`、`best_single_delta`、`decision_ce_ema`、`fn_rate`、文本重复率与“备注/不确定”片段占比。
 ## Findings — 2025-10-11 (Debug, 10 steps)
 
 - 奖励方差：在 `K_B=4, temp=1.0, top_p=0.97` 下，多步 `reward_best_std≈0`，候选文本几乎一致；亦出现“std≈0但文本不同”的新告警，指示奖励塑形对语义差异不敏感。

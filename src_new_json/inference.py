@@ -14,6 +14,7 @@ with the following features:
 import os
 import sys
 
+
 # PROJECT_ROOT not needed - using relative paths
 
 # Prevent stdlib shadowing when running this file directly (python src_new_json/inference.py)
@@ -36,7 +37,7 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import torch
 from PIL import Image
@@ -71,6 +72,7 @@ from src_new_json.processing.special_tokens import (
     IM_START,
     IMAGE_PAD,
 )
+
 # JSON mode: no TokenProcessor
 from src_new_json.utils.data_resolver import DataResolver
 from src_new_json.utils.path_manager import create_path_manager
@@ -152,7 +154,7 @@ class InferenceEngine:
             # Check if dynamic pairing is enabled to determine if teacher pool is required
             dynamic_pairing_enabled = self.config.dynamic_pairing_enabled
             resolved_dataset_paths = DataResolver.resolve_dataset_paths(
-                str(self.data_root), 
+                str(self.data_root),
                 require_teacher_pool=not dynamic_pairing_enabled
             )
             default_teacher_pool = str(resolved_dataset_paths.teacher_pool_file)
@@ -197,7 +199,7 @@ class InferenceEngine:
 
         # Check if dynamic pairing is enabled
         dynamic_pairing_enabled = self.config.dynamic_pairing_enabled
-        
+
         if teacher_pool_path and os.path.exists(teacher_pool_path):
             try:
                 # Load teacher pool manager for dynamic pairing (same as training)
@@ -1739,7 +1741,9 @@ def main():
         )
     log_level = getattr(logging, log_level_name)
     try:
-        from src_new_json.utils.rank_aware_logging import set_global_log_level as _set_rank_level
+        from src_new_json.utils.rank_aware_logging import (
+            set_global_log_level as _set_rank_level,
+        )
         _set_rank_level(log_level)
     except Exception:
         logging.getLogger().setLevel(log_level)

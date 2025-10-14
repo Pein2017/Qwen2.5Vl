@@ -98,7 +98,6 @@ class SamplingConfig:
 
     prompt_batch_size: int
     sample_k: int
-    reward_average_window: int
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "SamplingConfig":
@@ -113,7 +112,6 @@ class SamplingConfig:
         return SamplingConfig(
             prompt_batch_size=_require(cfg, "prompt_batch_size", "sampling"),
             sample_k=_require(cfg, "sample_k", "sampling"),
-            reward_average_window=_require(cfg, "reward_average_window", "sampling"),
         )
 
 
@@ -180,12 +178,12 @@ class GRPOConfig:
 
     epsilon_low: float
     epsilon_high: float
-    beta_start: float
     loss_type: str
     scale_rewards: bool
     mask_truncated_completions: bool
     steps_per_generation: int  # Buffer reuse interval
-    beta_anneal: Optional[BetaAnnealConfig] = None
+    beta_start: float = 0.0  # deprecated; ignored by TRL path
+    beta_anneal: Optional[BetaAnnealConfig] = None  # tolerated when present
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "GRPOConfig":
@@ -202,7 +200,6 @@ class GRPOConfig:
         return GRPOConfig(
             epsilon_low=_require(cfg, "epsilon_low", "grpo"),
             epsilon_high=_require(cfg, "epsilon_high", "grpo"),
-            beta_start=_require(cfg, "beta_start", "grpo"),
             loss_type=_require(cfg, "loss_type", "grpo"),
             scale_rewards=_require(cfg, "scale_rewards", "grpo"),
             mask_truncated_completions=_require(
@@ -212,6 +209,7 @@ class GRPOConfig:
             beta_anneal=BetaAnnealConfig.from_dict(beta_anneal_dict)
             if beta_anneal_dict
             else None,
+            beta_start=float(cfg.get("beta_start", 0.0) or 0.0),
         )
 
 
@@ -309,15 +307,15 @@ class LearningRatesConfig:
     """Learning rates - all required."""
 
     llm: float
-    vision: float
-    merger: float
+    vision: Optional[float] = None
+    merger: Optional[float] = None
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "LearningRatesConfig":
         return LearningRatesConfig(
             llm=_require(cfg, "llm", "learning_rates"),
-            vision=_require(cfg, "vision", "learning_rates"),
-            merger=_require(cfg, "merger", "learning_rates"),
+            vision=cfg.get("vision"),
+            merger=cfg.get("merger"),
         )
 
 
@@ -634,26 +632,25 @@ class RewardsConfig:
 
 @dataclass(frozen=True)
 class EvaluationConfig:
-    """Evaluation configuration - all required."""
+    """Evaluation configuration - minimal."""
 
     enabled: bool
     eval_every_steps: int
-    rounds: int
-    per_rank_samples: int
-    save_samples: int
-    log_text_snippets: bool
+    eval_data_size: int
     seed: int
+    # New: text dump controls moved from env to YAML
+    dump_conversations: bool
+    dump_max_per_step: int
 
     @staticmethod
     def from_dict(cfg: Dict[str, Any]) -> "EvaluationConfig":
         return EvaluationConfig(
             enabled=_require(cfg, "enabled", "evaluation"),
             eval_every_steps=_require(cfg, "eval_every_steps", "evaluation"),
-            rounds=_require(cfg, "rounds", "evaluation"),
-            per_rank_samples=_require(cfg, "per_rank_samples", "evaluation"),
-            save_samples=_require(cfg, "save_samples", "evaluation"),
-            log_text_snippets=_require(cfg, "log_text_snippets", "evaluation"),
+            eval_data_size=_require(cfg, "eval_data_size", "evaluation"),
             seed=_require(cfg, "seed", "evaluation"),
+            dump_conversations=_require(cfg, "dump_conversations", "evaluation"),
+            dump_max_per_step=_require(cfg, "dump_max_per_step", "evaluation"),
         )
 
 
@@ -703,7 +700,7 @@ class RLConfig:
     sampling: SamplingConfig
     generation: GenerationConfig
     grpo: GRPOConfig
-    normalization: NormalizationConfig
+    # normalization section is optional and ignored
     training: TrainingConfig
     optimizer: OptimizerConfig
     layer_freezing: LayerFreezingConfig
@@ -730,9 +727,7 @@ class RLConfig:
                 sampling=SamplingConfig.from_dict(_require(cfg, "sampling")),
                 generation=GenerationConfig.from_dict(_require(cfg, "generation")),
                 grpo=GRPOConfig.from_dict(_require(cfg, "grpo")),
-                normalization=NormalizationConfig.from_dict(
-                    _require(cfg, "normalization")
-                ),
+                # normalization section is optional and ignored
                 training=TrainingConfig.from_dict(_require(cfg, "training")),
                 optimizer=OptimizerConfig.from_dict(_require(cfg, "optimizer")),
                 layer_freezing=LayerFreezingConfig.from_dict(

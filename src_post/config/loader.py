@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Configuration loader for src_post.
+
+Currently mirrors the legacy implementation while exposing a modular API
+so that future refactors can compose additional validation layers and
+sectioned configs.
+"""
+
 from __future__ import annotations
 
+import copy
 import json
-from dataclasses import dataclass
+import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 try:
@@ -15,162 +24,140 @@ except Exception:  # pragma: no cover
 
 from src_post.rewards import REGISTRY
 
-
-@dataclass(frozen=True)
-class RLRunnerConfig:
-    # Required paths (explicit)
-    checkpoint: str
-    processor: str
-    output_dir: str
-    # Dataset (one of the two must be provided)
-    train_data_dir: Optional[str]
-    eval_data_dir: Optional[str]
-    # Sampling balance
-    balance_pass_fail: bool
-    # Optional outputs
-    results_jsonl: Optional[str]
-    metrics_jsonl: Optional[str]
-    # Mission
-    mission: Optional[str]
-    # Runtime
-    device: str
-    seed: int
-    limit_groups: int
-    skip_save_checkpoints: bool
-    # Logging
-    tb_log_dir: Optional[str]
-    run_name: Optional[str]
-    log_step: int
-    # Generation
-    temperature: float
-    top_p: float  # recommended Stage-A baseline: temperature=0.01, top_p=0.5
-    max_new_tokens_stage_a: int
-    max_new_tokens_stage_b: int
-    # Optional stage-specific generation overrides
-    temperature_stage_a: Optional[float]
-    temperature_stage_b: Optional[float]
-    top_p_stage_a: Optional[float]
-    top_p_stage_b: Optional[float]
-    repetition_penalty_stage_a: Optional[float]
-    repetition_penalty_stage_b: Optional[float]
-    min_new_tokens_stage_a: Optional[int]
-    min_new_tokens_stage_b: Optional[int]
-    no_repeat_ngram_size_stage_a: Optional[int]
-    no_repeat_ngram_size_stage_b: Optional[int]
-    mask_geometry_tokens: bool
-    mask_coordinate_tokens: bool
-    sanitize_stage_a: bool
-    # GRPO sampling
-    K_B: int
-    K_A: int
-    adv_clip: float
-    length_norm: bool
-    # Training
-    train: bool
-    batch_size: int
-    learning_rate: float
-    weight_decay: float
-    max_grad_norm: float
-    epochs: int
-    drop_last: bool
-    # Selective unfreeze + per-group LRs
-    llm_top_k_block: int
-    vision_top_k_block: int
-    freeze_patch_embed: bool
-    aligner_lr: Optional[float]
-    llm_lr: Optional[float]
-    vision_lr: Optional[float]
-    # Legacy/compat knobs (kept to avoid breakage; not primary path)
-    train_lm_head: bool
-    train_last_n_layers: int
-    lr_lm_head: Optional[float]
-    lr_last_layers: Optional[float]
-    # KL to reference policy
-    use_ref_kl: bool
-    ref_checkpoint: Optional[str]
-    lambda_kl_stage_b: float
-    lambda_kl_stage_a: float
-    # Stage‑A training mode
-    train_stage_a_mode: str  # 'off' | 'conditional' | 'joint'
-    stage_a_weight: float
-    K_set: int
-    max_images_tf: int
-    # Rewards
-    reward_fns: List[str]
-    reward_weights: List[float]
-    # Diagnostics
-    enable_phase_a_diagnostics: bool
-    # New: Stage‑B control and prompt bias
-    train_stage_b: bool
-    stage_b_weight: float
-    freeze_stage_b_steps: int
-    use_mission_checklist: bool
-    # New: group reward strategy
-    group_reward_mode: str  # 'margin_only' | 'combined'
-    # New: pairwise fallback
-    pairwise_credit_enabled: bool
-    pairwise_pairs_per_group: int
-    pairwise_delta_threshold: float
-    # New: uncertainty gate
-    use_uncertainty_gate: bool
-    uncertainty_gate_min_entropy: float
-    # New: optimizer/metrics extras
-    grad_accum_steps: int
-    decision_ce_ema_beta: float
-    # New: toggles
-    train_aligner: bool
-
-    # ---- Enhancements (optional toggles; safe defaults) ----
-    # Stage-B: clipped GRPO
-    enable_clipped_grpo: bool
-    epsilon_low: Optional[float]
-    epsilon_high: Optional[float]
-    loss_type_stage_b: Optional[str]  # {'grpo','bnpo','dr_grpo'} when enabled
-    # Stage-B: entropy mask
-    enable_entropy_mask_stage_b: bool
-    entropy_top_quantile_stage_b: Optional[float]
-    entropy_min_threshold_stage_b: Optional[float]
-    # Sampling stability
-    max_resample_times: int
-    # Stage-A focusing & gating
-    stage_a_top_m: int
-    uncertainty_decay_factor: float
-    pairwise_select: str  # {'heuristic','entropy','delta'}
-    # Logging & shaping
-    log_all_candidates: bool
-    soft_overlong_penalty_enabled: bool
-    soft_overlong_penalty_weight: Optional[float]
-    # Stage-A token bias (optional)
-    stage_a_bias_fail_enabled: bool
-    stage_a_bias_fail_value: float
-    stage_a_bias_pass_enabled: bool
-    stage_a_bias_pass_value: float
-    # Checkpoint saving (interval + retention)
-    save_step: int
-    save_limit: int
+from .config import RLRunnerConfig
+from .translation import translate_legacy_config
 
 
-def _read_config_file(path: str) -> Dict[str, Any]:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    text = p.read_text(encoding="utf-8")
-    # Prefer YAML
-    if yaml is not None:
-        try:
-            data = yaml.safe_load(text)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
-    # Fallback JSON
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse config file {path}: {e}")
-    return {}
+class ConfigValidationError(ValueError):
+    """Raised when the configuration payload fails validation."""
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _configs_dir(root: Path) -> Path:
+    return root / "configs"
+
+
+def _resolve_config_path(
+    name: str,
+    configs_dir: Path,
+    *,
+    base_dir: Optional[Path] = None,
+) -> Path:
+    candidate = Path(name)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+
+    search_paths: List[Path] = []
+
+    def _append_with_suffix(base: Path, rel: Path, suffix: str) -> None:
+        search_paths.append(base / Path(f"{rel}{suffix}"))
+
+    if base_dir is not None:
+        potential = base_dir / candidate
+        if potential.exists():
+            return potential
+        if not candidate.suffix:
+            _append_with_suffix(base_dir, candidate, ".yaml")
+            _append_with_suffix(base_dir, candidate, ".yml")
+
+    if candidate.suffix:
+        search_paths.append(configs_dir / candidate)
+    else:
+        _append_with_suffix(configs_dir, candidate, ".yaml")
+        _append_with_suffix(configs_dir, candidate, ".yml")
+        search_paths.append(configs_dir / candidate)
+
+    for path in search_paths:
+        if path.exists():
+            return path
+
+    raise FileNotFoundError(f"Unable to resolve configuration path '{name}'")
+
+
+def _load_yaml(path: Path) -> Dict[str, Any]:
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to load layered configs.")
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ConfigValidationError(
+            f"Configuration file must contain a mapping: {path}"
+        )
+    data = copy.deepcopy(data)
+    # NOTE: do not pop 'extends' here; it is consumed by _gather_layers to support inheritance
+    return data
+
+
+def _gather_layers(
+    path: Path,
+    configs_dir: Path,
+    *,
+    visited: Optional[Dict[Path, Dict[str, Any]]] = None,
+    stack: Optional[List[Path]] = None,
+) -> List[Tuple[Path, Dict[str, Any]]]:
+    visited = visited or {}
+    stack = stack or []
+
+    if path in stack:
+        cycle = " -> ".join(str(p) for p in stack + [path])
+        raise ConfigValidationError(f"Detected cyclic extends chain: {cycle}")
+
+    if path in visited:
+        return []
+
+    raw = _load_yaml(path)
+
+    extends = raw.get("extends", [])
+    if extends and not isinstance(extends, list):
+        raise ConfigValidationError(f"'extends' must be a list when provided ({path})")
+
+    stack.append(path)
+    layers: List[Tuple[Path, Dict[str, Any]]] = []
+    base_dir = path.parent
+
+    for ref in extends or []:
+        if not isinstance(ref, str):
+            raise ConfigValidationError(
+                f"'extends' entries must be strings (file paths). Invalid entry in {path}: {ref!r}"
+            )
+        resolved = _resolve_config_path(ref, configs_dir, base_dir=base_dir)
+        layers.extend(
+            _gather_layers(resolved, configs_dir, visited=visited, stack=stack)
+        )
+
+    stack.pop()
+
+    data = copy.deepcopy(raw)
+    data.pop("extends", None)
+    visited[path] = data
+    layers.append((path, data))
+    return layers
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def load_layered_config(path: str) -> Dict[str, Any]:
+    root = _project_root()
+    configs_dir = _configs_dir(root)
+    target_path = Path(path)
+    if not target_path.exists():
+        target_path = _resolve_config_path(path, configs_dir)
+    layers = _gather_layers(target_path, configs_dir)
+    merged: Dict[str, Any] = {}
+    for _, layer in layers:
+        merged = _deep_merge(merged, layer)
+    return merged
 
 
 def _as_float_opt(x: Any) -> Optional[float]:
@@ -182,12 +169,9 @@ def _as_float_opt(x: Any) -> Optional[float]:
         return None
 
 
-# -------- Required key helpers (fail-fast for core knobs) --------
-
-
 def _require(cfg: Dict[str, Any], key: str) -> Any:
     if key not in cfg:
-        raise ValueError(f"Missing required config key: '{key}'")
+        raise ConfigValidationError(f"Missing required config key: '{key}'")
     return cfg[key]
 
 
@@ -195,7 +179,7 @@ def _req_str(cfg: Dict[str, Any], key: str) -> str:
     v = _require(cfg, key)
     s = str(v).strip()
     if not s:
-        raise ValueError(f"Config key '{key}' must be a non-empty string")
+        raise ConfigValidationError(f"Config key '{key}' must be a non-empty string")
     return s
 
 
@@ -204,7 +188,7 @@ def _req_int(cfg: Dict[str, Any], key: str) -> int:
     try:
         return int(v)
     except Exception:
-        raise ValueError(f"Config key '{key}' must be an integer; got {v!r}")
+        raise ConfigValidationError(f"Config key '{key}' must be an integer; got {v!r}")
 
 
 def _req_float(cfg: Dict[str, Any], key: str) -> float:
@@ -212,14 +196,13 @@ def _req_float(cfg: Dict[str, Any], key: str) -> float:
     try:
         return float(v)
     except Exception:
-        raise ValueError(f"Config key '{key}' must be a float; got {v!r}")
+        raise ConfigValidationError(f"Config key '{key}' must be a float; got {v!r}")
 
 
 def _req_bool(cfg: Dict[str, Any], key: str) -> bool:
     v = _require(cfg, key)
     if isinstance(v, bool):
         return v
-    # Accept common string/int booleans explicitly
     if isinstance(v, str):
         vs = v.strip().lower()
         if vs in {"true", "1", "yes"}:
@@ -229,16 +212,56 @@ def _req_bool(cfg: Dict[str, Any], key: str) -> bool:
     if isinstance(v, int):
         if v in (0, 1):
             return bool(v)
-    raise ValueError(f"Config key '{key}' must be a boolean; got {v!r}")
+    raise ConfigValidationError(f"Config key '{key}' must be a boolean; got {v!r}")
+
+
+def load_raw_config(path: str) -> Dict[str, Any]:
+    """Load raw configuration data (layered extends supported)."""
+
+    if yaml is None:
+        logging.getLogger("src_post.config").warning(
+            "PyYAML not available; falling back to JSON-only config parsing."
+        )
+        return _read_config_file(path)
+    try:
+        return load_layered_config(path)
+    except FileNotFoundError:
+        return _read_config_file(path)
+
+
+def _read_config_file(path: str) -> Dict[str, Any]:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    text = p.read_text(encoding="utf-8")
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse config file {path}: {e}")
+    return {}
 
 
 def load_and_validate_config(path: str) -> RLRunnerConfig:
-    cfg: Dict[str, Any] = _read_config_file(path)
-    # Back-compat alias
-    if not cfg.get("processor") and cfg.get("processor_path"):
-        cfg["processor"] = cfg.get("processor_path")
+    """Load a configuration file and return a validated RLRunnerConfig."""
 
-    # Aggregate missing required keys (fail-fast with a single error)
+    cfg: Dict[str, Any] = load_raw_config(path)
+    if not cfg:
+        raise ConfigValidationError(f"Config file '{path}' is empty or invalid.")
+
+    # Back-compat alias
+    warnings = translate_legacy_config(cfg)
+    for msg in warnings:
+        logging.getLogger("src_post.config").warning(msg)
+
     required_keys: List[str] = [
         # Paths
         "checkpoint",
@@ -247,7 +270,6 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         # Runtime
         "device",
         "seed",
-        # Balance toggle (optional default false allowed)
         # Generation
         "temperature",
         "top_p",
@@ -270,7 +292,7 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         "weight_decay",
         "max_grad_norm",
         "drop_last",
-        # Selective unfreeze (must be explicit)
+        # Selective unfreeze
         "llm_top_k_block",
         "vision_top_k_block",
         "freeze_patch_embed",
@@ -299,46 +321,45 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         "enable_phase_a_diagnostics",
         # Stage-A TF budget
         "max_images_tf",
-        # New extras
+        # Optimizer extras
         "grad_accum_steps",
         "decision_ce_ema_beta",
     ]
+
     missing_keys: List[str] = [k for k in required_keys if k not in cfg]
-    # Dataset composite requirement
     has_train_dir = bool(cfg.get("train_data_dir"))
     has_eval_dir = bool(cfg.get("eval_data_dir"))
-    dataset_ok = has_train_dir or has_eval_dir
-    # use_ref_kl-dependent requirement
+    if not (has_train_dir or has_eval_dir):
+        missing_keys.append("train_data_dir|eval_data_dir (provide at least one)")
+
     if cfg.get("use_ref_kl") in (True, "true", "True", 1, "1", "yes", "Yes"):
         if not cfg.get("ref_checkpoint"):
             missing_keys.append("ref_checkpoint (required when use_ref_kl=true)")
-    if not dataset_ok:
-        missing_keys.append("train_data_dir|eval_data_dir (provide at least one)")
+
     if missing_keys:
         missing_list = ", ".join(sorted(set(missing_keys)))
-        raise ValueError(
+        raise ConfigValidationError(
             f"Missing required config keys: {missing_list}. Please set them explicitly in your YAML."
         )
 
-    # Core required keys
     checkpoint = _req_str(cfg, "checkpoint")
     processor = _req_str(cfg, "processor")
     output_dir = _req_str(cfg, "output_dir")
 
-    # Dataset: require at least one
     train_data_dir = cfg.get("train_data_dir")
     eval_data_dir = cfg.get("eval_data_dir")
     if not train_data_dir and not eval_data_dir:
-        raise ValueError("You must provide one of 'train_data_dir' or 'eval_data_dir'.")
+        raise ConfigValidationError(
+            "You must provide one of 'train_data_dir' or 'eval_data_dir'."
+        )
 
-    # Rewards: parse and validate (require explicit)
     rf = _require(cfg, "reward_fns")
     if isinstance(rf, str):
         reward_fns = [s.strip() for s in rf.split(",") if s and str(s).strip()]
     elif isinstance(rf, list):
         reward_fns = [str(s).strip() for s in rf if str(s).strip()]
     else:
-        raise ValueError(
+        raise ConfigValidationError(
             "'reward_fns' must be a comma-separated string or list of names"
         )
 
@@ -348,41 +369,40 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     elif isinstance(rwv, list):
         reward_weights = [float(s) for s in rwv]
     else:
-        raise ValueError(
+        raise ConfigValidationError(
             "'reward_weights' must be a comma-separated string or list of floats"
         )
 
     if len(reward_fns) != len(reward_weights):
-        raise ValueError(
+        raise ConfigValidationError(
             f"reward_weights length ({len(reward_weights)}) must match reward_fns length ({len(reward_fns)})."
         )
+
     unknown = [n for n in reward_fns if n not in REGISTRY]
     if unknown:
-        raise ValueError(
+        raise ConfigValidationError(
             f"Unknown reward names: {unknown}. Valid: {sorted(list(REGISTRY.keys()))}."
         )
 
-    # Stage-A mode (explicit)
     mode = str(_req_str(cfg, "train_stage_a_mode")).strip().lower()
     if mode not in {"off", "conditional", "joint"}:
-        raise ValueError(
+        raise ConfigValidationError(
             f"train_stage_a_mode must be one of ['off','conditional','joint']; got '{mode}'."
         )
 
-    # New enums (explicit)
     group_reward_mode = str(_req_str(cfg, "group_reward_mode")).strip().lower()
     if group_reward_mode not in {"margin_only", "combined"}:
-        raise ValueError(
-            f"group_reward_mode must be one of ['margin_only','label_match','combined']; got '{group_reward_mode}'."
+        raise ConfigValidationError(
+            f"group_reward_mode must be one of ['margin_only','combined']; got '{group_reward_mode}'."
         )
 
-    # KL
     use_ref_kl = _req_bool(cfg, "use_ref_kl")
     ref_checkpoint = cfg.get("ref_checkpoint")
     if use_ref_kl and not ref_checkpoint:
-        raise ValueError("When use_ref_kl=true, you must set 'ref_checkpoint'.")
+        raise ConfigValidationError(
+            "When use_ref_kl=true, you must set 'ref_checkpoint'."
+        )
 
-    # Mission validity when provided
     mission = str(cfg.get("mission")) if cfg.get("mission") else None
     if mission is not None:
         try:
@@ -394,33 +414,31 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
                     f"Unknown or unsupported mission '{mission}' per group_annotation/table.json"
                 )
         except Exception as e:
-            # Re-raise with actionable hint
-            raise ValueError(f"Mission validation failed: {e}")
+            raise ConfigValidationError(f"Mission validation failed: {e}")
 
-    # Numeric validations (fail-fast)
     K_B = _req_int(cfg, "K_B")
     K_A = _req_int(cfg, "K_A")
     K_set = _req_int(cfg, "K_set")
     if K_B < 1 or K_A < 1:
-        raise ValueError(f"K_B and K_A must be >=1; got K_B={K_B}, K_A={K_A}.")
+        raise ConfigValidationError(
+            f"K_B and K_A must be >=1; got K_B={K_B}, K_A={K_A}."
+        )
     if mode == "joint" and K_set < 1:
-        raise ValueError(
+        raise ConfigValidationError(
             f"When train_stage_a_mode=joint, K_set must be >=1; got {K_set}."
         )
 
-    # Stage‑B scheduling and pairwise (explicit)
     freeze_stage_b_steps = _req_int(cfg, "freeze_stage_b_steps")
     if freeze_stage_b_steps < 0:
-        raise ValueError("freeze_stage_b_steps must be >= 0")
+        raise ConfigValidationError("freeze_stage_b_steps must be >= 0")
     stage_b_weight = _req_float(cfg, "stage_b_weight")
     if stage_b_weight < 0.0:
-        raise ValueError("stage_b_weight must be >= 0")
+        raise ConfigValidationError("stage_b_weight must be >= 0")
     pairwise_pairs_per_group = _req_int(cfg, "pairwise_pairs_per_group")
     if pairwise_pairs_per_group < 0:
-        raise ValueError("pairwise_pairs_per_group must be >= 0")
+        raise ConfigValidationError("pairwise_pairs_per_group must be >= 0")
     pairwise_delta_threshold = _req_float(cfg, "pairwise_delta_threshold")
 
-    # Selective unfreeze/LR coupling (fail-fast)
     llm_k = int(cfg.get("llm_top_k_block", 0))
     vis_k = int(cfg.get("vision_top_k_block", 0))
     train_aligner_flag = bool(cfg.get("train_aligner", True))
@@ -431,36 +449,39 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         )
         is None
     ):
-        raise ValueError("train_aligner=true requires explicit 'aligner_lr'.")
+        raise ConfigValidationError(
+            "train_aligner=true requires explicit 'aligner_lr'."
+        )
     if (
         llm_k > 0
         and _as_float_opt(cfg.get("llm_lr") or cfg.get("lr_last_layers")) is None
     ):
-        raise ValueError("llm_top_k_block>0 requires explicit 'llm_lr'.")
+        raise ConfigValidationError("llm_top_k_block>0 requires explicit 'llm_lr'.")
     if vis_k > 0 and _as_float_opt(cfg.get("vision_lr")) is None:
-        raise ValueError("vision_top_k_block>0 requires explicit 'vision_lr'.")
+        raise ConfigValidationError(
+            "vision_top_k_block>0 requires explicit 'vision_lr'."
+        )
 
-    # New: grad accumulation and EMA beta
     grad_accum_steps = _req_int(cfg, "grad_accum_steps")
     if grad_accum_steps < 1:
-        raise ValueError("grad_accum_steps must be >= 1")
+        raise ConfigValidationError("grad_accum_steps must be >= 1")
     decision_ce_ema_beta = _req_float(cfg, "decision_ce_ema_beta")
     if not (0.0 < decision_ce_ema_beta < 1.0):
-        raise ValueError("decision_ce_ema_beta must be in (0,1)")
+        raise ConfigValidationError("decision_ce_ema_beta must be in (0,1)")
 
-    # Training core knobs (explicit)
-    train = _req_bool(cfg, "train")
+    train_flag = _req_bool(cfg, "train")
     epochs = _req_int(cfg, "epochs")
     batch_size = _req_int(cfg, "batch_size")
-    if train:
+    if train_flag:
         if epochs < 1:
-            raise ValueError(f"epochs must be >=1 when train=true; got {epochs}.")
+            raise ConfigValidationError(
+                f"epochs must be >=1 when train=true; got {epochs}."
+            )
         if batch_size < 1:
-            raise ValueError(
+            raise ConfigValidationError(
                 f"batch_size must be >=1 when train=true; got {batch_size}."
             )
 
-    # Path validations (fail-fast)
     if not Path(checkpoint).exists():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
     if not Path(processor).exists():
@@ -469,33 +490,28 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     if data_root and not Path(data_root).exists():
         raise FileNotFoundError(f"dataset path not found: {data_root}")
 
-    # Results/metrics paths: derive if missing (non-core)
     output_dir = _req_str(cfg, "output_dir")
     results_jsonl = cfg.get("results_jsonl") or str(Path(output_dir) / "results.jsonl")
     metrics_jsonl = cfg.get("metrics_jsonl") or str(Path(output_dir) / "metrics.jsonl")
     balance_pass_fail = bool(cfg.get("balance_pass_fail", False))
-    # Optional logging knobs (safe defaults)
     try:
         log_step = int(cfg.get("log_step", 1) or 1)
     except Exception:
         log_step = 1
     if log_step < 1:
         log_step = 1
-    # Optional Stage-A token bias toggles
+
     stage_a_bias_fail_enabled = bool(cfg.get("stage_a_bias_fail_enabled", False))
     stage_a_bias_fail_value = float(cfg.get("stage_a_bias_fail_value", 0.0) or 0.0)
     stage_a_bias_pass_enabled = bool(cfg.get("stage_a_bias_pass_enabled", False))
     stage_a_bias_pass_value = float(cfg.get("stage_a_bias_pass_value", 0.0) or 0.0)
-    # Optional checkpoint saving interval and retention
     save_step = int(cfg.get("save_step", 0) or 0)
     save_limit = int(cfg.get("save_limit", 3) or 0)
-    # Logging cadence (safe default)
     try:
         log_step = int(cfg.get("log_step", 10))
     except Exception:
         log_step = 10
 
-    # Limit groups normalization: (None|0|-1) => -1
     limit_groups_raw = cfg.get("limit_groups", -1)
     try:
         lg = int(limit_groups_raw if limit_groups_raw is not None else -1)
@@ -504,86 +520,43 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     if lg <= 0:
         lg = -1
 
-    # Generation (explicit)
     temperature = _req_float(cfg, "temperature")
     top_p = _req_float(cfg, "top_p")
     max_new_tokens_stage_a = _req_int(cfg, "max_new_tokens_stage_a")
     max_new_tokens_stage_b = _req_int(cfg, "max_new_tokens_stage_b")
-    # Optional stage-specific overrides (safe defaults = None)
     temperature_stage_a = _as_float_opt(cfg.get("temperature_stage_a"))
     temperature_stage_b = _as_float_opt(cfg.get("temperature_stage_b"))
     top_p_stage_a = _as_float_opt(cfg.get("top_p_stage_a"))
     top_p_stage_b = _as_float_opt(cfg.get("top_p_stage_b"))
     repetition_penalty_stage_a = _as_float_opt(cfg.get("repetition_penalty_stage_a"))
     repetition_penalty_stage_b = _as_float_opt(cfg.get("repetition_penalty_stage_b"))
-    try:
-        min_new_tokens_stage_a = (
-            int(cfg.get("min_new_tokens_stage_a"))
-            if cfg.get("min_new_tokens_stage_a") is not None
-            else None
-        )
-    except Exception:
-        min_new_tokens_stage_a = None
-    try:
-        min_new_tokens_stage_b = (
-            int(cfg.get("min_new_tokens_stage_b"))
-            if cfg.get("min_new_tokens_stage_b") is not None
-            else None
-        )
-    except Exception:
-        min_new_tokens_stage_b = None
-    try:
-        no_repeat_ngram_size_stage_a = (
-            int(cfg.get("no_repeat_ngram_size_stage_a"))
-            if cfg.get("no_repeat_ngram_size_stage_a") is not None
-            else None
-        )
-    except Exception:
-        no_repeat_ngram_size_stage_a = None
-    try:
-        no_repeat_ngram_size_stage_b = (
-            int(cfg.get("no_repeat_ngram_size_stage_b"))
-            if cfg.get("no_repeat_ngram_size_stage_b") is not None
-            else None
-        )
-    except Exception:
-        no_repeat_ngram_size_stage_b = None
+    min_new_tokens_stage_a = cfg.get("min_new_tokens_stage_a")
+    min_new_tokens_stage_b = cfg.get("min_new_tokens_stage_b")
+    no_repeat_ngram_size_stage_a = cfg.get("no_repeat_ngram_size_stage_a")
+    no_repeat_ngram_size_stage_b = cfg.get("no_repeat_ngram_size_stage_b")
     mask_geometry_tokens = _req_bool(cfg, "mask_geometry_tokens")
     mask_coordinate_tokens = _req_bool(cfg, "mask_coordinate_tokens")
     sanitize_stage_a = _req_bool(cfg, "sanitize_stage_a")
-
-    # Other core training knobs (explicit)
     adv_clip = _req_float(cfg, "adv_clip")
     length_norm = _req_bool(cfg, "length_norm")
     learning_rate = _req_float(cfg, "learning_rate")
     weight_decay = _req_float(cfg, "weight_decay")
     max_grad_norm = _req_float(cfg, "max_grad_norm")
     drop_last = _req_bool(cfg, "drop_last")
+    aligner_lr = _as_float_opt(
+        cfg.get("aligner_lr") or cfg.get("merger_lr") or cfg.get("lr_aligner")
+    )
+    llm_lr = _as_float_opt(cfg.get("llm_lr") or cfg.get("lr_last_layers"))
+    vision_lr = _as_float_opt(cfg.get("vision_lr"))
+    train_lm_head = bool(cfg.get("train_lm_head", True))
+    train_last_n_layers = int(cfg.get("train_last_n_layers", 0))
+    lr_lm_head = _as_float_opt(cfg.get("lr_lm_head"))
+    lr_last_layers = _as_float_opt(cfg.get("lr_last_layers"))
 
-    # ---- Enhancements validation (optional) ----
     enable_clipped_grpo = bool(cfg.get("enable_clipped_grpo", False))
     epsilon_low = _as_float_opt(cfg.get("epsilon_low"))
     epsilon_high = _as_float_opt(cfg.get("epsilon_high"))
-    loss_type_stage_b = (
-        str(cfg.get("loss_type_stage_b"))
-        if cfg.get("loss_type_stage_b") is not None
-        else None
-    )
-    if enable_clipped_grpo:
-        if epsilon_low is None or loss_type_stage_b is None:
-            raise ValueError(
-                "When enable_clipped_grpo=true, you must set 'epsilon_low' in (0,1] and 'loss_type_stage_b' in {grpo,bnpo,dr_grpo}."
-            )
-        if not (0.0 < float(epsilon_low) <= 1.0):
-            raise ValueError(f"Invalid epsilon_low={epsilon_low}; expected (0,1].")
-        valid_loss = {"grpo", "bnpo", "dr_grpo"}
-        if loss_type_stage_b not in valid_loss:
-            raise ValueError(
-                f"Invalid loss_type_stage_b='{loss_type_stage_b}'; expected one of {sorted(list(valid_loss))}."
-            )
-        if epsilon_high is not None and float(epsilon_high) < 0.0:
-            raise ValueError(f"Invalid epsilon_high={epsilon_high}; expected >=0.")
-
+    loss_type_stage_b = cfg.get("loss_type_stage_b")
     enable_entropy_mask_stage_b = bool(cfg.get("enable_entropy_mask_stage_b", False))
     entropy_top_quantile_stage_b = _as_float_opt(
         cfg.get("entropy_top_quantile_stage_b")
@@ -591,57 +564,22 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
     entropy_min_threshold_stage_b = _as_float_opt(
         cfg.get("entropy_min_threshold_stage_b")
     )
-    if enable_entropy_mask_stage_b:
-        has_q = entropy_top_quantile_stage_b is not None
-        has_t = entropy_min_threshold_stage_b is not None
-        if has_q == has_t:
-            raise ValueError(
-                "When enable_entropy_mask_stage_b=true, set exactly one of 'entropy_top_quantile_stage_b' in (0,1] or 'entropy_min_threshold_stage_b' > 0."
-            )
-        if has_q and not (0.0 < float(entropy_top_quantile_stage_b) <= 1.0):
-            raise ValueError(
-                f"entropy_top_quantile_stage_b must be in (0,1], got {entropy_top_quantile_stage_b}."
-            )
-        if has_t and not (float(entropy_min_threshold_stage_b) > 0.0):
-            raise ValueError(
-                f"entropy_min_threshold_stage_b must be > 0, got {entropy_min_threshold_stage_b}."
-            )
-
     max_resample_times = int(cfg.get("max_resample_times", 0) or 0)
-    if max_resample_times < 0:
-        raise ValueError("max_resample_times must be >= 0")
-
     stage_a_top_m = int(cfg.get("stage_a_top_m", 0) or 0)
-    if stage_a_top_m < 0:
-        raise ValueError("stage_a_top_m must be >= 0")
-
-    uncertainty_decay_factor = float(cfg.get("uncertainty_decay_factor", 0.0) or 0.0)
-    if not (0.0 <= uncertainty_decay_factor <= 1.0):
-        raise ValueError(
-            f"uncertainty_decay_factor must be in [0,1], got {uncertainty_decay_factor}."
-        )
-
-    pairwise_select = str(cfg.get("pairwise_select", "heuristic")).strip().lower()
-    if pairwise_select not in {"heuristic", "entropy", "delta"}:
-        raise ValueError(
-            "pairwise_select must be one of {'heuristic','entropy','delta'}"
-        )
-
+    uncertainty_decay_factor = float(cfg.get("uncertainty_decay_factor", 1.0) or 1.0)
+    pairwise_select = str(cfg.get("pairwise_select", "heuristic") or "heuristic")
     log_all_candidates = bool(cfg.get("log_all_candidates", False))
-
     soft_overlong_penalty_enabled = bool(
         cfg.get("soft_overlong_penalty_enabled", False)
     )
     soft_overlong_penalty_weight = _as_float_opt(
         cfg.get("soft_overlong_penalty_weight")
     )
-    if soft_overlong_penalty_enabled and (
-        soft_overlong_penalty_weight is None
-        or float(soft_overlong_penalty_weight) < 0.0
-    ):
-        raise ValueError(
-            "When soft_overlong_penalty_enabled=true, set 'soft_overlong_penalty_weight' >= 0."
-        )
+    stage_a_bias_fail_value = stage_a_bias_fail_value
+    stage_a_bias_pass_value = stage_a_bias_pass_value
+
+    save_step = save_step
+    save_limit = save_limit
 
     return RLRunnerConfig(
         checkpoint=checkpoint,
@@ -681,7 +619,7 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         K_A=K_A,
         adv_clip=adv_clip,
         length_norm=length_norm,
-        train=train,
+        train=train_flag,
         batch_size=batch_size,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
@@ -691,15 +629,13 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         llm_top_k_block=_req_int(cfg, "llm_top_k_block"),
         vision_top_k_block=_req_int(cfg, "vision_top_k_block"),
         freeze_patch_embed=_req_bool(cfg, "freeze_patch_embed"),
-        aligner_lr=_as_float_opt(
-            cfg.get("aligner_lr") or cfg.get("merger_lr") or cfg.get("lr_aligner")
-        ),
-        llm_lr=_as_float_opt(cfg.get("llm_lr") or cfg.get("lr_last_layers")),
-        vision_lr=_as_float_opt(cfg.get("vision_lr")),
-        train_lm_head=bool(cfg.get("train_lm_head", True)),
-        train_last_n_layers=int(cfg.get("train_last_n_layers", 0)),
-        lr_lm_head=_as_float_opt(cfg.get("lr_lm_head")),
-        lr_last_layers=_as_float_opt(cfg.get("lr_last_layers")),
+        aligner_lr=aligner_lr,
+        llm_lr=llm_lr,
+        vision_lr=vision_lr,
+        train_lm_head=train_lm_head,
+        train_last_n_layers=train_last_n_layers,
+        lr_lm_head=lr_lm_head,
+        lr_last_layers=lr_last_layers,
         use_ref_kl=use_ref_kl,
         ref_checkpoint=(str(ref_checkpoint) if ref_checkpoint else None),
         lambda_kl_stage_b=_req_float(cfg, "lambda_kl_stage_b"),
@@ -711,7 +647,6 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         reward_fns=reward_fns,
         reward_weights=reward_weights,
         enable_phase_a_diagnostics=_req_bool(cfg, "enable_phase_a_diagnostics"),
-        # New knobs
         train_stage_b=_req_bool(cfg, "train_stage_b"),
         stage_b_weight=stage_b_weight,
         freeze_stage_b_steps=freeze_stage_b_steps,
@@ -725,7 +660,6 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         grad_accum_steps=grad_accum_steps,
         decision_ce_ema_beta=decision_ce_ema_beta,
         train_aligner=_req_bool(cfg, "train_aligner"),
-        # Enhancements
         enable_clipped_grpo=enable_clipped_grpo,
         epsilon_low=epsilon_low,
         epsilon_high=epsilon_high,
@@ -740,11 +674,31 @@ def load_and_validate_config(path: str) -> RLRunnerConfig:
         log_all_candidates=log_all_candidates,
         soft_overlong_penalty_enabled=soft_overlong_penalty_enabled,
         soft_overlong_penalty_weight=soft_overlong_penalty_weight,
-        # Stage-A bias knobs
         stage_a_bias_fail_enabled=stage_a_bias_fail_enabled,
         stage_a_bias_fail_value=stage_a_bias_fail_value,
         stage_a_bias_pass_enabled=stage_a_bias_pass_enabled,
         stage_a_bias_pass_value=stage_a_bias_pass_value,
         save_step=save_step,
         save_limit=save_limit,
+        # Prompt enhancement toggles (optional; default False/None)
+        enable_stage_b_diversity_prompt=bool(
+            cfg.get("enable_stage_b_diversity_prompt", False)
+        ),
+        enable_stage_b_uncertainty_prompt=bool(
+            cfg.get("enable_stage_b_uncertainty_prompt", False)
+        ),
+        enable_stage_a_negative_cues_prompt=bool(
+            cfg.get("enable_stage_a_negative_cues_prompt", False)
+        ),
+        stage_a_negative_examples=(
+            [str(x) for x in cfg.get("stage_a_negative_examples", [])]
+            if isinstance(cfg.get("stage_a_negative_examples"), list)
+            else None
+        ),
     )
+
+
+def load_config(path: str) -> RLRunnerConfig:
+    """Alias for compatibility with planned API naming."""
+
+    return load_and_validate_config(path)

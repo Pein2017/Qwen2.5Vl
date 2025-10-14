@@ -154,7 +154,6 @@ def find_label_dir(group_dir: Path) -> Tuple[Optional[Path], Optional[Path], str
     if "审核通过" in parts:
         idx = parts.index("审核通过")
         mission = parts[idx - 1] if idx - 1 >= 0 else ""
-        parent = group_dir.parent.parent if group_dir.parent.name == "审核通过" else group_dir.parent
         # Fail sibling could be under the same mission root
         fail_dir = group_dir.parent.parent / "审核不通过" if group_dir.parent.name == "审核通过" else None
         return group_dir.parent, fail_dir, mission, group_dir.name

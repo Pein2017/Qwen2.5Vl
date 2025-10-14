@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from src_new.rl.grpo_trainer import BBUGRPOTrainer
+
+pytest.skip("Manual trainer removed; logging metrics covered by TRL trainer")
 
 
 class DummyStateManager:

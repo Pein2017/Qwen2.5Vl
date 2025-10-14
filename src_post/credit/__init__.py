@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from src_post.credit.credit_assignment import (
     BaseCreditAssigner,
-    OffAssigner,
     ConditionalAssigner,
+    OffAssigner,
     PairwiseFallbackAssigner,
     get_credit_assigner,
 )
+
 
 __all__ = [
     "BaseCreditAssigner",

@@ -18,7 +18,7 @@
 - Manual path, validate: `python -m src_new.rl.runner --config configs/dense_rl/debug.yaml --mode load`
 - Manual path, train: `python -m src_new.rl.runner --config configs/dense_rl/debug.yaml --mode train --trainer manual`
 - TRL path, smoke test (GPU required): `python -m src_new.rl.runner --config configs/dense_rl/trl_smoke.yaml --mode train --trainer trl`
-- Convenience launcher: `bash scripts/run_dense_grpo.sh` (honours `config`, `trainer`, `mode`, `GPUs`, `python` env vars)
+- Convenience launcher: `bash scripts/run_dense_grpo.sh` (honours `config`, `mode`, `gpus`, `python` env vars). Conversation dump is configured in YAML under `evaluation.dump_conversations` and `evaluation.dump_max_per_step`.
 - **Benefits**: Fail-fast validation with clear errors; no hidden defaults; IDE-friendly typed access; reproducible configs; HF-first dataflow unchanged; optional TRL integration for ecosystems that standardize on `trl.GRPOTrainer`.
 
 ### Quality consolidation (2025-10-12)

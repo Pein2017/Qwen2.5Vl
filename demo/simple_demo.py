@@ -398,7 +398,6 @@ def generate_captions_autoregressive(
     """
     model.eval()
     batch_size = hidden_states.shape[0]
-    device = hidden_states.device
 
     generated_captions = []
 
@@ -478,7 +477,6 @@ def generate_single_caption_autoregressive(
     Returns:
         Dict with generated caption and metadata
     """
-    device = hidden_states.device
 
     # Get object features from detection head
     with torch.no_grad():
@@ -1191,7 +1189,7 @@ def test_autoregressive_generation():
     # Setup
     device = setup_environment()
     config = load_configuration()
-    logger = setup_logging()
+    setup_logging()
 
     # Load model and data
     model, tokenizer, image_processor = load_model_and_tokenizer(config, device)
@@ -1403,7 +1401,7 @@ def test_with_trained_model(checkpoint_path: str):
     # Setup
     device = setup_environment()
     config = load_configuration()
-    logger = setup_logging()
+    setup_logging()
 
     # Load tokenizer first
     tokenizer = AutoTokenizer.from_pretrained(
@@ -1499,7 +1497,7 @@ def main():
     # Setup
     device = setup_environment()
     config = load_configuration()
-    logger = setup_logging()
+    setup_logging()
 
     # Load model and data
     model, tokenizer, image_processor = load_model_and_tokenizer(config, device)

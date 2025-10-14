@@ -24,7 +24,7 @@ def test_collator_validation_fix():
 
     # Create collator with strict validation enabled
     config = CollatorConfig(strict_single_coord_token=True)
-    collator = DataCollatorCoordBootstrap(tokenizer=mock_tokenizer, config=config)
+    DataCollatorCoordBootstrap(tokenizer=mock_tokenizer, config=config)
 
     print("🧪 Testing collator validation fix...")
 
@@ -153,7 +153,7 @@ def test_collator_integration():
     print("\n🧪 Testing collator integration...")
 
     # Test that collator can be created and configured
-    assert collator.config.strict_single_coord_token == False, (
+    assert not collator.config.strict_single_coord_token, (
         "Strict validation should be disabled"
     )
     assert collator.tokenizer == mock_tokenizer, "Tokenizer should be set"

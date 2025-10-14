@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 def exact_label_match_reward(sample: Dict[str, Any]) -> float:

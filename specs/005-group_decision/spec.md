@@ -79,6 +79,74 @@
 - 任务名/清单缺失或未知：`mission` 无法解析时直接失败并提示可用集合。
 - 路径问题：组目录/JSONL 中图片路径不可达时立即报错并指明具体样本。
 
+## Focus — Sampling Diversity & Credit Assignment
+
+为缓解采样坍缩（std≈0）与信用分配无信号的问题，本特性将“采样多样性”和“信用分配”明确为阶段性重点：
+
+- 采样多样性（Stage‑A/Stage‑B）
+  - Stage‑A：提高温度与去重约束，产生更丰富的一行摘要；门控放宽以放行高熵候选；必要时短期移除 `mission` 提示偏置以脱钩表内词项。
+  - Stage‑B：小幅提升采样温度 + `no_repeat_ngram_size`，并允许少量重采样（`max_resample_times`）以避免 std≈0 头。
+  - 验收指标（建议阈）：
+    - `stage_b_std>0` 的步占比 ≥ 40%；
+    - `phase_a_entropy_mean ≥ 0.10`；
+    - `best_single_delta > 0` 的样本占比 ≥ 30%。
+
+- 信用分配（Stage‑A）
+  - 条件式：固定除第 i 张外的摘要，替换候选并用组级奖励差分做 z‑score；优势仅回传“该摘要 token”。
+  - 配对回退：当单图 Δ 弱且组级预测错误时，抽 1–2 对图的组合替换，优势在两者间分摊。
+  - 门控：对候选摘要按 TF‑logits 熵设阈，仅对“高熵且提升边际”的候选给优势或放大优势。
+  - 奖励简化：前 200–500 步可使用 `group_reward_mode=margin_only` 稳定密集信号，后续切回 `combined` 并降低 `coverage` 权重（≈0.8），对“无法识别/不清楚”在缺少其它正证据时施加轻惩（soft_lexicon）。
+
+### Stage‑B Checklist Prompt（mission 聚焦）
+- 在最小偏置提示基础上，允许追加 mission‑aware 的“关键检查项”段落：
+  - 来源：`group_annotation/table.json` 中 `global_pass=不通过` 的 `desc_summary`；
+  - 过滤：剔除可见性占位（“遮挡/只显示部分/显示完整”），仅保留与判定直接相关的负向要点；
+  - 模板：
+    - “关键检查项（与本任务密切相关；可见性占位不作为直接依据）：\n  - <itemA>\n  - <itemB>\n ... 若关键项不可确认或命中负项，请输出‘不通过’，并简要说明原因；非本任务范围的异常可忽略。”
+  - 追加提示：多样化表达与“不确定即不通过”的引导保持开启。
+
+### Stage‑A 负向线索强化
+- 系统/用户提示中强调：若“无法确认/信息缺失/标签不可识别/安装方向不明”等，请在末尾以“备注: …”标注；
+- 业务规则：`遮挡/只显示部分/显示完整` 仅为可见性描述，不直接作为通过/不通过依据。
+
+示例 YAML 片段（可直接落地；YAML 的单一事实源/SSoT，其他文档仅引用此处）：
+```yaml
+# Stage‑A 多样化
+temperature_stage_a: 0.9
+top_p_stage_a: 0.95
+no_repeat_ngram_size_stage_a: 12
+repetition_penalty_stage_a: 1.08
+min_new_tokens_stage_a: 6
+K_A: 4
+use_uncertainty_gate: true
+uncertainty_gate_min_entropy: 0.08
+stage_a_top_m: 2
+
+# 暂时移除 mission 偏置（可选，短期）
+mission:
+
+# Stage‑B 轻度多样化
+temperature_stage_b: 0.9
+top_p_stage_b: 0.97
+no_repeat_ngram_size_stage_b: 12
+repetition_penalty_stage_b: 1.10
+max_resample_times: 2
+
+# 奖励与日程
+group_reward_mode: margin_only   # 先跑 200–500 步，再切回 combined
+reward_fns: group_margin,coverage,soft_lexicon,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.8,-0.2,-0.2,-0.1,-0.2
+lambda_kl_stage_a: 0.02
+lambda_kl_stage_b: 0.02
+freeze_stage_b_steps: 300
+balance_pass_fail: true
+```
+
+健康检查（新增）
+- 若 `std==0` 占比持续 >60%：增大 `temperature_*`/`top_p_*` 或 `K_*`，并启用 `max_resample_times`。
+- 若 `phase_a_entropy_mean<0.05`：放宽 `uncertainty_gate_min_entropy`，提高 `no_repeat_ngram_size_stage_a`。
+- 若 FN 偏高：保留 KL，小幅降低 `coverage` 权重并启用配对回退 1 对。
+
 ## Requirements *(mandatory)*
 
 ### Functional Requirements

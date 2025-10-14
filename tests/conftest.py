@@ -2,6 +2,7 @@ from typing import List
 
 import pytest
 
+
 try:
     import torch
 except ImportError:  # pragma: no cover - torch should exist in ms env

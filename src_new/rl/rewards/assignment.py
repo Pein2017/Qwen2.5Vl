@@ -44,20 +44,27 @@ def _geom_score_bbox(
 
 def _geom_score_quad(a_flat: List[int], b_flat: List[int]) -> float:
     # Canonicalize order, then polygon GIoU mapped to [0,1]
-    a_pts = [(int(a_flat[i]), int(a_flat[i + 1])) for i in range(0, 8, 2)]
-    b_pts = [(int(b_flat[i]), int(b_flat[i + 1])) for i in range(0, 8, 2)]
-    a_ord = CoordinateManager._canonical_quad_ordering(a_pts)
-    b_ord = CoordinateManager._canonical_quad_ordering(b_pts)
-    g = dr._giou_polygons_from_points(a_ord, b_ord)
-    return _mapped(0.5 * (g + 1.0))
+    try:
+        a_pts = [(int(a_flat[i]), int(a_flat[i + 1])) for i in range(0, 8, 2)]
+        b_pts = [(int(b_flat[i]), int(b_flat[i + 1])) for i in range(0, 8, 2)]
+        a_ord = CoordinateManager._canonical_quad_ordering(a_pts)
+        b_ord = CoordinateManager._canonical_quad_ordering(b_pts)
+        g = dr._giou_polygons_from_points(a_ord, b_ord)
+        return _mapped(0.5 * (g + 1.0))
+    except Exception:
+        # Worst-case when invalid
+        return 0.0
 
 
 def _geom_score_line(
     a_flat: List[int], b_flat: List[int], *, buffer_width: float, scale: float
 ) -> float:
     # Buffered line GIoU is required; raise if invalid
-    g = dr._giou_buffered_lines(a_flat, b_flat, float(buffer_width))
-    return _mapped(0.5 * (g + 1.0))
+    try:
+        g = dr._giou_buffered_lines(a_flat, b_flat, float(buffer_width))
+        return _mapped(0.5 * (g + 1.0))
+    except Exception:
+        return 0.0
 
 
 def _build_objects(text: str, meta: Optional[Dict[str, object]]):
@@ -102,19 +109,28 @@ def _build_cost_matrix(
                 continue
             # Geometry score in [0,1]
             if p_geom == "bbox_2d":
-                pa = tuple(int(v) for v in p["bbox_2d"])  # type: ignore[index]
-                ga = tuple(int(v) for v in g["bbox_2d"])  # type: ignore[index]
-                geom_s = _geom_score_bbox(pa, ga)
+                try:
+                    pa = tuple(int(v) for v in p["bbox_2d"])  # type: ignore[index]
+                    ga = tuple(int(v) for v in g["bbox_2d"])  # type: ignore[index]
+                    geom_s = _geom_score_bbox(pa, ga)
+                except Exception:
+                    geom_s = 0.0
             elif p_geom == "quad":
-                pa = [int(v) for v in p["quad"]][:8]  # type: ignore[index]
-                ga = [int(v) for v in g["quad"]][:8]  # type: ignore[index]
-                geom_s = _geom_score_quad(pa, ga)
+                try:
+                    pa = [int(v) for v in p["quad"]][:8]  # type: ignore[index]
+                    ga = [int(v) for v in g["quad"]][:8]  # type: ignore[index]
+                    geom_s = _geom_score_quad(pa, ga)
+                except Exception:
+                    geom_s = 0.0
             elif p_geom == "line":
-                pa = [int(v) for v in p["line"]]  # type: ignore[index]
-                ga = [int(v) for v in g["line"]]  # type: ignore[index]
-                geom_s = _geom_score_line(
-                    pa, ga, buffer_width=buffer_width, scale=scale
-                )
+                try:
+                    pa = [int(v) for v in p["line"]]  # type: ignore[index]
+                    ga = [int(v) for v in g["line"]]  # type: ignore[index]
+                    geom_s = _geom_score_line(
+                        pa, ga, buffer_width=buffer_width, scale=scale
+                    )
+                except Exception:
+                    geom_s = 0.0
             else:
                 geom_s = 0.0
 

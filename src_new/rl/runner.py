@@ -38,6 +38,15 @@ from src_new.utils.hf_components import HFComponents, build_hf_components
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
 
 
+# Optional callback for conversation dumping (non-invasive)
+try:
+    from src_new.rl.callbacks.conversation_dump import (
+        ConversationDumpCallback as _ConvDumpCB,  # noqa: F401
+    )
+except Exception:
+    _ConvDumpCB = None  # type: ignore[assignment]
+
+
 _LOGGER = get_rank_aware_logger("rl.runner")
 
 
@@ -400,9 +409,19 @@ def train(config_path: str, *, trainer_type: str = "trl") -> None:
                                 if p in named_cfg:
                                     call_kwargs[p] = named_cfg[p]
                     try:
-                        out.append(float(fn(text, **call_kwargs)))
-                    except TypeError:
-                        out.append(float(fn(text)))
+                        try:
+                            out.append(float(fn(text, **call_kwargs)))
+                        except TypeError:
+                            out.append(float(fn(text)))
+                    except Exception as exc:
+                        # Robust: default to 0.0 on reward failure
+                        try:
+                            _LOGGER.debug(
+                                "Reward '%s' failed for sample %d: %s", key, idx, exc
+                            )
+                        except Exception:
+                            pass
+                        out.append(0.0)
                 return out
 
             return _inner
@@ -582,6 +601,22 @@ def train(config_path: str, *, trainer_type: str = "trl") -> None:
     trl_args.logging_first_step = True
 
     eval_dataset = val_ds if evaluation_enabled else None
+    # Fixed total eval size from YAML (independent of world size)
+    if evaluation_enabled and eval_dataset is not None:
+        fixed_total = int(rl_config.evaluation.eval_data_size)
+        if fixed_total > 0 and fixed_total < len(val_ds):
+            from torch.utils.data import Subset as _Subset
+
+            eval_dataset = _Subset(val_ds, list(range(fixed_total)))
+            _LOGGER.info(
+                "Fixed eval size enabled via YAML: evaluation.eval_data_size=%d (world_size=%d)",
+                fixed_total,
+                int(world_size),
+            )
+        else:
+            _LOGGER.info(
+                "Using full validation dataset (eval_data_size <= 0 or >= dataset)."
+            )
 
     def _identity_collator(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return features
@@ -599,9 +634,70 @@ def train(config_path: str, *, trainer_type: str = "trl") -> None:
         processing_class=bundles["tokenizer"],
         prompt_collator=_identity_collator,
         rl_config=rl_config,
+        processor=bundles["processor"],
     )
+    # Expose original YAML path for checkpoint saver to copy into checkpoints
+    try:
+        setattr(trl_trainer.args, "original_config_path", os.path.abspath(config_path))
+        # For best-checkpoint gating, mirror evaluation cadence on args to avoid None
+        if evaluation_enabled and eval_steps is not None:
+            setattr(trl_trainer.args, "eval_steps", int(eval_steps))
+        else:
+            setattr(trl_trainer.args, "eval_steps", 0)
+    except Exception:
+        pass
+
+    # Optionally enable conversation dump callback via YAML config (no envs)
+    try:
+        if (
+            _ConvDumpCB is not None
+            and rl_config.evaluation.enabled
+            and bool(getattr(rl_config.evaluation, "dump_conversations", False))
+        ):
+            dump_dir = os.path.join(output_dir, "conversation_dumps")
+            max_per_step = int(getattr(rl_config.evaluation, "dump_max_per_step", 16))
+            cb = _ConvDumpCB(
+                output_dir=dump_dir,
+                max_samples_per_step=max_per_step,
+                file_prefix="step",
+                overwrite_step_files=True,
+            )
+            # Explicitly attach trainer reference for callback access
+            try:
+                setattr(cb, "trainer", trl_trainer)
+            except Exception:
+                pass
+            trl_trainer.add_callback(cb)
+            _LOGGER.info(
+                "ConversationDumpCallback enabled (YAML): dir=%s max_per_step=%d",
+                dump_dir,
+                max_per_step,
+            )
+    except Exception:
+        pass
+
     _LOGGER.info("Starting TRL GRPO training (max_steps=%d)", max_steps)
     trl_trainer.train()
+    # If conversation dump callback was requested, enforce that files exist
+    try:
+        dump_root = os.path.join(output_dir, "conversation_dumps")
+        if rl_config.evaluation.enabled and getattr(
+            rl_config.evaluation, "dump_conversations", False
+        ):
+            if not os.path.isdir(dump_root):
+                raise RuntimeError(
+                    f"Conversation dumps requested (evaluation.dump_conversations=true) but directory not created: {dump_root}"
+                )
+            # Check for any .jsonl files
+            dumped = [f for f in os.listdir(dump_root) if f.endswith(".jsonl")]
+            if len(dumped) == 0:
+                raise RuntimeError(
+                    f"Conversation dumps requested but no files were written under {dump_root}. "
+                    f"Ensure evaluation is enabled (evaluation.enabled=true) and occurs at least once; dumps run on on_evaluate."
+                )
+    except Exception as _dump_exc:
+        _LOGGER.error("Conversation dump validation failed: %s", _dump_exc)
+        raise
     trl_trainer.save_model(output_dir)
     return
 

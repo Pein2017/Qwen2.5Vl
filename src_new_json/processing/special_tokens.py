@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import logging
-from typing import List
 import re
+from typing import List
 
 from src_new_json.types.coords import CoordTokenRange
 

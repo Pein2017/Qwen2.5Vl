@@ -270,6 +270,9 @@ evaluation:
   save_samples: 20
   log_text_snippets: true
   seed: 17
+  # Text dump controls (moved from env to YAML)
+  dump_conversations: false      # true to enable ConversationDumpCallback on eval
+  dump_max_per_step: 16          # limit of samples per evaluation step to dump
 ```
 
 ## Auto-Computed Values

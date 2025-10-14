@@ -9,7 +9,7 @@ Central registry and utilities for training/eval metrics.
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable
+from typing import Dict
 
 
 ROLE_NAMES: tuple[str, str] = ("teacher", "student")

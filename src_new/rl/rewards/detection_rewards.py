@@ -121,24 +121,28 @@ def _points_from_flat(points_flat: List[int]) -> List[Tuple[int, int]]:
 def _giou_polygons_from_points(
     a_pts: List[Tuple[int, int]], b_pts: List[Tuple[int, int]]
 ) -> float:
-    pa = Polygon(a_pts).convex_hull
-    pb = Polygon(b_pts).convex_hull
-    if not pa.is_valid or not pb.is_valid or pa.area <= 0.0 or pb.area <= 0.0:
-        raise RuntimeError("Invalid polygon(s) for quad GIoU computation")
-    inter = pa.intersection(pb).area
-    union = pa.area + pb.area - inter
-    if union <= 0.0:
-        raise RuntimeError("Non-positive union area in quad GIoU computation")
-    iou = inter / union
-    c_area = unary_union([pa, pb]).convex_hull.area
-    if c_area <= 0.0:
-        raise RuntimeError("Invalid convex hull area in quad GIoU computation")
-    giou = float(iou) - (c_area - union) / c_area
-    if giou < -1.0:
-        giou = -1.0
-    if giou > 1.0:
-        giou = 1.0
-    return float(giou)
+    # Robust variant: return worst-case (-1.0) on any invalid geometry
+    try:
+        pa = Polygon(a_pts).convex_hull
+        pb = Polygon(b_pts).convex_hull
+        if not pa.is_valid or not pb.is_valid or pa.area <= 0.0 or pb.area <= 0.0:
+            return -1.0
+        inter = pa.intersection(pb).area
+        union = pa.area + pb.area - inter
+        if union <= 0.0:
+            return -1.0
+        iou = inter / union
+        c_area = unary_union([pa, pb]).convex_hull.area
+        if c_area <= 0.0:
+            return -1.0
+        giou = float(iou) - (c_area - union) / c_area
+        if giou < -1.0:
+            giou = -1.0
+        if giou > 1.0:
+            giou = 1.0
+        return float(giou)
+    except Exception:
+        return -1.0
 
 
 def reward_quad_giou(*args, **kwargs):
@@ -169,24 +173,28 @@ def _buffered_line_poly(points_flat: List[int], buffer_width: float):
 def _giou_buffered_lines(
     a_flat: List[int], b_flat: List[int], buffer_width: float
 ) -> float:
-    pa = _buffered_line_poly(a_flat, buffer_width)
-    pb = _buffered_line_poly(b_flat, buffer_width)
-    if pa is None or pb is None:
-        raise RuntimeError("Invalid buffered line geometry for line GIoU computation")
-    inter = pa.intersection(pb).area
-    union = pa.area + pb.area - inter
-    if union <= 0.0:
-        raise RuntimeError("Non-positive union area in line GIoU computation")
-    iou = inter / union
-    c_area = unary_union([pa, pb]).convex_hull.area
-    if c_area <= 0.0:
-        raise RuntimeError("Invalid convex hull area in line GIoU computation")
-    giou = float(iou) - (c_area - union) / c_area
-    if giou < -1.0:
-        giou = -1.0
-    if giou > 1.0:
-        giou = 1.0
-    return float(giou)
+    # Robust variant: return worst-case (-1.0) on any invalid geometry
+    try:
+        pa = _buffered_line_poly(a_flat, buffer_width)
+        pb = _buffered_line_poly(b_flat, buffer_width)
+        if pa is None or pb is None:
+            return -1.0
+        inter = pa.intersection(pb).area
+        union = pa.area + pb.area - inter
+        if union <= 0.0:
+            return -1.0
+        iou = inter / union
+        c_area = unary_union([pa, pb]).convex_hull.area
+        if c_area <= 0.0:
+            return -1.0
+        giou = float(iou) - (c_area - union) / c_area
+        if giou < -1.0:
+            giou = -1.0
+        if giou > 1.0:
+            giou = 1.0
+        return float(giou)
+    except Exception:
+        return -1.0
 
 
 def reward_line_giou(*args, **kwargs):

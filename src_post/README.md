@@ -278,3 +278,75 @@ Notes:
 - `src_post/prompting/schema.py`: mission check/token parsing from `MISSION_CHECKS_COVERAGE` (cached).
 - `src_post/rewards/lexicon.py`: shared canonical tokens (negatives/slots/forbidden words).
 - `src_post/generation/generation.py`: generators and `build_decision_prefix_constraint`
+
+## Module map (complete, for orientation)
+
+- Entry & orchestration
+  - `runner.py`: Main loop (Stage‑A sampling, Stage‑B sampling, rewards, GRPO update, logging, checkpointing, DDP setup).
+  - `models.py`: Processor/model loader, Qwen2.5‑VL patches, phase‑freeze + param‑group builder, DDP wrapper.
+  - `tutorial.md`: Algorithmic guide (two‑stage, GRPO, credit assignment, stability notes).
+  - `场景描述.md`: Business/scene description (Chinese) to contextualize tasks and rewards.
+
+- Configuration
+  - `config/loader.py`: Config loader with strict validation and layering.
+  - `config/config.py`: Dataclasses and schema definitions.
+  - `config/translation.py`: Minor helpers for config string handling.
+  - `config/__init__.py`: Public exports.
+
+- Data
+  - `data/dataset_group_qc.py`: Dataset over directories or JSONL; yields groups with images/label/meta.
+  - `data/data_loader.py`: Batch index builders (balanced sampling, per‑rank sharding) and iterator helpers.
+  - `data/__init__.py`: Exports dataset and batch utilities.
+
+- Prompting & parsing
+  - `prompting/conversation.py`: Stage‑A and Stage‑B prompt builders; mission hints; typed chat building.
+  - `prompting/schema.py`: Mission→checks coverage (cached) and tokenization helpers.
+  - `prompting/span_parser.py`: Stage‑B reply span parser to `{label, reason}`.
+  - `prompting/__init__.py`: Public exports.
+
+- Generation
+  - `generation/generation.py`: Stage‑A/B generators and decision prefix constraints.
+  - `generation/logits_processors.py`: Decode‑time constraints/utilities.
+  - `generation/__init__.py`: Public exports.
+
+- Rewards (registry)
+  - `rewards/__init__.py`: Name→fn registry and factory.
+  - `rewards/group_margin.py`: Core dense signal via log‑prob margin between pass/fail.
+  - `rewards/mission_outcome.py`: Mission‑aware decision metrics.
+  - `rewards/coverage.py`: Coverage of mission checks / canonical slots.
+  - `rewards/lexicon.py`: Shared tokens (negatives/forbidden/slots).
+  - `rewards/lexicon_shaping.py`: Cleanliness/formatting/forbidden words shaping.
+  - `rewards/repetition.py`: Repetition penalties.
+  - `rewards/soft_overlong.py`: Soft penalty for overlong replies.
+  - `rewards/basic.py`, `rewards/utils.py`, `rewards/compose.py`: Utilities and composition helpers.
+
+- Teacher‑forcing & loss
+  - `tf/teacher_forcing.py`: Summed log‑prob over reply tokens with length‑norm options.
+  - `tf/grpo_loss.py`: GRPO variant used in Stage‑B and optional Stage‑A with KL.
+  - `tf/__init__.py`: Public exports.
+
+- Credit assignment
+  - `credit/credit_assignment.py`: Conditional, joint, and pairwise fallback credit assigners; uncertainty gating.
+  - `credit/__init__.py`: Public exports for assigner selection.
+
+- Pipeline (typed DTOs and stages)
+  - `pipeline/stage_a.py`: Stage‑A sampling (per‑image lines) and diagnostics.
+  - `pipeline/stage_b.py`: Stage‑B sampling, parsing, reward evaluation, and candidate selection.
+  - `pipeline/metrics.py`: Group metrics container and reduction.
+  - `pipeline/dto.py`: Typed data structures passed between runner and stages.
+  - `pipeline/__init__.py`: Public exports.
+
+- Training loop (GRPO on group decision)
+  - `training/grpo_loop.py`: Update loop across groups; integrates Stage‑A/Stage‑B, TF, KL, accumulation, logging.
+  - `training/optim.py`: Optimizer and scheduler builders (per‑group LRs, cosine + warmup).
+  - `training/grpo_trainer.py`: Thin wrapper to manage gradient accumulation and metric windows.
+
+- Logging & IO
+  - `logging/logging_utils.py`: Metric aggregation, ETA, rank‑aware logging.
+  - `logging/setup.py`: Logging configuration and repeat‑filter setup.
+  - `logging/repeat_filter.py`: Suppressed warning tracking.
+  - `logging/diagnostics.py`: Text diagnostics helpers.
+  - `io/checkpoints.py`: Save HF‑compatible final checkpoints; rank‑0 only.
+
+- Utilities
+  - `utils/text.py`: Small text helpers for trimming/normalization.

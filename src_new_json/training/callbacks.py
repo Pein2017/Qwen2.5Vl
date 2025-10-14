@@ -59,7 +59,7 @@ class LossTracker:
     """
 
     # Configuration
-    
+
     window_size: int = 100
 
     # Loss component history

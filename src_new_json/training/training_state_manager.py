@@ -316,7 +316,7 @@ class TrainingStateManager:
         if "loss" not in logs:
             return
 
-        total_loss = logs["loss"]
+        logs["loss"]
         component_sum = 0.0
 
         # Sum per-role LLM and group losses (all weighted). Groups must sum to role LLM; roles sum to total.

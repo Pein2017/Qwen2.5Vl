@@ -5,66 +5,50 @@ from __future__ import annotations
 import json
 import logging
 import os
+import statistics
 import time
-from collections import defaultdict, deque
-from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
-from PIL import Image
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from transformers import GenerationConfig, Qwen2VLProcessor
 from transformers.generation import LogitsProcessorList
-from transformers.utils import logging as hf_logging
 
 from src_new.models.wrapper import DetectionModel
 from src_post.config import RLRunnerConfig, load_and_validate_config
-from src_post.credit.credit_assignment import get_credit_assigner
 from src_post.data.data_loader import (
     build_balanced_indices,
     build_epoch_indices,
     iter_batches,
 )
 from src_post.data.dataset_group_qc import RLGroupQCDataset
-from src_post.generation.generation import (
-    build_stage_a_context_lines,
-    build_stage_a_stopping,
-    decode_to_text,
-    to_device_and_cast,
-)
+from src_post.generation.generation import build_stage_a_stopping
 from src_post.io.checkpoints import save_if_rank0
-from src_post.logging.diagnostics import (
-    build_item_level_diagnostics,
-    classify_mismatch,
-    compute_phase_a_diagnostics,
-)
 from src_post.logging.logging_utils import (
     aggregate_training_metrics,
     compute_eta,
     rank0_log,
 )
-from src_post.models import (
-    apply_freeze_and_param_groups,
-    load_detection_model,
-    load_processor,
-    wrap_ddp_if_needed,
+from src_post.logging.setup import configure_logging
+from src_post.models import load_detection_model, load_processor, wrap_ddp_if_needed
+from src_post.pipeline import (
+    StageASampler,
+    StageASamplerConfig,
+    StageBCandidate,
+    StageBSampler,
+    StageBSamplerConfig,
+    StageBSamplingDiagnostics,
 )
 from src_post.prompting.conversation import GroupQCConversationBuilder
-from src_post.rewards.compose import compose_reward
-from src_post.tf.teacher_forcing import (
-    kl_to_ref_with_cur_logits,
-    tf_decision_probs,
-    tf_sum_logprob_and_logits_over_response,
-)
+from src_post.training.grpo_loop import GroupMetrics, GRPOLoop
+from src_post.training.grpo_trainer import GRPOTrainer, TrainerComponents
+from src_post.training.optim import build_optimizer, build_scheduler
 
 
 logger = logging.getLogger("src_post.runner")
-logging.basicConfig(
-    level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s"
-)
 
 
 def _get_dist_info() -> Tuple[int, int, int]:
@@ -93,55 +77,39 @@ def _bind_device(device: str) -> str:
     return device
 
 
+def _compute_stage_b_diagnostics(
+    candidates: List[StageBCandidate],
+) -> StageBSamplingDiagnostics:
+    if not candidates:
+        return StageBSamplingDiagnostics(
+            reward_mean=0.0,
+            reward_std=0.0,
+            duplicate_count=0,
+            raw_texts=[],
+            reasons=[],
+        )
+    rewards = [float(c.reward) for c in candidates]
+    text_values = [c.text for c in candidates]
+    reason_values = [c.reason or "" for c in candidates]
+    mean_val = statistics.mean(rewards)
+    std_val = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
+    dup_count = len(text_values) - len(set(text_values))
+    return StageBSamplingDiagnostics(
+        reward_mean=float(mean_val),
+        reward_std=float(std_val),
+        duplicate_count=int(dup_count),
+        raw_texts=text_values,
+        reasons=reason_values,
+    )
+
+
 class RLRunner:
     def __init__(self, cfg: RLRunnerConfig) -> None:
         self.cfg = cfg
         self._decision_ce_ema_state: Optional[float] = None
-        # Sliding window buffers for stable metrics reporting (env-controlled)
-        try:
-            self._metrics_window: int = max(
-                1, int(os.environ.get("METRICS_WINDOW_UPDATES", "50"))
-            )
-        except Exception:
-            self._metrics_window = 50
-        self._win_buf: Dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=self._metrics_window)
-        )
-
-    def _update_window_metrics(self, scalars: Dict[str, float]) -> Dict[str, float]:
-        keys_to_track: List[str] = [
-            "loss",
-            "reward_best_mean",
-            "reward_best_std",
-            "acc_best",
-            "acc_any",
-            "accuracy",
-            "fn_rate",
-            "resp_len_mean",
-            "grad_norm_mean",
-            "kl_b_mean",
-            "phase_a_formatting",
-            "phase_a_coverage",
-            "phase_a_cleanliness",
-            "phase_a_taxonomy",
-            "phase_a_consistency",
-            "skip_updates_std0",
-            "pairwise_trigger_rate",
-            "phase_a_entropy_mean",
-            "reward_margin_best",
-            "flip_rate",
-            "decision_ce_mean",
-            "decision_ce_ema",
-        ]
-        out: Dict[str, float] = {}
-        for k in keys_to_track:
-            if k in scalars and isinstance(scalars[k], (float, int)):
-                self._win_buf[k].append(float(scalars[k]))
-                # mean over window
-                buf = self._win_buf[k]
-                if len(buf) > 0:
-                    out[f"{k}_win"] = float(sum(buf) / float(len(buf)))
-        return out
+        # placeholder for future trainer, metrics handled in trainer to avoid double tracking
+        self._eta_groups_done: int = 0
+        self._eta_time_sum_sec: float = 0.0
 
     def run(self) -> None:
         cfg = self.cfg
@@ -154,6 +122,8 @@ class RLRunner:
             str(os.environ.get("DEBUG_GROUP_QC", "0")).strip().lower()
             in {"1", "true", "yes"}
         ) or bool(getattr(cfg, "debug_verbose", False))
+        rank, world_size, _ = _get_dist_info()
+        repeat_filter = configure_logging(rank, debug=debug_verbose)
         stop_after_updates_env = os.environ.get("STOP_AFTER_UPDATES", "0")
         try:
             stop_after_updates: int = (
@@ -179,24 +149,9 @@ class RLRunner:
                 )
 
         # Reduce verbosity on non-zero ranks
-        try:
-            rank, world_size, _ = _get_dist_info()
-            if rank != 0:
-                os.environ.setdefault("TQDM_DISABLE", "1")
-                os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-                os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
-                hf_logging.set_verbosity_error()
-                for name, level in [
-                    ("src_post", logging.WARNING),
-                    ("src_new", logging.WARNING),
-                    ("transformers", logging.ERROR),
-                ]:
-                    try:
-                        logging.getLogger(name).setLevel(level)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        if rank != 0:
+            os.environ.setdefault("TQDM_DISABLE", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
         # Seeding
         try:
@@ -317,6 +272,62 @@ class RLRunner:
             pad_token_id=processor.tokenizer.pad_token_id,
         )
 
+        stage_a_sampler = StageASampler(
+            policy=policy,
+            processor=processor,
+            conv_builder=conv_builder,
+            generation_config=gen_cfg_stage_a,
+            base_logits_processors=list(logits_processors),
+            stopping=stopping_stage_a,
+            config=StageASamplerConfig(
+                sanitize=bool(cfg.sanitize_stage_a),
+                mission=cfg.mission,
+                enable_diagnostics=bool(cfg.enable_phase_a_diagnostics),
+            ),
+        )
+        stage_b_sampler = StageBSampler(
+            policy=policy,
+            processor=processor,
+            generation_config=gen_cfg_stage_b,
+            base_logits_processors=list(logits_processors),
+            config=StageBSamplerConfig(
+                K_B=int(cfg.K_B),
+                reward_names=list(cfg.reward_fns),
+                reward_weights=list(cfg.reward_weights),
+                group_reward_mode=str(cfg.group_reward_mode),
+                mission=cfg.mission,
+                soft_overlong_penalty_enabled=bool(cfg.soft_overlong_penalty_enabled),
+                soft_overlong_penalty_weight=cfg.soft_overlong_penalty_weight,
+            ),
+        )
+
+        def _build_stage_b_diagnostics(
+            candidates: List[StageBCandidate],
+        ) -> StageBSamplingDiagnostics:
+            if not candidates:
+                return StageBSamplingDiagnostics(
+                    reward_mean=0.0,
+                    reward_std=0.0,
+                    duplicate_count=0,
+                    raw_texts=[],
+                    reasons=[],
+                )
+            rewards_local = [float(c.reward) for c in candidates]
+            mean_local = statistics.mean(rewards_local)
+            std_local = (
+                statistics.pstdev(rewards_local) if len(rewards_local) > 1 else 0.0
+            )
+            texts_local = [c.text for c in candidates]
+            reasons_local = [c.reason or "" for c in candidates]
+            dup_local = len(texts_local) - len(set(texts_local))
+            return StageBSamplingDiagnostics(
+                reward_mean=float(mean_local),
+                reward_std=float(std_local),
+                duplicate_count=int(dup_local),
+                raw_texts=texts_local,
+                reasons=reasons_local,
+            )
+
         # Dataset
         ds_path = cfg.train_data_dir or cfg.eval_data_dir
         if ds_path is None:
@@ -329,54 +340,21 @@ class RLRunner:
         if debug_verbose:
             logger.info(f"[debug] Dataset path resolved to: {Path(ds_path).resolve()}")
 
-        # Freeze and build optimizer param groups
-        params_groups = apply_freeze_and_param_groups(policy, processor.tokenizer, cfg)
-        try:
-            optimizer = torch.optim.AdamW(
-                params_groups,
-                lr=cfg.learning_rate,
-                weight_decay=cfg.weight_decay,
-                fused=True,
-            )  # type: ignore[call-arg]
-            logger.info("Using fused AdamW optimizer (fused=True)")
-        except TypeError:
-            optimizer = torch.optim.AdamW(
-                params_groups, lr=cfg.learning_rate, weight_decay=cfg.weight_decay
+        optimizer, param_group_infos = build_optimizer(policy, processor.tokenizer, cfg)
+        rank, world_size, _ = _get_dist_info()
+        lr_scheduler, updates_per_epoch_rank = build_scheduler(
+            cfg=cfg,
+            optimizer=optimizer,
+            dataset_len=len(dataset),
+            world_size=world_size,
+            rank=rank,
+            limit_groups=int(cfg.limit_groups),
+        )
+        if debug_verbose:
+            logger.info(
+                f"[debug] updates_per_epoch_rank={updates_per_epoch_rank} "
+                f"scheduler={'enabled' if lr_scheduler is not None else 'disabled'}"
             )
-            logger.info("Fused AdamW not available; falling back to standard AdamW")
-        # LR scheduler (cosine/warmup) via HF get_scheduler
-        try:
-            from transformers import get_scheduler
-
-            # Derive steps per rank based on current dataset sharding logic
-            rank, world_size, _ = _get_dist_info()
-            per_rank_indices = build_epoch_indices(
-                dataset_len=len(dataset),
-                world_size=world_size,
-                rank=rank,
-                limit_groups=int(cfg.limit_groups),
-                seed=int(cfg.seed),
-                epoch=0,
-            )
-            # Compute batches per epoch for this rank without consuming the dataset
-            batches = list(
-                iter_batches(per_rank_indices, int(cfg.batch_size), bool(cfg.drop_last))
-            )
-            updates_per_epoch_rank = int(len(batches))
-            total_steps = max(1, int(cfg.epochs) * max(1, updates_per_epoch_rank))
-            warmup_steps = max(0, int(getattr(cfg, "warmup_ratio", 0.0) * total_steps))
-            lr_scheduler = get_scheduler(
-                name=str(getattr(cfg, "lr_scheduler_type", "cosine")),
-                optimizer=optimizer,
-                num_warmup_steps=warmup_steps,
-                num_training_steps=total_steps,
-            )
-            if debug_verbose:
-                logger.info(
-                    f"[debug] updates_per_epoch_rank={updates_per_epoch_rank} total_steps={total_steps} warmup_steps={warmup_steps}"
-                )
-        except Exception:
-            lr_scheduler = None
 
         # Writers and metrics buffers
         update = 0
@@ -391,9 +369,47 @@ class RLRunner:
 
         # Grad accumulation
         grad_accum_steps = max(1, int(getattr(cfg, "grad_accum_steps", 1)))
+        try:
+            metrics_window = max(1, int(os.environ.get("METRICS_WINDOW_UPDATES", "50")))
+        except Exception:
+            metrics_window = 50
+        trainer: Optional[GRPOTrainer] = None
+        try:
+            trainer = GRPOTrainer(
+                components=TrainerComponents(
+                    model=train_model,
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                ),
+                grad_accum_steps=grad_accum_steps,
+                metrics_window=metrics_window,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to initialize GRPOTrainer: {exc}")
+        if trainer is None:
+            raise RuntimeError("GRPOTrainer initialization returned None")
         accum_scale = 1.0 / float(grad_accum_steps)
-        micro_step_counter = 0
-        optimizer.zero_grad(set_to_none=True)
+        trainer.zero_grad()
+        grpo_loop = GRPOLoop(
+            cfg=cfg,
+            device=device,
+            trainer=trainer,
+            stage_a_sampler=stage_a_sampler,
+            stage_b_sampler=stage_b_sampler,
+            conv_builder=conv_builder,
+            processor=processor,
+            policy=policy,
+            train_model=train_model,
+            ddp_policy=ddp_policy,
+            ref_model=ref_model,
+            gen_cfg_stage_a=gen_cfg_stage_a,
+            gen_cfg_stage_b=gen_cfg_stage_b,
+            logits_processors=logits_processors,
+            stopping_stage_a=stopping_stage_a,
+            tb_writer=tb_writer,
+            debug_verbose=debug_verbose,
+            rank=rank,
+        )
 
         # Env override for skip_save
         skip_save_env = os.environ.get("SKIP_SAVE", "0").strip().lower()
@@ -405,6 +421,9 @@ class RLRunner:
         early_stop = False
         for epoch_round in range(int(max(1, cfg.epochs))):
             epoch_idx = epoch_round
+            # reset ETA accumulators per epoch
+            self._eta_groups_done = 0
+            self._eta_time_sum_sec = 0.0
             if bool(getattr(cfg, "balance_pass_fail", False)):
                 try:
                     label_map = dataset.get_label_indices()
@@ -448,60 +467,20 @@ class RLRunner:
                 if early_stop:
                     break
                 update_start_ts = time.time()
-                # Accumulators per batch
-                total_loss = 0.0
-                total_items = 0
-                reward_best_sum = 0.0
-                reward_best_sq_sum = 0.0
-                best_hit_count = 0
-                any_hit_count = 0
-                resp_len_sum = 0
-                kl_b_sum = 0.0
-                kl_b_count = 0
-                grad_norm_sum = 0.0
-                # Phase-A diagnostics sums (placeholders; computed via rewards if enabled)
-                diag_fmt_sum = 0.0
-                diag_cov_sum = 0.0
-                diag_cln_sum = 0.0
-                diag_tax_sum = 0.0
-                diag_cons_sum = 0.0
-                # New metrics accumulators
-                skip_std0_count = 0.0
-                pairwise_trigger_count = 0.0
-                entropy_sum = 0.0
-                margin_best_sum = 0.0
-                flip_hit_count = 0.0
-                decision_ce_sum = 0.0
-                decision_ce_count = 0.0
-                # Additional classification metrics
-                fn_count = 0.0  # GT=fail but pred=pass
-                gt_fail_count = 0.0
-
-                # Stage-B clipped GRPO metrics accumulators
-                sb_clip_low_sum = 0.0
-                sb_clip_high_sum = 0.0
-                sb_clip_region_sum = 0.0
-                sb_clip_den = 0.0
-                sb_entropy_mask_true_sum = 0.0
-                sb_reply_token_sum = 0.0
+                batch_metrics = GroupMetrics()
+                last_stage_b_diag: Optional[StageBSamplingDiagnostics] = None
+                last_stage_b_candidate_count = 0
 
                 for idx in batch_indices:
-                    grp_start_ts = time.time()
                     sample = dataset[idx]
-                    images: List[Image.Image] = sample["images"]
-                    gt_label: str = str(sample["label"]).strip().lower()
-                    # Heartbeat: entering group processing
                     try:
-                        gid = (
-                            sample.get("meta", {}).get("group_id", "-")
-                            if isinstance(sample, dict)
-                            else "-"
-                        )
+                        gid = sample.get("meta", {}).get("group_id", "-")
                     except Exception:
                         gid = "-"
+                    gt_label = str(sample["label"]).strip().lower()
                     try:
                         logger.info(
-                            f"[group] idx={idx} gid={gid} gt={gt_label} images={len(images)} "
+                            f"[group] idx={idx} gid={gid} gt={gt_label} images={len(sample['images'])} "
                             f"K_B={int(cfg.K_B)} K_A={int(cfg.K_A)} mode_A={cfg.train_stage_a_mode} "
                             f"pairwise={bool(cfg.pairwise_credit_enabled)}"
                         )
@@ -513,937 +492,145 @@ class RLRunner:
                     except Exception:
                         pass
 
-                    # 1) Stage-A greedy context lines
-                    # No Stage-A token bias
-                    local_logits_processors = LogitsProcessorList(
-                        list(logits_processors)
+                    sync_now = trainer.should_sync()
+                    group_output = grpo_loop.process_group(
+                        idx=idx,
+                        sample=sample,
+                        accum_scale=accum_scale,
+                        debug_verbose=debug_verbose,
+                        sync_now=sync_now,
                     )
 
-                    t_a_start = time.time()
-                    context_lines = build_stage_a_context_lines(
-                        policy=policy,
-                        processor=processor,
-                        images=images,
-                        gen_cfg=gen_cfg_stage_a,
-                        logits_processors=local_logits_processors,
-                        stopping=stopping_stage_a,
-                        sanitize=bool(cfg.sanitize_stage_a),
-                        mission=cfg.mission,
-                        conv_builder=conv_builder,
-                    )
-                    try:
-                        dt_a = time.time() - t_a_start
-                        preview = ", ".join([str(s)[:] for s in context_lines[:]])
-                        logger.info(
-                            f"[stage-a] done in {dt_a:.2f}s | lines={len(context_lines)} | preview={preview}"
-                        )
-                        if debug_verbose:
-                            logger.info(f"[debug] stage_a_full={context_lines}")
-                    except Exception:
-                        pass
+                    batch_metrics.add_inplace(group_output.metrics)
 
-                    # 2) Stage-B GRPO step
-                    checklist = conv_builder.rules_for_mission(cfg.mission)
-                    # Phase-A diagnostics using reward functions (optional)
-                    if cfg.enable_phase_a_diagnostics:
+                    stage_b_result = group_output.stage_b_result
+                    last_stage_b_diag = stage_b_result.diagnostics
+                    last_stage_b_candidate_count = len(stage_b_result.candidates)
+                    if rank == 0:
+                        best_candidate = stage_b_result.best_candidate()
                         try:
-                            diags = compute_phase_a_diagnostics(
-                                context_lines, checklist, mission=cfg.mission
-                            )
-                            diag_fmt_sum += float(diags.get("formatting", 0.0))
-                            diag_cov_sum += float(diags.get("coverage", 0.0))
-                            diag_cln_sum += float(diags.get("cleanliness", 0.0))
-                            diag_tax_sum += float(diags.get("taxonomy", 0.0))
-                            diag_cons_sum += float(diags.get("consistency", 0.0))
-                            # Item-level diagnostics (lightweight, token-based)
-                            try:
-                                item_diag = build_item_level_diagnostics(
-                                    summary_lines=context_lines, mission=cfg.mission
-                                )
-                            except Exception:
-                                item_diag = None
-                        except Exception as e:
-                            # Fail-fast surface for diagnostics to not silently swallow systemic errors in rewards
-                            raise RuntimeError(f"Phase-A diagnostics failed: {e}")
+                            if best_candidate is not None:
 
-                    if bool(cfg.use_mission_checklist):
-                        msgs_b = conv_builder.build_stage_b_messages(
-                            summary_lines=context_lines, checklist_lines=checklist
-                        )
-                    else:
-                        msgs_b = conv_builder.build_stage_b_messages_minimal(
-                            summary_lines=context_lines
-                        )
-                    text_b = processor.apply_chat_template(
-                        conversation=msgs_b, tokenize=False, add_generation_prompt=True
-                    )
-                    # Fail-fast: Stage-B must not contain any <image> placeholders
-                    conv_builder.validate_image_placeholder_count(text_b, 0)
-                    enc_b = processor(
-                        text=[text_b], images=None, return_tensors="pt", padding=True
-                    )
-                    enc_b = to_device_and_cast(enc_b, device)
-                    if debug_verbose:
-                        try:
-                            logger.info(
-                                f"[debug] stage_b_prompt_len={len(text_b)} input_ids={int(enc_b['input_ids'].size(1))}"
-                            )
-                        except Exception:
-                            pass
-
-                    # Sync params/buffers before DDP forward
-                    if ddp_policy is not None and dist.is_initialized():
-                        try:
-                            ddp_policy._sync_params_and_buffers(authoritative_rank=0)
-                        except Exception:
-                            pass
-
-                    t_b_tf_start = time.time()
-                    tf_p_pass, tf_p_fail = tf_decision_probs(
-                        train_model, enc_b, processor, length_norm=bool(cfg.length_norm)
-                    )
-                    try:
-                        dt_b_tf = time.time() - t_b_tf_start
-                        logger.info(
-                            f"[stage-b/tf] p_pass={tf_p_pass:.4f} p_fail={tf_p_fail:.4f} in {dt_b_tf:.2f}s"
-                        )
-                    except Exception:
-                        pass
-                    # Baseline decision margin for logging
-                    import math as _math
-
-                    eps = 1e-9
-                    margin_best = float(
-                        _math.log(float(tf_p_pass) + eps)
-                        - _math.log(float(tf_p_fail) + eps)
-                    )
-                    margin_best_sum += margin_best
-                    # Decision CE for global guidance
-                    if gt_label == "pass":
-                        ce = -_math.log(float(tf_p_pass) + eps)
-                    else:
-                        ce = -_math.log(float(tf_p_fail) + eps)
-                    decision_ce_sum += float(ce)
-                    decision_ce_count += 1.0
-
-                    replies_token_ids: List[List[int]] = []
-                    replies_text: List[str] = []
-                    rewards_b: List[float] = []
-                    pred_labels: List[Optional[str]] = []
-                    reasons: List[Optional[str]] = []
-
-                    # Build a prefix constraint so Stage-B must start with a strict decision line
-                    prefix_fn = None
-                    try:
-                        from src_post.generation.generation import (
-                            build_decision_prefix_constraint,
-                        )
-
-                        prompt_len_b = int(enc_b["input_ids"].size(1))
-                        prefix_fn = build_decision_prefix_constraint(
-                            processor, prompt_len_b
-                        )
-                    except Exception:
-                        prefix_fn = None
-
-                    t_b_samp_start = time.time()
-                    for _ in range(max(1, int(cfg.K_B))):
-                        with torch.no_grad():
-                            gen_kwargs_b = {
-                                "generation_config": gen_cfg_stage_b,
-                                "logits_processor": logits_processors,
-                            }
-                            if prefix_fn is not None:
-                                gen_kwargs_b["prefix_allowed_tokens_fn"] = prefix_fn
-                            out = policy.generate(
-                                **enc_b,
-                                **gen_kwargs_b,
-                            )
-                        new_ids = out[:, enc_b["input_ids"].size(1) :]
-                        token_ids = new_ids[0].tolist()
-                        if len(token_ids) == 0:
-                            token_ids = [int(processor.tokenizer.eos_token_id)]
-                        text_out = decode_to_text(processor, token_ids)
-                        from src_post.prompting.span_parser import parse_stage_b_output
-
-                        parsed = parse_stage_b_output(text_out)
-                        pred_label = parsed.get("label")
-                        reason = parsed.get("reason")
-                        # Reward composition with group_reward_mode control
-                        reward_names = list(cfg.reward_fns)
-                        # Provide full Stage-B text for formatting reward
-                        # and strict_decision_format
-                        # (keys are optional; reward will fallback to 0.0 if missing)
-                        # text_out included later via compose inputs extension
-                        reward_weights = list(cfg.reward_weights)
-                        if cfg.group_reward_mode == "margin_only":
-                            # Ensure group_margin is included exclusively
-                            reward_names = ["group_margin"]
-                            reward_weights = [1.0]
-                        elif cfg.group_reward_mode == "label_match":
-                            # Deprecated mode; default to margin_only behavior
-                            reward_names = ["group_margin"]
-                            reward_weights = [1.0]
-                        # else: combined → use config as-is
-                        # Detect overlong (hit max tokens without EOS)
-                        hit_max = False
-                        try:
-                            max_len_b = int(gen_cfg_stage_b.max_new_tokens)
-                            hit_max = len(token_ids) >= max_len_b and (
-                                processor.tokenizer.eos_token_id not in token_ids
-                            )
-                        except Exception:
-                            hit_max = False
-                        meta = {
-                            "stage_b_hit_max": bool(hit_max),
-                            "soft_overlong_penalty_weight": float(
-                                cfg.soft_overlong_penalty_weight or 0.0
-                            )
-                            if bool(cfg.soft_overlong_penalty_enabled)
-                            else 0.0,
-                        }
-                        r = compose_reward(
-                            gt_label=gt_label,
-                            pred_label=pred_label,
-                            summary_lines=context_lines,
-                            reason=reason,
-                            checklist_lines=checklist,
-                            reward_names=reward_names,
-                            reward_weights=reward_weights,
-                            tf_p_pass=tf_p_pass,
-                            tf_p_fail=tf_p_fail,
-                            stage_b_text=text_out,
-                            mission=cfg.mission,
-                            meta=meta,
-                        )
-                        if not (r == r and abs(r) != float("inf")):
-                            r = 0.0
-                        replies_token_ids.append(token_ids)
-                        replies_text.append(text_out)
-                        rewards_b.append(float(r))
-                        pred_labels.append(pred_label)
-                        reasons.append(reason)
-                    try:
-                        dt_b_samp = time.time() - t_b_samp_start
-                        if len(rewards_b) > 0:
-                            import statistics as _st
-
-                            _mean = _st.mean(rewards_b)
-                            _std = (
-                                (_st.pvariance(rewards_b) ** 0.5)
-                                if len(rewards_b) > 1
-                                else 0.0
-                            )
-                            # Warn if std≈0 even when texts differ (weak learning signal)
-                            try:
-                                if len(rewards_b) > 1 and _std < 1e-6:
-                                    _unique_texts = len(set(replies_text))
-                                    if _unique_texts > 1:
-                                        logger.warning(
-                                            "[stage-b/sample] Reward std≈0 despite differing replies; reward shaping may be too flat"
-                                        )
-                            except Exception:
-                                pass
-                            # Duplicate detection for Stage-B samples
-                            try:
-                                _txt_counts: Dict[str, int] = {}
-                                for _t in replies_text:
-                                    _txt_counts[_t] = _txt_counts.get(_t, 0) + 1
-                                _all_same_txt = len(_txt_counts) == 1
-                                if _all_same_txt and len(replies_text) >= max(
-                                    1, int(cfg.K_B)
-                                ):
-                                    logger.warning(
-                                        "[stage-b/sample] All sampled replies are identical across K_B; std might be ~0 and learning signal weak"
+                                def _short(s: str, m: int = 120) -> str:
+                                    s = str(s).strip()
+                                    return (
+                                        s
+                                        if len(s) <= m
+                                        else (s[: max(0, m - 1)].rstrip() + "…")
                                     )
-                            except Exception:
-                                pass
-                            # Print raw natural-language reasons (second line), no extra parsing
-                            _raw_reasons = []
-                            for _txt in replies_text:
-                                _lines = _txt.splitlines()
-                                if len(_lines) >= 2:
-                                    _r = _lines[1].strip()
-                                else:
-                                    _r = _txt.strip()
-                                if _r.startswith("原因:") or _r.startswith("原因："):
-                                    _r = _r[3:].strip()
-                                _raw_reasons.append(_r)
-                            logger.info(
-                                f"[stage-b/sample] K_B={len(rewards_b)} in {dt_b_samp:.2f}s | reward_mean={_mean:.3f} std={_std:.3f} | labels={pred_labels} | reasons={_raw_reasons}"
-                            )
-                            if debug_verbose:
+
+                                best_reason_lines = best_candidate.text.splitlines()
+                                best_reason = (
+                                    best_reason_lines[1].strip()
+                                    if len(best_reason_lines) >= 2
+                                    else best_candidate.text.strip()
+                                )
+                                if best_reason.startswith(
+                                    "原因:"
+                                ) or best_reason.startswith("原因："):
+                                    best_reason = best_reason[3:].strip()
                                 logger.info(
-                                    f"[debug] stage_b_raw_best={replies_text[int(max(range(len(rewards_b)), key=lambda i: rewards_b[i]))]}"
+                                    f"[stage-b/best] idx={idx} label={best_candidate.label} reward={best_candidate.reward:.3f} reason={_short(best_reason)}"
                                 )
-                        else:
-                            logger.info(f"[stage-b/sample] K_B=0 in {dt_b_samp:.2f}s")
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
 
-                    with torch.no_grad():
-                        rewards_t = torch.tensor(
-                            rewards_b, dtype=torch.float32, device=device
-                        )
-                        mean = rewards_t.mean()
-                        std = rewards_t.std(unbiased=False)
-                        if float(std.item()) < 1e-6:
-                            # Attempt bounded resampling if configured
-                            attempts = int(getattr(cfg, "max_resample_times", 0) or 0)
-                            if attempts > 0:
-                                tried = 0
-                                while tried < attempts and float(std.item()) < 1e-6:
-                                    tried += 1
-                                    with torch.no_grad():
-                                        # Resample one more candidate
-                                        gen_kwargs_b = {
-                                            "generation_config": gen_cfg_stage_b,
-                                            "logits_processor": logits_processors,
-                                        }
-                                        if prefix_fn is not None:
-                                            gen_kwargs_b["prefix_allowed_tokens_fn"] = (
-                                                prefix_fn
-                                            )
-                                        out = policy.generate(**enc_b, **gen_kwargs_b)
-                                        new_ids = out[:, enc_b["input_ids"].size(1) :]
-                                        token_ids = new_ids[0].tolist() or [
-                                            int(processor.tokenizer.eos_token_id)
-                                        ]
-                                        text_out = decode_to_text(processor, token_ids)
-                                        from src_post.prompting.span_parser import (
-                                            parse_stage_b_output,
-                                        )
-
-                                        parsed = parse_stage_b_output(text_out)
-                                        pred_label = parsed.get("label")
-                                        reason = parsed.get("reason")
-                                        # reuse reward composition
-                                        rn, rw = reward_names, reward_weights
-                                        r_new = compose_reward(
-                                            gt_label=gt_label,
-                                            pred_label=pred_label,
-                                            summary_lines=context_lines,
-                                            reason=reason,
-                                            checklist_lines=checklist,
-                                            reward_names=rn,
-                                            reward_weights=rw,
-                                            tf_p_pass=tf_p_pass,
-                                            tf_p_fail=tf_p_fail,
-                                            stage_b_text=text_out,
-                                            mission=cfg.mission,
-                                        )
-                                        rewards_b.append(float(r_new))
-                                        replies_token_ids.append(token_ids)
-                                        replies_text.append(text_out)
-                                        pred_labels.append(pred_label)
-                                        rewards_t = torch.tensor(
-                                            rewards_b,
-                                            dtype=torch.float32,
-                                            device=device,
-                                        )
-                                        mean = rewards_t.mean()
-                                        std = rewards_t.std(unbiased=False)
-                            if float(std.item()) < 1e-6:
-                                adv = torch.zeros_like(rewards_t)
-                                skip_std0_count += 1.0
-                            else:
-                                adv = (rewards_t - mean) / (std + 1e-6)
-                        else:
-                            adv = (rewards_t - mean) / (std + 1e-6)
-                        adv = torch.clamp(adv, min=-cfg.adv_clip, max=cfg.adv_clip)
-
-                    # DDP no_sync for gradient accumulation: only sync on the last micro-step
-                    sync_now = ((micro_step_counter + 1) % grad_accum_steps) == 0
-                    loss_b_scalar = torch.tensor(
-                        0.0, dtype=torch.float32, device=device
-                    )
-                    with (
-                        ddp_policy.no_sync()
-                        if (ddp_policy is not None and not sync_now)
-                        else nullcontext()
-                    ):
-                        for k in range(len(replies_token_ids)):
-                            logp_k, cur_logits_k, prompt_len_k = (
-                                tf_sum_logprob_and_logits_over_response(
-                                    train_model,
-                                    enc_b,
-                                    replies_token_ids[k],
-                                    cfg.length_norm,
-                                )
+                    if writer is not None and group_output.record is not None:
+                        # attach current ETA (hours) to record for visibility
+                        try:
+                            # average seconds per group so far on this rank
+                            self._eta_groups_done += 1
+                            self._eta_time_sum_sec += float(group_output.dt_group)
+                            avg_sec_per_group = (
+                                self._eta_time_sum_sec / max(1, self._eta_groups_done)
                             )
-                            if bool(getattr(cfg, "enable_clipped_grpo", False)):
-                                # Per-token clipped GRPO with optional entropy mask
-                                from src_post.tf.grpo_loss import (
-                                    apply_entropy_mask_from_logits,
-                                    build_reply_mask,
-                                    compute_ratio_and_clip,
-                                    per_token_logps_from_logits,
-                                    reduce_loss,
-                                )
+                            remaining_current = max(0, epoch_total_local_len - self._eta_groups_done)
+                            remaining_future_epochs = max(0, int(cfg.epochs) - (epoch_idx + 1))
+                            eta_sec = avg_sec_per_group * (
+                                remaining_current + remaining_future_epochs * epoch_total_local_len
+                            )
+                            eta_hours = float(eta_sec / 3600.0)
+                            group_output.record["eta_hours"] = eta_hours
+                        except Exception:
+                            pass
+                        writer.write(json.dumps(group_output.record, ensure_ascii=False) + "\n")
 
-                                # Build full token ids = [prompt + reply] to derive next-token targets
-                                prompt_ids = enc_b["input_ids"].to(cur_logits_k.device)
-                                reply_ids = torch.tensor(
-                                    [replies_token_ids[k]],
-                                    dtype=prompt_ids.dtype,
-                                    device=prompt_ids.device,
-                                )
-                                full_ids = torch.cat([prompt_ids, reply_ids], dim=1)
-                                targets = full_ids[
-                                    :, 1:
-                                ]  # align with logits (next-token targets)
-                                reply_mask = build_reply_mask(
-                                    int(prompt_len_k), cur_logits_k
-                                )
-                                cur_logps = per_token_logps_from_logits(
-                                    cur_logits_k, targets
-                                )
-                                old_logps = cur_logps.detach()
-                                coef_1, coef_2 = compute_ratio_and_clip(
-                                    cur_logps,
-                                    old_logps,
-                                    float(cfg.epsilon_low),
-                                    float(getattr(cfg, "epsilon_high", 0.0) or 0.0),
-                                )
-                                # Broadcast advantage to [B,L] (single-sample batch)
-                                adv_scalar = float(adv[k].detach())
-                                adv_tok = torch.full_like(
-                                    cur_logps, fill_value=adv_scalar
-                                )
-                                per_token_loss = -torch.minimum(
-                                    coef_1 * adv_tok, coef_2 * adv_tok
-                                )
-                                # Optional entropy mask
-                                ent_mask = None
-                                if bool(
-                                    getattr(cfg, "enable_entropy_mask_stage_b", False)
-                                ):
-                                    top_q = getattr(
-                                        cfg, "entropy_top_quantile_stage_b", None
-                                    )
-                                    min_thr = getattr(
-                                        cfg, "entropy_min_threshold_stage_b", None
-                                    )
-                                    ent_mask = apply_entropy_mask_from_logits(
-                                        cur_logits_k,
-                                        reply_mask,
-                                        top_quantile=top_q,
-                                        min_threshold=min_thr,
-                                    )
-                                    per_token_loss = per_token_loss * ent_mask.to(
-                                        per_token_loss.dtype
-                                    )
-                                    # accumulate entropy mask ratio
-                                    sb_entropy_mask_true_sum += float(
-                                        ent_mask.sum().item()
-                                    )
-                                # Add KL term (already computed with cached logits)
-                                term = reduce_loss(
-                                    per_token_loss,
-                                    reply_mask,
-                                    str(getattr(cfg, "loss_type_stage_b", "grpo")),
-                                )
-                                if (
-                                    cfg.use_ref_kl
-                                    and ref_model is not None
-                                    and cfg.lambda_kl_stage_b > 0.0
-                                ):
-                                    kl_k = kl_to_ref_with_cur_logits(
-                                        ref_model,
-                                        enc_b,
-                                        replies_token_ids[k],
-                                        cur_logits_k,
-                                        int(prompt_len_k),
-                                    )
-                                    try:
-                                        kl_b_sum += float(kl_k.detach().item())
-                                        kl_b_count += 1
-                                    except Exception:
-                                        pass
-                                    term = term + (cfg.lambda_kl_stage_b * kl_k)
-                                # accumulate clip ratios over reply tokens
-                                with torch.no_grad():
-                                    low = 1.0 - float(cfg.epsilon_low)
-                                    high = 1.0 + float(
-                                        getattr(cfg, "epsilon_high", 0.0) or 0.0
-                                    )
-                                    is_reply = reply_mask
-                                    # token-level conditions
-                                    is_low = (coef_1 < low) & (adv_tok < 0)
-                                    is_high = (coef_1 > high) & (adv_tok > 0)
-                                    is_region = is_low | is_high
-                                    # restrict to reply tokens
-                                    is_low = is_low & is_reply
-                                    is_high = is_high & is_reply
-                                    is_region = is_region & is_reply
-                                    sb_clip_low_sum += float(is_low.sum().item())
-                                    sb_clip_high_sum += float(is_high.sum().item())
-                                    sb_clip_region_sum += float(is_region.sum().item())
-                                    sb_den_inc = float(is_reply.sum().item())
-                                    sb_clip_den += sb_den_inc
-                                    sb_reply_token_sum += sb_den_inc
-                            else:
-                                # Legacy un-clipped update (−A·logp)
-                                term = -(adv[k].detach()) * logp_k
-                                if (
-                                    cfg.use_ref_kl
-                                    and ref_model is not None
-                                    and cfg.lambda_kl_stage_b > 0.0
-                                ):
-                                    kl_k = kl_to_ref_with_cur_logits(
-                                        ref_model,
-                                        enc_b,
-                                        replies_token_ids[k],
-                                        cur_logits_k,
-                                        int(prompt_len_k),
-                                    )
-                                    try:
-                                        kl_b_sum += float(kl_k.detach().item())
-                                        kl_b_count += 1
-                                    except Exception:
-                                        pass
-                                    term = term + (cfg.lambda_kl_stage_b * kl_k)
-                            # Apply Stage‑B freeze/toggle at backward time
-                            if bool(cfg.train_stage_b) and update >= int(
-                                cfg.freeze_stage_b_steps
-                            ):
-                                scale_b = float(cfg.stage_b_weight)
-                                (term * (accum_scale * scale_b)).backward()
-                            loss_b_scalar = loss_b_scalar + term.detach()
-
-                    # Selection metrics
-                    if len(rewards_b) > 0:
-                        best_idx = int(
-                            max(range(len(rewards_b)), key=lambda i: rewards_b[i])
-                        )
-                    else:
-                        best_idx = 0
-                    best_reward = (
-                        float(rewards_b[best_idx]) if len(rewards_b) > 0 else 0.0
+                    logger.info(
+                        f"[group] idx={idx} done in {group_output.dt_group:.2f}s"
                     )
-                    reward_best_sum += best_reward
-                    reward_best_sq_sum += best_reward * best_reward
-                    best_label = pred_labels[best_idx] if len(pred_labels) > 0 else None
+                    # also print ETA in hours based on running average (rank-local, rough)
                     try:
-                        _ = reasons[best_idx] if len(reasons) > 0 else None
-                        # Log raw natural-language reason (second line) from the best reply
-                        _best_txt = (
-                            replies_text[best_idx] if len(replies_text) > 0 else ""
+                        avg_sec_per_group = (
+                            self._eta_time_sum_sec / max(1, self._eta_groups_done)
                         )
-                        _lines = _best_txt.splitlines()
-                        _best_reason = (
-                            _lines[1].strip() if len(_lines) >= 2 else _best_txt.strip()
+                        remaining_current = max(0, epoch_total_local_len - self._eta_groups_done)
+                        remaining_future_epochs = max(0, int(cfg.epochs) - (epoch_idx + 1))
+                        eta_sec = avg_sec_per_group * (
+                            remaining_current + remaining_future_epochs * epoch_total_local_len
                         )
-                        if _best_reason.startswith("原因:") or _best_reason.startswith(
-                            "原因："
-                        ):
-                            _best_reason = _best_reason[3:].strip()
+                        eta_hours = float(eta_sec / 3600.0)
                         logger.info(
-                            f"[stage-b/best] label={best_label} reward={best_reward:.3f} reason={_best_reason}"
+                            f"[group] idx={idx} eta={eta_hours:.2f}h (rank-local rough estimate)"
                         )
                     except Exception:
                         pass
-                    best_hit_count += int(
-                        isinstance(best_label, str) and best_label == gt_label
-                    )
-                    any_hit = int(
-                        any(
-                            (lbl == gt_label)
-                            for lbl in pred_labels
-                            if isinstance(lbl, str)
-                        )
-                    )
-                    any_hit_count += any_hit
-                    flip_hit_count += float(any_hit)
-                    # FN counting: GT=fail but predicted pass (by best selection)
-                    try:
-                        gt_fail_count += 1.0 if gt_label == "fail" else 0.0
-                        if (
-                            isinstance(best_label, str)
-                            and (best_label == "pass")
-                            and (gt_label == "fail")
-                        ):
-                            fn_count += 1.0
-                    except Exception:
-                        pass
-                    if len(replies_token_ids) > 0:
-                        try:
-                            resp_len_sum += int(len(replies_token_ids[best_idx]))
-                        except Exception:
-                            pass
 
-                    # 3) Stage-A GRPO (conditional only supported here; joint can be added later)
-                    loss_a = torch.tensor(0.0, dtype=torch.float32, device=device)
-                    assigner = get_credit_assigner(cfg.train_stage_a_mode)
-                    if cfg.train_stage_a_mode in {"conditional", "joint"}:
-                        t_a_grpo_start = time.time()
-                        tf_cfg = {
-                            "device": device,
-                            "length_norm": bool(cfg.length_norm),
-                            "logits_processors": logits_processors,
-                            "stopping": stopping_stage_a,
-                            "K_A": int(cfg.K_A),
-                            "max_images_tf": int(cfg.max_images_tf),
-                            "adv_clip": float(cfg.adv_clip),
-                            "ddp_policy": ddp_policy,
-                            "pairs_per_group": int(cfg.pairwise_pairs_per_group),
-                            # Stage-A enhancements
-                            "top_m": int(getattr(cfg, "stage_a_top_m", 0) or 0),
-                            "uncertainty_decay_factor": float(
-                                getattr(cfg, "uncertainty_decay_factor", 0.0) or 0.0
-                            ),
-                            # Scale Stage-A gradients by stage_a_weight
-                            "accum_scale": float(
-                                accum_scale * float(cfg.stage_a_weight)
-                            ),
-                        }
-                        reward_cfg = {
-                            "names": list(cfg.reward_fns),
-                            "weights": list(cfg.reward_weights),
-                            "group_reward_mode": str(cfg.group_reward_mode),
-                            "use_ref_kl": bool(cfg.use_ref_kl),
-                            "ref_model": ref_model,
-                            "lambda_kl_stage_a": float(cfg.lambda_kl_stage_a),
-                            "use_uncertainty_gate": bool(cfg.use_uncertainty_gate),
-                            "entropy_threshold": float(
-                                cfg.uncertainty_gate_min_entropy
-                            ),
-                            "use_mission_checklist": bool(cfg.use_mission_checklist),
-                            "baseline_tf_p_pass": float(tf_p_pass),
-                            "baseline_tf_p_fail": float(tf_p_fail),
-                        }
-                        # Backward inside compute_loss_a should also honor no_sync
-                        with (
-                            ddp_policy.no_sync()
-                            if (ddp_policy is not None and not sync_now)
-                            else nullcontext()
-                        ):
-                            loss_a, diags_a = assigner.compute_loss_a(
-                                policy=policy,
-                                train_model=train_model,
-                                processor=processor,
-                                conv_builder=conv_builder,
-                                images=images,
-                                context_lines=context_lines,
-                                checklist=checklist,
-                                mission=cfg.mission,
-                                gt_label=gt_label,
-                                enc_b_baseline=enc_b,
-                                tf_cfg=tf_cfg,
-                                gen_cfg_a=gen_cfg_stage_a,
-                                reward_cfg=reward_cfg,
-                            )
-                        try:
-                            dt_a_grpo = time.time() - t_a_grpo_start
-                            d_best = (
-                                float(diags_a.get("best_single_delta", 0.0))
-                                if isinstance(diags_a, dict)
-                                else 0.0
-                            )
-                            ent_m = (
-                                float(diags_a.get("phase_a_entropy_mean", 0.0))
-                                if isinstance(diags_a, dict)
-                                else 0.0
-                            )
-                            logger.info(
-                                f"[stage-a/grpo] done in {dt_a_grpo:.2f}s | best_single_delta={d_best:.4f} ent_mean={ent_m:.3f}"
-                            )
-                            if debug_verbose:
-                                logger.info(f"[debug] stage_a_diags={diags_a}")
-                        except Exception:
-                            pass
-                        # Pairwise fallback when enabled and stage-B best != GT and deltas weak
-                        pairwise_triggered_flag = 0
-                        if bool(cfg.pairwise_credit_enabled):
-                            try:
-                                from src_post.credit.credit_assignment import (
-                                    PairwiseFallbackAssigner,
-                                )
-
-                                # Heuristic trigger: reuse baseline vs pair margin condition here is approximate; runner lacks per-image deltas
-                                # We gate on best_label mismatch as a proxy and rely on config to enable sparingly
-                                best_idx = (
-                                    int(
-                                        max(
-                                            range(len(rewards_b)),
-                                            key=lambda i: rewards_b[i],
-                                        )
-                                    )
-                                    if len(rewards_b) > 0
-                                    else 0
-                                )
-                                best_label = (
-                                    pred_labels[best_idx]
-                                    if len(pred_labels) > 0
-                                    else None
-                                )
-                                # Require single-image deltas to be weak and best label mismatch
-                                max_single_delta = (
-                                    float(diags_a.get("best_single_delta", 0.0))
-                                    if isinstance(diags_a, dict)
-                                    else 0.0
-                                )
-                                threshold = float(cfg.pairwise_delta_threshold)
-                                if (
-                                    isinstance(best_label, str)
-                                    and best_label != gt_label
-                                    and int(cfg.pairwise_pairs_per_group) > 0
-                                    and (max_single_delta < threshold)
-                                ):
-                                    pw = PairwiseFallbackAssigner()
-                                    with (
-                                        ddp_policy.no_sync()
-                                        if (ddp_policy is not None and not sync_now)
-                                        else nullcontext()
-                                    ):
-                                        loss_pw, diags_pw = pw.compute_loss_a(
-                                            policy=policy,
-                                            train_model=train_model,
-                                            processor=processor,
-                                            conv_builder=conv_builder,
-                                            images=images,
-                                            context_lines=context_lines,
-                                            checklist=checklist,
-                                            mission=cfg.mission,
-                                            gt_label=gt_label,
-                                            enc_b_baseline=enc_b,
-                                            tf_cfg=tf_cfg,
-                                            gen_cfg_a=gen_cfg_stage_a,
-                                            reward_cfg=reward_cfg,
-                                        )
-                                    loss_a = loss_a + loss_pw
-                                    pairwise_triggered_flag = int(
-                                        diags_pw.get("pairwise_triggered", 0.0)
-                                    )
-                            except Exception as e:
-                                raise RuntimeError(f"Pairwise fallback failed: {e}")
-                        if (
-                            isinstance(diags_a, dict)
-                            and "phase_a_entropy_mean" in diags_a
-                        ):
-                            try:
-                                entropy_sum += (
-                                    float(diags_a["phase_a_entropy_mean"])
-                                    if bool(cfg.use_uncertainty_gate)
-                                    else 0.0
-                                )
-                            except Exception:
-                                raise RuntimeError(
-                                    "Invalid phase_a_entropy_mean diagnostic; expected float"
-                                )
-                        else:
-                            pairwise_triggered_flag = 0
-
-                    # 4) Combine and optimize
-                    # Apply Stage‑B weight and scale Stage‑A by number of images to keep gradient magnitude stable under full coverage
-                    try:
-                        num_images_in_group = (
-                            int(sample.get("num_images", len(images)))
-                            if isinstance(sample, dict)
-                            else len(images)
-                        )
-                    except Exception:
-                        num_images_in_group = len(images)
-                    stage_a_weight_eff = float(cfg.stage_a_weight) / max(
-                        1, int(num_images_in_group)
-                    )
-                    loss = (cfg.stage_b_weight * loss_b_scalar) + (
-                        stage_a_weight_eff * loss_a
-                    )
-                    # Backward for combined scalar (only scaling for accum if there are any remaining grads not already applied)
-                    # Note: Stage-B and Stage-A terms already backpropagated individually above. Here we do nothing to avoid double-backward.
-
-                    # Step when reaching grad_accum_steps
-                    _did_step = False
-                    if (micro_step_counter + 1) % grad_accum_steps == 0:
+                    if sync_now:
                         if ddp_policy is not None:
-                            _gn = torch.nn.utils.clip_grad_norm_(
+                            gn = torch.nn.utils.clip_grad_norm_(
                                 ddp_policy.parameters(), cfg.max_grad_norm
                             )
                         else:
-                            _gn = torch.nn.utils.clip_grad_norm_(
+                            gn = torch.nn.utils.clip_grad_norm_(
                                 policy.parameters(), cfg.max_grad_norm
                             )
-                        optimizer.step()
-                        optimizer.zero_grad(set_to_none=True)
-                        if lr_scheduler is not None:
-                            try:
-                                lr_scheduler.step()
-                            except Exception:
-                                pass
+                        trainer.step()
                         try:
-                            gn_val = (
-                                float(_gn.item())
-                                if hasattr(_gn, "item")
-                                else float(_gn)
+                            batch_metrics.grad_norm_sum += float(
+                                gn.item() if hasattr(gn, "item") else gn
                             )
-                            grad_norm_sum += gn_val
                         except Exception:
                             pass
-                        _did_step = True
-                    micro_step_counter += 1
+                    trainer.advance_accum()
+                    continue
 
-                    total_loss += float(loss.detach().item())
-                    total_items += 1
-                    # Accumulate per-item pairwise trigger count
-                    pairwise_trigger_count += float(pairwise_triggered_flag)
-
-                    # Write per-item results JSONL
-                    if writer is not None:
-                        per_image = []
-                        for img_path, cap in zip(sample["image_paths"], context_lines):
-                            per_image.append(
-                                {"image_id": os.path.basename(img_path), "caption": cap}
-                            )
-                        best_idx = (
-                            int(max(range(len(rewards_b)), key=lambda i: rewards_b[i]))
-                            if len(rewards_b) > 0
-                            else 0
-                        )
-                        # Build cleaner results record (group-level summary + full K_B and Stage-A K_A samples)
-                        group_id = (
-                            sample.get("meta", {}).get("group_id", "-")
-                            if isinstance(sample, dict)
-                            else "-"
-                        )
-                        rec = {
-                            "group_index": idx,
-                            "group_id": group_id,
-                            "mission": cfg.mission,
-                            "gt_label": gt_label,
-                            "k_b": int(cfg.K_B),
-                            "k_a": int(cfg.K_A),
-                            "images": [
-                                {"image_id": os.path.basename(p)}
-                                for p in sample["image_paths"]
-                            ],
-                            "stage_b": {
-                                "best": {
-                                    "pred_label": pred_labels[best_idx]
-                                    if len(pred_labels) > 0
-                                    else None,
-                                    "reward": float(rewards_b[best_idx])
-                                    if len(rewards_b) > 0
-                                    else 0.0,
-                                    "raw": replies_text[best_idx]
-                                    if len(replies_text) > 0
-                                    else "",
-                                },
-                                "candidates": [
-                                    {
-                                        "raw": replies_text[j],
-                                        "reward": float(rewards_b[j])
-                                        if j < len(rewards_b)
-                                        else 0.0,
-                                        "pred_label": pred_labels[j]
-                                        if j < len(pred_labels)
-                                        else None,
-                                    }
-                                    for j in range(len(replies_text))
-                                ],
-                            },
-                            "stage_a": None,  # optionally filled below
-                            "used_minimal_prompt": (
-                                not bool(cfg.use_mission_checklist)
-                            ),
-                            "pairwise_triggered": bool(pairwise_triggered_flag),
-                        }
-                        # Attach item-level diagnostics (strip token lists) and mismatch classification when available
-                        try:
-                            if cfg.enable_phase_a_diagnostics and (
-                                item_diag is not None
-                            ):
-                                # Drop present_pass_tokens/present_fail_tokens for compactness
-                                diag_slim = dict(item_diag)
-                                try:
-                                    if "per_image" in diag_slim:
-                                        for _pi in diag_slim["per_image"]:
-                                            _pi.pop("present_pass_tokens", None)
-                                            _pi.pop("present_fail_tokens", None)
-                                except Exception:
-                                    pass
-                                rec["diag_item_level"] = diag_slim
-                                try:
-                                    rec["diag_mismatch"] = classify_mismatch(
-                                        gt_label=gt_label,
-                                        pred_label=rec.get("pred_label"),
-                                        diag=item_diag,
-                                    )
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                        # Attach Stage-A K_A candidates if available in diags_a
-                        try:
-                            if (
-                                isinstance(diags_a, dict)
-                                and "stage_a_candidates" in diags_a
-                            ):
-                                rec["stage_a"] = diags_a["stage_a_candidates"]
-                        except Exception:
-                            pass
-                        writer.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-                # End-of-group heartbeat (max memory and total time)
-                try:
-                    dt_grp = time.time() - grp_start_ts
-                    if torch.cuda.is_available():
-                        import torch as _t
-
-                        mem_alloc = float(_t.cuda.memory_allocated() / (1024**2))
-                        mem_reserved = float(_t.cuda.memory_reserved() / (1024**2))
-                        logger.info(
-                            f"[group] idx={idx} done in {dt_grp:.2f}s | cuda_mem(MB) alloc={mem_alloc:.1f} reserved={mem_reserved:.1f}"
-                        )
-                    else:
-                        logger.info(f"[group] idx={idx} done in {dt_grp:.2f}s")
-                except Exception:
-                    pass
-
-                # Aggregate per-batch metrics and log (rank0)
-                if total_items > 0:
+                if batch_metrics.total_items > 0:
                     try:
-                        processed_so_far_local_epoch += int(total_items)
+                        processed_so_far_local_epoch += int(batch_metrics.total_items)
                     except Exception:
                         pass
                     # Global reductions
                     dev = torch.device(device)
                     vec_local = torch.tensor(
+                        batch_metrics.to_list(), device=dev, dtype=torch.float32
+                    )
+                    sb_vec_local = torch.tensor(
                         [
-                            float(total_items),
-                            float(total_loss),
-                            float(reward_best_sum),
-                            float(reward_best_sq_sum),
-                            float(best_hit_count),
-                            float(any_hit_count),
-                            float(resp_len_sum),
-                            float(grad_norm_sum),
-                            float(kl_b_sum),
-                            float(kl_b_count),
-                            float(diag_fmt_sum),
-                            float(diag_cov_sum),
-                            float(diag_cln_sum),
-                            float(diag_tax_sum),
-                            float(diag_cons_sum),
-                            float(skip_std0_count),
-                            float(pairwise_trigger_count),
-                            float(entropy_sum),
-                            float(margin_best_sum),
-                            float(flip_hit_count),
-                            float(decision_ce_sum),
-                            float(decision_ce_count),
-                            float(fn_count),
-                            float(gt_fail_count),
+                            batch_metrics.sb_clip_low_sum,
+                            batch_metrics.sb_clip_high_sum,
+                            batch_metrics.sb_clip_region_sum,
+                            batch_metrics.sb_clip_den,
+                            batch_metrics.sb_entropy_mask_true_sum,
+                            batch_metrics.sb_reply_token_sum,
                         ],
                         device=dev,
                         dtype=torch.float32,
                     )
                     if world_size > 1 and dist.is_initialized():
                         dist.all_reduce(vec_local, op=dist.ReduceOp.SUM)
+                        dist.all_reduce(sb_vec_local, op=dist.ReduceOp.SUM)
+                    (
+                        sb_clip_low_sum,
+                        sb_clip_high_sum,
+                        sb_clip_region_sum,
+                        sb_clip_den,
+                        sb_entropy_mask_true_sum,
+                        sb_reply_token_sum,
+                    ) = [float(x) for x in sb_vec_local.tolist()]
                     # Aggregate into scalars
                     agg = aggregate_training_metrics(vec_local, world_size)
                     # Update sliding-window metrics (over last N updates)
-                    agg_win = self._update_window_metrics(agg)
+                    agg_win = trainer.update_metrics(agg)
                     # ETA
                     dt_local = float(time.time() - update_start_ts)
                     dt_t = torch.tensor([dt_local], device=dev, dtype=torch.float32)
@@ -1509,6 +696,25 @@ class RLRunner:
                         if sb_reply_token_sum > 0.0:
                             scalars_to_log["sb_entropy_mask_ratio"] = float(
                                 sb_entropy_mask_true_sum / sb_reply_token_sum
+                            )
+                        suppressed = repeat_filter.suppressed_summary(reset=True)
+                        if suppressed:
+                            scalars_to_log["warnings/suppressed"] = float(
+                                sum(suppressed.values())
+                            )
+                        if last_stage_b_diag is not None:
+                            scalars_to_log["stage_b_reward_mean"] = float(
+                                last_stage_b_diag.reward_mean
+                            )
+                            scalars_to_log["stage_b_reward_std"] = float(
+                                last_stage_b_diag.reward_std
+                            )
+                            scalars_to_log["stage_b_duplicate_count"] = float(
+                                last_stage_b_diag.duplicate_count
+                            )
+                            total_candidates = max(1, last_stage_b_candidate_count)
+                            scalars_to_log["stage_b_duplicate_ratio"] = float(
+                                last_stage_b_diag.duplicate_count / total_candidates
                             )
                         # Tunable logging cadence via cfg.log_step (default=10) + env + edge conditions
                         try:
