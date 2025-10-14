@@ -2,10 +2,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from transformers import Qwen2VLProcessor
+
 from src_new_json.processing.templates import SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_PROMPT
+
 
 # import json  # removed: no longer reading table.json at runtime
 # import os    # removed: no longer resolving external table path
@@ -20,7 +24,7 @@ def _normalize_mission(name: Optional[str]) -> str:
     return "".join(str(name).strip().lower().split())
 
 
-DISPLAY_VARIANTS = {"显示完整", "只显示部分"}
+DISPLAY_VARIANTS = {"显示完整", "只显示部分", "遮挡"}
 
 
 def _normalize_desc_item(text: str) -> str:
@@ -29,11 +33,50 @@ def _normalize_desc_item(text: str) -> str:
     return "/".join(filtered)
 
 
-# def _load_annotation_table(path: str) -> Dict[str, Dict[str, List[str]]]:
-#     ... existing code ...
+def _load_annotation_table_json() -> Optional[Dict[str, Dict[str, List[str]]]]:
+    """Load mission→{pass_items, fail_items} from group_annotation/table.json.
+
+    Returns None when file not found or parsing fails.
+    """
+    try:
+        root = Path(__file__).resolve().parent.parent  # src_post/
+        table_path = root.parent / "group_annotation" / "table.json"
+        if not table_path.exists():
+            return None
+        data = json.loads(table_path.read_text(encoding="utf-8"))
+        mapping: Dict[str, Dict[str, List[str]]] = {}
+        for row in data:
+            mission = _normalize_mission(row.get("mission"))
+            gp = str(row.get("global_pass", "")).strip()
+            items_raw = [
+                str(x).strip()
+                for x in (row.get("desc_summary") or [])
+                if str(x).strip()
+            ]
+            items = [
+                _normalize_desc_item(x) for x in items_raw if _normalize_desc_item(x)
+            ]
+            if mission not in mapping:
+                mapping[mission] = {"pass_items": [], "fail_items": []}
+            if gp == "通过":
+                mapping[mission]["pass_items"].extend(items)
+            elif gp == "不通过":
+                mapping[mission]["fail_items"].extend(items)
+        for m in list(mapping.keys()):
+            mapping[m]["pass_items"] = sorted(
+                list({x for x in mapping[m]["pass_items"]})
+            )
+            mapping[m]["fail_items"] = sorted(
+                list({x for x in mapping[m]["fail_items"]})
+            )
+        return mapping
+    except Exception:
+        return None
 
 
-def _find_best_mission_key(mapping: Dict[str, Any], mission: Optional[str]) -> Optional[str]:
+def _find_best_mission_key(
+    mapping: Dict[str, Any], mission: Optional[str]
+) -> Optional[str]:
     norm = _normalize_mission(mission)
     if not norm:
         return None
@@ -45,44 +88,37 @@ def _find_best_mission_key(mapping: Dict[str, Any], mission: Optional[str]) -> O
     return None
 
 
-def _build_stage_b_system_prompt(mission: Optional[str], pass_items: List[str], fail_items: List[str]) -> str:
+def _build_stage_b_system_prompt(
+    mission: Optional[str], pass_items: List[str], fail_items: List[str]
+) -> str:
     lines: List[str] = [
-        "你是通信机房质检助手（仅依赖标注表进行判断）",
-        "判定规则（只允许使用下方表内词项进行匹配，不得引入表外词项）：",
-        "  1) 若摘要出现任意‘不通过类’词项 → 总评: 不通过",
-        "  2) 否则，若‘通过类’词项全部出现（每项至少出现一次） → 总评: 通过",
-        "  3) 否则（缺少任意通过类词项） → 总评: 不通过",
+        "你是通信机房质检助手。目标：基于多张图片的单行摘要，做一个简明的工单级判断说明。",
         "输出格式严格为两行：",
         "  第一行：总评: 通过 或 总评: 不通过",
-        "  第二行：原因: <自然语言简述（一到两句，允许合并描述，不需列表/编号；若因未覆盖导致不通过，请说明缺失的通过类词项）>（不得引入表外词项）",
+        "  第二行：原因: <用自然语言简述关键依据，可合并表达；可包含‘备注: …’>",
+        "仅做格式约束，不强制引用固定词表；不要输出坐标/特殊标记。",
     ]
     if mission:
         lines.append(f"当前任务：{mission}")
-    lines.append("表内词项（仅供匹配）：")
-    if pass_items:
-        lines.append("  通过类（全部需覆盖）：")
-        lines.extend([f"    - {x}" for x in pass_items])
-    else:
-        lines.append("  通过类：<无>")
-    if fail_items:
-        lines.append("  不通过类（出现任意一项即判不通过）：")
-        lines.extend([f"    - {x}" for x in fail_items])
-    else:
-        lines.append("  不通过类：<无>")
-    # --- Mission-specific minimal detection constraints (highest priority) ---
-    nm = _normalize_mission(mission) if mission else ""
-    extra: List[str] = []
-    if "bbu安装方式检查" in nm:
-        extra.append(" - 至少检测到一个“BBU设备”，否则直接判定为“不通过”（挡风板描述不影响此条）。")
-    if "bbu接地线检查" in nm:
-        extra.append(" - 至少检测到一对以上的配对：同时包含“机柜处接地螺丝”和“地排处接地螺丝”（各≥1），否则直接判定为“不通过”。")
-    if ("bbu线缆布放" in nm) or ("bbu线缆布放要求" in nm):
-        extra.append(" - 至少检测到一对以上的配对：同时包含“BBU端光纤插头”和“ODF端光纤插头”（各≥1），否则直接判定为“不通过”。")
-    if "挡风板安装检查" in nm:
-        extra.append(" - 至少检测到一个“挡风板”，否则直接判定为“不通过”。")
-    if extra:
-        lines.append("附加最低检测要求（不满足直接判不通过）：")
-        lines.extend(extra)
+    # 关键检查项（只列出本 mission 负项要点，过滤可见性描述）
+    focus: List[str] = []
+    for raw in (fail_items or [])[:]:  # 防止过长
+        if not raw:
+            continue
+        item = _normalize_desc_item(str(raw))
+        if not item:
+            continue
+        focus.append(item)
+    focus = sorted(list({x for x in focus}))[:8]
+    if focus:
+        lines.append(
+            "关键检查项（与本任务密切相关；可见性类‘遮挡/只显示部分/显示完整’不作为直接依据）："
+        )
+        for it in focus:
+            lines.append(f"  - {it}")
+        lines.append(
+            "若关键项不可确认或命中负项，请输出‘不通过’，并简要说明原因；非本任务范围的异常可忽略。"
+        )
     return "\n".join(lines)
 
 
@@ -193,7 +229,9 @@ def _inline_annotation_items() -> Dict[str, Dict[str, List[str]]]:
     for row in rows:
         mission = _normalize_mission(row.get("mission"))
         gp = str(row.get("global_pass", "")).strip()
-        items_raw = [str(x).strip() for x in (row.get("desc_summary") or []) if str(x).strip()]
+        items_raw = [
+            str(x).strip() for x in (row.get("desc_summary") or []) if str(x).strip()
+        ]
         items = [_normalize_desc_item(x) for x in items_raw if _normalize_desc_item(x)]
         if mission not in mapping:
             mapping[mission] = {"pass_items": [], "fail_items": []}
@@ -214,7 +252,9 @@ class GroupQCConversationBuilder:
     Image tensorization should be handled by `Qwen2VLProcessor` in the runner.
     """
 
-    def __init__(self, processor: Qwen2VLProcessor, annotation_path: Optional[str] = None) -> None:
+    def __init__(
+        self, processor: Qwen2VLProcessor, annotation_path: Optional[str] = None
+    ) -> None:
         self.processor = processor
         # Inline annotation table (do not read external files)
         self._annotation_path = "<inline>"
@@ -232,7 +272,9 @@ class GroupQCConversationBuilder:
         items = self._mission_items[key]
         return list(items.get("pass_items", [])) + list(items.get("fail_items", []))
 
-    def build_stage_a_messages(self, mission: Optional[str] = None) -> List[Dict[str, Any]]:
+    def build_stage_a_messages(
+        self, mission: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Build Stage-A messages for single-image summary generation.
 
         Returns a messages list with one `<image>` placeholder in user content.
@@ -242,32 +284,24 @@ class GroupQCConversationBuilder:
         user_text = SUMMARY_USER_PROMPT
         key = _find_best_mission_key(self._mission_items, mission)
         if key is not None:
-            pass_items = self._mission_items[key].get("pass_items", [])
-            fail_items = self._mission_items[key].get("fail_items", [])
+            # Retain mission context line only; no checklist expansion
             lines: List[str] = [
-                f"任务概览：{mission}。请逐张图核验清单里的词项，不要引入表外描述。",
-                "先把每个通过类词项确认一遍：看到就直接照原词写‘×1’；如果没看到或角度不清，请写‘未见<词项>×1’或‘<词项>/不符合要求×1’，方便最终判定。",
-                "一旦发现不通过类词项，也要照原词写出并补充位置。",
-                "清单如下（已去掉“显示完整”“只显示部分”等辅助描述）：",
-                "- 通过类（全部需要覆盖）：",
-            ] + [f"  - {x}" for x in pass_items]
-            lines += [
-                "- 不通过类（出现任意一项即判不通过）：",
-            ] + [f"  - {x}" for x in fail_items]
+                f"任务概览：{mission}。请仅陈述可见事实，优先描述关键信息；如不确定，句末用‘，备注: …’精简说明。"
+            ]
             user_text = user_text + "\n" + "\n".join(lines)
         generic_lines = [
-            "只输出一行中文，语句精简自然，避免堆砌或重复。",
-            "看不清或被遮挡，请直接说明真实情况，不要猜测。",
-            "不要写坐标、几何数据或特殊标记；与当前任务无关的现象直接忽略。",
-            "仅引用或同义转述表内词项；无需重复‘显示完整/只显示部分’等修饰语。",
-            "发现不通过类词项时，请在描述中注明位置或对应的图像编号。",
-            "每个要点末尾都要写‘×数量’，数量为1也要写×1，禁止单独写‘×’或留空。",
-            "要点之间使用全角逗号，例如：机柜处接地螺丝/符合要求×1，电线/捆扎整齐×1。",
+            "只输出一行中文，语句简洁自然，避免堆砌或重复。",
+            "不要写坐标、几何或特殊标记；与任务无关的现象忽略。",
+            # 业务说明：‘遮挡/显示部分/显示完整’仅作为可见性描述，不能作为决定性依据，不要据此直接下最终结论
+            "若存在无法确认/信息缺失/标签不可识别/安装方向不明等情况，请在末尾补充‘，备注: …’，并明确指出不确定性。",
         ]
         user_text = user_text + "\n" + "\n".join(generic_lines)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_text},
-            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": user_text}]},
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": user_text}],
+            },
         ]
         GroupQCConversationBuilder.validate_typed_image_count(messages, 1)
         return messages
@@ -278,34 +312,46 @@ class GroupQCConversationBuilder:
         """Build Stage-B messages for text aggregation and final decision (table-only)."""
         summaries_text = "\n".join(summary_lines)
         user_text = (
-            "请仅依据下方‘表内词项’进行匹配与判断，输出严格两行（总评/原因），不得引入表外词项。第二行用自然语言简述原因。\n"
+            "请基于下方摘要做两行输出（第一行‘总评: 通过/不通过’，第二行‘原因: …’），"
+            "不要输出坐标或特殊标记；原因用自然语言简述关键依据，可合并表达；如不确定，可在末尾补充‘备注: …’。\n"
             f"摘要列表：\n{summaries_text}"
         )
         if self._last_mission_key and self._last_mission_key in self._mission_items:
             items = self._mission_items[self._last_mission_key]
             pass_items = items.get("pass_items", [])
             fail_items = items.get("fail_items", [])
-            system_prompt = _build_stage_b_system_prompt(self._last_mission_name, pass_items, fail_items)
+            system_prompt = _build_stage_b_system_prompt(
+                self._last_mission_name, pass_items, fail_items
+            )
         else:
             system_prompt = _build_stage_b_system_prompt(None, [], [])
+        # 增加多样化与不确定性提示
+        diversity_hint = "请避免重复用语/模板化句式，允许多种合理表达；"
+        uncertainty_hint = "若关键项不可确认（如标签缺失/安装方向不明），请输出‘不通过’，并简要说明原因。"
+        system_full = system_prompt + "\n" + diversity_hint + "\n" + uncertainty_hint
         messages: List[Dict[str, str]] = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": system_full},
             {"role": "user", "content": user_text},
         ]
         return messages
 
-    def build_stage_b_messages_minimal(self, summary_lines: List[str]) -> List[Dict[str, str]]:
+    def build_stage_b_messages_minimal(
+        self, summary_lines: List[str]
+    ) -> List[Dict[str, str]]:
         """Build Stage-B messages without checklist (table-only)."""
         summaries_text = "\n".join(summary_lines)
         user_text = (
-            "请仅依据下方‘表内词项’进行匹配与判断，输出严格两行（总评/原因），不得引入表外词项。第二行用自然语言简述原因。\n"
+            "请基于下方摘要做两行输出（第一行‘总评: 通过/不通过’，第二行‘原因: …’），"
+            "不要输出坐标或特殊标记；原因用自然语言简述关键依据，可合并表达；如不确定，可在末尾补充‘备注: …’。\n"
             f"摘要列表：\n{summaries_text}"
         )
         if self._last_mission_key and self._last_mission_key in self._mission_items:
             items = self._mission_items[self._last_mission_key]
             pass_items = items.get("pass_items", [])
             fail_items = items.get("fail_items", [])
-            system_prompt = _build_stage_b_system_prompt(self._last_mission_name, pass_items, fail_items)
+            system_prompt = _build_stage_b_system_prompt(
+                self._last_mission_name, pass_items, fail_items
+            )
         else:
             system_prompt = _build_stage_b_system_prompt(None, [], [])
         messages: List[Dict[str, str]] = [
@@ -327,7 +373,9 @@ class GroupQCConversationBuilder:
         return text
 
     @staticmethod
-    def validate_image_placeholder_count(rendered_text: str, expected_num_images: int) -> None:
+    def validate_image_placeholder_count(
+        rendered_text: str, expected_num_images: int
+    ) -> None:
         count = rendered_text.count("<image>")
         if count != expected_num_images:
             raise ValueError(
@@ -335,12 +383,20 @@ class GroupQCConversationBuilder:
             )
 
     @staticmethod
-    def validate_typed_image_count(messages: List[Dict[str, Any]], expected_num_images: int) -> None:
+    def validate_typed_image_count(
+        messages: List[Dict[str, Any]], expected_num_images: int
+    ) -> None:
         if not isinstance(messages, list) or not messages:
-            raise ValueError("Messages must be a non-empty list for typed image validation")
+            raise ValueError(
+                "Messages must be a non-empty list for typed image validation"
+            )
         typed_count = 0
         for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "user" and isinstance(msg.get("content"), list):
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and isinstance(msg.get("content"), list)
+            ):
                 for item in msg["content"]:
                     if isinstance(item, dict) and item.get("type") == "image":
                         typed_count += 1

@@ -11,23 +11,22 @@ Simplified, self-contained implementation that:
 """
 from __future__ import annotations
 
-import logging
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
-from src_new_json.types import ConversationVariant
 
 import torch
 from PIL import Image
 from transformers import Qwen2VLProcessor
 
-from src_new_json.processing.templates import CONSTANTS, get_system_prompt
-from src_new_json.processing.special_tokens import IMAGE_PAD
-from src_new_json.processing.variants import create_default_variant_registry
 from src_new_json.processing.json_formatter import JsonGeometryFormatter
+from src_new_json.processing.special_tokens import IMAGE_PAD
+from src_new_json.processing.templates import get_system_prompt
+from src_new_json.processing.variants import create_default_variant_registry
+from src_new_json.types import ConversationVariant
 from src_new_json.types.json_schema import JsonSchema
 from src_new_json.utils.rank_aware_logging import get_rank_aware_logger
+
 
 logger = get_rank_aware_logger("processing.conversation")
 
@@ -76,10 +75,10 @@ class ConversationType(Enum):
 
 class ConversationValidator:
     """Validator for conversation structure and content."""
-    
+
     def __init__(self):
         pass
-    
+
     def validate(self, conversation: Dict[str, Any]) -> ConversationValidationResult:
         """Validate a conversation structure."""
         # Basic validation implementation
@@ -88,7 +87,7 @@ class ConversationValidator:
                 is_valid=False,
                 error_message="Conversation must be a dictionary"
             )
-        
+
         return ConversationValidationResult(is_valid=True)
 
     @staticmethod
@@ -584,7 +583,7 @@ class ConversationProcessor:
                 logger.warning(f"Skipping teacher sample with empty/invalid objects: {type(t_sample.get('objects'))}")
                 continue
             objs = t_sample["objects"]
-            
+
             t_render = assistant_fn(objs)
             t_assistant = (
                 t_render["text"] if isinstance(t_render, dict) and "text" in t_render else t_render

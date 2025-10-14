@@ -7,9 +7,9 @@ Validation and transformation utilities moved to coordinate_manager.py.
 
 from .file_ops import FileOperations
 from .sanitizers import (
-    strip_occlusion_tokens,
     sanitize_text,
     standardize_label_description,
+    strip_occlusion_tokens,
 )
 
 

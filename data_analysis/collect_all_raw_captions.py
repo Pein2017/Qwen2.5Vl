@@ -12,13 +12,13 @@ Example:
     python collect_all_raw_captions.py ds_v2 --output chinese_annotations.json
 """
 
-import json
-import os
 import argparse
-from pathlib import Path
-from typing import Dict, List, Any, Set
-from collections import defaultdict, Counter
+import json
 import logging
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any, Dict, List
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

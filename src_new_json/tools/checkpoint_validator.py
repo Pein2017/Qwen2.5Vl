@@ -5,7 +5,6 @@ This module provides tools to validate that saved checkpoints have the correct
 structure and components for inference compatibility.
 """
 
-import json
 from pathlib import Path
 from typing import Dict, Tuple
 

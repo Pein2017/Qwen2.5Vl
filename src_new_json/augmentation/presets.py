@@ -5,10 +5,7 @@ from typing import Dict, Literal, Optional
 
 from src_new_json.config.augmentation_config import (
     AugmentationConfig,
-    CriteriaConfig,
     ImageGeomConfig,
-    LineAugConfig,
-    OcclusionCriterionConfig,
     OCRPolicyConfig,
     PhotometricConfig,
     SmartResizeConfig,

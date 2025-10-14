@@ -1,0 +1,113 @@
+# ===== GROUP QC RL DEBUG CONFIGURATION =====
+# Group-level Quality Control with GRPO - DEBUG (src_post.runner)
+
+# Required paths
+checkpoint: outputs/summary/9-23-summary/best-200-eval_loss0.1945
+processor:  outputs/summary/9-23-summary/best-200-eval_loss0.1945
+output_dir: outputs_post/group_qc/grpo_debug_baseline
+train_data_dir: group_data/bbu_scene_2.0_order/挡风板安装检查
+mission: 挡风板安装检查
+
+# Runtime
+device: cuda
+seed: 17
+limit_groups: 100
+balance_pass_fail: true
+
+# Logging & outputs
+results_jsonl: outputs_post/group_qc/results.debug.baseline.jsonl
+metrics_jsonl: outputs_post/group_qc/metrics.debug.baseline.jsonl
+tb_log_dir: tb_post
+run_name: debug-baseline
+log_step: 1
+
+# Generation (Stage-A/B)
+temperature: 0.9
+top_p: 0.95
+max_new_tokens_stage_a: 64
+max_new_tokens_stage_b: 96
+mask_geometry_tokens: false
+mask_coordinate_tokens: false
+sanitize_stage_a: false
+
+# GRPO sampling
+K_B: 4
+K_A: 4
+K_set: 1
+adv_clip: 1.5
+length_norm: true
+
+# Training
+train: true
+epochs: 1
+batch_size: 1
+learning_rate: 1.0e-5
+weight_decay: 1.0e-3
+max_grad_norm: 0.5
+drop_last: true
+
+# Selective unfreeze & LRs
+llm_top_k_block: 1
+vision_top_k_block: 0
+freeze_patch_embed: true
+train_aligner: true
+aligner_lr: 1.5e-5
+llm_lr: 8.0e-6
+vision_lr: 4.0e-6
+
+# KL to reference
+use_ref_kl: false
+ref_checkpoint: outputs/summary/9-23-summary/best-200-eval_loss0.1945
+lambda_kl_stage_b: 0.02
+lambda_kl_stage_a: 0.02
+
+# Stage‑A training mode
+train_stage_a_mode: conditional
+stage_a_weight: 1.0
+max_images_tf: 99
+temperature_stage_a: 0.9
+top_p_stage_a: 0.95
+
+# Stage‑B controls
+train_stage_b: true
+stage_b_weight: 1.0
+freeze_stage_b_steps: 300
+use_mission_checklist: false
+temperature_stage_b: 0.9
+top_p_stage_b: 0.97
+
+# Rewards (registry-supported)
+reward_fns: group_margin,coverage,soft_lexicon,rep_penalty,quote_penalty,special_penalty
+reward_weights: 1.0,0.8,-0.2,-0.2,-0.1,-0.2
+group_reward_mode: margin_only
+
+# Pairwise/uncertainty/diagnostics
+pairwise_credit_enabled: true
+pairwise_pairs_per_group: 1
+pairwise_delta_threshold: 0.2
+use_uncertainty_gate: true
+uncertainty_gate_min_entropy: 0.08
+enable_phase_a_diagnostics: true
+
+# Extras
+grad_accum_steps: 1
+decision_ce_ema_beta: 0.9
+
+# Enhancements (baseline: disabled)
+enable_clipped_grpo: false
+epsilon_low: 0.2
+epsilon_high: 0.0
+loss_type_stage_b: grpo
+enable_entropy_mask_stage_b: false
+entropy_top_quantile_stage_b: 0.2
+max_resample_times: 2
+stage_a_top_m: 2
+uncertainty_decay_factor: 0.6
+pairwise_select: heuristic
+log_all_candidates: true
+soft_overlong_penalty_enabled: false
+soft_overlong_penalty_weight: 0.2
+
+# Checkpoint saving
+save_step: 0
+save_limit: 3

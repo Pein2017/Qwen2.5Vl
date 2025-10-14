@@ -20,6 +20,7 @@ adapter config is present.
 import sys
 from pathlib import Path
 
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import argparse
@@ -46,6 +47,7 @@ from pathlib import Path as _Path  # noqa: E402
 
 from src.config import init_config as _init_config  # noqa: E402
 
+
 _default_cfg_path = _Path(__file__).resolve().parents[1] / "configs" / "base_flat.yaml"
 _init_config(str(_default_cfg_path))
 
@@ -59,6 +61,7 @@ from transformers import AutoProcessor
 # Patch Qwen2.5-VL first (mRoPE, vision fixes)
 # ----------------------------------------------------------------------------
 from src.models.patches import apply_comprehensive_qwen25_fixes
+
 
 apply_comprehensive_qwen25_fixes()
 
@@ -88,7 +91,7 @@ QUESTION_CN = """
 
 1. **BBU设备**
    - bbu基带处理单元/华为
-   - bbu基带处理单元/中兴  
+   - bbu基带处理单元/中兴
    - bbu基带处理单元/爱立信
 
 2. **螺丝连接点**

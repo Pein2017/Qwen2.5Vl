@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set, Tuple, Optional
-from functools import lru_cache
+from typing import Any, Dict, List, Optional, Set
 
-from src_post.utils.text import _extract_keywords
 from src_post.prompting.schema import get_mission_checks
 from src_post.rewards.lexicon import CANONICAL_SLOTS
+from src_post.utils.text import _extract_keywords
+
 
 # Fallback canonical slots
 _SLOTS: Dict[str, Set[str]] = CANONICAL_SLOTS

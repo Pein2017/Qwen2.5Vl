@@ -11,7 +11,9 @@ from src_new_json.config.augmentation_config import CriteriaConfig
 
 
 try:
-    from src_new_json.utils.rank_aware_logging import get_rank_aware_logger as _get_logger
+    from src_new_json.utils.rank_aware_logging import (
+        get_rank_aware_logger as _get_logger,
+    )
 
     _logger = _get_logger(__name__)
 except Exception:

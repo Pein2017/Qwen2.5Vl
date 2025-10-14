@@ -13,7 +13,6 @@ from src_new.config.augmentation_config import (
     CriteriaConfig,
     ImageGeomConfig,
     LineAugConfig,
-    OcclusionCriterionConfig,
     PhotometricConfig,
     SmartResizeConfig,
 )
@@ -91,7 +90,7 @@ class TestObjectAwareAug(unittest.TestCase):
         scale_y = expected_h / sample["height"]
 
         bbox = out_sample["objects"][0]["bbox_2d"]
-        expected_bbox = [
+        [
             int(round(12 * scale_x)),
             int(round(12 * scale_y)),
             int(round(58 * scale_x)),
@@ -242,7 +241,7 @@ class TestObjectAwareAug(unittest.TestCase):
             l = o["line"]
             self.assertEqual(len(l), 2 * 32)
 
-        
+
 
 if __name__ == "__main__":
     unittest.main()

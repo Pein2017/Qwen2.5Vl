@@ -13,7 +13,6 @@ Usage:
   python ./scripts/migrate_to_expanded_cache.py
 """
 
-import os
 
 # Configuration - Define all parameters here
 BASE_MODEL_PATH = "./model_cache/Qwen/Qwen2.5-VL-7B-Instruct"
@@ -38,7 +37,6 @@ from transformers import (
     Qwen2VLImageProcessor,
     Qwen2VLProcessor,
 )
-
 from transformers.models.qwen2_vl.video_processing_qwen2_vl import Qwen2VLVideoProcessor
 
 

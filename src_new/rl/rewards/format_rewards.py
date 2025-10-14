@@ -15,6 +15,7 @@ from src_new.processing.parse_generated import parse_geometry_response
 
 # Canonical wrappers sourced from the single authority
 from src_new.processing.special_tokens import GEOMETRY_TOKENS
+from src_new.rl.rewards.sanitizer import sanitize_tail_geometry_block
 
 
 OBJ_S, OBJ_E, BOX_S, BOX_E = (
@@ -47,6 +48,7 @@ def check_wrappers(text: str) -> float:
     has_box = BOX_S in text and BOX_E in text
     has_quad = QUAD_S in text and QUAD_E in text
     has_line = LINE_S in text and LINE_E in text
+    # Strong penalty if wrappers are missing after SFT (treat as low-level issue)
     return 1.0 if has_obj and (has_box or has_quad or has_line) else 0.0
 
 
@@ -232,7 +234,12 @@ def check_banned_vocab(text: str) -> float:
 
 
 def parse_reward(text: str) -> float:
-    """Binary parse success when any geometry wrapper is present."""
+    """Binary parse success when any geometry wrapper is present.
+
+    Also drop the last complete geometry block from the tail to avoid counting
+    an incomplete final object when EOS is missing; length_vs_gt will handle length.
+    """
+    text = sanitize_tail_geometry_block(text)
     for pat in (BOX_S, QUAD_S, LINE_S):
         if pat in text:
             return 1.0

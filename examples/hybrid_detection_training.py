@@ -28,6 +28,7 @@ object detection losses into LLM training paradigm.
 import os
 import sys
 
+
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -146,7 +147,7 @@ def explain_hybrid_strategy():
    - Cons: May not reflect actual generation quality
    - When: Training steps 0-1000
 
-2️⃣ **Inference Mode** (Late Training)  
+2️⃣ **Inference Mode** (Late Training)
    - Generates complete responses during training
    - Pros: Realistic, better alignment
    - Cons: Slower, more memory intensive

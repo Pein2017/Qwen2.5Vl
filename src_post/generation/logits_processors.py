@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Set
+from typing import List, Optional, Set
 
 import torch
 from transformers.generation.logits_process import LogitsProcessor
@@ -85,12 +85,3 @@ class GeometryCoordMaskLogitsProcessor(LogitsProcessor):
         scores.index_fill_(dim=1, index=banned_ids_tensor, value=min_val)
         return scores
 
-
-class _Removed: pass
-    """Adds a positive bias to token ids derived from a set of mission tokens.
-
-    Use this at training time to make Stage-A more likely to emit mission fail tokens
-    for GT=fail groups. The bias is additive on logits.
-    """
-
-    pass

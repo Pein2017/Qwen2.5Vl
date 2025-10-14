@@ -128,7 +128,13 @@ def apply_entropy_mask_from_logits(
     return ent_mask & reply_mask
 
 
-def reduce_loss(per_token_loss: Tensor, reply_mask: Tensor, loss_type: str) -> Tensor:
+def reduce_loss(
+    per_token_loss: Tensor,
+    reply_mask: Tensor,
+    loss_type: str = "grpo",
+    *,
+    keep_batch: bool = False,
+) -> Tensor:
     """Reduce per-token loss to scalar according to loss_type.
 
     - grpo: mean over sentences of (sum over reply tokens / num reply tokens)
@@ -140,10 +146,12 @@ def reduce_loss(per_token_loss: Tensor, reply_mask: Tensor, loss_type: str) -> T
     B, L = per_token_loss.shape
     denom = reply_mask.sum(dim=1).clamp(min=1)
     if loss_type == "grpo":
-        loss = ((per_token_loss * reply_mask).sum(dim=1) / denom).mean()
-        return loss
+        per_sample = (per_token_loss * reply_mask).sum(dim=1) / denom
+        return per_sample if keep_batch else per_sample.mean()
     if loss_type in {"bnpo", "dr_grpo"}:
         total = reply_mask.sum().clamp(min=1)
+        if keep_batch:
+            return (per_token_loss * reply_mask).sum(dim=1)
         loss = (per_token_loss * reply_mask).sum() / total
         return loss
     raise ValueError(f"Unknown loss_type: {loss_type}")

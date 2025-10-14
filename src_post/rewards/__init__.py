@@ -2,17 +2,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Dict, Callable, Any, List
+from typing import Any, Callable, Dict, List
 
-from .coverage import coverage_reward
 from .basic import exact_label_match_reward
+from .coverage import coverage_reward
 from .group_margin import group_margin
-from .repetition import repetition_penalty, quote_penalty, special_token_penalty
-from .soft_overlong import soft_overlong_penalty
-from .lexicon_shaping import table_lexicon_conformity
-from .lexicon_shaping import soft_lexicon_alignment
+from .lexicon import CANONICAL_SLOTS, FORBIDDEN_DECISION_WORDS, NEGATIVE_TOKENS
+from .lexicon_shaping import soft_lexicon_alignment, table_lexicon_conformity
 from .mission_outcome import negative_alignment_reward, positive_alignment_reward
-from .lexicon import NEGATIVE_TOKENS, FORBIDDEN_DECISION_WORDS, CANONICAL_SLOTS
+from .repetition import quote_penalty, repetition_penalty, special_token_penalty
+from .soft_overlong import soft_overlong_penalty
 
 
 RewardFn = Callable[[Dict[str, Any]], float]

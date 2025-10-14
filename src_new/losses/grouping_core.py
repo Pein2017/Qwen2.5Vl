@@ -12,13 +12,13 @@ This module reduces duplication in token_grouping and makes future extensions si
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 
-from src_new.processing.special_tokens import ASSISTANT_SPAN_RE, get_coord_token_range
+from src_new.processing.special_tokens import get_coord_token_range
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ def build_id_sets(tok) -> GroupingIdSets:
 
 def build_base_predicates(
 	*,
-	labels: torch.Tensor,	
+	labels: torch.Tensor,
 	ids: GroupingIdSets,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, bool]:
 	"""Build base boolean predicates and wrapper presence flag from labels.

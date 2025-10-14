@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import unittest
+
 import torch
 from transformers import AutoTokenizer
 
-from src_new.processing.special_tokens import IM_START, IM_END, IMAGE_PAD, ASSISTANT_HEADER
 from src_new.processing.span_builder import build_assistant_spans_token_aligned
+from src_new.processing.special_tokens import (
+    ASSISTANT_HEADER,
+    IM_END,
+    IM_START,
+    IMAGE_PAD,
+)
 
 
 MODEL_PATHS = [

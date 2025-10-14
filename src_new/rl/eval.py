@@ -20,7 +20,11 @@ from src_new.processing.special_tokens import (
 )
 from src_new.rl.data.dataset import RLDenseJSONLDataset
 from src_new.rl.eval_utils import dump_samples, objects_to_boxes
-from src_new.rl.generation import generate_completions, prepare_generate_inputs
+from src_new.rl.generation import (
+    build_generation_args,
+    generate_completions,
+    prepare_generate_inputs,
+)
 from src_new.rl.prompting.conversation import (
     RLConversationContext,
 )
@@ -38,9 +42,22 @@ def _prepare_gen_kwargs(tok, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "max_new_tokens": int(cfg.get("max_new_tokens", 256)),
         "do_sample": True,
         "temperature": float(cfg.get("temperature", 0.9)),
-        "top_p": float(cfg.get("top_p", 0.9)),
         "use_cache": True,
     }
+    # keep optional args consistent with generation helpers
+    opt = build_generation_args(
+        tokenizer=tok,
+        max_new_tokens=kwargs["max_new_tokens"],
+        temperature=kwargs["temperature"],
+        top_p=float(cfg.get("top_p", 0.9)),
+        min_new_tokens=int(cfg.get("min_new_tokens", 0))
+        if cfg.get("min_new_tokens") is not None
+        else None,
+        repetition_penalty=float(cfg.get("repetition_penalty", 0.0))
+        if cfg.get("repetition_penalty") is not None
+        else None,
+    )
+    kwargs.update(opt)
     if isinstance(eos_id, int) and eos_id >= 0:
         kwargs["eos_token_id"] = eos_id
     return kwargs
@@ -165,7 +182,7 @@ def compute_absolute_metrics(
         float(nums) / float(max(1, len(text.split()))), float(digits) / float(total)
     )
 
-    return {
+    out = {
         "object_count_mae": float(
             abs(len(pred_objs) - (len(gt_objs) if isinstance(gt_objs, list) else 0))
         ),
@@ -177,6 +194,16 @@ def compute_absolute_metrics(
         "banned_vocab_rate": banned_rate,
         "numeric_tail_fraction": float(numeric_tail_fraction),
     }
+
+    # Optional: include assignment_f1 if registry is available
+    try:
+        from src_new.rl.rewards.assignment import assignment_f1 as _assign
+
+        out["assignment_f1_mean"] = float(_assign(text, meta=meta))
+    except Exception:
+        pass
+
+    return out
 
 
 def evaluate(config_path: str) -> Dict[str, Any]:

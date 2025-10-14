@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Set
 
+
 # Canonical negative tokens (align with SFT summary templates)
 NEGATIVE_TOKENS: Set[str] = set([
     # Connection issues

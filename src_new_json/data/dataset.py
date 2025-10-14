@@ -14,7 +14,6 @@ Key Features:
 import json
 import logging
 import random
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,12 +23,11 @@ from torch.utils.data import Dataset as TorchDataset
 from transformers import Qwen2VLImageProcessor, Qwen2VLProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-from src_new_json.config.config import Config
 from src_new_json.config.augmentation_config import SmartResizeConfig
+from src_new_json.config.config import Config
 from src_new_json.data.teacher_pool import TeacherPoolManager
 from src_new_json.processing.conversation import ConversationBuilder
 from src_new_json.processing.special_tokens import (
-    ASSISTANT_SPAN_PATTERN,
     IM_END,
     IMAGE_PAD,
 )
@@ -155,7 +153,7 @@ class Dataset(TorchDataset):
         # Initialize teacher assignment tracking
         self.teacher_assignments = {}
         self.teacher_assignment_counts = {}
-        
+
         # Hardness EMA cache (student loss per sample)
         self._hardness_ema_alpha = float(self.config.hardness_alpha)
         self._hardness_warmup_epochs = int(self.config.hardness_warmup_epochs)
@@ -322,7 +320,8 @@ class Dataset(TorchDataset):
                 and isinstance(self.samples, list)
                 and len(self.samples) > 0
             ):
-                from src_new_json.sampling import BucketedSamplingEngine, SamplingConfig as _SampCfg
+                from src_new_json.sampling import BucketedSamplingEngine
+                from src_new_json.sampling import SamplingConfig as _SampCfg
                 base_seed = int(self.config.seed)
                 # Reuse a persistent engine to leverage caches across epochs
                 if not hasattr(self, "_pair_engine") or (self._pair_engine is None):

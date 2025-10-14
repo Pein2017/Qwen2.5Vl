@@ -7,11 +7,11 @@ This module provides:
 """
 
 import json
+import math
 import os
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-import math
 
 
 if TYPE_CHECKING:

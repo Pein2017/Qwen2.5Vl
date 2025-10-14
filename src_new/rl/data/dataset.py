@@ -9,12 +9,11 @@ RL dataset: JSONL reader yielding preprocessed tensors for GRPO.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 import torch
 
+from src_new.data.dataset import read_jsonl
 from src_new.rl.prompting.conversation import (
     RLConversationContext,
     build_simple_generation_inputs,
@@ -25,30 +24,21 @@ class RLDenseJSONLDataset:
     def __init__(self, jsonl_path: str, ctx: RLConversationContext) -> None:
         self.path = str(jsonl_path)
         self.ctx = ctx
-        if not Path(self.path).exists():
-            raise FileNotFoundError(f"JSONL not found: {self.path}")
-        # Load all non-empty lines for random access (GRPO requires Sized datasets)
-        self._lines: List[str] = []
-        with open(self.path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self._lines.append(line)
-        if len(self._lines) == 0:
+        records = read_jsonl(self.path)
+        if not records:
             raise ValueError(f"No valid JSON lines found in: {self.path}")
+        self._records = records
 
     def __len__(self) -> int:
-        return len(self._lines)
+        return len(self._records)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         try:
-            raw = self._lines[int(idx)]
-        except Exception:
+            sample = self._records[int(idx)]
+        except Exception as exc:
+            if isinstance(exc, IndexError):
+                raise IndexError(f"Index out of range: {idx}") from exc
             raise IndexError(f"Index out of range: {idx}")
-        try:
-            sample = json.loads(raw)
-        except Exception as e:
-            raise ValueError(f"Invalid JSON at index {idx}: {e}")
         tensors = build_simple_generation_inputs(sample, self.ctx)
 
         input_ids = tensors.get("input_ids")

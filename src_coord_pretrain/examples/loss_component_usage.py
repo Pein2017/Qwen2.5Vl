@@ -8,17 +8,16 @@ This demonstrates how to:
 3. Monitor loss components during training
 """
 
+
 import torch
-import torch.nn.functional as F
-from typing import Dict, Any
 
 
 def example_custom_loss_function(outputs, inputs):
     """Example custom loss function for demonstration.
-    
+
     This could be any additional loss you want to add, such as:
     - Regularization losses
-    - Auxiliary task losses  
+    - Auxiliary task losses
     - Custom coordinate losses
     - Contrastive losses
     """
@@ -39,26 +38,26 @@ def example_coordinate_consistency_loss(outputs, inputs):
 
 def demonstrate_loss_logging():
     """Demonstrate how the enhanced loss logging works."""
-    
+
     print("🔧 Enhanced Loss Component Logging System")
     print("=" * 50)
-    
+
     print("\n📊 Built-in Loss Components:")
     print("- llm_loss: Standard cross-entropy loss from HuggingFace trainer")
     print("- unlikelihood_loss: Digit and coordinate suppression loss")
     print("- loss: Total combined loss")
-    
+
     print("\n📈 Automatic Logging Metrics:")
     print("- Individual loss values: llm_loss, unlikelihood_loss, custom_loss")
     print("- Loss ratios: llm_loss_ratio, unlikelihood_loss_ratio")
     print("- Absolute values: llm_loss_abs, unlikelihood_loss_abs")
     print("- Summary stats: auxiliary_loss_total, auxiliary_loss_ratio")
-    
+
     print("\n🔌 Extensible Framework:")
     print("- Register custom loss functions with trainer.register_loss_component()")
     print("- Automatic integration with logging system")
     print("- Error handling for custom loss functions")
-    
+
     print("\n💡 Usage Example:")
     print("""
 # In your training script:
@@ -72,14 +71,14 @@ trainer.register_loss_component(
 )
 
 trainer.register_loss_component(
-    name="coordinate_consistency", 
+    name="coordinate_consistency",
     loss_function=example_coordinate_consistency_loss,
     weight=0.05
 )
 
 # Training will automatically log all components:
 # - llm_loss, llm_loss_ratio, llm_loss_abs
-# - unlikelihood_loss, unlikelihood_loss_ratio, unlikelihood_loss_abs  
+# - unlikelihood_loss, unlikelihood_loss_ratio, unlikelihood_loss_abs
 # - l2_regularization, l2_regularization_ratio, l2_regularization_abs
 # - coordinate_consistency, coordinate_consistency_ratio, coordinate_consistency_abs
 # - auxiliary_loss_total, auxiliary_loss_ratio
@@ -89,10 +88,10 @@ trainer.register_loss_component(
 
 def example_training_logs():
     """Show what the enhanced training logs look like."""
-    
+
     print("\n📋 Example Training Log Output:")
     print("-" * 40)
-    
+
     # Simulate training log
     example_logs = {
         "epoch": 1.0,
@@ -113,13 +112,13 @@ def example_training_logs():
         "current_phase": "A",
         "phase_a_progress": 0.25,
     }
-    
+
     for key, value in example_logs.items():
         if isinstance(value, float):
             print(f"  {key}: {value:.4f}")
         else:
             print(f"  {key}: {value}")
-    
+
     print("\n🎯 Key Benefits:")
     print("- Monitor individual loss components for debugging")
     print("- Track loss balance and ratios")
@@ -130,10 +129,10 @@ def example_training_logs():
 
 def configuration_examples():
     """Show configuration examples for different loss setups."""
-    
+
     print("\n⚙️  Configuration Examples:")
     print("-" * 30)
-    
+
     print("\n1. Basic Setup (Built-in losses only):")
     print("""
 # coord_bootstrap.yaml
@@ -143,7 +142,7 @@ unlikelihood_lambda_coords: 1.0
 
 # Logs: llm_loss, unlikelihood_loss, loss
 """)
-    
+
     print("\n2. With Custom Loss Components:")
     print("""
 # In training script:
@@ -152,7 +151,7 @@ trainer.register_loss_component("consistency", consistency_loss_fn, 0.05)
 
 # Logs: llm_loss, unlikelihood_loss, regularization, consistency, loss
 """)
-    
+
     print("\n3. Monitoring Loss Balance:")
     print("""
 # Watch these metrics to ensure balanced training:
@@ -166,6 +165,6 @@ if __name__ == "__main__":
     demonstrate_loss_logging()
     example_training_logs()
     configuration_examples()
-    
+
     print("\n🎉 Enhanced loss logging system is ready!")
     print("See src_coord_pretrain/training/trainer.py for implementation details.")

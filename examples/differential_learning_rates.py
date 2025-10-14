@@ -14,6 +14,7 @@ Usage:
 import os
 import sys
 
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.core import Config
@@ -276,7 +277,7 @@ from src.core import Config, create_trainer
 
 config = Config()
 config.tune_vision = False
-config.tune_mlp = True  
+config.tune_mlp = True
 config.tune_llm = False
 config.learning_rate = 1e-6
 config.num_train_epochs = 10
@@ -300,7 +301,7 @@ config.output_dir = "output/ratio_based_lr"
 
 # This will result in:
 # - Vision LR: 1e-7 (5e-7 * 1/5)
-# - Language LR: 2e-7 (5e-7 * 2/5)  
+# - Language LR: 2e-7 (5e-7 * 2/5)
 # - Aligner LR: 5e-7 (5e-7 * 5/5)
 
 trainer = create_trainer(config)

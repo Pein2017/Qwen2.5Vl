@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import torch
 
-from .special_tokens import IMAGE_PAD, IM_END
 from .span_extraction import find_assistant_spans
 from .span_mapping import map_spans_unexpanded_to_expanded
+from .special_tokens import IM_END, IMAGE_PAD
 
 
 def _build_unexpanded_to_expanded_index_map(

@@ -14,10 +14,10 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
 import torch
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration,
 )
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
 @dataclass

@@ -4,7 +4,6 @@ import torch
 from PIL import Image
 
 from ..conversation_processor import ConversationProcessor
-from ..templates import CONSTANTS
 
 
 class ConversationBuilder:

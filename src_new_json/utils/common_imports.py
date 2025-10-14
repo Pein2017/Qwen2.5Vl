@@ -235,7 +235,10 @@ def setup_logging(level: Union[str, int] = DEFAULT_LOG_LEVEL) -> logging.Logger:
     This avoids basicConfig to prevent duplicate handlers across ranks.
     """
     try:
-        from .rank_aware_logging import configure_rank_aware_logging, get_rank_aware_logger
+        from .rank_aware_logging import (
+            configure_rank_aware_logging,
+            get_rank_aware_logger,
+        )
 
         # Normalize level
         if isinstance(level, str):

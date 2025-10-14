@@ -6,29 +6,20 @@ from __future__ import annotations
 import re
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+from scipy.optimize import linear_sum_assignment as _lsa  # type: ignore
+
+# Geometry library for polygon/line GIoU (required)
+from shapely.geometry import LineString, Polygon  # type: ignore
+from shapely.ops import unary_union  # type: ignore
+
 from data_conversion.coordinate_manager import CoordinateManager
 from src_new.augmentation.utils import bbox_from_quad_flat
 from src_new.processing.parse_generated import parse_geometry_response
 
 
-try:  # Optional dependency for optimal assignment
-    from scipy.optimize import linear_sum_assignment as _lsa  # type: ignore
-except Exception:  # pragma: no cover - SciPy optional
-    raise ImportError("scipy is not installed")
-
-# Optional geometry library for polygon/line GIoU
-try:
-    from shapely.geometry import LineString, Polygon  # type: ignore
-    from shapely.ops import unary_union  # type: ignore
-except Exception:  # pragma: no cover - Shapely optional
-    Polygon = None  # type: ignore
-    LineString = None  # type: ignore
-    unary_union = None  # type: ignore
-
-
 def parse_dense_caption(text: str) -> List[Dict[str, object]]:
-    """Parse dense-caption output into structured objects."""
-    return [dict(obj) for obj in parse_geometry_response(text, tolerant=True)]
+    """Parse dense-caption output into structured objects (strict wrappers only)."""
+    return [dict(obj) for obj in parse_geometry_response(text, tolerant=False)]
 
 
 def _iter_gt_boxes(
@@ -130,30 +121,20 @@ def _points_from_flat(points_flat: List[int]) -> List[Tuple[int, int]]:
 def _giou_polygons_from_points(
     a_pts: List[Tuple[int, int]], b_pts: List[Tuple[int, int]]
 ) -> float:
-    if Polygon is None or unary_union is None:
-        # Fallback to bbox-based GIoU
-        a_flat = [int(x) for pt in a_pts for x in pt]
-        b_flat = [int(x) for pt in b_pts for x in pt]
-        a_box = bbox_from_quad_flat(a_flat[:8])
-        b_box = bbox_from_quad_flat(b_flat[:8])
-        return giou_bbox(a_box, b_box)
+    # Robust variant: return worst-case (-1.0) on any invalid geometry
     try:
         pa = Polygon(a_pts).convex_hull
         pb = Polygon(b_pts).convex_hull
         if not pa.is_valid or not pb.is_valid or pa.area <= 0.0 or pb.area <= 0.0:
-            a_flat = [int(x) for pt in a_pts for x in pt]
-            b_flat = [int(x) for pt in b_pts for x in pt]
-            a_box = bbox_from_quad_flat(a_flat[:8])
-            b_box = bbox_from_quad_flat(b_flat[:8])
-            return giou_bbox(a_box, b_box)
+            return -1.0
         inter = pa.intersection(pb).area
         union = pa.area + pb.area - inter
         if union <= 0.0:
-            return 0.0
+            return -1.0
         iou = inter / union
         c_area = unary_union([pa, pb]).convex_hull.area
         if c_area <= 0.0:
-            return float(iou)
+            return -1.0
         giou = float(iou) - (c_area - union) / c_area
         if giou < -1.0:
             giou = -1.0
@@ -161,58 +142,13 @@ def _giou_polygons_from_points(
             giou = 1.0
         return float(giou)
     except Exception:
-        a_flat = [int(x) for pt in a_pts for x in pt]
-        b_flat = [int(x) for pt in b_pts for x in pt]
-        a_box = bbox_from_quad_flat(a_flat[:8])
-        b_box = bbox_from_quad_flat(b_flat[:8])
-        return giou_bbox(a_box, b_box)
+        return -1.0
 
 
-def reward_quad_giou(
-    text: str,
-    *,
-    meta: Optional[Dict[str, object]] = None,
-    **_: object,
-) -> float:
-    pred_objs = parse_dense_caption(text)
-    pred_quads_pts: List[List[Tuple[int, int]]] = []
-    for o in pred_objs:
-        if "quad" in o and isinstance(o["quad"], list) and len(o["quad"]) >= 8:
-            pts = [(int(o["quad"][i]), int(o["quad"][i + 1])) for i in range(0, 8, 2)]
-            ordered = CoordinateManager._canonical_quad_ordering(pts)
-            pred_quads_pts.append([(int(x), int(y)) for x, y in ordered])
-    if not pred_quads_pts:
-        return 0.0
-
-    gt_quads_pts: List[List[Tuple[int, int]]] = []
-    if isinstance(meta, dict):
-        for o in meta.get("objects", []) or []:
-            if (
-                isinstance(o, dict)
-                and "quad" in o
-                and isinstance(o["quad"], list)
-                and len(o["quad"]) >= 8
-            ):
-                pts = [
-                    (int(o["quad"][i]), int(o["quad"][i + 1])) for i in range(0, 8, 2)
-                ]
-                ordered = CoordinateManager._canonical_quad_ordering(pts)
-                gt_quads_pts.append([(int(x), int(y)) for x, y in ordered])
-    if not gt_quads_pts:
-        return 0.0
-
-    def _cost(a_pts: List[Tuple[int, int]], b_pts: List[Tuple[int, int]]) -> float:
-        return 1.0 - _mapped_giou(_giou_polygons_from_points(a_pts, b_pts))
-
-    pairs = _assign_pairs(pred_quads_pts, gt_quads_pts, _cost)
-    if not pairs:
-        return 0.0
-
-    scores = [
-        _mapped_giou(_giou_polygons_from_points(pred_quads_pts[i], gt_quads_pts[j]))
-        for (i, j) in pairs
-    ]
-    return float(sum(scores) / len(scores))
+def reward_quad_giou(*args, **kwargs):
+    raise NotImplementedError(
+        "reward_quad_giou has been removed in favor of assignment_f1"
+    )
 
 
 def _buffered_line_poly(points_flat: List[int], buffer_width: float):
@@ -237,21 +173,20 @@ def _buffered_line_poly(points_flat: List[int], buffer_width: float):
 def _giou_buffered_lines(
     a_flat: List[int], b_flat: List[int], buffer_width: float
 ) -> float:
-    if LineString is None or unary_union is None:
-        return 0.0
+    # Robust variant: return worst-case (-1.0) on any invalid geometry
     try:
         pa = _buffered_line_poly(a_flat, buffer_width)
         pb = _buffered_line_poly(b_flat, buffer_width)
         if pa is None or pb is None:
-            return 0.0
+            return -1.0
         inter = pa.intersection(pb).area
         union = pa.area + pb.area - inter
         if union <= 0.0:
-            return 0.0
+            return -1.0
         iou = inter / union
         c_area = unary_union([pa, pb]).convex_hull.area
         if c_area <= 0.0:
-            return float(iou)
+            return -1.0
         giou = float(iou) - (c_area - union) / c_area
         if giou < -1.0:
             giou = -1.0
@@ -259,86 +194,13 @@ def _giou_buffered_lines(
             giou = 1.0
         return float(giou)
     except Exception:
-        return 0.0
+        return -1.0
 
 
-def reward_line_giou(
-    text: str,
-    *,
-    meta: Optional[Dict[str, object]] = None,
-    buffer_frac: float = 0.01,
-    **_: object,
-) -> float:
-    pred_objs = parse_dense_caption(text)
-    pred_lines: List[List[int]] = []
-    for o in pred_objs:
-        if (
-            "line" in o
-            and isinstance(o["line"], list)
-            and len(o["line"]) >= 4
-            and len(o["line"]) % 2 == 0
-        ):
-            pred_lines.append([int(v) for v in o["line"]])
-
-    if not pred_lines:
-        return 0.0
-
-    gt_lines: List[List[int]] = []
-    if isinstance(meta, dict):
-        for o in meta.get("objects", []) or []:
-            if (
-                isinstance(o, dict)
-                and "line" in o
-                and isinstance(o["line"], list)
-                and len(o["line"]) >= 4
-                and len(o["line"]) % 2 == 0
-            ):
-                gt_lines.append([int(v) for v in o["line"]])
-
-    if not gt_lines:
-        return 0.0
-
-    scale = _normalization_scale(meta)
-    buffer_width = max(1.0, float(buffer_frac) * float(scale))
-
-    if LineString is not None and unary_union is not None:
-
-        def _cost(a: List[int], b: List[int]) -> float:
-            return 1.0 - _mapped_giou(_giou_buffered_lines(a, b, buffer_width))
-
-        pairs = _assign_pairs(pred_lines, gt_lines, _cost)
-        if not pairs:
-            return 0.0
-        scores = [
-            _mapped_giou(_giou_buffered_lines(pred_lines[i], gt_lines[j], buffer_width))
-            for (i, j) in pairs
-        ]
-        return float(sum(scores) / len(scores))
-    else:
-        # Fallback to endpoints-L1-based similarity mapped to [0,1]
-        def _endpoints(points_flat: List[int]) -> List[int]:
-            pts = [
-                (int(points_flat[i]), int(points_flat[i + 1]))
-                for i in range(0, len(points_flat), 2)
-            ]
-            ordered = CoordinateManager._canonical_line_ordering(pts)
-            a = ordered[0]
-            b = ordered[-1]
-            return [int(a[0]), int(a[1]), int(b[0]), int(b[1])]
-
-        pred_end = [_endpoints(p) for p in pred_lines]
-        gt_end = [_endpoints(g) for g in gt_lines]
-
-        def _dist(a: List[int], b: List[int]) -> float:
-            return _l1_distance(a, b) / scale
-
-        pairs = _assign_pairs(pred_end, gt_end, _dist)
-        if not pairs:
-            return 0.0
-        sims = [
-            1.0 / (1.0 + max(0.0, _dist(pred_end[i], gt_end[j]))) for (i, j) in pairs
-        ]
-        return float(sum(sims) / len(sims))
+def reward_line_giou(*args, **kwargs):
+    raise NotImplementedError(
+        "reward_line_giou has been removed in favor of assignment_f1"
+    )
 
 
 def _normalization_scale(meta: Optional[Dict[str, object]]) -> float:
@@ -483,173 +345,26 @@ def reward_geometry_sanity(
     return 1.0
 
 
-def reward_bbox_iou(
-    text: str,
-    *,
-    meta: Optional[Dict[str, object]] = None,
-    **_: object,
-) -> float:
-    """Greedy/Hungarian one-to-one matching reward using Generalized IoU for bboxes.
-
-    For quads, compare GIoU on their axis-aligned bounding boxes. GIoU in [-1,1]
-    is mapped to [0,1] for stability, and the reward is the mean mapped value over
-    matched pairs.
-    """
-    pred = parse_dense_caption(text)
-    pred_boxes = _iter_gt_boxes(pred)
-    if not pred_boxes:
-        return 0.0
-
-    gt_objects = meta.get("objects", []) if isinstance(meta, dict) else []
-    if not isinstance(gt_objects, list) or not gt_objects:
-        return 0.0
-    gt_boxes = _iter_gt_boxes(gt_objects)
-    if not gt_boxes:
-        return 0.0
-
-    def _mapped_giou(
-        a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]
-    ) -> float:
-        g = giou_bbox(tuple(a), tuple(b))
-        m = 0.5 * (g + 1.0)
-        if m < 0.0:
-            m = 0.0
-        if m > 1.0:
-            m = 1.0
-        return float(m)
-
-    pairs = _assign_pairs(pred_boxes, gt_boxes, lambda a, b: 1.0 - _mapped_giou(a, b))
-    if not pairs:
-        return 0.0
-
-    scores = [_mapped_giou(pred_boxes[i], gt_boxes[j]) for (i, j) in pairs]
-    return float(sum(scores) / len(scores))
+def reward_bbox_iou(*args, **kwargs):
+    raise NotImplementedError(
+        "reward_bbox_giou has been removed in favor of assignment_f1"
+    )
 
 
 # Backward compatible alias and explicit GIoU name
 reward_bbox_giou = reward_bbox_iou
 
 
-def reward_quad_l1(
-    text: str,
-    *,
-    meta: Optional[Dict[str, object]] = None,
-    **_: object,
-) -> float:
-    """L1-based proximity for quad coordinates (8-dim) with 1-1 matching.
-
-    Returns a value in (0, 1], higher is better. If no quads or GT quads, returns 0.0.
-    """
-    pred_objs = parse_dense_caption(text)
-    pred_quads: List[List[int]] = []
-    for o in pred_objs:
-        if "quad" in o and isinstance(o["quad"], list) and len(o["quad"]) >= 8:
-            pred_quads.append([int(v) for v in o["quad"][:8]])
-    if not pred_quads:
-        return 0.0
-
-    gt_quads: List[List[int]] = []
-    if isinstance(meta, dict):
-        for o in meta.get("objects", []) or []:
-            if (
-                isinstance(o, dict)
-                and "quad" in o
-                and isinstance(o["quad"], list)
-                and len(o["quad"]) >= 8
-            ):
-                gt_quads.append([int(v) for v in o["quad"][:8]])
-    if not gt_quads:
-        return 0.0
-
-    # Canonicalize order for both predicted and GT
-    def _canon(points_flat: List[int]) -> List[int]:
-        pts = [(int(points_flat[i]), int(points_flat[i + 1])) for i in range(0, 8, 2)]
-        ordered = CoordinateManager._canonical_quad_ordering(pts)
-        out: List[int] = []
-        for x, y in ordered:
-            out.extend([int(x), int(y)])
-        return out
-
-    pred_canon = [_canon(q) for q in pred_quads]
-    gt_canon = [_canon(q) for q in gt_quads]
-
-    scale = _normalization_scale(meta)
-
-    def _dist(a: List[int], b: List[int]) -> float:
-        return _l1_distance(a, b) / scale
-
-    pairs = _assign_pairs(pred_canon, gt_canon, _dist)
-    if not pairs:
-        return 0.0
-
-    errs = [_dist(pred_canon[i], gt_canon[j]) for (i, j) in pairs]
-    mean_err = float(sum(errs) / len(errs))
-    return float(1.0 / (1.0 + mean_err))
+def reward_quad_l1(*args, **kwargs):
+    raise NotImplementedError(
+        "reward_quad_l1 has been removed in favor of assignment_f1"
+    )
 
 
-def reward_line_l1(
-    text: str,
-    *,
-    meta: Optional[Dict[str, object]] = None,
-    **_: object,
-) -> float:
-    """L1-based proximity for line endpoints (4-dim) with 1-1 matching.
-
-    Uses canonical line direction. If no lines or GT lines, returns 0.0.
-    """
-    pred_objs = parse_dense_caption(text)
-    pred_lines: List[List[int]] = []
-    for o in pred_objs:
-        if (
-            "line" in o
-            and isinstance(o["line"], list)
-            and len(o["line"]) >= 4
-            and len(o["line"]) % 2 == 0
-        ):
-            pred_lines.append([int(v) for v in o["line"]])
-    if not pred_lines:
-        return 0.0
-
-    gt_lines: List[List[int]] = []
-    if isinstance(meta, dict):
-        for o in meta.get("objects", []) or []:
-            if (
-                isinstance(o, dict)
-                and "line" in o
-                and isinstance(o["line"], list)
-                and len(o["line"]) >= 4
-                and len(o["line"]) % 2 == 0
-            ):
-                gt_lines.append([int(v) for v in o["line"]])
-    if not gt_lines:
-        return 0.0
-
-    # Reduce to endpoints with canonical direction
-    def _endpoints(points_flat: List[int]) -> List[int]:
-        pts = [
-            (int(points_flat[i]), int(points_flat[i + 1]))
-            for i in range(0, len(points_flat), 2)
-        ]
-        ordered = CoordinateManager._canonical_line_ordering(pts)
-        a = ordered[0]
-        b = ordered[-1]
-        return [int(a[0]), int(a[1]), int(b[0]), int(b[1])]
-
-    pred_end = [_endpoints(p) for p in pred_lines]
-    gt_end = [_endpoints(g) for g in gt_lines]
-
-    scale = _normalization_scale(meta)
-
-    def _dist(a: List[int], b: List[int]) -> float:
-        return _l1_distance(a, b) / scale
-
-    pairs = _assign_pairs(pred_end, gt_end, _dist)
-    if not pairs:
-        return 0.0
-
-    errs = [_dist(pred_end[i], gt_end[j]) for (i, j) in pairs]
-    mean_err = float(sum(errs) / len(errs))
-    return float(1.0 / (1.0 + mean_err))
+def reward_line_l1(*args, **kwargs):
+    raise NotImplementedError(
+        "reward_line_l1 has been removed in favor of assignment_f1"
+    )
 
 
 def reward_ordering(
@@ -658,7 +373,10 @@ def reward_ordering(
     meta: Optional[Dict[str, object]] = None,
     **_: object,
 ) -> float:
-    """Ordering reward: quads clockwise from top-left; lines start from leftmost endpoint.
+    """Ordering reward with extended checks for quads and lines.
+
+    Quads: top-left start vertex then clockwise ordering (per data_conversion README).
+    Lines: canonical direction (topmost-leftmost endpoint first), penalize reversal/backtracking.
 
     Returns the mean correctness ratio over all predicted quads and lines. If none exist, returns 1.0.
     """
@@ -682,8 +400,23 @@ def reward_ordering(
         flat: List[int] = []
         for x, y in ordered:
             flat.extend([int(x), int(y)])
-        # Either identical or exact reverse indicates wrong direction; we need identical
-        return flat == [int(v) for v in line]
+        if flat != [int(v) for v in line]:
+            return False
+        # Backtracking penalty: check for large reversals via successive segment dot products
+        try:
+            vecs: List[Tuple[int, int]] = []
+            for k in range(0, len(line) - 2, 2):
+                dx = int(line[k + 2]) - int(line[k])
+                dy = int(line[k + 3]) - int(line[k + 1])
+                vecs.append((dx, dy))
+            # If any sharp reversal (negative large dot with previous) occurs, treat as not OK
+            for a, b in zip(vecs, vecs[1:]):
+                dot = a[0] * b[0] + a[1] * b[1]
+                if dot < 0:
+                    return False
+        except Exception:
+            pass
+        return True
 
     checks: List[bool] = []
     for o in objs:
@@ -919,15 +652,6 @@ def grounding_acc(
 
 __all__ = [
     "parse_dense_caption",
-    "reward_coverage",
     "reward_geometry_sanity",
-    "reward_bbox_iou",
-    "reward_bbox_giou",
-    "reward_quad_l1",
-    "reward_line_l1",
     "reward_ordering",
-    "caption_f1",
-    "reward_quad_giou",
-    "reward_line_giou",
-    "grounding_acc",
 ]

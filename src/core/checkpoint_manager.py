@@ -32,7 +32,7 @@ class CheckpointManager:
     def __init__(self, config=None, tokenizer=None, image_processor=None, logger=None):
         """
         Initialize checkpoint manager.
-        
+
         Args:
             config: Configuration object (optional - can be passed to individual methods)
             tokenizer: Model tokenizer (can be provided later)

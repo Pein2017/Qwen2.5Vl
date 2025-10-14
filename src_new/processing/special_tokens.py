@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import logging
-from typing import Dict, List, Tuple, Optional, Iterable
 import re
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from src_new.types.coords import CoordTokenRange
 

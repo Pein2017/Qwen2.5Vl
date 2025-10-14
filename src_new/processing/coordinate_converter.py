@@ -30,7 +30,7 @@ class CoordinateTokenConverter:
         """Convert a list of objects to coordinate tokens format."""
         if not objects:
             return ""
-        
+
         out_lines: List[str] = []
         for i, obj in enumerate(objects):
             # Extract geometry and description
@@ -47,28 +47,28 @@ class CoordinateTokenConverter:
             coord_string = ", ".join(coord_texts)
             out_lines.append(f"{geom_start}[{coord_string}]{geom_end}")
         return "\n".join(out_lines)
-    
+
     def convert_objects_to_tokens(self, objects: List[Dict[str, Any]]) -> str:
         """Convert objects to coordinate tokens format."""
         return self.convert_objects_list(objects)
-    
+
     def convert_objects_to_desc_only(self, objects: List[Dict[str, Any]]) -> str:
         """Convert objects to description-only format."""
         if not objects:
             return ""
-        
+
         ref_start, ref_end = self._get_ref_tokens()
         out_lines = []
         for obj in objects:
             description = obj.get("desc", "")
             out_lines.append(f"{ref_start}{description}{ref_end}")
         return "\n".join(out_lines)
-    
+
     def convert_objects_to_geometry_only(self, objects: List[Dict[str, Any]]) -> str:
         """Convert objects to geometry-only format."""
         if not objects:
             return ""
-        
+
         out_lines = []
         for i, obj in enumerate(objects):
             geometry_type, coordinates = self._extract_geometry(obj, i)
@@ -87,13 +87,13 @@ class CoordinateTokenConverter:
     def format_geometry_for_user(self, obj: Dict[str, object]) -> str:
         """Format a single object's geometry for inclusion in a user message (wrapper tokens)."""
         if "line" in obj:
-            coords = ", ".join(str(int(v)) for v in obj["line"])  
+            coords = ", ".join(str(int(v)) for v in obj["line"])
             return f"<|line_start|>[{coords}]<|line_end|>"
         if "bbox_2d" in obj:
-            coords = ", ".join(str(int(v)) for v in obj["bbox_2d"])  
+            coords = ", ".join(str(int(v)) for v in obj["bbox_2d"])
             return f"<|box_start|>[{coords}]<|box_end|>"
         if "quad" in obj:
-            coords = ", ".join(str(int(v)) for v in obj["quad"])  
+            coords = ", ".join(str(int(v)) for v in obj["quad"])
             return f"<|quad_start|>[{coords}]<|quad_end|>"
         return ""
 

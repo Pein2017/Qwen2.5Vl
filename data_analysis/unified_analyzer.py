@@ -6,7 +6,7 @@ Basic dataset analysis tool focused on statistics and sample extraction.
 Removed complex validation logic that was based on incorrect data structure assumptions.
 
 Features:
-- Dataset statistics and analysis  
+- Dataset statistics and analysis
 - Representative sample extraction for prompt engineering
 - Export capabilities for analysis results
 """
@@ -57,14 +57,14 @@ class UnifiedDatasetAnalyzer:
     def _extract_descriptions(self, sample: Dict[str, Any]) -> List[str]:
         """Extract object descriptions from a sample."""
         descriptions = []
-        
+
         # Handle the actual data format used by the pipeline
         if "objects" in sample and isinstance(sample["objects"], list):
             # New format: objects is a list of objects with desc field
             for obj in sample["objects"]:
                 if isinstance(obj, dict) and "desc" in obj:
                     descriptions.append(obj["desc"])
-        
+
         return descriptions
 
     def analyze_dataset(self) -> Dict[str, Any]:

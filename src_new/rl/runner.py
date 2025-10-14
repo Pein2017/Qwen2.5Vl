@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Unified RL loader (HF-first parity) for Qwen2.5-VL GRPO runs."""
+"""
+Unified RL loader (HF-first parity) for Qwen2.5-VL GRPO runs.
+
+This runner now uses TRL's GRPO trainer exclusively. The manual trainer
+implementation has been deprecated and removed.
+
+For evaluation: Use the evaluation utilities in src_new/rl/eval.py
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,7 @@ import argparse
 import inspect
 import json
 import logging
+import math
 import os
 from typing import Any, Callable, Dict, List, Set
 
@@ -17,14 +25,26 @@ from src_new.processing.special_tokens import (
     require_core_special_tokens,
     require_geometry_tokens,
 )
+from src_new.rl.data.collator import PromptOnlyCollator
 from src_new.rl.data.dataset import RLDenseJSONLDataset
-from src_new.rl.grpo_trainer import BBUGRPOTrainer
+
+# Manual trainer removed - using TRL only
 from src_new.rl.prompting.conversation import RLConversationContext
 from src_new.rl.rewards.registry import REGISTRY
+from src_new.rl.trl_trainer import GRPOVLMTrainer
 from src_new.rl.utils import create_builder
 from src_new.training.phase_freeze_manager import PhaseFreezeManager
 from src_new.utils.hf_components import HFComponents, build_hf_components
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
+
+
+# Optional callback for conversation dumping (non-invasive)
+try:
+    from src_new.rl.callbacks.conversation_dump import (
+        ConversationDumpCallback as _ConvDumpCB,  # noqa: F401
+    )
+except Exception:
+    _ConvDumpCB = None  # type: ignore[assignment]
 
 
 _LOGGER = get_rank_aware_logger("rl.runner")
@@ -239,9 +259,12 @@ def build_datasets(cfg_path: str) -> Dict[str, Any]:
     train_ds = RLDenseJSONLDataset(train_path, ctx)
     val_ds = RLDenseJSONLDataset(val_path, ctx)
 
+    collator = PromptOnlyCollator(tokenizer=bundles["tokenizer"])
+
     return {
         "train": train_ds,
         "val": val_ds,
+        "collator": collator,
         "tokenizer": bundles["tokenizer"],
         "model": bundles["model"],
         "processor": bundles["processor"],
@@ -249,8 +272,8 @@ def build_datasets(cfg_path: str) -> Dict[str, Any]:
     }
 
 
-def train(config_path: str) -> None:
-    """Orchestrate a GRPO training run using the manual BBU trainer."""
+def train(config_path: str, *, trainer_type: str = "trl") -> None:
+    """Orchestrate a GRPO training run (TRL trainer only)."""
 
     # Using Accelerate: avoid manual process group init and device selection
 
@@ -265,25 +288,13 @@ def train(config_path: str) -> None:
     prompt_batch_size = rl_config.sampling.prompt_batch_size
     sample_k = rl_config.sampling.sample_k
 
-    # Compute expected trajectories
-    # Get world_size from environment (set by torch.distributed.run)
+    # Compute world size from environment (set by torch.distributed/accelerate)
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-
-    if world_size > 1 and sample_k % world_size != 0:
-        raise ValueError(
-            f"sampling.sample_k={sample_k} must be divisible by world_size={world_size} (GLOBAL-K semantics)"
-        )
-
-    # Log both global and per-rank expectations for clarity
-    per_rank_expected = prompt_batch_size * (sample_k // max(world_size, 1))
-    global_expected = prompt_batch_size * sample_k
     _LOGGER.info(
-        "Prompt batching configured | prompts=%d | sample_k=%d | world_size=%d | expected_per_rank=%d | expected_global=%d",
+        "Prompt batching configured | prompts=%d | sample_k=%d | world_size=%d (TRL global E%%K rule)",
         prompt_batch_size,
         sample_k,
         world_size,
-        per_rank_expected,
-        global_expected,
     )
 
     # Use typed config for rewards
@@ -305,16 +316,12 @@ def train(config_path: str) -> None:
 
     # Combine active + observe (unique, sorted for deterministic order)
     all_keys = sorted(set(active_keys) | set(observe_keys))
-    reward_names: List[str] = all_keys
 
     reward_funcs: List[Callable[..., List[float]]] = []
     reward_weights: List[float] = []
 
     # Use typed config for rewards hyperparams
     rewards_config_dict = {
-        "tau_iou": rl_config.rewards.config.tau_iou,
-        "tau_quad": rl_config.rewards.config.tau_quad,
-        "tau_line": rl_config.rewards.config.tau_line,
         "length_vs_gt": {
             "use_ratio": rl_config.rewards.config.length_vs_gt.use_ratio,
             "sigma_ratio": rl_config.rewards.config.length_vs_gt.sigma_ratio,
@@ -326,9 +333,6 @@ def train(config_path: str) -> None:
     # Example: rewards_config.line_giou.buffer_frac -> injected into reward_line_giou
     try:
         extra_cfg = {}
-        # Convert dataclass to dict-ish access
-        if getattr(rl_config.rewards.config, "line_giou", None) is not None:
-            extra_cfg["line_giou"] = dict(rl_config.rewards.config.line_giou)
         if getattr(rl_config.rewards.config, "duplicate_penalty", None) is not None:
             extra_cfg["duplicate_penalty"] = dict(
                 rl_config.rewards.config.duplicate_penalty
@@ -337,6 +341,8 @@ def train(config_path: str) -> None:
             extra_cfg["pattern_penalty"] = dict(
                 rl_config.rewards.config.pattern_penalty
             )
+        if getattr(rl_config.rewards.config, "assignment_f1", None) is not None:
+            extra_cfg["assignment_f1"] = dict(rl_config.rewards.config.assignment_f1)
         # Merge into rewards_config_dict for wrapper to consume
         rewards_config_dict.update(extra_cfg)
     except Exception:
@@ -403,9 +409,19 @@ def train(config_path: str) -> None:
                                 if p in named_cfg:
                                     call_kwargs[p] = named_cfg[p]
                     try:
-                        out.append(float(fn(text, **call_kwargs)))
-                    except TypeError:
-                        out.append(float(fn(text)))
+                        try:
+                            out.append(float(fn(text, **call_kwargs)))
+                        except TypeError:
+                            out.append(float(fn(text)))
+                    except Exception as exc:
+                        # Robust: default to 0.0 on reward failure
+                        try:
+                            _LOGGER.debug(
+                                "Reward '%s' failed for sample %d: %s", key, idx, exc
+                            )
+                        except Exception:
+                            pass
+                        out.append(0.0)
                 return out
 
             return _inner
@@ -463,39 +479,235 @@ def train(config_path: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
     _LOGGER.info("Output directory (with run_name): %s", output_dir)
 
-    # Ensure tb_dir exists (run_name subfolder created by trainer)
-    tb_dir = rl_config.paths.tb_dir
+    # Ensure TB logs are written under {tb_dir}/{run_name}
+    tb_root = rl_config.paths.tb_dir
+    tb_dir = os.path.join(tb_root, run_name)
     os.makedirs(tb_dir, exist_ok=True)
 
-    manual_trainer = BBUGRPOTrainer(
-        model=hf_model,
-        tokenizer=bundles["tokenizer"],
-        processor=bundles.get("processor"),
-        train_dataset=train_ds,
-        val_dataset=val_ds,
-        reward_functions=reward_funcs,
-        reward_names=reward_names,
-        reward_weights=reward_weights,
-        rl_config=rl_config,  # Pass v2 config only
-        output_dir=output_dir,
-    )
-    # Attach original YAML path for checkpoint reproducibility
+    # Only TRL trainer is supported
     try:
-        manual_trainer._checkpoint_saver.args.original_config_path = config_path
+        from trl.trainer.grpo_config import GRPOConfig as HFGRPOConfig
+    except ImportError as exc:  # pragma: no cover - required dependency
+        raise RuntimeError(
+            "TRL trainer is required but the `trl` package is not installed. "
+            "Please install it to use the GRPO trainer."
+        ) from exc
+
+    train_ds = bundles["train"]
+    val_ds = bundles["val"]
+    hf_model = bundles["model"]
+
+    dataset_size = rl_config.training.dataset_size
+    if dataset_size == -1:
+        dataset_size = len(train_ds)
+    steps_per_epoch = max(1, dataset_size // prompt_batch_size)
+    max_steps = rl_config.training.num_train_epochs * steps_per_epoch
+
+    prefetch_factor = rl_config.training.prefetch_factor
+    if prefetch_factor is not None and prefetch_factor <= 0:
+        prefetch_factor = None
+
+    evaluation_enabled = rl_config.evaluation.enabled
+    evaluation_strategy = "steps" if evaluation_enabled else "no"
+    eval_steps = (
+        rl_config.evaluation.eval_every_steps
+        if evaluation_enabled and rl_config.evaluation.eval_every_steps > 0
+        else None
+    )
+
+    per_device_base = rl_config.training.per_device_train_batch_size
+    base_grad_accum = rl_config.training.gradient_accumulation_steps
+    steps_per_generation = rl_config.grpo.steps_per_generation
+
+    per_device_bs = per_device_base
+    # TRL rule: let E = P (world size) × B (per_device_bs) × G (grad_accum). Require E % K == 0.
+    # Keep per_device_bs unchanged (memory safety); adjust gradient_accumulation_steps to satisfy the rule.
+    effective_global = max(world_size, 1) * per_device_bs * base_grad_accum
+    if effective_global % sample_k != 0:
+        gcd_val = math.gcd(effective_global, sample_k)
+        multiplier = sample_k // gcd_val
+        trl_grad_accum = base_grad_accum * multiplier
+        effective_global = max(world_size, 1) * per_device_bs * trl_grad_accum
+        _LOGGER.info(
+            "Adjusted gradient_accumulation_steps for TRL: base=%d -> adjusted=%d so that (P*B*G)=%d is divisible by sample_k=%d",
+            base_grad_accum,
+            trl_grad_accum,
+            effective_global,
+            sample_k,
+        )
+    else:
+        trl_grad_accum = base_grad_accum
+
+    trl_args = HFGRPOConfig(
+        output_dir=output_dir,
+        run_name=rl_config.experiment.run_name,
+        seed=rl_config.experiment.seed,
+        do_train=True,
+        do_eval=evaluation_enabled,
+        num_train_epochs=rl_config.training.num_train_epochs,
+        max_steps=max_steps,
+        per_device_train_batch_size=per_device_bs,
+        per_device_eval_batch_size=per_device_bs,
+        gradient_accumulation_steps=trl_grad_accum,
+        learning_rate=rl_config.optimizer.learning_rates.llm,
+        weight_decay=rl_config.optimizer.weight_decay,
+        max_grad_norm=rl_config.optimizer.max_grad_norm,
+        lr_scheduler_type=rl_config.training.lr_scheduler_type,
+        warmup_ratio=rl_config.training.warmup_ratio,
+        logging_strategy="steps",
+        logging_steps=rl_config.logging.logging_steps,
+        logging_dir=tb_dir,
+        save_strategy="steps",
+        save_steps=rl_config.checkpointing.save_steps,
+        save_total_limit=rl_config.checkpointing.save_total_limit,
+        report_to=["tensorboard"],
+        bf16=rl_config.training.bf16,
+        fp16=rl_config.training.fp16,
+        remove_unused_columns=False,
+        dataloader_num_workers=rl_config.training.dataloader_num_workers,
+        dataloader_prefetch_factor=prefetch_factor,
+        dataloader_pin_memory=rl_config.training.pin_memory,
+        dataloader_drop_last=False,
+        disable_tqdm=False,
+        eval_strategy=evaluation_strategy,
+        eval_steps=eval_steps,
+        num_generations=rl_config.sampling.sample_k,
+        steps_per_generation=steps_per_generation,
+        num_iterations=1,
+        max_prompt_length=None,
+        max_completion_length=rl_config.generation.max_new_tokens,
+        temperature=rl_config.generation.temperature,
+        top_p=rl_config.generation.top_p,
+        repetition_penalty=rl_config.generation.repetition_penalty,
+        mask_truncated_completions=rl_config.grpo.mask_truncated_completions,
+        scale_rewards=rl_config.grpo.scale_rewards,
+        reward_weights=reward_weights,
+        beta=0.0,
+        # TRL alignment||
+        gradient_checkpointing=False,
+        epsilon=rl_config.grpo.epsilon_low,
+        epsilon_high=rl_config.grpo.epsilon_high,
+        loss_type=rl_config.grpo.loss_type,
+    )
+    if rl_config.optimizer.adam_beta1 is not None:
+        trl_args.adam_beta1 = rl_config.optimizer.adam_beta1
+    if rl_config.optimizer.adam_beta2 is not None:
+        trl_args.adam_beta2 = rl_config.optimizer.adam_beta2
+    if rl_config.optimizer.adam_epsilon is not None:
+        trl_args.adam_epsilon = rl_config.optimizer.adam_epsilon
+
+    trl_args.push_to_hub = False
+    trl_args.load_best_model_at_end = False
+    trl_args.logging_first_step = True
+
+    eval_dataset = val_ds if evaluation_enabled else None
+    # Fixed total eval size from YAML (independent of world size)
+    if evaluation_enabled and eval_dataset is not None:
+        fixed_total = int(rl_config.evaluation.eval_data_size)
+        if fixed_total > 0 and fixed_total < len(val_ds):
+            from torch.utils.data import Subset as _Subset
+
+            eval_dataset = _Subset(val_ds, list(range(fixed_total)))
+            _LOGGER.info(
+                "Fixed eval size enabled via YAML: evaluation.eval_data_size=%d (world_size=%d)",
+                fixed_total,
+                int(world_size),
+            )
+        else:
+            _LOGGER.info(
+                "Using full validation dataset (eval_data_size <= 0 or >= dataset)."
+            )
+
+    def _identity_collator(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return features
+
+    # Force per-device batch size to 1 to avoid OOM on single GPU; satisfy TRL divisibility via accumulation only
+    trl_args.per_device_train_batch_size = 1
+    trl_args.per_device_eval_batch_size = 1
+
+    trl_trainer = GRPOVLMTrainer(
+        model=hf_model,
+        reward_funcs=reward_funcs,
+        args=trl_args,
+        train_dataset=train_ds,
+        eval_dataset=eval_dataset,
+        processing_class=bundles["tokenizer"],
+        prompt_collator=_identity_collator,
+        rl_config=rl_config,
+        processor=bundles["processor"],
+    )
+    # Expose original YAML path for checkpoint saver to copy into checkpoints
+    try:
+        setattr(trl_trainer.args, "original_config_path", os.path.abspath(config_path))
+        # For best-checkpoint gating, mirror evaluation cadence on args to avoid None
+        if evaluation_enabled and eval_steps is not None:
+            setattr(trl_trainer.args, "eval_steps", int(eval_steps))
+        else:
+            setattr(trl_trainer.args, "eval_steps", 0)
     except Exception:
         pass
+
+    # Optionally enable conversation dump callback via YAML config (no envs)
     try:
-        # Ensure training mode after DDP wrapping
-        if hasattr(hf_model, "train"):
-            hf_model.train()
-        manual_trainer.train()
-    finally:
-        manual_trainer.close()
+        if (
+            _ConvDumpCB is not None
+            and rl_config.evaluation.enabled
+            and bool(getattr(rl_config.evaluation, "dump_conversations", False))
+        ):
+            dump_dir = os.path.join(output_dir, "conversation_dumps")
+            max_per_step = int(getattr(rl_config.evaluation, "dump_max_per_step", 16))
+            cb = _ConvDumpCB(
+                output_dir=dump_dir,
+                max_samples_per_step=max_per_step,
+                file_prefix="step",
+                overwrite_step_files=True,
+            )
+            # Explicitly attach trainer reference for callback access
+            try:
+                setattr(cb, "trainer", trl_trainer)
+            except Exception:
+                pass
+            trl_trainer.add_callback(cb)
+            _LOGGER.info(
+                "ConversationDumpCallback enabled (YAML): dir=%s max_per_step=%d",
+                dump_dir,
+                max_per_step,
+            )
+    except Exception:
+        pass
+
+    _LOGGER.info("Starting TRL GRPO training (max_steps=%d)", max_steps)
+    trl_trainer.train()
+    # If conversation dump callback was requested, enforce that files exist
+    try:
+        dump_root = os.path.join(output_dir, "conversation_dumps")
+        if rl_config.evaluation.enabled and getattr(
+            rl_config.evaluation, "dump_conversations", False
+        ):
+            if not os.path.isdir(dump_root):
+                raise RuntimeError(
+                    f"Conversation dumps requested (evaluation.dump_conversations=true) but directory not created: {dump_root}"
+                )
+            # Check for any .jsonl files
+            dumped = [f for f in os.listdir(dump_root) if f.endswith(".jsonl")]
+            if len(dumped) == 0:
+                raise RuntimeError(
+                    f"Conversation dumps requested but no files were written under {dump_root}. "
+                    f"Ensure evaluation is enabled (evaluation.enabled=true) and occurs at least once; dumps run on on_evaluate."
+                )
+    except Exception as _dump_exc:
+        _LOGGER.error("Conversation dump validation failed: %s", _dump_exc)
+        raise
+    trl_trainer.save_model(output_dir)
+    return
 
 
 def main() -> None:
+    """
+    Main entry point for GRPO training/evaluation using TRL trainer.
+    """
     parser = argparse.ArgumentParser(
-        description="Qwen2.5-VL RL Loader (HF-first parity)"
+        description="Qwen2.5-VL RL Loader (HF-first parity) - TRL trainer only"
     )
     parser.add_argument(
         "--config", type=str, required=True, help="Path to rl dense_grpo.yaml"
@@ -503,10 +715,17 @@ def main() -> None:
     parser.add_argument(
         "--mode", type=str, default="load", choices=["load", "train"], help="Run mode"
     )
+    parser.add_argument(
+        "--trainer",
+        type=str,
+        default="trl",
+        choices=["trl"],
+        help="Trainer implementation to run (TRL only - manual trainer is deprecated)",
+    )
     args = parser.parse_args()
 
     if args.mode == "train":
-        train(args.config)
+        train(args.config, trainer_type=args.trainer)
         return
 
     comps = build_components(args.config)

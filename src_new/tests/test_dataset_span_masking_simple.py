@@ -6,7 +6,7 @@ import unittest
 import torch
 
 from src_new.data.dataset import Dataset
-from src_new.processing.special_tokens import IM_START, IM_END, IMAGE_PAD
+from src_new.processing.special_tokens import IM_END, IM_START, IMAGE_PAD
 
 
 class _FakeTokenizer:

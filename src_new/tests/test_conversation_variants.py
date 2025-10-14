@@ -1,21 +1,21 @@
 
 from __future__ import annotations
 
+import logging
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-import logging
 
 from PIL import Image
 from transformers import Qwen2_5_VLProcessor
+
+from src_new.processing.coordinate_converter import CoordinateTokenConverter
 from src_new.processing.templates import (
     COORD_TO_DESC_USER_PROMPT,
     DESC_TO_COORD_USER_PROMPT,
-    BASE_USER_PROMPT,
     TEXT_ONLY_USER_PROMPT,
     get_system_prompt,
 )
-from src_new.processing.coordinate_converter import CoordinateTokenConverter
 from src_new.processing.variants import TextOnlyHandler
 
 

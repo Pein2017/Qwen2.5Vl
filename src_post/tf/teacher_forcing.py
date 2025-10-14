@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 from torch.nn import functional as F
-
 from transformers import Qwen2VLProcessor
 
 from src_new.models.wrapper import DetectionModel

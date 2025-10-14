@@ -4,7 +4,8 @@ import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Set
+from typing import Any, Dict, List, Set, Tuple
+
 
 # Ensure project root is importable when running as a script
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]

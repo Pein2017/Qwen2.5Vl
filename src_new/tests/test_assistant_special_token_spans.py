@@ -1,21 +1,25 @@
 from __future__ import annotations
+
+import json
 import unittest
 from pathlib import Path
-from typing import Dict, List, Tuple, Any, cast
+from typing import Dict, List, Tuple
 
+import torch
 from PIL import Image
 from transformers import Qwen2_5_VLProcessor
 
+from src_new.losses.token_grouping import TokenGroupingPlugin
 from src_new.processing.conversation_processor import ConversationProcessor
-from src_new.processing.span_builder import build_assistant_spans_token_aligned, build_assistant_spans_with_token_offsets
+from src_new.processing.span_builder import (
+    build_assistant_spans_token_aligned,
+    build_assistant_spans_with_token_offsets,
+)
 from src_new.processing.templates import (
-    get_system_prompt,
     SUMMARY_SYSTEM_PROMPT,
     SUMMARY_USER_PROMPT,
+    get_system_prompt,
 )
-from src_new.losses.token_grouping import TokenGroupingPlugin
-import json
-import torch
 
 
 def _make_image(size_wh: Tuple[int, int]) -> Image.Image:
@@ -119,7 +123,7 @@ class TestAssistantSpecialTokenSpans(unittest.TestCase):
 
         # Validate per special token inside assistant span
         start, end = s_spans[0]
-        assistant_ids = ids_list[start:end]
+        ids_list[start:end]
         assistant_text = tok.decode(input_ids[start:end], skip_special_tokens=False)
 
         # Re-tokenize assistant text alone to validate offsets deterministically

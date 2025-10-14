@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Set
-from random import Random
 from collections import Counter
+from dataclasses import dataclass, field
+from random import Random
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)

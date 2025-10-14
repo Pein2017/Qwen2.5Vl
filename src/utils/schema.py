@@ -8,40 +8,39 @@ classes and functions from the new modular structure.
 # Import from new modules
 from .data_utils import (
     ChatMessage,
+    GroundTruthObject,
     ImageSample,
     MultiChatSample,
-    GroundTruthObject,
 )
-
+from .model_utils import (
+    DetectionHeadOutputs,
+    LLMHiddenStates,
+    ModelAssets,
+    ModelInputs,
+    ModelOutput,
+    VisionFeatures,
+    assert_detection_head_outputs,
+    assert_llm_hidden_states,
+    assert_model_inputs,
+    assert_model_output,
+    assert_vision_features,
+    ensure_batched_vision_feats,
+)
 from .training_utils import (
     ChatProcessorOutput,
     CollatedBatch,
     LossDictType,
-    assert_tensor_shape,
     assert_chat_processor_output,
     assert_collated_batch,
+    assert_tensor_shape,
 )
 
-from .model_utils import (
-    ModelAssets,
-    ModelInputs,
-    ModelOutput,
-    LLMHiddenStates,
-    DetectionHeadOutputs,
-    VisionFeatures,
-    assert_model_inputs,
-    assert_model_output,
-    assert_detection_head_outputs,
-    assert_llm_hidden_states,
-    assert_vision_features,
-    ensure_batched_vision_feats,
-)
 
 # Re-export everything for backward compatibility
 __all__ = [
     # Data schemas
     "ChatMessage",
-    "ImageSample", 
+    "ImageSample",
     "MultiChatSample",
     "GroundTruthObject",
     # Training schemas
@@ -51,7 +50,7 @@ __all__ = [
     # Model schemas
     "ModelAssets",
     "ModelInputs",
-    "ModelOutput", 
+    "ModelOutput",
     "LLMHiddenStates",
     "DetectionHeadOutputs",
     "VisionFeatures",

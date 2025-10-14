@@ -7,25 +7,24 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from PIL import Image
-import torch
 from transformers import Qwen2_5_VLProcessor
 
-from src_new.data.dataset import Dataset
 from src_new.config.augmentation_config import (
     AugmentationConfig,
     ImageGeomConfig,
     PhotometricConfig,
 )
+from src_new.data.dataset import Dataset
+from src_new.inference import InferenceEngine
 from src_new.processing.conversation_processor import ConversationProcessor
 from src_new.processing.span_builder import build_assistant_spans_token_aligned
 from src_new.processing.special_tokens import (
     IM_END,
     IMAGE_PAD,
 )
-from src_new.inference import InferenceEngine
 
 
 def _load_processor() -> Qwen2_5_VLProcessor:

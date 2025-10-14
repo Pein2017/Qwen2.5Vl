@@ -6,11 +6,11 @@ saves checkpoints only on the main process (rank 0) to avoid conflicts
 in distributed training scenarios.
 """
 
-import unittest
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 class TestRank0CheckpointSaving(unittest.TestCase):
@@ -55,7 +55,7 @@ class TestRank0CheckpointSaving(unittest.TestCase):
             final_step = mock_trainer_rank0.state.global_step
             final_checkpoint_dir = self.output_dir / f"checkpoint-{final_step}"
             final_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # This should be called for rank 0
             mock_save_checkpoint(
                 mock_model,
@@ -152,7 +152,7 @@ class TestRank0CheckpointSaving(unittest.TestCase):
 
         # Verify print was called exactly twice (only for rank 0)
         self.assertEqual(mock_print.call_count, 2)
-        
+
         # Verify the correct messages were printed
         expected_calls = [
             unittest.mock.call("💾 Saving final inference-ready checkpoint to checkpoint-200..."),

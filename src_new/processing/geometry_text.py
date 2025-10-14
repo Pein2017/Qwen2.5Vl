@@ -17,13 +17,13 @@ def format_geometry_for_user(obj: Dict[str, object]) -> str:
     Values are expected to be sequences of numeric values.
     """
     if "line" in obj:
-        coords = ", ".join(str(int(v)) for v in obj["line"])  
+        coords = ", ".join(str(int(v)) for v in obj["line"])
         return f"<|line_start|>[{coords}]<|line_end|>"
     if "bbox_2d" in obj:
-        coords = ", ".join(str(int(v)) for v in obj["bbox_2d"])  
+        coords = ", ".join(str(int(v)) for v in obj["bbox_2d"])
         return f"<|box_start|>[{coords}]<|box_end|>"
     if "quad" in obj:
-        coords = ", ".join(str(int(v)) for v in obj["quad"])  
+        coords = ", ".join(str(int(v)) for v in obj["quad"])
         return f"<|quad_start|>[{coords}]<|quad_end|>"
     return ""
 

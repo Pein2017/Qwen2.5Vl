@@ -8,7 +8,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Any
+from typing import Any, Dict, List
 
 from data_conversion.summary_builder import build_summary_from_objects
 

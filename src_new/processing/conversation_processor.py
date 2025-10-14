@@ -13,21 +13,21 @@ Simplified, self-contained implementation that:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
-from src_new.types import FormatMode, ConversationVariant
 
 import torch
 from PIL import Image
 from transformers import Qwen2_5_VLProcessor
 
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
-from src_new.processing.templates import CONSTANTS, get_system_prompt
 from src_new.processing.special_tokens import IMAGE_PAD
+from src_new.processing.templates import CONSTANTS, get_system_prompt
 from src_new.processing.variants import create_default_variant_registry
+from src_new.types import ConversationVariant, FormatMode
 from src_new.utils.rank_aware_logging import get_rank_aware_logger
+
 
 logger = get_rank_aware_logger("processing.conversation")
 
@@ -76,10 +76,10 @@ class ConversationType(Enum):
 
 class ConversationValidator:
     """Validator for conversation structure and content."""
-    
+
     def __init__(self):
         pass
-    
+
     def validate(self, conversation: Dict[str, Any]) -> ConversationValidationResult:
         """Validate a conversation structure."""
         # Basic validation implementation
@@ -88,7 +88,7 @@ class ConversationValidator:
                 is_valid=False,
                 error_message="Conversation must be a dictionary"
             )
-        
+
         return ConversationValidationResult(is_valid=True)
 
     @staticmethod
@@ -232,10 +232,10 @@ class ConversationProcessor:
         self.coordinate_converter = CoordinateTokenConverter(
             format_mode=self._format_mode,
         )
-        
+
         # Initialize variant registry for conversation variants
         self._variant_registry = create_default_variant_registry(self.coordinate_converter)
-        
+
         # Initialize system prompt
         self._system_prompt = get_system_prompt(
             format_mode=self._format_mode,
@@ -499,7 +499,9 @@ class ConversationProcessor:
         out = self._process_text_and_images(text, oi)
         # Precompute spans for teacher-student
         try:
-            from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+            from src_new.processing.span_builder import (
+                build_assistant_spans_token_aligned as _build_spans,
+            )
             t_spans, s_spans = _build_spans(
                 conversation_text=text,
                 offset_mapping=out.get("offset_mapping"),
@@ -574,7 +576,9 @@ class ConversationProcessor:
         try:
             sys_prompt = self._get_system_prompt_for_variant("summary")
         except Exception:
-            from src_new.processing.templates import SUMMARY_SYSTEM_PROMPT as _SSP  # type: ignore
+            from src_new.processing.templates import (
+                SUMMARY_SYSTEM_PROMPT as _SSP,  # type: ignore
+            )
             sys_prompt = _SSP
         from src_new.processing.templates import CONSTANTS as _C
         user_text = _C.get("SUMMARY_USER_PROMPT", "请只输出一行摘要：")
@@ -716,7 +720,9 @@ class ConversationProcessor:
             )
             out = self._process_text_and_images(text, oi)
             try:
-                from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+                from src_new.processing.span_builder import (
+                    build_assistant_spans_token_aligned as _build_spans,
+                )
                 t_spans, s_spans = _build_spans(
                     conversation_text=text,
                     offset_mapping=out.get("offset_mapping"),
@@ -752,7 +758,9 @@ class ConversationProcessor:
         )
         out = self._process_text_and_images(text, oi)
         try:
-            from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+            from src_new.processing.span_builder import (
+                build_assistant_spans_token_aligned as _build_spans,
+            )
             t_spans, s_spans = _build_spans(
                 conversation_text=text,
                 offset_mapping=out.get("offset_mapping"),
@@ -838,7 +846,9 @@ class ConversationProcessor:
             out = self._process_text_and_images(text, oi)
             # Precompute spans for teacher-student
             try:
-                from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+                from src_new.processing.span_builder import (
+                    build_assistant_spans_token_aligned as _build_spans,
+                )
                 t_spans, s_spans = _build_spans(
                     conversation_text=text,
                     offset_mapping=out.get("offset_mapping"),
@@ -869,7 +879,7 @@ class ConversationProcessor:
                 # Skip empty teacher samples rather than failing
                 logger.warning(f"Skipping teacher sample with empty/invalid objects: {type(objs)}")
                 continue
-            
+
             t_render = assistant_fn(objs)
             t_assistant = (
                 t_render["text"] if isinstance(t_render, dict) and "text" in t_render else t_render
@@ -914,7 +924,9 @@ class ConversationProcessor:
         out = self._process_text_and_images(text, oi)
         # Precompute spans for teacher-student
         try:
-            from src_new.processing.span_builder import build_assistant_spans_token_aligned as _build_spans
+            from src_new.processing.span_builder import (
+                build_assistant_spans_token_aligned as _build_spans,
+            )
             t_spans, s_spans = _build_spans(
                 conversation_text=text,
                 offset_mapping=out.get("offset_mapping"),

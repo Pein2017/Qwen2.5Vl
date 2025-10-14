@@ -30,6 +30,7 @@ from pathlib import Path
 import torch
 from transformers import AutoProcessor, AutoTokenizer
 
+
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -437,7 +438,7 @@ def main():
     dataset = create_dataset(config, tokenizer, processor)
 
     # Step 5: Analyze sample structure
-    raw_sample = analyze_sample_structure(dataset, sample_idx=0)
+    analyze_sample_structure(dataset, sample_idx=0)
 
     # Step 6: Test data processing
     processed_sample = test_data_processing(dataset, sample_idx=0)

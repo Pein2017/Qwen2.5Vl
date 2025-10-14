@@ -10,13 +10,13 @@ Validates image token consistency across pipeline stages:
 3. Loss computation
 """
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
-
 import logging
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import torch
 from transformers import PreTrainedTokenizer
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,30 +24,30 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MultimodalAlignmentCheck:
     """Results from multimodal alignment validation."""
-    
+
     step: int
     stage: str
     sample_idx: int
     is_valid: bool
-    
+
     # Token counts
     expected_image_tokens: int
     actual_image_tokens: int
     mismatch_magnitude: int
-    
+
     # Pixel validation
     expected_patches: int
     actual_patches: int
     patches_match: bool
-    
+
     # THW validation
     thw_shape_valid: bool
     num_images: int
-    
+
     # Lists
     errors: List[str]
     warnings: List[str]
-    
+
     def to_tensorboard(self) -> Dict[str, float]:
         """Convert to TensorBoard scalar dict."""
         return {
@@ -57,7 +57,7 @@ class MultimodalAlignmentCheck:
             f"multimodal/{self.stage}/thw_valid": float(self.thw_shape_valid),
             f"multimodal/{self.stage}/num_images": float(self.num_images),
         }
-    
+
     def log_warnings(self) -> None:
         """Log warnings and errors if present."""
         if self.errors:
@@ -67,7 +67,7 @@ class MultimodalAlignmentCheck:
             )
             for err in self.errors:
                 logger.error(f"  ❌ {err}")
-        
+
         if self.warnings:
             logger.warning(
                 f"[Multimodal {self.stage}] Step {self.step}, Sample {self.sample_idx}: "
@@ -89,7 +89,7 @@ def compute_multimodal_alignment(
 ) -> MultimodalAlignmentCheck:
     """
     Validate multimodal alignment at a pipeline stage.
-    
+
     Args:
         step: Current training step
         stage: Pipeline stage name
@@ -99,17 +99,17 @@ def compute_multimodal_alignment(
         image_grid_thw: Grid metadata [num_images, 3] or None
         tokenizer: Tokenizer with image_pad_token_id
         merge_size: Vision patch merge factor (default 2)
-        
+
     Returns:
         MultimodalAlignmentCheck with validation results
     """
     errors = []
     warnings = []
-    
+
     # Flatten input_ids if needed
     if input_ids.dim() == 2:
         input_ids = input_ids.squeeze(0)
-    
+
     # Count actual image tokens
     image_pad_id = getattr(tokenizer, "image_pad_token_id", None)
     if image_pad_id is None:
@@ -117,7 +117,7 @@ def compute_multimodal_alignment(
         actual_image_tokens = 0
     else:
         actual_image_tokens = (input_ids == image_pad_id).sum().item()
-    
+
     # Validate THW shape
     thw_shape_valid = True
     num_images = 0
@@ -129,14 +129,14 @@ def compute_multimodal_alignment(
             thw_shape_valid = False
         else:
             num_images = image_grid_thw.size(0)
-    
+
     # Compute expected image tokens
     expected_image_tokens = 0
     if image_grid_thw is not None and thw_shape_valid:
         # Formula: sum(t*h*w) // merge_size^2
         thw_prod = image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
         expected_image_tokens = int(thw_prod.sum().item() // (merge_size ** 2))
-    
+
     # Check token mismatch
     mismatch_magnitude = abs(expected_image_tokens - actual_image_tokens)
     if pixel_values is not None and mismatch_magnitude > 0:
@@ -148,12 +148,12 @@ def compute_multimodal_alignment(
         warnings.append(
             f"Found {actual_image_tokens} image tokens but pixel_values is None"
         )
-    
+
     # Validate pixel_values vs THW
     patches_match = True
     expected_patches = 0
     actual_patches = 0
-    
+
     if pixel_values is not None and image_grid_thw is not None and thw_shape_valid:
         # Expected patches: sum(t*h*w)
         expected_patches = int(
@@ -162,17 +162,17 @@ def compute_multimodal_alignment(
             .item()
         )
         actual_patches = pixel_values.size(0)
-        
+
         if expected_patches != actual_patches:
             errors.append(
                 f"Pixel patches mismatch: expected {expected_patches} from THW, "
                 f"got {actual_patches} rows in pixel_values"
             )
             patches_match = False
-    
+
     # Final validity
     is_valid = len(errors) == 0
-    
+
     return MultimodalAlignmentCheck(
         step=step,
         stage=stage,

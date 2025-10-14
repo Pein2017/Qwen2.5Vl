@@ -13,7 +13,6 @@ Key Features:
 - Compatible with existing DetectionModel and training pipeline
 """
 
-import logging
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
@@ -32,8 +31,8 @@ from ..utils.rank_aware_logging import (
     rank0_only,
 )
 from .checkpoint_saver import BestCheckpointManager, CheckpointSaver
-from .training_state_manager import TrainingStateManager
 from .metrics_adapter import adapt_group_losses
+from .training_state_manager import TrainingStateManager
 
 
 # Import debug logging utilities
@@ -976,9 +975,9 @@ class BBUTrainer(HFTrainer):
             # One-time LR consistency checks and table log
             try:
                 # Extract intended overrides
-                lr_merger = getattr(config, "merger_lr", None)
-                lr_vision = getattr(config, "vision_lr", None)
-                lr_llm = getattr(config, "llm_lr", None)
+                getattr(config, "merger_lr", None)
+                getattr(config, "vision_lr", None)
+                getattr(config, "llm_lr", None)
                 lr_top_layers = getattr(config, "lr_top_layers", None)
                 lr_full_model = getattr(config, "lr_full_model", None)
 

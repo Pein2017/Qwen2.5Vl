@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import unittest
-from pathlib import Path
-from PIL import Image
 
-import torch
-from transformers import AutoTokenizer, Qwen2VLImageProcessor, Qwen2_5_VLProcessor, Qwen2VLVideoProcessor
+from PIL import Image
+from transformers import (
+    AutoTokenizer,
+    Qwen2_5_VLProcessor,
+    Qwen2VLImageProcessor,
+    Qwen2VLVideoProcessor,
+)
 
 from src_new.processing.conversation_processor import ConversationProcessor
-from src_new.processing.variants import create_default_variant_registry
 from src_new.processing.coordinate_converter import CoordinateTokenConverter
 from src_new.processing.special_tokens import IMAGE_PAD
 
@@ -50,7 +52,7 @@ class TestConversationProcessorPrecomputed(unittest.TestCase):
         raise unittest.SkipTest(f"No processor/tokenizer available: {last_exc}")
 
     def _run_variant(self, variant_key: str):
-        converter = CoordinateTokenConverter(format_mode="special_tokens")
+        CoordinateTokenConverter(format_mode="special_tokens")
         conv = ConversationProcessor(processor=self.processor)
         # Fake a 1x1 white image for simplicity
         img = Image.new("RGB", (64, 64), color=(255, 255, 255))

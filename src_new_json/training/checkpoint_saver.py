@@ -110,7 +110,6 @@ class CheckpointSaver:
             )
 
         # Use safe per-file copy by default (copytree disabled)
-        skip_copytree = True
         logger.info("🛡️ Using safe per-file copy for best checkpoint (copytree disabled by default)")
 
         # Source directory validation with retries (important for NFS sync delays)
@@ -145,7 +144,6 @@ class CheckpointSaver:
 
             def _copy_with_fsync(src_path: str, dst_path: str) -> None:
                 # Copy with explicit read/write and fsync to ensure durability on NFS
-                import errno
                 bufsize = 1024 * 1024
                 with open(src_path, 'rb', buffering=0) as rf:
                     st = os.fstat(rf.fileno())
@@ -474,10 +472,10 @@ class CheckpointSaver:
             last_best_attempt = getattr(self.checkpoint_manager, "_last_best_attempt", None)
             if last_best_attempt and last_best_attempt == (step, metrics_hash):
                 return
-            
+
             # Record this attempt
             setattr(self.checkpoint_manager, "_last_best_attempt", (step, metrics_hash))
-            
+
             logger.info("🏆 Creating best checkpoint by direct folder copy")
             best_checkpoint_name = self.checkpoint_manager.create_best_checkpoint_name(
                 current_metrics, step

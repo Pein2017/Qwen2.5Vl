@@ -1,80 +1,43 @@
 #!/bin/bash
 set -euo pipefail
 
-# =============================================================================
-# 🤖 Group QC RL Training Launcher
-# =============================================================================
-#
-# USAGE:
-#   bash scripts/run_group_qc_rl.sh
-#   RL_CONFIG_PATH=configs/rl/custom_grpo.yaml bash scripts/run_group_qc_rl.sh
-#   RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true bash scripts/run_group_qc_rl.sh
-#
-# ENVIRONMENT VARIABLES:
-#   RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
-#   RL_GPU_DEVICES       GPUs to use (default: 0)
-#   RL_TO_CONSOLE       Output to console: true|false (default: false)
-#   RL_MASTER_PORT      Master port for distributed training (default: 29511)
-#   RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
-#   RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
-#   RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
-# =============================================================================
-
-show_help() {
-    cat << EOF
-🤖 Group QC RL Training Launcher
-
-USAGE:
-    $0
-    RL_CONFIG_PATH=configs/rl/custom_grpo.yaml $0
-    RL_GPU_DEVICES=0,1,2,3 RL_TO_CONSOLE=true $0
-
-ENVIRONMENT VARIABLES:
-    RL_CONFIG_PATH       RL config file (default: configs/rl/group_qc_grpo.yaml)
-    RL_GPU_DEVICES       GPUs to use (default: 0)
-    RL_TO_CONSOLE       Output to console: true|false (default: false)
-    RL_MASTER_PORT      Master port for distributed training (default: 29511)
-    RL_PYTHON_BIN       Python interpreter path (default: /root/miniconda3/envs/ms/bin/python)
-    RL_LOG_NAME         Log file name (default: run_group_qc_rl.log)
-    RL_SKIP_SAVE        Skip saving checkpoints: 1|0 (default: 1)
-
-EXAMPLES:
-    $0                                        # Default training
-    RL_CONFIG_PATH=configs/rl/custom_grpo.yaml $0  # Custom config
-    RL_GPU_DEVICES=0,1,2,3 $0                 # Multi-GPU training
-    RL_TO_CONSOLE=true $0                     # Output to console
-
-FEATURES:
-    🎯 Group-level quality control RL training
-    🚀 Multi-GPU distributed training support
-    📊 Configurable logging and output options
-    ⚙️  Environment-aware configuration
-EOF
-}
-
-# Parse help argument
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    show_help
-    exit 0
-fi
+# =====================
+# Group QC RL Runner Script
+# 
+# Environment variables (lowercase, short names):
+#   config      - Path to YAML config file (default: configs/group_qc_rl/standard.yaml)
+#   gpus        - GPU devices (default: "0", use "cpu" for CPU-only)
+#   console     - Output to console vs log file (default: "false")
+#   port        - Master port for DDP (default: 29511)
+#   python      - Python binary path (default: /root/miniconda3/envs/ms/bin/python)
+#   log         - Log file name (default: run_group_qc_rl.log)
+#   skip_save   - Skip checkpoint saving (default: "1")
+#   launcher    - Launch method: "ddp" or "accelerate" (default: "ddp")
+#   procs       - Number of processes (default: auto-detect from gpus)
+#   precision   - Mixed precision: "bf16", "fp16", "no" (default: "bf16")
+#   selftest    - Run self-test mode (default: "0")
+# =====================
 
 # =====================
 # Configuration with environment variables and sensible defaults
 # =====================
-CONFIG_PATH="${RL_CONFIG_PATH:-configs/rl/group_qc_grpo.yaml}"
-GPU_DEVICES="${RL_GPU_DEVICES:-0}"                   # e.g. "0" for single GPU; "0,1,2,3" for 4 GPUs; use "cpu" to force CPU
-TO_CONSOLE="${RL_TO_CONSOLE:-false}"                 # true to output to console, false to output to log file
-MASTER_PORT="${RL_MASTER_PORT:-29511}"
-PY="${RL_PYTHON_BIN:-/root/miniconda3/envs/ms/bin/python}"
-LOG_NAME="${RL_LOG_NAME:-run_group_qc_rl.log}"
+CONFIG_PATH="${config:-configs/group_qc_rl/standard.yaml}"
+GPU_DEVICES="${gpus:-0}"                   # e.g. "0" for single GPU; "0,1,2,3" for 4 GPUs; use "cpu" to force CPU
+TO_CONSOLE="${console:-false}"                 # true to output to console, false to output to log file
+MASTER_PORT="${port:-29511}"
+PY="${python:-/root/miniconda3/envs/ms/bin/python}"
+LOG_NAME="${log:-run_group_qc_rl.log}"
 DS_CONFIG="scripts/zero2.json"
 # Runtime toggles
-SKIP_SAVE="${RL_SKIP_SAVE:-1}"             # 1 to skip saving checkpoints; 0 to save
+SKIP_SAVE="${skip_save:-1}"             # 1 to skip saving checkpoints; 0 to save
+LAUNCHER="${launcher:-ddp}"
+NUM_PROCS_ENV="${procs:-}"
+MIXED_PRECISION="${precision:-bf16}"
 
 # Validate config file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "[ERROR] Config file not found: $CONFIG_PATH" >&2
-  echo "Hint: set RL_CONFIG_PATH environment variable to an absolute path." >&2
+  echo "Hint: set 'config' environment variable to an absolute path." >&2
   exit 1
 fi
 
@@ -91,12 +54,13 @@ echo "   🖥️  GPUs: $GPU_DEVICES"
 echo "   📝  Console output: $TO_CONSOLE"
 
 echo "Using DeepSpeed ZeRO-2 config: $DS_CONFIG"
+echo "Launcher: $LAUNCHER"
 
 # =====================
 # Self-test mode (optional): run single-GPU and multi-GPU (2 GPUs) quick checks
-# Enable by setting SELFTEST=1 environment variable
+# Enable by setting selftest=1 environment variable
 # =====================
-if [[ "${SELFTEST:-0}" == "1" ]]; then
+if [[ "${selftest:-0}" == "1" ]]; then
   echo "Self-test mode enabled"
   GPU_COUNT=0
   if command -v nvidia-smi >/dev/null 2>&1; then
@@ -135,14 +99,22 @@ fi
 export CUDA_VISIBLE_DEVICES="$GPU_DEVICES"
 IFS=',' read -r -a GPU_ARR <<< "$GPU_DEVICES"
 NPROC=${#GPU_ARR[@]}
+if [[ -n "$NUM_PROCS_ENV" ]]; then
+  NPROC="$NUM_PROCS_ENV"
+fi
 
 # =====================
-# Launch (torchrun DDP only)
+# Launch
 # =====================
-if [ "$NPROC" -le 1 ]; then
-  echo "Running (single GPU): $PY -m src_post.runner --config \"$CONFIG_PATH\""
-  eval "SKIP_SAVE=$SKIP_SAVE $PY -m src_post.runner --config \"$CONFIG_PATH\""
+if [[ "$LAUNCHER" == "accelerate" ]]; then
+  echo "Running (accelerate, nproc=$NPROC, mp=$MIXED_PRECISION): accelerate launch --num_processes $NPROC --mixed_precision $MIXED_PRECISION $PY -m src_post.runner --config \"$CONFIG_PATH\""
+  eval "SKIP_SAVE=$SKIP_SAVE accelerate launch --num_processes $NPROC --mixed_precision $MIXED_PRECISION $PY -m src_post.runner --config \"$CONFIG_PATH\""
 else
-  echo "Running (multi GPU, nproc=$NPROC, DDP): $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
-  eval "SKIP_SAVE=$SKIP_SAVE $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+  if [ "$NPROC" -le 1 ]; then
+    echo "Running (single GPU): $PY -m src_post.runner --config \"$CONFIG_PATH\""
+    eval "SKIP_SAVE=$SKIP_SAVE $PY -m src_post.runner --config \"$CONFIG_PATH\""
+  else
+    echo "Running (multi GPU, nproc=$NPROC, DDP): $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+    eval "SKIP_SAVE=$SKIP_SAVE $PY -m torch.distributed.run --nproc_per_node $NPROC --master_port $MASTER_PORT -m src_post.runner --config \"$CONFIG_PATH\""
+  fi
 fi

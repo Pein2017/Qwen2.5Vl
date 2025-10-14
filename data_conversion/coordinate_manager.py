@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from PIL import Image, ImageOps
 from data_conversion.utils.exif_utils import get_exif_transform
 
 
@@ -1580,8 +1579,8 @@ class StructureValidator:
 
     @staticmethod
     def validate_pipeline_output(
-        train_samples: List[Dict], 
-        val_samples: List[Dict], 
+        train_samples: List[Dict],
+        val_samples: List[Dict],
         teacher_samples: List[Dict],
         max_teachers: int = None
     ) -> bool:

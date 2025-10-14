@@ -311,31 +311,31 @@ def create_trainer_with_new_architecture(
 
     # Auto-resolve data paths if they are null
     from src_new.utils.data_resolver import DataResolver
-    
+
     # Check if any data paths need to be resolved
     needs_resolution = (
         getattr(config.data, 'train_data_path', None) is None or
-        getattr(config.data, 'val_data_path', None) is None or 
+        getattr(config.data, 'val_data_path', None) is None or
         getattr(config.data, 'teacher_pool_file', None) is None
     )
-    
+
     if needs_resolution:
         if not hasattr(config.data, 'data_root') or config.data.data_root is None:
             raise ValueError(
                 "Data paths are null but no data_root provided. "
                 "Either specify explicit paths or provide data_root for auto-resolution."
             )
-        
+
         logger.info(f"🔍 Auto-resolving data paths from data_root: {config.data.data_root}")
         resolved_paths = DataResolver.resolve_dataset_paths(config.data.data_root)
-        
+
         # Update config with resolved paths if they were null (using object.__setattr__ for frozen dataclass)
         if getattr(config.data, 'train_data_path', None) is None:
             object.__setattr__(config.data, 'train_data_path', str(resolved_paths.train_data_path))
-        
+
         if getattr(config.data, 'val_data_path', None) is None:
             object.__setattr__(config.data, 'val_data_path', str(resolved_paths.val_data_path))
-            
+
         if getattr(config.data, 'teacher_pool_file', None) is None:
             object.__setattr__(config.data, 'teacher_pool_file', str(resolved_paths.teacher_pool_file))
 
@@ -510,7 +510,7 @@ def create_trainer_with_new_architecture(
         logger.warning(f"⚠️ Could not register AugmentationScheduleCallback: {e}")
 
     # Create and set processor for checkpoint saving with updated components
-    from transformers import Qwen2_5_VLProcessor, AutoVideoProcessor
+    from transformers import AutoVideoProcessor, Qwen2_5_VLProcessor
 
     # Load processor from pretrained to get the chat template, then update components
     processor = Qwen2_5_VLProcessor.from_pretrained(

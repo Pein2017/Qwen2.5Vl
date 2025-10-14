@@ -18,7 +18,7 @@
 
 3. **Truly optional fields**
    - `paths.ref_model_path` (can be None)
-   - `grpo.max_advantage_magnitude` (can be None)
+   - (removed) `grpo.max_advantage_magnitude`
    - `grpo.beta_anneal` (can be None if beta=0)
    - Everything else is REQUIRED
 
@@ -110,11 +110,17 @@ grpo:
   beta_anneal:  # Optional
     type: "cosine"  # or "linear"
     ratio: 0.67     # Fraction of training for annealing (e.g., 0.67 = 2/3)
-  loss_type: "grpo"
+  loss_type: "dr_grpo"
   scale_rewards: true
   mask_truncated_completions: false
   max_advantage_magnitude: 5.0  # Optional, can be null
 ```
+
+- Mapping to TRL (runner wiring):
+  - `epsilon_low` → `HFGRPOConfig.epsilon`
+  - `epsilon_high` → `HFGRPOConfig.epsilon_high`
+  - `loss_type` → `HFGRPOConfig.loss_type`
+  - Reference policy KL is disabled by default in our TRL path (no `beta` used by trainer; keep `beta_start: 0` to match).
 
 **Beta Annealing (epoch-based):**
 - `beta_start`: Initial KL coefficient
@@ -127,7 +133,7 @@ grpo:
 ### 7. Normalization
 ```yaml
 normalization:
-  cross_rank_advantages: true
+  cross_rank_advantages: false
 ```
 
 ### 8. Training
@@ -144,6 +150,8 @@ training:
   bf16: true
   fp16: false
 ```
+
+- Runner defaults `gradient_checkpointing=True` for TRL when constructing `HFGRPOConfig` (YAML value can remain false/omitted; runner overrides).
 
 **Epoch-Based Training:**
 - `num_train_epochs`: Number of passes through dataset
@@ -262,6 +270,9 @@ evaluation:
   save_samples: 20
   log_text_snippets: true
   seed: 17
+  # Text dump controls (moved from env to YAML)
+  dump_conversations: false      # true to enable ConversationDumpCallback on eval
+  dump_max_per_step: 16          # limit of samples per evaluation step to dump
 ```
 
 ## Auto-Computed Values
